@@ -106,8 +106,11 @@ check("OpenVPN: lists serialised from the model (B-OVPN-2); CN without < > (B-OV
       and "if (!r.cn || !r.sub || !r.mask) return `<#JS_fieldblank#>`;" in T)
 check("OpenVPN: vpn_serverN_ccd_val byte-capped (not JFFS-whitelisted, B-OVPN-1); the whitelisted user list keeps the httpd 2048 cap",
       "CCD_BYTES = 1006 - 'vpn_server1_ccd_val='.length" in T and "serCcd(CCD.concat([r])).length > CCD_BYTES" in T and "serUsers(OUSERS.concat([r])).length > 2048" in T)
-check("OpenVPN: port + protocol clash with the other enabled instance refused (B-OVPN-7); real subnet overlap vs LAN, the other instance and WireGuard (B-OVPN-8)",
-      "c.vpn_server_port === OV[oth].port && c.vpn_server_proto === OV[oth].proto" in T and "overlap(sn, nm, F.lan_ipaddr, F.lan_netmask)" in T
+# 2026-11-16: the port check is one list of every VPN server listener (OpenVPN 1 + 2, WireGuard, IPsec) instead of the
+# OpenVPN-only comparison; its cases run in test_review_2026_11_16_vpn.py
+check("OpenVPN: port + protocol clash with any other enabled VPN server refused (B-OVPN-7); real subnet overlap vs LAN, the other instance and WireGuard (B-OVPN-8)",
+      "var pc = portClash(listeners(c)); if (pc) return bad(pc.id, `<#RVSV_145#>` + ' (' + pc.who + ')');" in T and "function listeners(c){" in T
+      and "function portClash(L){" in T and "c.vpn_server_port === OV[oth].port" not in T and "overlap(sn, nm, F.lan_ipaddr, F.lan_netmask)" in T
       and "overlap(sn, nm, OV[oth].sn, OV[oth].nm)" in T and "function overlap(a, am, b, bm)" in T)
 check("OpenVPN: local / remote endpoints (B-OVPN-3) and the cipher list (B-OVPN-4) validated",
       "has('vpn_server_local') && c.vpn_server_local && !unicast(c.vpn_server_local)" in T and "/^[A-Za-z0-9:-]+$/.test(c.vpn_server_ncp_ciphers)" in T)

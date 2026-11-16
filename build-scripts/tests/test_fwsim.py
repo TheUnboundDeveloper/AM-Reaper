@@ -456,7 +456,9 @@ try:
     # 9100+code. No walk of iptables can see it, so before the rule database
     # became an input a Killswitch that never installed was invisible - the
     # exact failure the feature exists to prevent.
-    PBRNV = (NV + "reaper_pbr_enable=1\nvpn_client1_enforce=1\nvpn_clientx_eas=1\n"
+    # 2026-11-16: the Killswitch counts only while the client carries the default route (Redirect all = 1 or
+    # VPN Director = 2, TUN), as ppbr_target() decides it
+    PBRNV = (NV + "reaper_pbr_enable=1\nvpn_client1_enforce=1\nvpn_client1_rgw=2\nvpn_client1_if=tun\nvpn_clientx_eas=1\n"
              "reaper_pbr_rulelist=<1>to the tunnel>src>192.168.50.50>>>OVPN1\n")
     KS_ON = "0:\tfrom all lookup local\n9001:\tfrom all fwmark 0x10000/0xf0000 lookup ovpnc1\n9101:\tfrom all fwmark 0x10000/0xf0000 prohibit\n32766:\tfrom all lookup main\n"
     KS_OFF = "0:\tfrom all lookup local\n9001:\tfrom all fwmark 0x10000/0xf0000 lookup ovpnc1\n32766:\tfrom all lookup main\n"
@@ -481,6 +483,17 @@ try:
     j, out, rc = run(nv=PBRNV.replace("vpn_clientx_eas=1", "vpn_clientx_eas="), witness=None, rule4=KS_OFF, tag="c6d")
     check("C6: a disabled client's Killswitch emits no witness",
           not any(i["id"].startswith("C6") for i in j["witnesses"]), [i["id"] for i in j["witnesses"]])
+
+    # 2026-11-16 (review): Redirect "No" (pushed routes only) or a TAP client - the stored Killswitch promises nothing
+    # (no prohibit is installed any more), so there is no row to go red; Redirect "all" is a promise like VPN Director
+    for tag, old, new in (("c6f", "vpn_client1_rgw=2", "vpn_client1_rgw=0"), ("c6g", "vpn_client1_rgw=2\n", ""),
+                          ("c6h", "vpn_client1_if=tun", "vpn_client1_if=tap")):
+        j, out, rc = run(nv=PBRNV.replace(old, new), witness=None, rule4=KS_OFF, tag=tag)
+        check("C6: no Killswitch witness with %s" % (new or "no Redirect value"),
+              not any(i["id"].startswith("C6") for i in j["witnesses"]), [i["id"] for i in j["witnesses"]])
+    j, out, rc = run(nv=PBRNV.replace("vpn_client1_rgw=2", "vpn_client1_rgw=1"), witness=None, rule4=KS_ON, tag="c6i")
+    x = wit(j, "C6.1")
+    check("C6: Redirect all keeps the Killswitch witness", x and x["state"] == "green", x)
 
     # a BLOCK target is a prohibit by definition, at 9000+code
     j, out, rc = run(nv=(NV + "reaper_pbr_enable=1\nreaper_pbr_rulelist=<1>no internet>src>192.168.50.60>>>BLOCK\n"),
@@ -879,12 +892,85 @@ try:
     j, out, rc = run(save6=s6, members=MEMBERS + "rw_threat6 2001:db8:ffff::7\n", witness=None, tag="v6p")
     check("v6 picker: the documentation address is claimed, the next candidate is used", j.get("wan6src") == "2606:4700:4700::1111" and "2001:db8:ffff::7" in j.get("wan6src_note", ""), (j.get("wan6src"), j.get("wan6src_note")))
 
-    # guest isolation is not promised where networks are deliberately linked
+    # ---- 2026-11-16 (bug review A1): G1 reads the Access Intranet pair, G3 witnesses it ----
+    # sdn_access_rl is "<a>b" pairs of network indexes; a pair is two-way forwarding between exactly those two
+    # networks and index 0 is the main network. G1 ("isolated from the main LAN") used to stand down while ANY pair
+    # existed. It now resolves a pair through sdn_rl / subnet_rl: only a pair with the main network lifts the
+    # promise. A pair between two guest networks leaves G1 judged (rc/reaper_guest.c keeps both isolated), and G3
+    # witnesses the pair itself: a host on one reaches a host on the other, through the guest layer's RETURN and on
+    # to the stock pair rule.
     gaddr = ADDR + "4: br55    inet 10.20.0.1/24 brd 10.20.0.255 scope global br55\\       valid_lft forever preferred_lft forever\n"
     j, out, rc = run(addr=gaddr, nv=NV + "sdn_access_rl=<1>2<\n", witness=None, tag="gl1")
-    x = wit(j, "G1.1"); check("linked SDN: guest isolation is a NOTE while any link exists", x and x["state"] == "na" and "linked" in x["note"], x)
+    x = wit(j, "G1.1"); check("pairs, but an input without the network list (a replayed fixture): G1 is a NOTE that says so",
+                              x and x["state"] == "na" and "does not carry the network list" in x["note"], x)
+    check("...and no pair row is made up from a pair that cannot be resolved", not [w_ for w_ in j["witnesses"] if w_["id"].startswith("G3.")])
     j, out, rc = run(addr=gaddr, nv=NV, witness=None, tag="gl2")
-    x = wit(j, "G1.1"); check("linked SDN neg: no links = the isolation row is judged as before", x and x["state"] in ("green", "red") and x["expect"] == "DROP", x)
+    x = wit(j, "G1.1"); check("no pairs = the isolation row is judged as before", x and x["state"] in ("green", "red") and x["expect"] == "DROP", x)
+    check("...and there is no pair row", not [w_ for w_ in j["witnesses"] if w_["id"].startswith("G3.")])
+    # two guest networks (documentation addresses): 1 = br55 192.0.2.0/25, 2 = br56 192.0.2.128/25
+    PADDR = ADDR + ("4: br55    inet 192.0.2.1/25 brd 192.0.2.127 scope global br55\\       valid_lft forever preferred_lft forever\n"
+                    "5: br56    inet 192.0.2.129/25 brd 192.0.2.255 scope global br56\\       valid_lft forever preferred_lft forever\n")
+    SDN = ("sdn_rl=<0>MAINFH>1>0>0>1>0>0>0>0>0>0>0>0>0>0<1>Guest>1>1>1>2>0>0>0>0>0>0>0>0>0>0<2>IoT>1>2>2>3>0>0>0>0>0>0>0>0>0>0\n"
+           "subnet_rl=<1>br55>192.0.2.1>255.255.255.128>1>192.0.2.2>192.0.2.126>86400<2>br56>192.0.2.129>255.255.255.128>1>192.0.2.130>192.0.2.254>86400\n")
+    def pair_table(pair):
+        # the guest layer as rc/reaper_guest.c writes it for two plain guest networks (iptables-save order), with or
+        # without the pair rules, and the stock pair chain: ACCEPT both ways, then bridge-to-bridge DROP
+        def guf(X, P):
+            L = ["-A REAPER_GUF -i %s -o %s -j RETURN" % (X, X), "-A REAPER_GUF -i %s -o eth0 -j RETURN" % X]
+            if pair: L.append("-A REAPER_GUF -i %s -o %s -j RETURN" % (X, P))
+            L += ["-A REAPER_GUF -i %s -j DROP" % X,
+                  "-A REAPER_GUF -o %s -m conntrack --ctstate RELATED,ESTABLISHED -j RETURN" % X,
+                  "-A REAPER_GUF -i eth0 -o %s -j RETURN" % X]
+            if pair: L.append("-A REAPER_GUF -i %s -o %s -j RETURN" % (P, X))
+            return L + ["-A REAPER_GUF -o %s -j DROP" % X]
+        extra = guf("br55", "br56") + guf("br56", "br55") + ["-A SDN_IA -i br55 -o br56 -j ACCEPT", "-A SDN_IA -i br56 -o br55 -j ACCEPT",
+                                                             "-A SDN_IA -i br+ -o br+ -j DROP"]
+        t = SAVE4.replace(":INPUT_ICMP - [0:0]\n", ":INPUT_ICMP - [0:0]\n:REAPER_GUF - [0:0]\n:SDN_IA - [0:0]\n")
+        t = t.replace("-A FORWARD -j WARDEN\n", "-A FORWARD -j REAPER_GUF\n-A FORWARD -j WARDEN\n")
+        t = t.replace("-A FORWARD -i br0 -o br0 -j ACCEPT\n",
+                      "-A FORWARD -i br0 -o br0 -j ACCEPT\n-A FORWARD -i br55 -o eth0 -j ACCEPT\n-A FORWARD -i br56 -o eth0 -j ACCEPT\n-A FORWARD -j SDN_IA\n")
+        return t.replace("-A RW_DROP -j DROP\nCOMMIT\n", "-A RW_DROP -j DROP\n" + "\n".join(extra) + "\nCOMMIT\n")
+    PT, PN = pair_table(True), pair_table(False)
+    check("pair: the synthetic table took the guest layer and the stock pair chain",
+          PT.count("-A REAPER_GUF ") == 16 and PN.count("-A REAPER_GUF ") == 12 and PT.count("-A SDN_IA ") == 3 and "-A FORWARD -j SDN_IA\n" in PT)
+    j, out, rc = run(save4=PT, addr=PADDR, nv=NV + SDN + "sdn_access_rl=<1>2\n", witness=None, tag="gq1")
+    x = wit(j, "G3.1.1"); check("G3: a host on br55 reaches a host on its paired network br56 - past the guest layer, accepted by the stock pair rule",
+                                x and x["state"] == "green" and x["expect"] == "ACCEPT" and x["verdict"] == "ACCEPT" and "SDN_IA#1" in x["rule"]
+                                and x["witness"].startswith("br55 192.0.2.123 ") and "192.0.2.252" in x["witness"], x)
+    x = wit(j, "G3.2.1"); check("G3: and the other way round (a pair has no direction)",
+                                x and x["state"] == "green" and x["verdict"] == "ACCEPT" and "SDN_IA#2" in x["rule"] and x["witness"].startswith("br56 192.0.2.251 "), x)
+    x = wit(j, "G1.1"); check("G3: the paired network is still isolated from the main LAN - G1 is judged and the guest layer drops it",
+                              x and x["state"] == "green" and x["expect"] == "DROP" and x["verdict"] == "DROP" and "REAPER_GUF#4" in x["rule"], x)
+    x = wit(j, "G1.2"); check("G3: so is the other one", x and x["state"] == "green" and x["verdict"] == "DROP" and "REAPER_GUF#12" in x["rule"], x)
+    x = wit(j, "G2.1"); check("G3: and both still reach the WAN", x and x["state"] == "green" and wit(j, "G2.2")["state"] == "green", x)
+    check("G3: one row per paired network, none else", sorted(w_["id"] for w_ in j["witnesses"] if w_["id"].startswith("G3.")) == ["G3.1.1", "G3.2.1"])
+    j, out, rc = run(save4=PN, addr=PADDR, nv=NV + SDN + "sdn_access_rl=<1>2\n", witness=None, tag="gq2")
+    x = wit(j, "G3.1.1"); check("G3 neg: without the pair rules the guest layer drops the pair - red, and the row names the rule",
+                                x and x["state"] == "red" and x["verdict"] == "DROP" and "REAPER_GUF#3" in x["rule"], x)
+    x = wit(j, "G1.1"); check("G3 neg: the main-LAN promise is unaffected", x and x["state"] == "green" and x["verdict"] == "DROP", x)
+    j, out, rc = run(save4=PT, addr=PADDR, nv=NV + SDN + "sdn_access_rl=<2>1<1>2\n", witness=None, tag="gq3")
+    check("G3: the pair written the other way round, and twice, is still one row each",
+          sorted(w_["id"] for w_ in j["witnesses"] if w_["id"].startswith("G3.")) == ["G3.1.1", "G3.2.1"] and wit(j, "G3.1.1")["state"] == "green")
+    j, out, rc = run(save4=PT, addr=PADDR, nv=NV + SDN + "sdn_access_rl=<0>1\n", witness=None, tag="gq4")
+    x = wit(j, "G1.1"); check("a pair with the main network: G1 is a NOTE - that network reaches the main LAN by design",
+                              x and x["state"] == "na" and "Access Intranet to the main network" in x["note"], x)
+    x = wit(j, "G1.2"); check("...the network that is in no pair is still judged", x and x["expect"] == "DROP" and x["state"] == "green", x)
+    check("...and a main-network pair is not a guest pair: no G3 row", not [w_ for w_ in j["witnesses"] if w_["id"].startswith("G3.")])
+    j, out, rc = run(save4=PT, addr=PADDR, nv=NV + SDN + "sdn_access_rl=<1>2<2>0\n", witness=None, tag="gq5")
+    x = wit(j, "G1.1"); check("paired with a network that has main-network access: that network is no peer - no G3 row, G1 still judged",
+                              x and x["expect"] == "DROP" and x["state"] != "na" and wit(j, "G1.2")["state"] == "na"
+                              and not [w_ for w_ in j["witnesses"] if w_["id"].startswith("G3.")], x)
+    for tag, nv_, why in (("gq6", SDN + "sdn_access_rl=<1>9\n", "the other index names no network"),
+                          ("gq7", SDN.replace("<2>IoT>1>", "<2>IoT>0>") + "sdn_access_rl=<1>2\n", "the other network is switched off"),
+                          ("gq8", SDN.replace("<2>IoT>1>2>2>3>0>0>0>0>0>0", "<2>IoT>1>2>2>3>0>0>0>0>0>2") + "sdn_access_rl=<1>2\n", "the other network is a captive portal"),
+                          ("gq9", SDN + "sdn_access_rl=<1>1\n", "a network paired with itself")):
+        j, out, rc = run(save4=PT, addr=PADDR, nv=NV + nv_, witness=None, tag=tag)
+        x = wit(j, "G1.1"); check("pair ignored (%s): no G3 row, G1 judged as for any guest network" % why,
+                                  x and x["expect"] == "DROP" and x["state"] == "green" and not [w_ for w_ in j["witnesses"] if w_["id"].startswith("G3.")], x)
+    j, out, rc = run(save4=PT, addr=PADDR.replace("5: br56    inet 192.0.2.129/25 brd 192.0.2.255 scope global br56\\       valid_lft forever preferred_lft forever\n", ""),
+                     nv=NV + SDN + "sdn_access_rl=<1>2\n", witness=None, tag="gq10")
+    check("the paired bridge has no address (not up): no G3 row, nothing to aim at", not [w_ for w_ in j["witnesses"] if w_["id"].startswith("G3.")]
+          and wit(j, "G1.1")["expect"] == "DROP")
 
     # v1.11, 2026-10-30 field report: a guest network bound to an OpenVPN client
     # from the Network page is policy-routed ("iif br55 lookup ovpnc3") with its

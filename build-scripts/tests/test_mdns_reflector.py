@@ -7,6 +7,8 @@ bridge but never relayed between them. The owner asked for the reflector with th
 network with Access Intranet on take part (those devices are main-network devices on another SSID); a network with
 the Network page's "Set AP Isolated" on must never be joined to another one; isolated guest networks and Guest Portals
 stay out. The 2026-11-11 review (Appendix A) also noted that avahi announced the router onto guest bridges.
+2026-11-16 (bug review A1): "Access Intranet on" means a pair with the MAIN network. A pair between two guest
+networks used to count too, which joined both to the main LAN's reflector; it no longer does.
 
 HOW. avahi has no per-interface reflector option, so a Reaper patch adds `reflect-interfaces` (avahi-core/server.c
 reflect_iface_ok, checked on the receiving AND the sending interface in all four reflect paths). rc/reaper_guest.c
@@ -14,7 +16,7 @@ reaper_mdns_ifaces() picks the bridges, rc/services.c writes them into avahi-dae
 the networks guest isolation closes to deny-interfaces, and restarts avahi after restart_sdn / sdn_del only when that
 plan changed. Tweaks > Advanced tweaks has the switch (reaper_mdns_reflect, on by default; only "0" is off).
 
-WHAT IT DOES. Compiles reaper_mdns_ifaces() (with rm_add and rg_access_on) and avahi's reflect_iface_ok() on the
+WHAT IT DOES. Compiles reaper_mdns_ifaces() (with rm_add, the pair helpers and rg_refs_load) and avahi's reflect_iface_ok() on the
 host against small stand-ins and runs the owner's cases; pins the avahi patch, the rc wiring, the page, the default,
 the settings-file row and the two dictionary keys in every pack. Exit 0 pass, 1 fail, 77 skipped (no gcc, or no
 router tree - argv[1] or REAPER_ROUTER_SRC = .../release/src/router)."""
@@ -49,10 +51,15 @@ def cfunc(src, head):
 
 # ---------------------------------------------------------------- rc: which bridges
 gsrc = read("rc/reaper_guest.c")
-acc = cfunc(gsrc, "static int rg_access_on(")
+# 2026-11-16: the pair helpers (struct rg_ref, rg_main_access ...) sit between two markers; rg_refs_load fills the table
+_pm = re.search(r"/\* REAPER-GUEST-PAIR-BEGIN[^\n]*\*/\n(.*?)/\* REAPER-GUEST-PAIR-END \*/", gsrc, re.S)
+_rl = cfunc(gsrc, "static int rg_refs_load(")
+acc = (_pm.group(1) + "\n" + _rl) if _pm and _rl else None
 add = cfunc(gsrc, "static void rm_add(")
 ifs = cfunc(gsrc, "void reaper_mdns_ifaces(")
-check("reaper_guest.c: rg_access_on, rm_add and reaper_mdns_ifaces are there", acc and add and ifs)
+check("reaper_guest.c: the pair helpers, rg_refs_load, rm_add and reaper_mdns_ifaces are there", acc and add and ifs)
+check("reaper_guest.c: the old any-pair test (rg_access_on) is gone; mDNS uses the main-network test",
+      "rg_access_on" not in gsrc and "!rg_main_access(acc, m->sdn_t.sdn_idx, refs, nref, lan))) {" in (ifs or ""))
 
 HARNESS = r'''
 #include <stdio.h>
@@ -110,6 +117,15 @@ int main(int argc, char **argv)
 	case 10: net(1, "Guest", 2, 3, "br54", "br54", 3, 0); nv("sdn_access_rl", "<2>0"); break;
 	case 11: net(1, "Kids", 1, 2, "br53", "br53", 2, 0); net(1, "IoT", 2, 2, "br53", "br53", 3, 0); nv("sdn_access_rl", "<1>0<2>0");
 		nv("apg3_ap_isolate", "1"); break;
+	/* 2026-11-16 (bug review A1): what a pair means */
+	case 12: net(1, "GuestA", 2, 3, "br54", "br54", 3, 0); net(1, "GuestB", 3, 4, "br55", "br55", 4, 0); nv("sdn_access_rl", "<2>3"); break;
+	case 13: net(1, "Guest", 2, 3, "br54", "br54", 3, 0); net(1, "OnLan", 4, 0, "br0", "br0", 6, 0); nv("sdn_access_rl", "<2>4"); break;
+	case 14: net(1, "Guest", 2, 3, "br54", "br54", 3, 0); nv("sdn_access_rl", "<2>9"); break;
+	case 15: net(1, "Guest", 2, 3, "br54", "br54", 3, 0); net(0, "Off", 3, 4, "br55", "br55", 4, 0); nv("sdn_access_rl", "<2>3"); break;
+	case 16: net(1, "Guest", 2, 3, "br54", "br54", 3, 0); net(1, "Portal", 3, 4, "br55", "tun22", 4, 1); CPT[1] = 2;
+		nv("sdn_access_rl", "<3>2"); break;
+	case 17: net(1, "IoT", 1, 2, "br53", "br53", 2, 0); net(1, "Guest", 2, 3, "br54", "br54", 3, 0); nv("sdn_access_rl", "<0>1<1>2"); break;
+	case 18: net(1, "Guest", 2, 3, "br54", "br54", 3, 0); nv("sdn_access_rl", "<0>2"); break;
 	}
 	reaper_mdns_ifaces(d, sizeof(d), r, sizeof(r), w, sizeof(w));
 	printf("deny=%s\nrefl=%s\nwhy=%s\n", d, r, w);
@@ -163,6 +179,25 @@ with tempfile.TemporaryDirectory() as td:
             o = run(10)
             check("owner 2026-11-14: a guest network WITH Access Intranet on takes part (main-network devices on another SSID)",
                   o["refl"] == "br0,br54" and o["deny"] == "", o)
+            # ---- 2026-11-16 (bug review A1): only a pair with the Main Network is "Access Intranet on" here ----
+            o = run(12)
+            check("two guest networks paired with each other: both stay denied and out of the reflector (was: both joined the main LAN)",
+                  o["refl"] == "br0" and o["deny"] == "br54,br55" and o["why"] == "br54 no intranet access, br55 no intranet access", o)
+            o = run(18)
+            check("the pair written the other way round (<0>2) is the same main-network access", o["refl"] == "br0,br54" and o["deny"] == "", o)
+            o = run(13)
+            check("paired with a network that rides the LAN bridge: that is the main network - it takes part",
+                  o["refl"] == "br0,br54" and o["deny"] == "", o)
+            o = run(14)
+            check("paired with an index that names no network: ignored - denied, left out", o["refl"] == "br0" and o["deny"] == "br54", o)
+            o = run(15)
+            check("paired with a switched-off network: ignored - denied, left out", o["refl"] == "br0" and o["deny"] == "br54", o)
+            o = run(16)
+            check("a guest network paired with a Guest Portal: both denied, neither reflected",
+                  o["refl"] == "br0" and o["deny"] == "br54,br55,tun22" and "br54 no intranet access" in o["why"] and "br55 Guest Portal" in o["why"], o)
+            o = run(17)
+            check("a guest network paired with a network that has main-network access: only the latter takes part",
+                  o["refl"] == "br0,br53" and o["deny"] == "br54" and o["why"] == "br54 no intranet access", o)
             o = run(3)
             check("Set AP Isolated on (apgN_ap_isolate): left out of the reflector, avahi still serves it",
                   o["refl"] == "br0" and o["deny"] == "" and o["why"] == "br54 AP isolated", o)

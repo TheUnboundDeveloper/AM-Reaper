@@ -1,6 +1,6 @@
 # Reaper Quick Start: first setup after a factory reset
 
-> **Doc status:** current as of **v3.7.5** · 2026-11-09 <!--@stamp-->
+> **Doc status:** current as of **v3.8.0** · 2026-11-16 <!--@stamp-->
 
 **Applies to:** every supported model, Reaper v3.4.2 and later, after a first flash or a factory reset.
 
@@ -29,7 +29,7 @@ The `admin` / `admin` sign-in is only the starting point. Reaper shows a warning
    |---|---|
    | **Network Name (SSID)** | 1 to 32 characters. One name is used on every band. |
    | **Wi-Fi password** | 8 to 63 characters. This is what people type to join the Wi-Fi. |
-   | **Router Login Name** | Lower-case letters, digits, `-` and `_`. At least 2 characters, starting with a letter or digit. Not `root`, `guest` or `anonymous`. |
+   | **Router Login Name** | Letters (upper or lower case), digits, `-` and `_`. 2 to 32 characters, starting with a letter or digit. Not `root`, `guest` or `anonymous`. Sign-in compares it exactly, so remember the case you typed. |
    | **Router login password** | 10 to 32 characters with at least one letter, one number and one special character. It must differ from the login name. Keep it different from the Wi-Fi password. |
 
 6. **Click "Apply & Reboot".** The router restarts once. This takes about three minutes, and the page counts down.
@@ -51,7 +51,7 @@ When the banner no longer appears, the router is set up.
 | The page at `192.168.50.1` does not open | Your device is not on the router's network. Use a cable to a LAN port, or join the `ASUS_xx` Wi-Fi, and check that no other network on your device uses `192.168.50.x`. |
 | The browser warns about the certificate | You opened `https://192.168.50.1:8443`. The router's certificate is self-signed until you install your own. Accept the warning, or use `http://192.168.50.1` for this first setup. |
 | The login password is refused in the box | It needs 10 or more characters with a letter, a number and a special character, and it cannot equal the login name. |
-| The login name changes to lower case as you type | Login names are lower case only. |
+| The new login name is refused at sign-in | The name is case-sensitive: type it exactly as you set it (`Admin2` and `admin2` are different names). |
 | After the restart the page does not come back | Your device is still looking for the old `ASUS_xx` network. Join your new network name. |
 | The banner says *One step left to secure this router* | Only one of the two (login, Wi-Fi) was changed. Click the button in the banner to change the other. |
 

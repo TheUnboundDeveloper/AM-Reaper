@@ -21,7 +21,7 @@ This is the **hard-won, known-good** setup for building and modifying this firmw
 
 1. **Upstream Asuswrt-Merlin source @ the matching tag.** This is the full buildable tree (it includes the Broadcom components the BE96U build needs — which is exactly why we don't redistribute them here):
    ```bash
-   git clone https://github.com/RMerl/asuswrt-merlin.ng.git
+   git clone https://github.com/Asuswrt-Merlin/asuswrt-merlin.ng.git
    cd asuswrt-merlin.ng
    git checkout 3006.102.8-beta2        # the base this fork was built on
    ```
@@ -29,7 +29,7 @@ This is the **hard-won, known-good** setup for building and modifying this firmw
 
 2. **Toolchains** — the gcc-10.3 ARM + aarch64 crosstools, from RMerlin's toolchain repo, installed under `/opt/toolchains` (details and the gcc-13.2-phantom explanation in §3):
    ```bash
-   git clone https://github.com/RMerl/am-toolchains.git
+   git clone https://github.com/Asuswrt-Merlin/am-toolchains.git
    # copy the crosstools-arm-gcc-10.3-… and crosstools-aarch64-gcc-10.3-… dirs to /opt/toolchains
    ```
 

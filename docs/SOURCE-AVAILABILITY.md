@@ -21,7 +21,7 @@ ASUS's GPL firmware release. The **complete corresponding source** for the
 GPL-covered portions of any Reaper build is, deterministically:
 
 1. **The upstream Asuswrt-Merlin source**, at the exact pinned base:
-   - Repository: <https://github.com/RMerl/asuswrt-merlin.ng>
+   - Repository: <https://github.com/Asuswrt-Merlin/asuswrt-merlin.ng>
    - Tag: `3006.102.8-beta2`
    - Commit: **`a7ebfa133a`**
    - From v3.6.0 the RT-BE96U, RT-BE86U, RT-BE88U and GT-BE98 Pro build from the `Dev` branch on

@@ -102,7 +102,11 @@ check("Reset = the stock Default buttons (stop + clearovpnclient / clearwgclient
 # ---- dangerous changes ask first (rule 14) ----
 check("a tunnel restart / stop, redirect-all and killswitch ask first; cancel posts nothing",
       "if (ask.length && !confirm(ask.join('\\n') + '\\n\\n' + `<#RVCL_" in T and T.count("ask.push(") == 9 and T.count("ask.push(`<#RVCL_") == 8
-      and "if (changed.vpn_client_rgw === '1') ask.push(" in T and "if (changed.vpn_client_enforce === '1') ask.push(" in T and "if (changed.wgc_enforce === '1') ask.push(" in T)
+      and "if (changed.vpn_client_rgw === '1') ask.push(" in T and "if (changed.wgc_enforce === '1') ask.push(" in T
+      # 2026-11-16: the Killswitch also asks when Redirect leaves "No" with a switch still stored on (it starts to count)
+      and "if (changed.vpn_client_enforce === '1' || (NV.vpn_client_rgw === '0' && changed.vpn_client_rgw && changed.vpn_client_rgw !== '0' && q('t_ov_enforce').checked)) ask.push(" in T)
+check("a TUN/TAP change re-applies the routing rules (the Killswitch does not count on TAP)",
+      "if (has('vpn_clientx_eas', 'vpn_client_rgw', 'vpn_client_enforce', 'vpn_client_if')) S.push('start_vpnrouting' + OU);" in T)
 check("imports, resets and an instance switch with unsaved changes ask first", T.count("if (!confirm(`<#RVCL_") >= 4 and T.count("tabDirty(") >= 2)
 
 # ---- secrets (rule 12) ----

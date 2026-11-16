@@ -1,6 +1,6 @@
 # Verifying a Reaper Build — a Guide for Reviewers
 
-> **Doc status:** current as of **v3.8.0** · 2026-11-15 <!--@stamp-->
+> **Doc status:** current as of **v3.8.1** · 2026-11-16 <!--@stamp-->
 
 This document explains, for someone who does not trust us and shouldn't have to,
 how to confirm that a published Reaper firmware image was built from exactly the
@@ -66,7 +66,7 @@ worked example (substitute any release from the manifest):
 
 ```sh
 # --- (a) Get the pinned upstream base -----------------------------------------
-git clone https://github.com/RMerl/asuswrt-merlin.ng
+git clone https://github.com/Asuswrt-Merlin/asuswrt-merlin.ng
 cd asuswrt-merlin.ng
 git checkout a7ebfa133a           # tag 3006.102.8-beta2, the base of the 3006.102.8 line
 
@@ -82,7 +82,7 @@ tar -xzf /path/to/AM-Reaper/overlays/openssl-3.5-source.tar.gz         # from th
 # 3006.102.8 model) takes ASUS stock 42015's pair from overlays/wlcsm-42015-blobs.tar.gz over its
 # router-sysdep.<model>/{wlan/nvram,wlcsm}/prebuilt/ copies, as CI does.
 #   --keep-cr matters: a few third-party files are CRLF and the series
-#   fails without it. This applies all 1044 <!--@patchcount--> patches (through v3.8.0 <!--@treever-->).
+#   fails without it. This applies all 1056 <!--@patchcount--> patches (through v3.8.1 <!--@treever-->).
 
 # --- (c) Hash the corresponding source and compare ----------------------------
 git rev-parse HEAD:release/src/router

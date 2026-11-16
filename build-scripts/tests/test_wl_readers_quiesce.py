@@ -86,8 +86,39 @@ if fn:
     # review 2026-11-11 (A-C1): the driver's own call timeout is put back first, so the teardown runs at stock
     check("stop: remembers whether rpunctd was running, restores the driver timeout, then stops all three readers",
           re.search(r"int armed = pids\(\"rpunctd\"\); reaper_dhd_ioto_stock\(\); stop_rpunctd\(\); stop_reaper_bwfloor\(\); stop_rchqd\(\);", n) is not None)
-    check("stop: waits out an armed window only when rpunctd was running",
-          "if (armed) {" in n and "usleep((REAPER_WL_WINDOW_MS + 600) * 1000);" in n)
+    # 2026-11-16 (field, owner RT-BE96U): the wait must run its WHOLE length. usleep() returns early on any signal,
+    # and rc gets one for every child that exits; the third wireless restart in five minutes began its teardown ~1 s
+    # after the "waiting out" line and both dongles trapped inside the still-open measurement window.
+    check("stop: waits out an armed window only when rpunctd was running, with the wait a signal cannot cut short",
+          "if (armed) {" in n and "reaper_wl_window_wait(REAPER_WL_WINDOW_MS + 600);" in n and "usleep(" not in n)
+    wfn = extract(S["services"], "reaper_wl_window_wait(int ms)")
+    check("services.c: reaper_wl_window_wait() sleeps on through signals (nanosleep with the time left)",
+          wfn is not None and "while (nanosleep(&ts, &ts) == -1 && errno == EINTR)" in norm(wfn))
+    import shutil as _sh, subprocess as _sp, tempfile as _tf
+    _cc = _sh.which("gcc") or _sh.which("cc")
+    if _cc and wfn and sys.platform.startswith("linux"):
+        _td = _tf.mkdtemp(prefix="wlwait_")
+        try:
+            # a child sends SIGUSR1 every 50 ms while the parent waits 1200 ms: the fixed wait must take >= 1200 ms;
+            # a bare usleep (the old code) is the control - it returns at the first signal
+            with open(os.path.join(_td, "t.c"), "w") as f:
+                f.write('#include <stdio.h>\n#include <stdlib.h>\n#include <string.h>\n#include <errno.h>\n#include <time.h>\n#include <signal.h>\n'
+                        '#include <unistd.h>\n#include <sys/wait.h>\nstatic void h(int s) { (void)s; }\nstatic ' + wfn[wfn.find("reaper_wl_window_wait"):].replace("reaper_wl_window_wait(int ms)", "void reaper_wl_window_wait(int ms)", 1) + '\n'
+                        'static long ms_now(void) { struct timespec t; clock_gettime(CLOCK_MONOTONIC, &t); return t.tv_sec * 1000L + t.tv_nsec / 1000000L; }\n'
+                        'int main(int c, char **v) { struct sigaction sa; long t0; pid_t k; memset(&sa, 0, sizeof(sa)); sa.sa_handler = h; sigaction(SIGUSR1, &sa, NULL);\n'
+                        ' k = fork(); if (k == 0) { int i; for (i = 0; i < 60; i++) { usleep(50000); kill(getppid(), SIGUSR1); } _exit(0); }\n'
+                        ' t0 = ms_now(); if (c > 1 && !strcmp(v[1], "old")) usleep(1200 * 1000); else reaper_wl_window_wait(1200);\n'
+                        ' printf("%ld\\n", ms_now() - t0); kill(k, SIGKILL); waitpid(k, NULL, 0); return 0; }\n')
+            r = _sp.run([_cc, "-Wall", "-Werror", "-o", os.path.join(_td, "t"), os.path.join(_td, "t.c")], capture_output=True, text=True)
+            check("the wait compiles on the host without a warning", r.returncode == 0, r.stderr[-500:])
+            if r.returncode == 0:
+                new_ms = int(_sp.run([os.path.join(_td, "t")], capture_output=True, text=True).stdout.strip() or -1)
+                old_ms = int(_sp.run([os.path.join(_td, "t"), "old"], capture_output=True, text=True).stdout.strip() or -1)
+                check("with a signal every 50 ms the wait still runs its full 1200 ms (%d ms)" % new_ms, 1200 <= new_ms < 2500, new_ms)
+                check("control: a bare usleep under the same signals returns early (%d ms) - the fault the test can see" % old_ms,
+                      0 <= old_ms < 600, old_ms)
+        finally:
+            _sh.rmtree(_td, ignore_errors=True)
     check("stop: logs either way (the diag's 19b lead)", n.count("radio readers stopped for a wireless teardown") == 2)
 fn = extract(S["services"], "reaper_wl_readers_start(void)")
 check("services.c: reaper_wl_readers_start() starts all three", fn is not None

@@ -1,8 +1,8 @@
 # Reaper — the owner's guide
 
-> **Doc status:** current as of **v3.8.0** · 2026-11-15 <!--@stamp-->
+> **Doc status:** current as of **v3.8.1** · 2026-11-16 <!--@stamp-->
 
-**Applies to:** Reaper firmware for the ASUS RT-BE96U (primary model) and the sibling RT-BE86U, RT-BE88U, GT-BE98, GT-BE98 Pro, GT-BE19000, ZenWiFi BQ16 and ZenWiFi BQ16 Pro, in two lines with the same Reaper version: `3006.102.10_Reaper_v<X>` (RT-BE96U, RT-BE86U, RT-BE88U, GT-BE98 Pro) and `3006.102.8_Reaper_v<X>` (GT-BE98, GT-BE19000, BQ16, BQ16 Pro; see 2.1). This guide describes the feature set as of the v3.8.0 <!--@treever--> source tree. The newest *published* release may be behind that; where a feature is newer than the image you are running, the page simply will not be there yet. See [`CHANGELOG.md`](CHANGELOG.md) for what each version added and [`BACKLOG.md`](BACKLOG.md) for what is still pending confirmation.
+**Applies to:** Reaper firmware for the ASUS RT-BE96U (primary model) and the sibling RT-BE86U, RT-BE88U, GT-BE98, GT-BE98 Pro, GT-BE19000, ZenWiFi BQ16 and ZenWiFi BQ16 Pro, in two lines with the same Reaper version: `3006.102.10_Reaper_v<X>` (RT-BE96U, RT-BE86U, RT-BE88U, GT-BE98 Pro) and `3006.102.8_Reaper_v<X>` (GT-BE98, GT-BE19000, BQ16, BQ16 Pro; see 2.1). This guide describes the feature set as of the v3.8.1 <!--@treever--> source tree. The newest *published* release may be behind that; where a feature is newer than the image you are running, the page simply will not be there yet. See [`CHANGELOG.md`](CHANGELOG.md) for what each version added and [`BACKLOG.md`](BACKLOG.md) for what is still pending confirmation.
 
 Reaper is based on **Asuswrt-Merlin by Eric "Merlin" Sauvageau**. Every line of Reaper is a patch on top of that work; the base firmware, most of its features, and most of what is good about the result are his. Reaper is an independent fork. Neither ASUS nor the Asuswrt-Merlin project has reviewed, approved or endorsed it, and neither should be contacted about it (see [Where to report issues](#214-where-to-report-issues)).
 
@@ -124,6 +124,83 @@ This guide is written for someone who will install and run the firmware: technic
    - 4.17 [Administration → Tweaks: the Reaper setting](#417-administration--tweaks-the-reaper-setting)
    - 4.18 [Site Survey (Network Tools)](#418-site-survey-network-tools)
    - 4.19 [WAN Ports](#419-wan-ports)
+   - 4.20 [VPN](#420-vpn)
+     - 4.20.1 [VPN Status](#4201-vpn-status)
+     - 4.20.2 [VPN Director](#4202-vpn-director)
+     - 4.20.3 [Policy Routing](#4203-policy-routing)
+     - 4.20.4 [VPN Server](#4204-vpn-server)
+     - 4.20.5 [VPN Client](#4205-vpn-client)
+     - 4.20.6 [Tor](#4206-tor)
+   - 4.21 [Network: guest networks, VLANs and the Guest Portal](#421-network-guest-networks-vlans-and-the-guest-portal)
+     - 4.21.1 [The page and the network types](#4211-the-page-and-the-network-types)
+     - 4.21.2 [The network editor: every setting](#4212-the-network-editor-every-setting)
+     - 4.21.3 [What a guest network may reach (guest isolation)](#4213-what-a-guest-network-may-reach-guest-isolation)
+     - 4.21.4 [A network that uses a VPN](#4214-a-network-that-uses-a-vpn)
+     - 4.21.5 [IoT networks and the Default IoT Network](#4215-iot-networks-and-the-default-iot-network)
+     - 4.21.6 [DNS for a network](#4216-dns-for-a-network)
+     - 4.21.7 [The Guest Portal](#4217-the-guest-portal)
+     - 4.21.8 [mDNS across networks](#4218-mdns-across-networks)
+     - 4.21.9 [How the other features treat guest networks](#4219-how-the-other-features-treat-guest-networks)
+     - 4.21.10 [Examples](#42110-examples)
+     - 4.21.11 [Limits and gotchas](#42111-limits-and-gotchas)
+   - 4.22 [LAN](#422-lan)
+     - 4.22.1 [LAN IP and DHCP server](#4221-lan-ip-and-dhcp-server)
+     - 4.22.2 [DNS](#4222-dns)
+     - 4.22.3 [IPTV](#4223-iptv)
+     - 4.22.4 [VLAN](#4224-vlan)
+   - 4.23 [WAN](#423-wan)
+     - 4.23.1 [Internet Connection](#4231-internet-connection)
+     - 4.23.2 [NAT and Port Forwarding](#4232-nat-and-port-forwarding)
+     - 4.23.3 [DDNS](#4233-ddns)
+   - 4.24 [IPv6](#424-ipv6)
+   - 4.25 [Wireless settings](#425-wireless-settings)
+     - 4.25.1 [Wi-Fi Settings](#4251-wi-fi-settings)
+     - 4.25.2 [WPS](#4252-wps)
+     - 4.25.3 [WDS](#4253-wds)
+     - 4.25.4 [Wireless MAC Filter](#4254-wireless-mac-filter)
+     - 4.25.5 [RADIUS Setting](#4255-radius-setting)
+     - 4.25.6 [Roaming Block List](#4256-roaming-block-list)
+     - 4.25.7 [MLO](#4257-mlo)
+     - 4.25.8 [Smart Connect Rule](#4258-smart-connect-rule)
+   - 4.26 [System Log](#426-system-log)
+     - 4.26.1 [General Log](#4261-general-log)
+     - 4.26.2 [Wireless Log](#4262-wireless-log)
+     - 4.26.3 [DHCP leases](#4263-dhcp-leases)
+     - 4.26.4 [IPv6](#4264-ipv6)
+     - 4.26.5 [Routing Table](#4265-routing-table)
+     - 4.26.6 [Port Forwarding](#4266-port-forwarding)
+     - 4.26.7 [Connections and Long-Term Storage](#4267-connections-and-long-term-storage)
+   - 4.27 [Administration](#427-administration)
+     - 4.27.1 [System: how the page works](#4271-system-how-the-page-works)
+     - 4.27.2 [System > Login and access](#4272-system--login-and-access)
+     - 4.27.3 [System > SSH](#4273-system--ssh)
+     - 4.27.4 [System > Time and NTP](#4274-system--time-and-ntp)
+     - 4.27.5 [System > Hardware](#4275-system--hardware)
+     - 4.27.6 [System > Maintenance](#4276-system--maintenance)
+     - 4.27.7 [Backup & Restore](#4277-backup--restore)
+     - 4.27.8 [SNMP](#4278-snmp)
+     - 4.27.9 [Tweaks: the other settings](#4279-tweaks-the-other-settings)
+     - 4.27.10 [System Information](#42710-system-information)
+     - 4.27.11 [The security banner](#42711-the-security-banner)
+   - 4.28 [USB Application](#428-usb-application)
+     - 4.28.1 [The USB Application page](#4281-the-usb-application-page)
+     - 4.28.2 [Accounts and folder rights (Samba and FTP)](#4282-accounts-and-folder-rights-samba-and-ftp)
+     - 4.28.3 [Network Place (Samba) Share](#4283-network-place-samba-share)
+     - 4.28.4 [FTP Share](#4284-ftp-share)
+     - 4.28.5 [Media Server](#4285-media-server)
+     - 4.28.6 [NFS Exports](#4286-nfs-exports)
+     - 4.28.7 [A USB volume for the long-term store](#4287-a-usb-volume-for-the-long-term-store)
+   - 4.29 [Network Tools](#429-network-tools)
+     - 4.29.1 [Network Analysis](#4291-network-analysis)
+     - 4.29.2 [Netstat](#4292-netstat)
+     - 4.29.3 [Wake on LAN](#4293-wake-on-lan)
+     - 4.29.4 [Smart Connect Rule and Site Survey](#4294-smart-connect-rule-and-site-survey)
+   - 4.30 [Parental Controls: Time Scheduling](#430-parental-controls-time-scheduling)
+   - 4.31 [Other menus](#431-other-menus)
+     - 4.31.1 [AiMesh](#4311-aimesh)
+     - 4.31.2 [Traffic Manager > Internet Speed](#4312-traffic-manager--internet-speed)
+     - 4.31.3 [Network Printer Server](#4313-network-printer-server)
+     - 4.31.4 [Time Machine](#4314-time-machine)
 5. [Efficiency and good practice](#5-efficiency-and-good-practice)
 6. [Troubleshooting quick table](#6-troubleshooting-quick-table)
 7. [Glossary](#7-glossary)
@@ -160,7 +237,7 @@ Reaper is distributed as a patch series applied to the public Asuswrt-Merlin sou
 - **The USB application network installer** (v3.3.7): it installed plain-HTTP packages as root. The USB Application page, the mount chain and the disk check stay.
 - **Phone-home.** The ASUS AWS-IoT cloud connector and account binding, the AAE/AiHome cloud tunnel, AiCloud/WebDAV, the AiDisk cloud-share wizard, the stock privacy-policy check, the stock "Security Update" (Trend Micro signature) panel, and every browser-side callback to ASUS servers — device and app icons, the FAQ index, DNS-provider and ISP lists, the Open NAT game database, timezone tables and so on. The build now fails if an ASUS CDN reference reaches the shipped web root, so this cannot silently creep back. Nothing in the web interface contacts ASUS any more; the only outbound checks the firmware makes on its own are the opt-in firmware check, which goes to the Reaper GitHub release channel, and — with the LAN name resolution check switched on (4.14a, off at factory) — one DNS query a minute for a random name under the domain you set there, or the stock network-monitoring name, which that domain's DNS servers see.
 - **Adaptive QoS / Trend Micro DPI.** AiProtection, DPI-based Adaptive QoS and the web-history feature are gone with the engine that powered them. Reaper's own hardware QoS and Traffic Analyzer take their place.
-- **Alexa / Google Assistant** integration, the Download Master advert, the stock Network Map page (its device list and per-device detail now live on the dashboard and the Devices page), the Open NAT menu entry (it was port forwarding, which is still there), and the legacy SNMPv1/v2c protocols (SNMPv3 with SHA + AES is the only option).
+- **Alexa / Google Assistant** integration, the Download Master advert, the stock Network Map page (its device list and per-device detail now live on the dashboard and the Devices page), the Open NAT menu entry (it was port forwarding, which is still there), and the legacy SNMPv1/v2c protocols (SNMPv3 only; SHA with AES is the default and the choice to keep, MD5, DES and no privacy remain selectable for old managers, 4.27.8).
 - **Instant Guard and the VPN Fusion app.** Both needed the ASUS account and phone app that the phone-home removal took out, so they could never pair. Their old addresses open the VPN Server and VPN Client pages, where every server and client type they offered is configured instead.
 - **No packet-capture page is bundled.** If you want `tcpdump`, install it through Entware on a USB stick.
 
@@ -168,7 +245,7 @@ Reaper is distributed as a patch series applied to the public Asuswrt-Merlin sou
 
 In short: two hardware QoS engines that keep the flow accelerator on, a native Traffic Analyzer, a native firewall rules engine, Gatekeeper device access control, the Bastion menu (Warden threat and country blocking, Dreadwatch DNS threat blocking, the Wallguard ad and tracker blocker, Encrypted DNS for devices), an advisory Security Review, Policy Routing, a Device Identity Manager, a live Connections explorer with destination names, wireless channel diagnostics, Wi-Fi 7 preamble puncturing (static or dynamic) with a minimum channel width on Auto and an optional receiver interference-mitigation setting, a one-click sanitized diagnostics report, a native firmware page with a verified one-click update, long-term storage with analytics export, Reaper-native settings pages across most of the menu (3), and (in one of the two builds) a read-only LAN-only AI Advisor. Each gets its own section in part 4.
 
-Secure factory defaults: WPS is off, UPnP is off, the scheduled firmware check is off, and remote web admin, SSH, WAN ping, FTP, DLNA, DDNS, guest networks, SNMP, custom-script execution, remote logging and IPv6 all default off; no Telnet server ships at all. From v3.2.5 the SMB file server and the Traffic Analyzer collector also default off. From v3.4.2 the internet port is the port labelled WAN with automatic port detection off, so the provider's port is never bridged into the LAN, and every switch on the DNS Failover page starts off. Section 8 lists every factory default. The admin session logs out after 30 idle minutes (Administration → System → *Logout after*; 0 turns it off), on Reaper's own pages as on the stock ones.
+Secure factory defaults: WPS is off, UPnP is off, the scheduled firmware check is off, and remote web admin, SSH, WAN ping, FTP, DLNA, DDNS, guest networks, SNMP, custom-script execution, remote logging and IPv6 all default off; no Telnet server ships at all. From v3.2.5 the SMB file server and the Traffic Analyzer collector also default off. From v3.4.2 the internet port is the port labelled WAN with automatic port detection off, so the provider's port is never bridged into the LAN, and every switch on the DNS Failover page starts off. Section 8 lists every factory default. The admin session logs out after 30 idle minutes (Administration → System → *Auto Logout*; 0 turns it off), on Reaper's own pages as on the stock ones.
 
 ### 1.4 The two builds: Standard (noMCP) and AI Advisor (MCP)
 
@@ -245,7 +322,7 @@ The project's install guide ([`INSTALL-AND-ROLLBACK.md`](INSTALL-AND-ROLLBACK.md
 
 There is no setup wizard and nothing blocks a page. A factory-fresh or factory-reset router boots usable on `admin` / `admin`, with its Wi-Fi **open** on the factory network name (`ASUS_xx…`), so it can be reached for setup over Wi-Fi without running a cable. Until both the router login and the Wi-Fi have left their factory values, every top-level admin page carries a banner that cannot be dismissed. Since v3.1.0 it has one button:
 
-- **Set up this router** (both still factory) opens Reaper's setup box: **network name**, **Wi-Fi password** and **router login password** in one step. The box writes exactly what the stock Wireless apply writes on every band — one name, WPA2/WPA3 on 2.4 and 5 GHz, WPA3 on 6 GHz, Smart Connect on — changes the login through the same committed path as the password page, marks setup complete and reboots (**Apply & Reboot**, v3.3.1–v3.3.2). The page shows the same reboot countdown as the GUI's Reboot and then returns to the login page; the reboot is what creates the main network's all-band card. Nothing is prefilled, and the login name is lowercase only. A Wi-Fi key must be 8–63 characters (or a 64-digit hex key); a shorter key is refused in the page and in the router, because the access-point daemon silently drops a short key and would come up with no Wi-Fi at all. A network name is 1–32 printable characters.
+- **Set up this router** (both still factory) opens Reaper's setup box: **network name**, **Wi-Fi password** and **router login password** in one step. The box writes exactly what the stock Wireless apply writes on every band — one name, WPA2/WPA3 on 2.4 and 5 GHz, WPA3 on 6 GHz, Smart Connect on — changes the login through the same committed path as the password page, marks setup complete and reboots (**Apply & Reboot**, v3.3.1–v3.3.2). The page shows the same reboot countdown as the GUI's Reboot and then returns to the login page; the reboot is what creates the main network's all-band card. Nothing is prefilled. The login name follows the stock rule (v3.8.0; earlier builds forced it to lower case): 2 to 32 characters, letters, digits, `-` and `_` in either case, starting with a letter or digit, and not `root`, `guest` or `anonymous` in any case. The sign-in compares the name exactly, so `Admin2` and `admin2` are different names. A Wi-Fi key must be 8–63 characters (or a 64-digit hex key); a shorter key is refused in the page and in the router, because the access-point daemon silently drops a short key and would come up with no Wi-Fi at all. A network name is 1–32 printable characters.
 - If only the login is still factory, the button goes to the password page; if only the Wi-Fi is, it opens the box (which asks for all three fields).
 
 Why a Reaper box rather than the stock Wireless page: on this build the stock page edits each radio's primary network, which AiMesh turns into its hidden backhaul; the network your devices join lives on the virtual networks the mesh daemon rebuilds after every wireless apply. The box writes to the right place. The stock Wireless page is untouched for engineers.
@@ -273,6 +350,9 @@ This is the single most important thing to understand about running Reaper after
 | Firewall engine lists (objects, groups, services, zones, zone policies, rules, egress defaults, forwards) | `/jffs/reaper_fw/lastgood/` | v2.6.9 |
 | Warden feed cache and block counters | `/jffs` (locked there by design; it must restore before the firewall arms, earlier than any USB mount) | v1.8.0 |
 | Saved domain-list members (replayed at boot) | `/jffs` | v2.5.9 |
+| Wallguard settings, rules, profiles, rewrites and keys | `/jffs/wallguard/` (4.3.3; the downloaded lists stay in RAM or on USB) | v3.4.9 |
+| DHCP lease lists and the names devices announced (restored at start, 4.26.3) | `/jffs/reaper/leases/` (root only) | v3.8.0 |
+| Warden custom-feed API keys | `/jffs/rwarden/cfkeys` (root only; not in a settings export) | v3.8.0 |
 
 An existing list is migrated once, automatically, at the first boot on a firmware that moved it, and the migration is logged (for example `gatekeeper: device list migrated from nvram to /jffs/gatekeeper/rl`). The ceilings are gone: Gatekeeper is tested to 300 devices and its tables are sized for 512; twenty-plus routing rules and 40-domain objects save and survive a reboot. The lists' own limits (8 KB per firewall list, about 1,900 characters per domain object, 64 addresses per routing rule) are now the real ones.
 
@@ -490,7 +570,7 @@ Do not enable remote (WAN) web administration or WAN SSH. The real-world attacks
 - The **left rail** is identical on every page. At the top is a live 24-hour router-time clock; above the "General" heading is the **Language** selector (all 25 languages; the active language is shown selected and English can always be chosen). Menu entries are the stock sections plus Reaper's own (Devices, Gatekeeper, Bastion, AI Advisor on the MCP build). Installed **addons** (amtm, Diversion, scMerlin and the like) are gathered into one dedicated **Addons** section at the end of the rail (v2.7.5) instead of being scattered through the stock menus. It behaves like every other menu entry: clicking it **opens the first installed addon page**, and the rest appear as tabs across the top. Until v3.1.2 it was the one rail item that did not navigate — it unfolded a sub-list instead, which read as the menu misbehaving. An add-on registers its page by inserting a line into the menu tree after the stock page it extends; since v3.2.8 the stock lines Reaper retired (the firewall, wireless, firmware, backup, Sysinfo, QoS, statistics and connections pages) are kept as hidden anchors, so an installer written for stock Merlin, Skynet among them, still lands its tab in the Addons section. An external "Help & Support" link opens in a new tab. At the foot of the rail a small **scythe mark** opens the About page; it stays at the bottom of the window while a long menu scrolls beneath it.
 - **Tabs** run across the top of pages that have them (QoS / QoS Diagnostics under Traffic Manager; Warden / Dreadwatch / Wallguard / Encrypted DNS under Bastion; USB Disks as the last tab of USB Application (v3.4.9); Long-Term Storage and Data Export under System Log; Diagnostics and Firmware under Administration; Policy Routing next to VPN Director under VPN).
 - **Unsaved changes.** A Reaper page that keeps your edits until Apply or Save says so: *Unsaved changes: N* and a **Discard** button (QoS, Policy Routing, WAN Ports, Wallguard and Dreadwatch as well since v3.6.3).
-- Every page lands scrolled to the top. The admin session logs itself out after the idle time set under Administration → System → *Logout after* (**30 minutes** at factory; 0 turns it off). Before v3.1.2 the dashboard used a fixed 15 minutes whatever that setting said.
+- Every page lands scrolled to the top. The admin session logs itself out after the idle time set under Administration → System → *Auto Logout* (**30 minutes** at factory; 0 turns it off). Before v3.1.2 the dashboard used a fixed 15 minutes whatever that setting said.
 - **Overlays.** An apply, reboot or firmware flash puts up a full-screen veil that locks the header and rail; it shows an elapsed-time heartbeat so a stalled operation looks different from a working one, and on the firmware page a Close button appears on any terminal state. After a firmware flash the page polls for the router's return and sends you back to sign-in. A stock pop-up panel inside the frame (the AiMesh client card, for example) opens centred in the part of the page on screen, however far down it is scrolled (v3.6.5).
 - **Theme.** The Reaper look (matte black, crimson, jade and amber accents) is applied to stock pages by a web-server filter. It is always on: the switch that turned it off left Administration → Tweaks in v2.5.9, because Reaper's own pages, and the stock pages it replaces, depend on it. The AiMesh and Network pages are the exception: since v3.6.5 they link a Reaper stylesheet of their own with the same look, the router injects nothing into them, and their stock white / ROG / TUF themes are gone. The sign-in, set-password and logout screens show an animated model header that plays once.
 - **Tablets** are supported (the frame pans horizontally when a page is wider than the column). **Phones** get a first fit since v3.1.0: below 680 px the rail collapses into a sticky strip of icons under the header and the page takes the full width. Since v3.6.5 every Reaper page fits the screen at 402, 375 and 320 px: a settings row is one column and a data table scrolls sideways in its own box with its headers whole, and the header's ? / Reboot / Logout buttons are one group that fits beside the logo or wraps whole.
@@ -530,7 +610,7 @@ The eleven tabs follow, in the order they appear in the interface.
 
 **How to use it.** Treat it as the answer to "is what I think I configured actually live?" — the two can differ while a restart is in flight, or if a ruleset failed to build. Check it after every Apply, and again after a reboot. The exposure card is the one worth a slow read: anything listed there can be reached from the WAN side.
 
-The page no longer runs `iptables`, so auto-refresh is cheap; raw chains are still available over SSH.
+The page no longer runs `iptables`, so auto-refresh is cheap; raw chains are still available over SSH. The **Auto refresh** switches on Status and Rule Status are kept per browser (from the image after v3.8.0; before, each page load switched them off again).
 
 **Example.** You add a port forward, apply it, and the Forwards table shows your rule — but Status still reports the engine inactive. That means the generated ruleset did not run (most often the LAN was not up yet at boot). The rule exists in your configuration and does nothing until it does.
 
@@ -1034,6 +1114,13 @@ All selected feeds and custom feeds merge into **one de-duplicated set** (`rw_th
 
 **Custom feeds.** Up to 8, each a **Name** (up to 24 characters: letters, digits, space, `.`, `_`, `-`), an **https** address of up to 200 characters with no quotes, spaces or `@`, and an optional IPv6 list address. The router pulls every IPv4 address or CIDR out of the file (any text format works) and loads them into the same set, so they appear in the same counters. Only add lists you trust: whatever they contain is dropped.
 
+**A feed that needs an API key (v3.8.0).** Type `$APIkey` in the address where the key belongs (for example
+`https://example.com/list?key=$APIkey`); a box for the key appears in that row. Type the key and save the page. The key is
+kept on the router alone (`/jffs/rwarden/cfkeys`, root only): it is not in the feed list, not shown on the page again
+(the row says a key is saved) and not in a settings export, so after restoring a backup on another router you type it
+again. The router puts it into the address only when it fetches the feed. `$` is allowed in an address only as
+`$APIkey`, after the host. Renaming the feed or changing its host clears the key; type it again.
+
 **How a download behaves.** Every fetch is https only, including redirects, and capped at 32 MB. Built-in feeds get 2 retries of up to 40 s; custom feeds 1 retry of up to 15 s, so eight unreachable custom feeds cost about 4 minutes at most. The merged set is rebuilt from the feeds that arrived in that run; **a feed that fails while others succeed is missing from the set until its next good download**. If every feed fails, the previous set stays and the log says `feed update: no feed produced data (all fetches failed)`. A second update started while one runs is skipped (`feed update already in progress`).
 
 ##### 4.3.1.6 Countries
@@ -1285,7 +1372,7 @@ The *automatic* settings are fine as they are: Chrome and Edge upgrade to encryp
 
 ##### 4.3.2.9 Examples
 
-**Threat blocking for the whole house.** Switch on, keep Basics, save, **Test now**. Set DNS Director's global mode to *Router* so devices with their own DNS server are covered too.
+**Threat blocking for the whole house.** Switch on, keep Basics, save, **Test now**. Set DNS Director's global mode to *Router* so devices with their own DNS server are covered too, and set each guest network's row to *Router* as well: a network's row starts at *No redirection*, which keeps that network out of the global mode (4.22.2).
 
 **Add ThreatFox live with your abuse.ch key.** **Add a source**, Template *abuse.ch ThreatFox - API, needs your Auth-Key*, paste the key, OK, **Save & Apply**. The row reads *API · key saved* and fills after the fetch. Untick or delete the bundled snapshot only if you want; both can run.
 
@@ -1324,13 +1411,26 @@ Wallguard is the router's own **ad and tracker blocker**: what Pi-hole or AdGuar
 
 **Use it** to remove ads and tracking for the whole house; to give a child's devices stricter filtering, bedtime service blocks and enforced safe search; to exempt a work laptop. **Do not expect it** to remove ads served from the same host name as the content (YouTube video ads, some streaming apps) or page elements; it blocks by name only. It sees only lookups that reach the router (4.3, *Living with the rest of the router*); the page shows a banner when a firewall rule sends devices' DNS elsewhere.
 
+**The page (v3.8.0).** The master switch **Block ads and trackers** and the status pill sit in the header, with a **?**
+button that opens *How to use* and *How it works* (the **Reset counters** button is there). Five tabs sit below; **Save &
+Apply** is at the right end of the tab row, and a tab that holds an unsaved change shows an amber dot. The page reopens on
+the tab you used last (kept in your browser).
+
+| Tab | What is on it |
+|---|---|
+| **Overview** | The warning banners, the five counter tiles, **Fix a device** (Unbreak), **Pause** and **Why?** (4.3.3.7) |
+| **Lists** | The block lists and your own sources (4.3.3.3), **Update lists now**, where the lists are kept, the build warning, **Blocked answer** (4.3.3.8). The tab label shows *N problems* when the table in use lacks lists |
+| **Rules** | **My rules** and **Advanced rules** (4.3.3.4), **DNS rewrites** (4.3.3.14), **Services and safe search** (4.3.3.6) |
+| **Devices** | **Devices and networks**: every device and guest network, its profile, its blocked lookups in the last 15 minutes, **Fix** and **Pause**; the **Profiles** grid (4.3.3.5) |
+| **Activity** | **Live view**, **Most-blocked names**, **Devices with the most blocked lookups** (4.3.3.11) |
+
 ##### 4.3.3.2 Setting it up
 
 1. Switch on **Block ads and trackers** and press **Save & Apply**. One balanced list, **HaGeZi Normal**, is subscribed the first time. The lists download in the background; the pill reads *Waiting for lists* until the first table is built, then *Blocking*.
-2. Choose lists under **Lists** (4.3.3.3) and press **Save & Apply**. A list with no downloaded copy yet (newly ticked, or ticked again after it was removed) is downloaded then, alone and in the background (the lists already downloaded are not fetched again), and the table is rebuilt; otherwise a save only rebuilds the table from the lists already downloaded. The daily update at 05:15 fetches every list again; a row's **Update** fetches that list alone.
-3. If a site or app breaks, open **Unbreak**, pick the device and allow the name (4.3.3.7).
-4. Under **Profiles**, give devices or guest networks a profile of their own (4.3.3.5).
-5. **Edit** a profile to block services, set a schedule and switch on safe search (4.3.3.6).
+2. Choose lists on the **Lists** tab (4.3.3.3) and press **Save & Apply**. A list with no downloaded copy yet (newly ticked, or ticked again after it was removed) is downloaded then, alone and in the background (the lists already downloaded are not fetched again), and the table is rebuilt; otherwise a save only rebuilds the table from the lists already downloaded. The daily update at 05:15 fetches every list again; a row's **Update** fetches that list alone.
+3. If a site or app breaks, open **Overview › Fix a device**, pick the device and allow the name (4.3.3.7).
+4. On the **Devices** tab, give devices or guest networks a profile of their own (4.3.3.5).
+5. On the **Rules** tab, under **Services and safe search**, pick a profile to block services, set a schedule and switch on safe search (4.3.3.6).
 
 ##### 4.3.3.3 Lists
 
@@ -1364,16 +1464,59 @@ Never blocked automatically: your DDNS name, NTP servers and LAN domain, the ser
 
 To answer a name with an address of your own rather than block or allow it, use **DNS rewrites** (4.3.3.14).
 
+**Advanced rules (AdGuard Home syntax).** The **Advanced rules** card on the Rules tab takes an AdGuard Home rule list
+pasted as it is, up to 40,000 characters. Use it when you already keep rules for AdGuard Home, or need a rule for some
+devices only.
+
+| Rule | Meaning |
+|---|---|
+| `\|\|name^` | block the name and its subdomains |
+| `\|name\|` | block that name only |
+| `@@\|\|name^` | allow (an exception) |
+| `$important` | the rule wins over exceptions that lack it |
+| `$client=` | only for these devices: an address, a MAC or a device's name (its Devices-page name or DHCP reservation name); `~` before a client means everyone else |
+| `$ctag=` | only for the devices of this Wallguard profile |
+| `$dnstype=` | only for these record types (`AAAA`, `HTTPS` ...) |
+| `$dnsrewrite=NOERROR` / `NXDOMAIN` / `REFUSED` | answer with that code instead of the blocked answer |
+| `*` wildcards, `/regex/` | pattern rules |
+
+A rule with `$client=` or `$ctag=` applies to those devices only; everyone else is unaffected. A block is never put on a
+name the router itself needs (the entries in 4.3.3.4 above). After **Save & Apply** the card shows *N rules in use, N left
+out, N notes* and lists every line it could not use, with the reason. Invisible characters pasted with a list (zero-width
+spaces, byte-order marks, direction marks) are removed before saving and counted in a note. The rules are kept in
+`/jffs/wallguard/adv` and compiled beside the block table at every build (log `Advanced rules: N in use, N left out`); a
+list that does not compile leaves the previous rules in use (log `the Advanced rules could not be compiled`). A long list
+belongs in a custom list source (4.3.3.3) instead: the box refuses more than 40,000 characters.
+
+Example: block a game for one tablet only, and let a work laptop past a list entry:
+
+```
+||roblox.com^$client=00:00:5e:00:53:21
+@@||tracking.example.com^$client=Work-Laptop
+```
+
 ##### 4.3.3.5 Profiles, devices and networks
 
-A **profile** is a set of lists. The **Profiles** table has one row per profile and one column per subscribed list plus **My rules**; a tick means that profile blocks with that list.
+A **profile** is a set of lists. The **Profiles** grid (Devices tab) has one row per profile and one column per subscribed list plus **My rules**; a tick means that profile blocks with that list.
 
 - **Default** applies to every device without a profile of its own. Until you change its row it uses every subscribed list and My rules.
 - **Bypass** blocks nothing (no lists, no services, no safe search). Use it for equipment that must not be filtered.
-- **Add profile** creates one with **My rules** only ticked: tick the lists it should use.
-- **Services and safe search** shows a summary and **Edit** (4.3.3.6). **Remove** deletes a profile and its assignments.
+- **Add profile** (name box under the grid) creates one with **My rules** only ticked: tick the lists it should use.
+- **Edit** on a row opens that profile in **Services and safe search** on the Rules tab (4.3.3.6). **Remove** deletes a profile and its assignments.
 
-**Devices and networks** assigns a profile: pick a device (by name and MAC) or a guest/VLAN network, pick the profile, **Assign**. A device rule beats a network rule, which beats Default. The main network cannot be assigned as a whole; its devices use Default unless assigned.
+**Devices and networks** (the table above the grid) has one row per device and per guest or VLAN network:
+
+| Column | Shows |
+|---|---|
+| **Device / Network** | the device's label (4.8.1) or the network's name |
+| **Profile** | a menu: the profile it uses. *No profile of its own* means Default (or, for a device, its network's profile) |
+| **Blocked, 15 min** | lookups blocked for it in the last 15 minutes |
+| **State** | *paused until ...* while a pause holds it |
+| (actions) | devices only: **Fix** opens Overview › Fix a device on this device; **Pause 10 min** / **Resume** |
+
+To assign, pick a profile in the row's menu and press **Save & Apply**; **Fix** and **Pause** act at once. A device rule
+beats a network rule, which beats Default. The main network cannot be assigned as a whole; its devices use Default
+unless assigned.
 
 How the device is recognised: by MAC address, looked up from the address that asked; a device whose MAC the router cannot find gets its network's profile or Default. A **network** rule matches the network's IPv4 subnet, so a device on that network asking over IPv6 gets Default unless it has a device rule. Devices using Encrypted DNS are recognised by their real address. The router applies up to 22 profiles of your own.
 
@@ -1381,7 +1524,9 @@ Changes to profiles and assignments take effect within seconds of **Save & Apply
 
 ##### 4.3.3.6 Blocked services, schedules and safe search
 
-**Edit** on a profile's row opens its editor.
+The editor is the **Services and safe search** card on the Rules tab: pick the profile in its menu (or press **Edit** on
+the profile's row in the Profiles grid, which opens it there). Default and your own profiles can be edited; Bypass
+cannot.
 
 - **Blocked services**: tick services by name, in seven groups: Social media, Video & streaming, Games, Messaging, Shopping, Dating, AI chat (45 services; their domains are maintained with the firmware in `/usr/share/wallguard/services`). The profile then blocks every domain of those services with their subdomains. A service a list does not cover fully can be topped up with **Always block**. Up to **13 profiles** can block services (each gets a list slot of its own); the editor says when the limit is reached. Bypass never blocks anything.
 - **Schedule for the blocked services**: *Always blocked*, or *Blocked only at these times*: up to 8 time ranges, each with its days, **from** and **to**. A range that ends before it starts runs past midnight (21:00 to 07:00 on school nights is one range, counted from the day it starts); "allowed only 16:00-18:00" is the range 18:00 to 16:00; a range whose start equals its end is the whole day. The schedule switches **the blocked services only**; the profile's lists and safe search stay on. The router follows its own clock and time zone, and **until the clock is set after a boot, the services stay blocked**. To take a device off the internet entirely at bedtime, use Parental Controls › Time Scheduling (the editor links to it).
@@ -1391,15 +1536,26 @@ A **pause** never lifts a profile's blocked services or safe search. **Unbreak**
 
 ##### 4.3.3.7 Pause, Unbreak and Why?
 
-- **Pause**: pick *Everyone* or a device, then *5 minutes*, *1 hour* or *Until 06:00* (by your browser's clock), and **Pause**; **Resume** ends it early. A pause lifts the lists and My rules, not blocked services, safe search or Dreadwatch. Pauses are held in RAM: a reboot ends them, and they end by themselves. While everyone is paused the pill reads *Paused* and a banner gives the end time.
-- **Unbreak**: pick the device that has a problem. The table lists the names Wallguard refused it in the last 15 minutes (from the newest 500 blocked records), with **Allow 24 h** and **Always allow**. *Always allow* adds the list entry to **Never block**; *Allow 24 h* adds it to the 24-hour list. The entry shown is the **list entry** that matched (`doubleclick.net`, not the full name asked), so the allow covers its subdomains. Several names in a row usually belong to one service; allow them one at a time.
+All three are on the **Overview** tab.
+
+- **Pause**: pick *Everyone* or a device, then *5 minutes*, *10 minutes* (the default), *1 hour* or *Until 06:00* (by your browser's clock), and **Pause**; **Resume** ends it early. **Pause 10 min** on a device's row of the Devices tab does the same for that device. A pause lifts the lists and My rules, not blocked services, safe search or Dreadwatch. Pauses are held in RAM: a reboot ends them, and they end by themselves. The list under the buttons names each pause and its end time; while everyone is paused the pill reads *Paused* and a banner gives the end time.
+- **Fix a device (Unbreak)**: pick the device that has a problem. The menu lists first the devices that had lookups blocked in the last 15 minutes, with the count. The table lists the names Wallguard refused that device in the last 15 minutes, with how often and when last, and **Allow 24 h** and **Always allow**. *Always allow* adds the entry to **Never block**; *Allow 24 h* adds it to the 24-hour list. Several names in a row usually belong to one service; allow them one at a time, newest first, and retry the app after each.
+  - **What a row names.** For an ordinary block, the **list entry** that matched (`doubleclick.net`, not the full name asked), so an allow covers its subdomains. For a block caught in a CNAME chain (4.3.3.8) the row reads *asked name (blocked via listed name)*, for example `saa.example.com (blocked via metrics.tracker.example)`: the device asked for the first name, and the list holds the second. **Allow** on such a row allows the **asked** name, which lifts the block for it (the note under the button says so) without allowing the tracker for every other site.
+  - **How the device is found.** Every blocked record carries the MAC of the device that asked, so a device is found by its MAC even after its address changed; an older record without a MAC is matched by the addresses the device holds now. The router keeps the blocked records of the last hour (at most 20,000, in RAM), so a busy network no longer pushes one device's 15 minutes out of view.
+  - **After Allow** the row reads *Allowed - takes effect for new lookups*, and a name you have allowed (Never block, or a 24-hour allow still running) is left out of the table from then on. A device keeps its cached answer until it asks again: restart the app, or wait a minute.
 - **Why?**: type a name and **Check**. It says *Blocked by:* the lists or rules that hold it (or *Allowed by a Never block entry or a list exception*, or *Not on any list*), then, for each profile, whether it is blocked for that profile, and *The router answers:* what the router answers right now (an address, `nxdomain` or `none`).
+
+**Finding what broke a streaming app.** Open **Fix a device**, pick the TV or streaming box, and start the app. Rows
+that appear while it fails are the candidates; a *blocked via* row is a common cause for streaming services, whose own
+names are often aliases for a measurement host on a list. Allow 24 h on the newest row, retry, and make it permanent
+with Always allow once the app works. If nothing appears, the block is not Wallguard's: check **Dreadwatch** (4.3.2) and
+**Warden** (4.3.1).
 
 ##### 4.3.3.8 What it checks, and how it answers
 
 - **The name asked and every parent name**, for entries that cover subdomains (4.3.3.3).
 - **Before the cache**, so a cached answer is covered and a pause or an allow shows at once.
-- **Hidden trackers (CNAME cloaking)**: a site's own name that is an alias for a tracker's name is caught by checking every name in the reply's CNAME chain, for the device that asked. Such answers are never cached. The **Hidden trackers caught** tile counts them.
+- **Hidden trackers (CNAME cloaking)**: a site's own name that is an alias for a tracker's name is caught by checking every name in the reply's CNAME chain, for the device that asked. Such answers are never cached. The **Hidden trackers caught** tile counts them. Since v3.8.0 such a block is recorded under the name the device **asked** for, with the listed chain name beside it (*asked name (blocked via listed name)* in Fix a device and Live view), and an allow for the asked name (Never block, a 24-hour allow, or an `@@` exception) lets that name's answer through even though its chain leads to a listed name. The listed name stays blocked when asked for directly.
 - **The router's own answers win**: a name the router answers itself (local names, a device's DHCP name, a DNS rewrite (4.3.3.14), an `address=` line, the DoH provider names and browser canaries answered by the Encrypted DNS block, or a Dreadwatch threat name) gets that answer. A threat name on both is answered and counted by Dreadwatch.
 - **The answer**: **Blocked answer** below the Profiles card chooses *0.0.0.0 (fastest, recommended)* (`wallguard_mode` `null`, the default: `0.0.0.0` for IPv4, `::` for IPv6, an empty answer for other record types) or *NXDOMAIN* (`nx`). Blocked answers carry a 10-second lifetime and the Extended DNS Error code *Blocked*. Changing the mode applies with **Save & Apply**.
 
@@ -1417,8 +1573,19 @@ Downloaded lists live in RAM and come down again after every restart. Tick **Wal
 
 - **The table always stays in RAM.** The volume is read only while a table is built, never during lookups, so a stick that is pulled, sleeps or fails cannot stop DNS.
 - Each list's SHA-256 is recorded on `/jffs` when it downloads; a copy that no longer matches (changed through the file share) is not used (log: `list ... on the USB volume does not match its last download - not used`).
+- **Lists downloaded while the volume was away are copied to it later (v3.8.0).** A list downloaded before the store was mounted (the boot-time update), or whose write to the volume failed, stays in RAM and is written to the volume on the next build once it is there, so the stored copy and its recorded sum agree again. Before v3.8.0 such a list was refused from the volume after the next restart.
 - If the volume is missing when a table must be rebuilt (a rule change), the table in use stays and the log says so; downloads go to RAM until the volume is back.
-- The Lists card says where the lists are kept. This is USB only because internal flash has no room for lists of this size.
+- The Lists tab says where the lists are kept. This is USB only because internal flash has no room for lists of this size.
+
+**When a rebuild is skipped (v3.8.0).** A rebuild that could not use every subscribed list is reported on the Lists tab
+(and as a banner on Overview, with **Show lists**), and the Lists tab label shows *N problems*:
+
+| Message | Meaning | What to do |
+|---|---|---|
+| *The last rebuild (time) was skipped: list has no usable copy (USB volume not mounted, or its copy changed)* | A rule change needed a rebuild while a stored list was unreadable; the previous table stays in use | Reattach or remount the volume, or **Update** that list |
+| *The last rebuild (time) was skipped: another build was still running* | Several saves in a row | Save again after a minute |
+| *The last rebuild (time) failed* | The compiler failed; the previous table stays in use | Read the `wallguard:` lines in the system log |
+| *The block table in use was built from N of M subscribed lists - no usable copy yet of: ...* | Some lists are still owed (first download, or a failed one) | Wait for the retry, or **Update** the list |
 
 ##### 4.3.3.11 Counters, live view and privacy
 
@@ -1432,7 +1599,10 @@ Downloaded lists live in RAM and come down again after every restart. Tick **Wal
 | **Most-blocked names** / **Devices with the most blocked lookups** | The top 50 of each; the counters keep the 200 busiest names and devices |
 | **Live view** | Every lookup as it happens (newest 150 shown, refreshed every 3 s), with its verdict: *blocked*, *allowed by a rule*, *listed, not for this device*, *passed*, *safe search* |
 
-**Privacy.** Only **blocked** lookups are recorded, and a record names the **list entry** that matched (`doubleclick.net`), not the name as asked. The counters, the top lists and Unbreak come from those records. The resolver keeps at most 50 records a second and 512 KB between collections; the rest is counted, not recorded. The **Live view** is the only place names as asked, and lookups that were not blocked, appear: **Start live view** starts it (only while Wallguard is on), it is kept in RAM only, never saved, and switches itself off after an hour (*N min left*).
+The tiles are on **Overview**; Live view and the two top-50 tables on **Activity**. **Live view** can be narrowed to one
+device with the menu beside its button.
+
+**Privacy.** Only **blocked** lookups are recorded. A record holds the time, the device's address and MAC, and the **list entry** that matched (`doubleclick.net`), not the name as asked; a CNAME block (4.3.3.8) records the asked name and the listed name. The counters, the top lists, the Devices tab counts and Fix a device come from those records; the records of the last hour stay in RAM (at most 20,000) and are never written to flash. The resolver keeps at most 50 records a second and 512 KB between collections; the rest is counted, not recorded. The **Live view** is the only place names as asked, and lookups that were not blocked, appear: **Start live view** starts it (only while Wallguard is on), it is kept in RAM only, never saved, and switches itself off after an hour (*N min left*).
 
 Records are collected every 15 minutes and on each page refresh; the counters are copied to `/jffs/wallguard/counters` at most hourly. **Reset counters** (in **How it works**) clears them. With **Wallguard blocked lookups** ticked on Long-Term Storage, every record is also appended to `<store>/wallguard/blocked.log` (rolled to `.1` past 16 MB on USB, 2 MB on JFFS); on USB, anyone with access to the volume's share can read it.
 
@@ -1440,13 +1610,17 @@ Records are collected every 15 minutes and on each page refresh; the counters ar
 
 **Ads off for the house.** Switch on, keep HaGeZi Normal, save. Check after a few minutes that the pill reads *Blocking*.
 
-**A child's tablet.** **Add profile** "Kids"; tick HaGeZi Pro and My rules in its row; **Edit**: tick TikTok, Roblox and YouTube, schedule *Blocked only at these times*, school nights 21:00 to 07:00; Safe search On, YouTube Strict. **Assign** the tablet to Kids. **Save & Apply**.
+**A child's tablet.** Devices tab: **Add profile** "Kids"; tick HaGeZi Pro and My rules in its row; **Edit**: tick TikTok, Roblox and YouTube, schedule *Blocked only at these times*, school nights 21:00 to 07:00; Safe search On, YouTube Strict. Back on the Devices tab, set the tablet's **Profile** to Kids. **Save & Apply**.
 
 **A work laptop that must not be filtered.** Assign it to **Bypass**. Dreadwatch still applies to it.
 
 **A guest network with lighter filtering.** Add a profile with HaGeZi Light only and assign the guest network to it.
 
-**A shopping site's checkout breaks.** **Unbreak**, pick the device, **Allow 24 h** on the name that appeared when it broke; if that fixes it, **Always allow**.
+**A shopping site's checkout breaks.** **Overview › Fix a device**, pick the device, **Allow 24 h** on the name that appeared when it broke; if that fixes it, **Always allow**.
+
+**A streaming app shows an error on the TV.** Devices tab: the TV's **Blocked, 15 min** count rises while the app fails.
+**Fix** on its row, then follow *Finding what broke a streaming app* (4.3.3.7). To test quickly whether Wallguard is the
+cause at all, **Pause 10 min** on the same row and retry the app.
 
 ##### 4.3.3.13 Troubleshooting
 
@@ -1460,11 +1634,17 @@ Records are collected every 15 minutes and on each page refresh; the counters ar
 | A list reads *failed, previous copy kept* | The host cannot be reached, or refuses | Log `list <id>: download failed`; for your source check its address and key |
 | Log `not fetched, less than 160 MB of memory available` | Low memory at update time | Fewer lists; free memory |
 | Log `not taken, the lists kept in RAM would pass 96 MB` | Too many large lists in RAM | Fewer lists, or keep them on USB (4.3.3.10) |
-| A site or app stopped working | A list blocks a name it needs | **Unbreak** (4.3.3.7) |
+| A site or app stopped working | A list blocks a name it needs | **Overview › Fix a device** (4.3.3.7) |
+| Fix a device shows nothing for a device that is clearly blocked | The block is not Wallguard's (Dreadwatch, Warden, the Encrypted DNS block), or the device uses its own DNS (banner) | **Pause 10 min** on its row: if the app still fails, look at Dreadwatch and Warden |
+| A row reads *name (blocked via other name)* | A CNAME block: the asked name is an alias of a listed name | **Allow** on that row allows the asked name only (4.3.3.8) |
+| Lists tab shows *N problems*, or a rebuild warning | A rebuild was skipped or a list has no usable copy | The warning says which; see *When a rebuild is skipped* (4.3.3.10) |
 | Safe search not applied | The device has another profile; the enforcement addresses are not looked up yet; or the browser uses its own encrypted DNS | **Why?**; **Update lists now**; Encrypted DNS block (4.3.4.6) |
 | A blocked service still partly works | It also runs on shared cloud hosts or plain IP addresses, or the schedule is off now | Top up with **Always block**; check the schedule and the router's clock |
 | A DNS rewrite does not answer | The table was not saved; the device resolves elsewhere (banner); the device asked with the LAN domain added; or an alias points at a name the router does not answer | **Why?** shows *The router answers:*; save; add the name with the LAN domain; give the alias's target a rewrite with an address |
 | Log `DNS rewrites: N row(s) left out` | A row in `/jffs/wallguard/rewrite` (edited by hand, or restored) is unreadable, repeats an alias, or points an alias at another alias | Remove or correct that row on the page and save |
+| Log `another block table build is still running - this one was skipped` | Two builds at once (several saves in a row) | Save again after a minute |
+| Log (dnsmasq) `wallguard: the block table is damaged - passing everything until it is rebuilt` | A damaged table | **Update lists now** |
+| Advanced rules: *N left out* | Those lines use syntax that cannot work in a DNS resolver (cosmetic rules, unsupported modifiers) | The card lists each line with the reason; remove or rewrite them |
 
 ##### 4.3.3.14 DNS rewrites
 
@@ -1489,10 +1669,8 @@ Type the **Name** and the **Answer**, tick **Subdomains too** if wanted, and pre
 - **Lines of your own** in `/jffs/configs/dnsmasq.conf.add` still work beside the table. Do not define the same alias in both places: the resolver refuses to start on a repeated alias.
 
 **Example: a lab of containers.** Add `nas.home.arpa` → `192.168.50.20`; `*.k8s.lan` → `192.168.50.40` (every service name under `k8s.lan` reaches the ingress); `plex.home.arpa` → `nas.home.arpa` (an alias). Save. **Why?** with `grafana.k8s.lan` shows *The router answers: 192.168.50.40*.
-| Log `another block table build is still running - this one was skipped` | Two builds at once (several saves in a row) | Save again after a minute |
-| Log (dnsmasq) `wallguard: the block table is damaged - passing everything until it is rebuilt` | A damaged table | **Update lists now** |
 
-##### 4.3.3.14 Limits
+##### 4.3.3.15 Limits
 
 - Only lookups that reach the router's resolver. A browser or app with its own encrypted DNS, a hard-coded DNS server, or a VPN go around it; DNS Director *Router* closes the plain-DNS route, the Encrypted DNS block (4.3.4.6) the encrypted one.
 - By name only: ads served from the content's own host, and page elements, are not blocked.
@@ -1517,7 +1695,7 @@ The tab has two halves, each switched on its own: a server for your devices, and
 1. Switch on **DNS-over-TLS**, **DNS-over-HTTPS** or both (the two switches at the top of the tab) and press **Save & Apply**. The pill reads *Running*. If DNS-over-TLS to your upstream servers is off, the Save offers to switch that on as well (4.3.4.5).
 2. Check the **Certificate** card. *Trusted* works for every kind of device. *Self-signed* works only for Android phones on the *Automatic* setting.
 3. Set up each kind of device (4.3.4.4).
-4. **Stop devices going around the router:** in DNS Director, set the global mode to *Router*. Plain DNS from every device is then answered by the router, and DNS-over-TLS and DNS-over-QUIC (TCP and UDP 853) to any other server are rejected.
+4. **Stop devices going around the router:** in DNS Director, set the global mode to *Router*, and each guest network's row to *Router* (a row left on *No redirection* keeps its network out of the global mode, 4.22.2). Plain DNS from every device is then answered by the router, and DNS-over-TLS and DNS-over-QUIC (TCP and UDP 853) to any other server are rejected.
 5. **Check it works:** *Connected now* rises as devices connect, and Android shows Private DNS as connected.
 6. To stop devices going around the router altogether, switch on **Block encrypted DNS that goes around the router** (4.3.4.6).
 
@@ -1558,7 +1736,7 @@ The tab fills these steps with your certificate's name and the router's LAN addr
 
 - **Where it answers** (the card of that name): the main LAN address (IPv4 and IPv6), each guest/VLAN network's address, and, when the WAN address is public, the WAN address *for devices on this network that look the name up* (the certificate's name resolves to the WAN address; the connection still arrives through the LAN bridge). An address marked *could not listen here* is held by something else. It accepts a connection only from a LAN or guest/VLAN subnet, and port 853 is dropped on every other interface (WAN, VPN) while it runs.
 - **Each lookup** goes to the resolver of the device's **own** network over the router's loopback, tagged with the device's address in a private field the resolver reads (only from the router itself) and removes before anything leaves the router. Dreadwatch, Wallguard profiles, the cache, DNS-over-TLS upstream and each guest network's settings apply exactly as for plain DNS, and Dreadwatch and Wallguard record the device itself. Answers too large for UDP are fetched again over TCP.
-- **DNS Director**: a device it sends to another DNS server (per device, per guest network, or by the global mode) is refused before the TLS handshake. Android's *Automatic* setting then falls back to plain DNS, where DNS Director applies; a device on the hostname setting fails instead. Devices set to *Router* or *No filtering* are served.
+- **DNS Director**: a device it sends to another DNS server (per device, per guest network, or by the global mode) is refused before the TLS handshake. Android's *Automatic* setting then falls back to plain DNS, where DNS Director applies; a device on the hostname setting fails instead. Devices set to *Router* or *No redirection* are served.
 - **Gatekeeper**: a held or blocked device cannot use it and keeps plain DNS, where Gatekeeper's rules apply.
 - **Limits**: 128 connections, 8 per device, 16 lookups in flight per connection, TLS 1.2 or later; a connection that does not finish its handshake in 5 s, or sits idle for 30 s, is closed.
 - **Logging**: nothing per lookup. The tiles are totals since it last started: **Connected now**, **Lookups answered**, **Refused** (not from a LAN subnet, refused by DNS Director, or over a limit). The **Encrypted DNS activity** row on Long-Term Storage writes one summary line per self-monitor tick.
@@ -1579,7 +1757,7 @@ The upstream line is shown whether or not the server for devices is on: it cover
 
 **Which devices use it.** *Using encrypted DNS* lists the devices that reached the server since it started, with the protocol, the number of lookups and the time of the last one (64 devices at most). *Plain DNS only* lists devices on the router's own networks that asked port 53 in the last few minutes and are not in the first list. Names come from the DHCP leases. A device that has looked nothing up is in neither list.
 
-**Automatic setup (DHCP option 162).** With a server switch on and a publicly trusted certificate, the router's DHCP names itself as an encrypted DNS server (RFC 9463): the certificate's name, the router's address on that network, and the protocols that are on. A device that supports the option switches to encrypted DNS by itself; every other device ignores it and is set up as in 4.3.4.4. It is offered on the main network unless you gave DHCP clients other DNS servers (LAN › DHCP Server), and on each guest/VLAN network that has no DNS server of its own. The card's **Automatic setup** line shows the name while it is offered; the log has `rednsd: automatic setup for devices (DHCP option 162) is offered` / `is withdrawn` when that changes, and the DHCP server is restarted once at that moment. Nothing is offered with a self-signed or private certificate, because the device checks the name against a public authority and would only fail. The router does not publish the other discovery record, `_dns.resolver.arpa` (RFC 9462): a device verifies that one by finding the router's LAN address inside the certificate, which no public authority issues.
+**Automatic setup (DHCP option 162).** With a server switch on and a publicly trusted certificate, the router's DHCP names itself as an encrypted DNS server (RFC 9463): the certificate's name, the router's address on that network, and the protocols that are on. A device that supports the option switches to encrypted DNS by itself; every other device ignores it and is set up as in 4.3.4.4. It is offered on the main network unless you gave DHCP clients other DNS servers (LAN › DNS › *Handed to clients*), and on each guest/VLAN network that has no DNS server of its own, **except an isolated guest network and a Guest Portal network** (v3.8.0): their devices may reach the router for DHCP and plain DNS only, so an offer would name a resolver they cannot use. iPhones and iPads take the offer by themselves and lost DNS on such networks before v3.8.0; Android ignores it. The card's **Automatic setup** line shows the name while it is offered; the log has `rednsd: automatic setup for devices (DHCP option 162) is offered` / `is withdrawn` when that changes, and the DHCP server is restarted once at that moment. Nothing is offered with a self-signed or private certificate, because the device checks the name against a public authority and would only fail. The router does not publish the other discovery record, `_dns.resolver.arpa` (RFC 9462): a device verifies that one by finding the router's LAN address inside the certificate, which no public authority issues.
 
 ##### 4.3.4.6 Block encrypted DNS that goes around the router
 
@@ -1595,7 +1773,7 @@ A card on the same tab with two switches. Each works on its own and covers devic
 - **The DoH providers' host names** a device looks up first (`dns.google`, `cloudflare-dns.com`, `dns.quad9.net`, `doh.opendns.com`, `dns.nextdns.io` and about 40 more, with their subdomains; maintained with the firmware in `/usr/share/encdns/doh-names`) are answered NXDOMAIN. A name the router itself uses as its DNS-over-TLS upstream is never on it.
 - **The browser canaries** `use-application-dns.net`, `mask.icloud.com` / `mask-h2.icloud.com` and `_dns.resolver.arpa` are answered NXDOMAIN, so Firefox's automatic DoH and iCloud Private Relay stand down. Without this switch, **Prevent client auto DoH** on LAN › DNS decides this (*Auto* answers them when DNS-over-TLS upstream or DNS Director's global mode is on).
 
-Changing the port 853 switch rebuilds the firewall. Changing the DNS-over-HTTPS switch rebuilds the firewall and restarts the resolvers once; list updates restart nothing. Devices set to **No filtering** in DNS Director are exempt from both switches. A Firewall rules-engine Allow rule is evaluated first and can let such traffic through.
+Changing the port 853 switch rebuilds the firewall. Changing the DNS-over-HTTPS switch rebuilds the firewall and restarts the resolvers once; list updates restart nothing. Devices set to **No redirection** in DNS Director are exempt from both switches. A Firewall rules-engine Allow rule is evaluated first and can let such traffic through.
 
 **With one switch on, the other route stays partly open.** Port 853 only: a device can still use DNS-over-HTTPS to an outside provider. DNS-over-HTTPS only: port 853 stays open, so DNS-over-TLS or DNS-over-QUIC to a server reached by its address, or by a name that is not on the provider list, still works. The provider names and the browser signal follow the DNS-over-HTTPS switch, so a device set to one of those provider names for DNS-over-TLS (Android *Private DNS provider hostname* `dns.google`, for example) is stopped by that switch as well: the name is not answered. Dreadwatch's Coverage card reads the block as on only when both switches are on.
 
@@ -1606,7 +1784,7 @@ Changing the port 853 switch rebuilds the firewall. Changing the DNS-over-HTTPS 
 - A DNS-over-TLS or DNS-over-QUIC client (Android *Private DNS provider hostname*, a resolver set to DNS-over-TLS) is refused by the port 853 switch; a DNS-over-HTTPS client (browsers, Windows) by the DNS-over-HTTPS switch. The provider names that are not answered under the DNS-over-HTTPS switch also stop a client that looks its provider up by name first.
 - An **automatic** setting (Chrome, Edge, Firefox, Windows, Android *Automatic*) falls back to the router's DNS by itself.
 - A device set to **one named outside provider** (Android *Private DNS provider hostname* set to a provider, a browser set to one provider with no fallback) has **no DNS** until it is set back to automatic or to the router's Encrypted DNS. The card says so.
-- To let one device keep its own encrypted DNS, set it to **No filtering** in DNS Director.
+- To let one device keep its own encrypted DNS, set it to **No redirection** in DNS Director.
 
 **Not stopped:** an encrypted DNS server on an address not on the list (self-hosted, a new provider), VPNs and proxies, and anything a Firewall Allow rule lets through first.
 
@@ -1627,9 +1805,9 @@ Changing the port 853 switch rebuilds the firewall. Changing the DNS-over-HTTPS 
 
 **Encrypted and filtered phones.** Let's Encrypt on your DDNS name, or Let's Encrypt via DNS on a name in your own domain (WAN › DDNS, 4.3.4.3); switch on Encrypted DNS for devices; leave Android on *Automatic*; install the Apple profile on iPhones. Dreadwatch's Coverage card then shows Encrypted DNS as on, and the phones appear by their own address in Dreadwatch and Wallguard.
 
-**Close every route around the filters.** DNS Director global mode *Router*, Encrypted DNS for devices on, both block switches on. Then set any device with a named Private DNS provider back to *Automatic*.
+**Close every route around the filters.** DNS Director global mode *Router* (and each guest network's row *Router*), Encrypted DNS for devices on, both block switches on. Then set any device with a named Private DNS provider back to *Automatic*.
 
-**One device keeps its own provider.** DNS Director, per-device rule *No filtering* for that device.
+**One device keeps its own provider.** DNS Director, per-device rule *No redirection* for that device.
 
 ##### 4.3.4.10 Troubleshooting
 
@@ -1640,7 +1818,7 @@ Changing the port 853 switch rebuilds the firewall. Changing the DNS-over-HTTPS 
 | An address marked *could not listen here* | Another service holds port 853 there | Stop that service |
 | A phone has no internet away from home | Android set to *Private DNS provider hostname* | Use *Automatic* on phones |
 | The hostname works at home but not behind a second router | Double NAT: the name points at the outer router | Android *Automatic* or the Apple profile, which use the LAN address |
-| A phone or browser has no DNS after the block was switched on | It is set to one named outside provider | Set it to automatic or to the router's Encrypted DNS, or DNS Director *No filtering* |
+| A phone or browser has no DNS after the block was switched on | It is set to one named outside provider | Set it to automatic or to the router's Encrypted DNS, or DNS Director *No redirection* |
 | The block's list shows only the built-in addresses; log `encrypted-DNS address list: download failed, the previous list stays in use` | The list host cannot be reached | **Update list now**; check that `raw.githubusercontent.com` is reachable from the router |
 | A browser still bypasses with the block on | Its DoH server's address is not on the list | Report the provider; DNS Director per-device rules or a Firewall rule can block it meanwhile |
 
@@ -1721,7 +1899,7 @@ Every rule has one target:
 - **A VPN client (OpenVPN 1–5)** — matched traffic goes through that OpenVPN client's tunnel, using the routing table the client already created. The tunnel does not have to be the default route; this steers only the traffic you named through it.
 - **WAN** — matched traffic is forced out the normal internet connection, **bypassing** a full-tunnel VPN and any VPN Director rule for it. This is how you carve an exception out of "route everything through the tunnel". The row simply reads `WAN`; the bypass is stated once in the notes under the table, and as a hint when you pick WAN as a target (v3.1.5).
 - **Block** — matched traffic is dropped. Useful as a hard "this device, or this destination, goes nowhere" that does not depend on the firewall rule order.
-- **WireGuard 1–5** — supported since v2.6.7, with a cost described in 4.4.9. A WireGuard rule whose client is switched off either blocks the selected traffic or lets it use the WAN, depending on that client's Killswitch (4.4.7). Since v2.7.7 the target list **hides tunnels that are not enabled**, so a rule cannot be pointed at a target that was never going to carry it; a rule that already names a switched-off client keeps its target and shows *Inactive · WAN* in the Status column (v3.1.5). The accelerator-bypass table (4.4.9) has **eight IPv4 and eight IPv6 slots**, shared with VPN Director's WireGuard rules and the WireGuard server's peers. A WireGuard rule is never refused for it: the marking and routing rules go in regardless. If no slot is free, the apply reports a **partial failure**, the log names the entry, and until a slot is freed flows from that source that the accelerator has already learned keep their old path. If the tunnel's interface is not up yet when the rules are applied (at boot, Policy Routing applies with the firewall, before the WireGuard client starts), the bypass is recorded as **pending** and installed the moment the client starts (v3.1.7); the diagnostics bundle's section 14d shows each bypass as *new*, *pre* or *pending*.
+- **WireGuard 1–5** — supported since v2.6.7, with a cost described in 4.4.9. A WireGuard rule whose client is switched off lets the selected traffic use the WAN: a switched-off client blocks nothing, whatever its Killswitch says (4.4.7). Since v2.7.7 the target list **hides tunnels that are not enabled**, so a rule cannot be pointed at a target that was never going to carry it; a rule that already names a switched-off client keeps its target and shows *Inactive · WAN* in the Status column (v3.1.5). The accelerator-bypass table (4.4.9) has **eight IPv4 and eight IPv6 slots**, shared with VPN Director's WireGuard rules and the WireGuard server's peers. A WireGuard rule is never refused for it: the marking and routing rules go in regardless. If no slot is free, the apply reports a **partial failure**, the log names the entry, and until a slot is freed flows from that source that the accelerator has already learned keep their old path. If the tunnel's interface is not up yet when the rules are applied (at boot, Policy Routing applies with the firewall, before the WireGuard client starts), the bypass is recorded as **pending** and installed the moment the client starts (v3.1.7); the diagnostics bundle's section 14d shows each bypass as *new*, *pre* or *pending*.
 
 **IPv6 is covered** (v2.6.7): a destination list matches its IPv6 addresses, a MAC rule follows the device on both families, and a source rule may name an IPv6 prefix. If the chosen tunnel carries no IPv6, the selected IPv6 traffic is blocked when that client's Killswitch is on and uses the WAN when it is off - the same rule as for a tunnel that is down (4.4.7).
 
@@ -1738,8 +1916,9 @@ A rule chooses the **path**. What happens when that path is gone — the tunnel 
 - **Killswitch on** — the matched traffic is **blocked** until the tunnel is back. This is the setting to use when the whole point of the rule is that the traffic must *never* touch the internet directly.
 - **Killswitch off** — the matched traffic **falls back to the WAN** while the tunnel is down, and returns to the tunnel when it is up.
 - **Client switched off** — the Killswitch does not apply to a client that is not enabled (v3.1.5, the same condition VPN Director puts on its own rule): the matched traffic **uses the WAN** until you enable the client again.
+- **OpenVPN client with Redirect Internet traffic set to *No*, or a TAP client** — the Killswitch does not apply either (from the image after v3.8.0). Such a client carries only the networks its server pushes, so there is no "tunnel down" for general traffic to be protected from; the VPN Client page hides the switch in that mode, and a switch saved earlier is ignored, not changed. Before this, a Policy Routing rule to such a client with a saved Killswitch was refused Internet access even while the tunnel was up. Set Redirect to *VPN Director rules* to send a rule's traffic through the tunnel with the Killswitch behind it.
 
-Reaper does not override that choice. Before v3.1.3 every VPN-client rule was blocked regardless of the Killswitch, which meant Policy Routing and VPN Director disagreed about the same client; now one setting governs both. The rules table's **Status** column says which applies to each rule: *Active*, *Active · Killswitch* (a dropped tunnel blocks rather than leaks) or *Inactive · WAN* (the client is switched off); the notes under the table state the rule once.
+Reaper does not override that choice. Before v3.1.3 every VPN-client rule was blocked regardless of the Killswitch, which meant Policy Routing and VPN Director disagreed about the same client; now one setting governs both. A rule to an OpenVPN client whose Redirect Internet traffic is *No* reads *Active · pushed routes only* (only the networks that client's server pushes use the tunnel; everything else uses the WAN), a rule to a TAP client reads *Inactive · WAN · TAP* (it has no effect), and TAP clients are not offered as a target for a new rule (from the image after v3.8.0). The rules table's **Status** column says which applies to each rule: *Active*, *Active · Killswitch* (a dropped tunnel blocks rather than leaks) or *Inactive · WAN* (the client is switched off); the notes under the table state the rule once.
 
 What the router actually installs is the same pair VPN Director installs, keyed by the rule's mark instead of its source address. For a rule to WireGuard 2 whose client is enabled with its Killswitch on:
 
@@ -1824,7 +2003,7 @@ Why not 100%? Because the shaper only controls a queue it owns. If your figure m
 
 1. Enter the bandwidth figures as above.
 2. Select **HW QoS Classful** and let the router reboot.
-3. The classes ship as a measured profile — **Web/VoIP**, **Gaming**, **Streaming**, **Downloads**, **Default** — with starter rules for conferencing, SIP, game consoles, Steam, BitTorrent and web traffic.
+3. The classes ship as a measured profile — **Web/VoIP**, **Gaming**, **Streaming**, **Downloads**, **Default** — with starter rules for conferencing, SIP, game consoles, Steam, BitTorrent and web traffic. The factory minimums and ceilings are Web/VoIP 15-90%, Gaming 15-90%, Streaming 20-90%, Downloads 5-95%, Default 25-95% (`qos_orates`, 8.1). No class starts at a 100% ceiling (Web/VoIP did until v3.8.0); a router that already holds its own rates keeps them.
 4. Leave the **Aggregate cap (port shaper)** on.
 5. **Guaranteed minimums** is on at factory; turn on **Trust DSCP marking** only as below.
 6. **Apply.**
@@ -1987,6 +2166,24 @@ Click a name to rename it inline. **Your custom name wins everywhere** over what
 
 There is one master name store behind that, deliberately, because there used not to be. Renames could appear to revert, or show the old name on some pages and the new one on others, and deleting a single offline client could wipe every custom name you had set. Those were real defects with a single cause — several parts of the firmware parsing the same store differently — and the fix was to make one store authoritative. Field devices with duplicate records left over from that period clean themselves up on the next reboot.
 
+**Name and Hostname: one rule on every page (v3.8.0).**
+
+| Label | Where it comes from | When it is empty |
+|---|---|---|
+| **Name** | The name you gave the device **on this page** (the one master list, `custom_clientlist`) | You have not named it |
+| **Hostname** | The name the device sent when it asked for an address (DHCP option 12) | No name sent: the **maker** of its network card, from the MAC prefix, for a real MAC; the text `Private-Address` for a randomized (private) MAC |
+
+- A page with **one** label (Gatekeeper, Wallguard, Encrypted DNS, Traffic Analyzer, Connections and the rest) shows
+  **Name**, else **Hostname**. The **DHCP Leases** page (System Log) shows both columns; Name stays empty unless you named
+  the device here.
+- A **DHCP reservation's name** (the reservations on the LAN page) is the device's **DNS name**: what other devices reach it by, what
+  `$client=` in Wallguard's Advanced rules can use. It is not a Name and is never shown as one; the reservation page
+  labels it *DNS name*. Give the device a Name here to change what the pages show.
+- Parental Controls and Wake on LAN keep their own entry names; they show this page's Name for the same MAC, and their
+  own name only when the device has no Name.
+- Changing a label changes only what is **shown**. Enforcement (Gatekeeper, Wallguard profiles, firewall rules) keys
+  on the MAC or address, never on a label, so renaming a device never changes what applies to it.
+
 #### 4.8.2 Pinning an address
 
 **Pin IP** opens a pool-aware dialog. It recommends an address **outside** the DHCP pool, which keeps the pool free for new arrivals; the device moves to it at its next lease renewal rather than immediately. You can also keep the address it currently has, inside the pool.
@@ -2019,6 +2216,8 @@ Wired versus wireless is read from the LAN bridge's forwarding table rather than
 - A **Wi-Fi 7 MLO** device is one row showing its combined bands (`MLO · 5+6 GHz`), with its affiliated links labelled rather than flagged as faults.
 - Devices behind an **AiMesh node** are shown as Wi-Fi on their real band. The node itself gets an **AiMesh Node** chip and shows its backhaul band, or Wired if it is cabled.
 - **First-seen** stamping waits for the clock to be set, so a device does not claim to have been first seen 961 days ago.
+- **After a restart (v3.8.0)** every device that still holds a DHCP lease is listed and named at once: the router keeps
+  its lease lists in flash and puts them back when it starts (see *DHCP leases kept across a restart* in 4.26.3).
 
 #### 4.8.5 Filtering and export
 
@@ -2478,7 +2677,7 @@ pinned on.
 
 ### 4.17 Administration → Tweaks: the Reaper setting
 
-The menu names this tab **Tweaks**, under **Administration**. There is no Tools menu. One setting sits under the **Reaper** heading, with a **?** beside it:
+The menu names this tab **Tweaks**, under **Administration**. There is no Tools menu. The page has four panels: **Warden** (below), **Connection tracking**, **Advanced tweaks** (including *mDNS across networks*) and **Wireless stability**; 4.27.9 describes the other three. The Warden panel has one setting, with a **?** beside it:
 
 - **Warden feed update schedule** — cron format; empty = 04:30 daily.
 
@@ -2561,6 +2760,2942 @@ the same on the other.
 IPTV (LAN → IPTV), Switch Control and the Internet Connection page are separate pages; Internet Connection names
 the WAN port actually in use, resolved the way this page resolves it (v3.6.3).
 
+### 4.20 VPN
+
+The **VPN** menu holds six tabs: **VPN Status**, **VPN Director**, **Policy Routing**, **VPN Server**, **VPN Client**
+and **Tor**. The menu shows in router mode only (not in access point, repeater or media bridge mode). Each tab, and
+each sub-tab inside VPN Server and VPN Client, is shown only where the firmware is built with the function behind it
+(`openvpnd`, `wireguard`, `ipsec_srv`, `pptpd`, `vpnc`, `tor`). All eight models on both lines
+(3006.102.10: RT-BE96U, RT-BE86U, RT-BE88U, GT-BE98 Pro; 3006.102.8: GT-BE98, GT-BE19000, BQ16, BQ16 Pro) are built
+with all of them, so every tab described here is present on every model.
+
+The pages are Reaper's own (v3.4.9) and replace the stock VPN pages; the stock addresses open the Reaper page. The
+engines behind them are Asuswrt-Merlin's (OpenVPN client and server, WireGuard, VPN Director) and ASUS's (IPsec,
+PPTP, the PPTP / L2TP client, Tor's firewall rules). Each page posts only the settings you changed. A stored password,
+WireGuard private key or pre-shared key is never sent to the page: the field shows `********` (or says that a key is
+saved) and is written only when you type a new value. The OpenVPN key and certificate boxes are the exception: they load
+the stored PEM text so it can be edited.
+
+Apart from Policy Routing, these pages use a plain **Apply**: the change is saved to flash at once, with no
+Keep / Revert timer (2.7). Every Apply that would drop a running tunnel or disconnect clients asks first and names what happens.
+
+What a VPN client and its **Killswitch** do to traffic is the same on every page:
+
+- A device is sent into a client tunnel by a VPN Director rule (4.20.2), a Policy Routing rule (4.4), an OpenVPN client
+  set to redirect all traffic, or a network bound to the client on the Network page.
+- **Killswitch on, client enabled, tunnel down** - that traffic is blocked. It does not fall back to the WAN.
+- **Killswitch off** - that traffic uses the WAN while the tunnel is down and returns to the tunnel when it is up.
+- **Client switched off** - the Killswitch does not apply; the traffic uses the WAN (4.4.7).
+
+#### 4.20.1 VPN Status
+
+**What it is.** A live, read-only view of every VPN server and client on the router. It writes nothing: there is no
+form and no Apply. It refreshes every 10 seconds while the page is visible, stops while the browser tab is hidden, and
+**Refresh** asks again at once. Reaper's own page; the stock status page no longer ships.
+
+**How to use it.**
+
+1. Open **VPN > VPN Status**. The pill at the top reads *Updated hh:mm:ss* after each successful read, or *Some data
+   could not be read* when one of the requests failed.
+2. Choose **Servers** to see the OpenVPN, WireGuard, IPsec and PPTP servers and who is connected to each.
+3. Choose **Clients** to see the five OpenVPN clients, the five WireGuard clients and the PPTP / L2TP profiles.
+4. Each instance has a **Settings** link that opens the tab on VPN Server or VPN Client where it is configured.
+
+**What each section shows.**
+
+| Section | What it shows |
+|---|---|
+| OpenVPN servers 1 and 2 | State (*Running*, *Starting*, *Stopped*, *Error* with the reason: IP/Routing conflict, Authentication failed, Configuration error, No network to the server). Connected clients: username, common name, real address, virtual address, bytes received and sent, connected since, data-channel cipher. The routes table: virtual address, common name, real address, last used. |
+| WireGuard server | *Running* or *Off*, and each peer: name, the first 12 characters of its public key, *Connected* / *Idle* / *Never*, endpoint, allowed IPs, last handshake, transfer. A peer counts as connected when its last handshake is under three minutes old. |
+| IPsec server | *Running* or *Off*, and the connected clients per IKE version: remote IP, status, access time, username, PSK re-authentication, bytes received and sent. |
+| PPTP server | *Running*, *Stopped* (enabled but no daemon) or *Off*, and the connected clients: username, interface, remote IP, client IP. |
+| OpenVPN clients 1-5 | Description, state, an *Enabled* tag, server address:port/protocol, the Internet routing mode (*No Internet traffic*, *Redirect all Internet traffic*, *VPN Director*). While connected: local tunnel IP, public IP, the OpenVPN traffic statistics and the time they were updated. |
+| WireGuard clients 1-5 | Description, *Off* / *Connected* / *No recent handshake* / *Waiting for data*, server endpoint. While enabled: local IP, public IP, and the peer's endpoint, allowed IPs, last handshake, transfer and keepalive. |
+| PPTP / L2TP | Each saved profile: type, description, state, server, username. Only the profile in use carries a state; the others read *Off*. Passwords are never sent to the page. |
+
+**The settings.**
+
+| Setting | What it does | Default |
+|---|---|---|
+| **Servers** / **Clients** | Switches between the two views. The choice is remembered for the browser tab; `?tab=servers` or `?tab=clients` in the address opens one directly. | Servers |
+| **Refresh** | Reads everything again now. Does not clear the cached public addresses. | - |
+| **Settings** (per instance) | Opens that instance's configuration tab. | - |
+
+**Limits and gotchas.**
+
+- Every instance is listed with its state, including stopped servers and disabled clients; the stock page hid them.
+- A server whose state key says running but whose daemon is gone is shown *Stopped*.
+- The WireGuard dumps (`wg show`, run by the web server on each read) are fetched only for the view that is open.
+- The stock Refresh posted a reset of the cached tunnel addresses, which made the router look its public address up
+  again over HTTP. Reaper's Refresh writes nothing.
+- *No recent handshake* on a WireGuard client means it is enabled and has had no handshake for three minutes. The
+  router's watchdog restarts such a client on its own (4.20.5, *WireGuard client watchdog*).
+
+#### 4.20.2 VPN Director
+
+**What it is.** VPN Director is Eric Sauvageau's (Asuswrt-Merlin) policy-routing table: rules that send LAN traffic
+through an OpenVPN client, a WireGuard client or out the WAN, chosen by **source** address (a LAN device or subnet) and
+**destination** address. Each rule becomes a plain `ip rule` (priority 10000 and up) that points at the client's
+routing table. Reaper keeps Merlin's engine and replaces the page.
+
+The rules apply to an OpenVPN client only while its **Redirect Internet traffic** is set to **VPN Director rules**
+(4.20.5). A WireGuard client has no such setting: it carries only what VPN Director, Policy Routing or a network
+binding sends to it.
+
+**How to use it.**
+
+*Route one device through a VPN client.*
+
+1. Set up and enable the client on **VPN Client** (4.20.5). For OpenVPN, set **Redirect Internet traffic** to
+   **VPN Director rules**.
+2. Open **VPN > VPN Director**. The **VPN clients** cards show each client's state and tags: *Enabled* / *Off*,
+   *VPN Director* or *Redirect all* (OpenVPN), *Killswitch*.
+3. In the rule form choose **Interface** = the client, for example *WireGuard 1*.
+4. In **Local IP** pick the device from the list, or type its address, for example `192.168.50.20`. Picking a device
+   fills **Description** with its name while that field is empty or still holds the last name filled in.
+5. Leave **Remote IP** empty (any destination).
+6. Press **Add**. The rule appears in the table under its interface's heading; nothing is saved yet.
+7. Press **Apply**. The router rebuilds every VPN routing rule, Killswitch and exclusive-DNS rule, then Policy
+   Routing's rules.
+
+*Route a whole subnet, but keep one device on the WAN.*
+
+1. Rule 1: Interface *OpenVPN 1*, Local IP `192.168.50.0/24`.
+2. Rule 2: Interface *WAN*, Local IP `192.168.50.30`.
+3. Apply. WAN rules are evaluated before VPN rules, so 192.168.50.30 uses the WAN.
+
+*Send traffic to one destination network through a tunnel.* Interface *WireGuard 2*, Local IP empty, Remote IP
+`203.0.113.0/24`. The page asks before adding a rule with neither address: it matches every connection, the router's
+own included.
+
+**The settings.**
+
+| Setting | What it does | Default |
+|---|---|---|
+| **VPN clients** cards | Read-only: each OpenVPN and WireGuard client's description, state, routing mode and Killswitch. Enabling a client, its routing mode and its Killswitch are set on **VPN Client** (link on the card heading). | - |
+| **Interface** | Where matched traffic goes: *WAN*, *OpenVPN 1-5*, *WireGuard 1-5*. | WAN |
+| **State** (form) | Whether the new or edited rule is on. | On |
+| **Description** | A label, up to 32 characters; no `<` `>` `'` `%` `"` or `\`. | empty |
+| **Local IP** | Source: one IPv4 address or an IPv4 network in CIDR form. Empty = any. The list offers the devices the router knows. | empty |
+| **Remote IP** | Destination: one IPv4 address or network. Empty = any. | empty |
+| **Add** / **Save** | Adds the rule, or saves the rule being edited, into the table. Nothing reaches the router until Apply. | - |
+| **Cancel** | Leaves edit mode and clears the form. | - |
+| **State** (table, *On* / *Off*) | Click to switch a rule on or off without deleting it. | - |
+| **Edit** | Loads a rule into the form; **Add** becomes **Save**. | - |
+| **x** (delete) | Removes the rule from the table. | - |
+| **Apply** | Saves the list and runs `restart_vpnrouting0`. | - |
+| **Discard** | Reloads the page and drops unsaved edits. | - |
+
+**Examples.**
+
+- *A streaming box through a provider tunnel, everything else direct.* WireGuard 1 imported from the provider's
+  `.conf`, rule Interface *WireGuard 1*, Local IP `192.168.50.40`. The rest of the LAN does not use the tunnel.
+- *Tunnel the house, exempt a work laptop.* OpenVPN 1 set to VPN Director rules; rule *OpenVPN 1* for
+  `192.168.50.0/24`; rule *WAN* for `192.168.50.25`.
+
+**Limits and gotchas.**
+
+- **IPv4 only.** Local IP and Remote IP take IPv4 addresses and networks. To steer IPv6, or to match a device by MAC
+  address or a destination by domain name, use Policy Routing (4.4).
+- **Order.** WAN rules win over VPN rules. Inside one interface the order does not matter: every rule of the group
+  routes to the same table. The table is grouped by interface for display; the stored order is kept (stock re-sorted
+  the list on every Apply).
+- **Policy Routing wins.** A Policy Routing rule for the same traffic is evaluated first (priority 9000 band) and
+  overrides a VPN Director rule (4.4.6).
+- **A rule to a switched-off client** is marked on its group heading, and Apply asks before saving such a rule. Its
+  traffic uses the WAN while the client is off (4.4.7).
+- **A rule to an OpenVPN client that is not set to VPN Director rules** has no effect until the client's routing mode
+  is changed. From the image after v3.8.0 the group heading says so (*not in VPN Director mode, rule not used*) and
+  Apply asks first, as it does for a rule to a switched-off client. A switched-off client blocks nothing, even with
+  its Killswitch on: its rules' traffic uses the WAN. The one case that stays blocked is a guest network bound to the
+  client with the network's own Kill Switch on (4.21.4).
+- **WireGuard and the hardware accelerator.** A WireGuard source rule also keeps that device's traffic off the
+  hardware accelerator so the tunnel sees it (4.4.9 describes the shared bypass table).
+- **Capacity.** Up to 199 rules and 7999 characters in all; the counter under the table shows both. The list is kept in
+  a file on `/jffs` (`/jffs/openvpn/vpndirector_rulelist`), not in nvram.
+- A duplicate rule (same interface, Local IP and Remote IP) is refused. A stored record that is not five fields is
+  shown dimmed with *not five fields, ignored by the router* and can only be deleted.
+- **Guest networks.** A rule whose Local IP is a guest network's subnet routes that network. Since v3.8.0 such a
+  network reaches the internet through the tunnel; this does not apply to a Guest Portal network or to a network with
+  its own Kill Switch on (4.2.5).
+- Removed from the stock page: the client on/off switches and the Edit jumps. They saved client settings from a rules
+  page; the client cards now link to VPN Client instead.
+
+#### 4.20.3 Policy Routing
+
+**What it is.** Reaper's own routing engine, in the VPN menu next to VPN Director. It sends traffic chosen by a
+**destination domain list or Firewall object**, a **source IP / CIDR** (IPv4 or IPv6) or a **source MAC** to an OpenVPN
+client, a WireGuard client, the WAN, or a block. Its rules take precedence over VPN Director's, follow each client's
+Killswitch, and use the Keep / Revert timer. Section 4.4 describes the page in full: matching (4.4.3), domain lists
+(4.4.4), targets (4.4.5), order (4.4.6), the Killswitch (4.4.7), examples (4.4.8) and limits (4.4.9). It is off by
+default (`reaper_pbr_enable` `0`, 8.2).
+
+Details of the page that 4.4 does not state:
+
+- Each rule has an optional **Description** (up to 48 characters), shown in the rules table.
+- A domain list's **Name** takes letters, digits and underscore, up to 25 characters; its **Description** takes up to
+  60. All Firewall objects together are limited to 8191 characters, and a save that would pass that is refused.
+- Deleting a domain list that a rule still uses asks first.
+- The source IP / CIDR box takes up to 64 entries per rule; more must be split over two rules (4.4.3 states the
+  limit).
+- Apply can end with one of these messages: *No confirmed snapshot exists yet. Reboot once on this firmware, then
+  apply again*; *A change is already awaiting confirmation. Keep or revert it first*; *The new rules could not be
+  built and were rolled back*; *Some rules did not load. The watchdog keeps retrying; the system log names them*;
+  *Kept, but the saved copy is incomplete. Apply and keep again so it survives a reboot*.
+
+#### 4.20.4 VPN Server
+
+**What it is.** The servers this router runs for devices connecting from outside: two **OpenVPN** instances, one
+**WireGuard** server with up to ten peers, an **IPsec** server (IKEv1 and IKEv2) and a **PPTP** server, each on its own
+sub-tab. All are off at factory (`vpn_serverx_start` empty, `wgs_enable` `0`, `ipsec_server_enable` `0`,
+`pptpd_enable` `0`; 8.3). The OpenVPN and WireGuard servers are Merlin's; IPsec (strongSwan) and PPTP are ASUS's. The
+page is Reaper's own.
+
+The pill at the top lists the servers that are on. Each server tab has a **Server address** row: the DDNS host name
+when DDNS is on, otherwise the WAN address. When that address is private (10/8, 172.16/12, 192.168/16, or the carrier
+range 100.64/10), the row warns that clients outside cannot reach it without a port forward on the upstream router.
+
+**How to use it: a WireGuard server and a phone.**
+
+1. Open **VPN > VPN Server > WireGuard** and switch **Enable WireGuard server** on. Leave the defaults
+   (tunnel address `10.6.0.1/32`, port `51820`, keepalive `25`).
+2. Press **Apply**. The first start generates the server's key pair; **Public Key** then shows it.
+3. In **Peer** press **Add**. The editor suggests the next free address in the server's /24, for example
+   `10.6.0.2/32`, server-side Allowed IPs = that address, client-side Allowed IPs = `0.0.0.0/0`.
+4. Enter a **Username** (the peer's name), for example `phone`, and press **Save peer**. The peer is saved at once,
+   not with Apply. A running server takes it without dropping the other peers.
+5. Press **Export** on the peer's row. The configuration appears, with **Download** (`wgs_client.conf`) and **QR**.
+6. In the WireGuard app on the phone, add a tunnel by scanning the QR code. The file and the code contain the peer's
+   private key: hand them to that device only.
+7. Connect from mobile data. **Server status** shows the peer's handshake; VPN Status lists it as *Connected*.
+
+**How to use it: an OpenVPN server for a laptop.**
+
+1. Open **VPN > VPN Server > OpenVPN**, choose **Server 1** in **Instance**, switch **Enable OpenVPN Server** on.
+2. Choose **Client will use VPN to access**: *Local network only*, *Internet only* or *Internet and local network*.
+3. Under **Username and Password** add an account, for example `laptop` with a password. Username and password
+   authentication is on by default, so the client presents this account as well as its certificate.
+4. Press **Apply**. The first start generates the certificates and can take a minute.
+5. When the instance shows *Running*, press **Export** to download `client1.ovpn`, and import that file into the
+   laptop's OpenVPN client.
+6. The laptop connects to the **Server address** shown, on UDP 1194 (instance 2: UDP 1195).
+
+**How to use it: IPsec for the built-in VPN client of a phone or a PC.**
+
+1. Open **VPN > VPN Server > IPsec**, switch **Enable IPSec VPN Server** on and enter a **Pre-shared Key** of 8 to 32
+   characters.
+2. Add an account under **Username and Password** and choose its **Supported IKE version**.
+3. Press **Apply**.
+4. IKEv1 clients use the server address, the pre-shared key and the account. IKEv2 clients use the account and must
+   trust the server certificate: download it with **For Windows** (`.der`) or **For Mobile** (`.pem`) under
+   **IKEv2 certificate** and install it on the device.
+
+**The settings: OpenVPN.**
+
+The two instances are configured one at a time. Clicking the other instance in **Instance** saves the choice on the
+router and reloads the page (it asks first when there are unsaved changes). The user list is shared by both instances;
+everything else is per instance.
+
+| Setting | What it does | Default |
+|---|---|---|
+| **Instance** | Server 1 or Server 2. The dot shows running (green), starting (amber) or failed (red). | Server 1 |
+| **Enable OpenVPN Server** | Starts this instance now and at every boot; off disconnects its clients. The line beside it gives *Running*, *Starting*, *Failed*, *Enabled* or *Disabled*, and a failure reason (routing conflict, certificate or key problem, weak or missing DH parameters, configuration error). | Off |
+| **Server address** | Read-only: what clients connect to (see above). | - |
+| **Client will use VPN to access** | *Local network only*: the LAN route is pushed and clients reach the router and LAN. *Internet only*: clients are told to send all traffic through the tunnel and reach only the Internet. *Internet and local network*: both. | Local network only |
+| **RSA Encryption** | 1024 or 2048-bit keys for the certificates generated at the first start. Shown only while no certificate exists. | 2048 bit |
+| **Export OpenVPN configuration file** | Downloads a ready-to-import `.ovpn` profile for this instance. Available while the instance runs. | - |
+| **Keys and certificates: Edit** | Opens a panel with `ca.crt`, `server.crt`, `server.key`, `dh.pem`, `crl.pem`, `static.key` and extra chain certificates as PEM text, up to 7999 characters each. An empty box is generated at the next start. **OK** keeps the edit for Apply. | - |
+| **Renew Certificate** | Marks the certificates for renewal: Apply blanks the CA, certificate, key, DH and CRL and the server makes new ones at start. Every client then needs a new profile. Enabled only while certificates exist and the instance is on. | - |
+| **Export Current Certificate** | Downloads the instance's certificate set as a `.cert` file. | - |
+| **Import Original Certificate** | Uploads a `.cert` file exported earlier and restores it; the page reloads. | - |
+| **Reset this instance** | Stops the instance and returns every setting, key and certificate of it to factory values. Every client profile for it stops working. | - |
+| **Username and Password** table | Accounts for username and password authentication, shared by both instances, up to 32 and 2048 characters in all. The router's login account is always listed and always allowed. Usernames may not contain spaces or `@ * + \| : ? < > , . / ; [ ] \ = " & #`; passwords are 1-64 characters without `< > & "`. **Show passwords** reveals them. The first column shows whether each account is connected to the selected instance. | router login only |
+| **Interface Type** | TUN routes IP packets. TAP bridges Ethernet frames into the LAN and uses a client address pool. | TUN |
+| **Protocol** | UDP or TCP. | UDP |
+| **Port** | The port clients connect to, 1-65535. The two instances cannot share a port on the same protocol. | 1194 (instance 1), 1195 (instance 2) |
+| **Username and password authentication** | Clients must present an account from the list in addition to their certificate. | On |
+| **Username / Password Auth. Only** | Shown when the above is on. Accepts the account alone; the client certificate is not checked. | Off |
+| **TLS control channel security** | *Disable*, *TLS auth* (bi-directional, incoming 0, outgoing 1), *TLS encryption (tls-crypt)*, *TLS encryption v2 (tls-crypt-v2)*. Signs or encrypts the TLS handshake with a shared key so unknown clients are dropped before authentication; tls-crypt-v2 gives every client its own key. | Disable |
+| **Generate client key** | Shown when tls-crypt-v2 is saved and the instance runs. Generates a key for one client to paste into that client's profile as its tls-crypt-v2 block; **Copy** copies it. The router does not keep it. | - |
+| **Auth digest** | HMAC digest for the control channel. Choosing MD5 or RSA-MD4 shows a warning. | Default |
+| **VPN Subnet / Netmask** | TUN only. The private network handed to clients; netmask /16 to /29, no host bits set. Must not overlap the LAN, the other instance or the WireGuard server's /24. | 10.8.0.0 / 255.255.255.0 (instance 2: 10.16.0.0) |
+| **IPv6** | TUN only, shown when the router has IPv6. Gives clients IPv6. | Off |
+| **IPv6 NAT** | Translates clients' IPv6 addresses to the router's. Off hands them routable addresses from the IPv6 subnet. | On |
+| **IPv6 VPN Subnet / Netmask** | The IPv6 prefix for clients. | `fd00:ac68:1::/64` |
+| **Allocate from DHCP** | TAP only. The LAN's DHCP server addresses the clients; off uses the pool below. | On |
+| **Client Address Pool** | TAP with DHCP off: first and last address, inside the LAN subnet, not covering the router's address. | 192.168.1.50 - 192.168.1.55 |
+| **Local / remote endpoint addresses** | Point-to-point addresses for a single TUN client with a fixed peer. Leave both empty for the usual subnet mode. | - |
+| **IPv6 Local / remote endpoint addresses** | The IPv6 equivalent. | empty |
+| **Advertise DNS to clients** | Tells clients to use this router for DNS (and the LAN domain). Changing it also restarts the DNS server. | Off |
+| **Data ciphers** | Colon-separated list negotiated with the client, strongest first, for example `AES-256-GCM:AES-128-GCM:CHACHA20-POLY1305`. Letters, digits, colon and hyphen only. | built-in list |
+| **Log verbosity** | 0 (silent) to 6. | 3 |
+| **Manage Client-Specific Options** | Turns on the per-client table and the two switches below. Off, several clients may connect with the same certificate. | Off |
+| **Allow Client <-> Client** | Clients of this instance can reach each other. | Off |
+| **Allow only specified clients** | Only clients named in the table may connect; others are refused after authentication. | Off |
+| Client-specific table | Per client: **Common name** (the **Username** when Username / Password Auth. Only is on), **Subnet** and **Netmask** of a network that lives behind that client, **Push**. The router routes that subnet to the client. **Push = Yes** announces the subnet to the other clients, and only while Allow Client <-> Client is on. Up to 128 rows; the counter shows the byte budget (the list is held in nvram and limited to about 1 KB). | empty |
+| **Custom Configuration** | Extra OpenVPN directives appended to the server configuration, one per line, up to 4095 characters. Kept in `/jffs/openvpn`, not nvram. | empty |
+| **Connection Status** | Read-only: common name, real address, VPN address and connected-since of each client of the selected instance. | - |
+
+**The settings: WireGuard.**
+
+| Setting | What it does | Default |
+|---|---|---|
+| **Enable WireGuard server** | Starts the server now and at every boot; off disconnects every peer. | Off |
+| **Server address** | Read-only: what peers connect to. | - |
+| **Access Intranet** | Peers reach devices on the LAN. Off: peers reach only the Internet through the router. | On |
+| **Tunnel IPv4 and / or IPv6 Address** | The router's own tunnel address with prefix; add an IPv6 one after a comma if peers need IPv6. Must not overlap the LAN. | `10.6.0.1/32` |
+| **Listen Port** | UDP port peers connect to, 1-65535. | 51820 |
+| **Persistent Keepalive** | Seconds between keepalive packets a peer sends so NAT mappings stay open; 0 disables. | 25 |
+| **Push router as DNS** | Peers use this router for DNS. Changing it restarts the DNS server. | On |
+| **Enable NAT - IPv6** | Shown when the router has IPv6. Translates the peers' IPv6 addresses to the router's. | On |
+| **Pre-shared Key (Secret)** | Adds a pre-shared key to every peer. Peers must import a new configuration after a change. | Off |
+| **Public Key** | Read-only: the server's public key. | - |
+| **Private Key** / **Renew keys** | The private key is never shown. **Renew keys** marks a new key pair for Apply; every peer must then import a new configuration. | generated at first start |
+| **Peer** table | Up to ten peers: connection dot, name, address, allowed IPs, and **Edit**, **Export** and **x** (delete). | empty |
+| **Add** / **Edit** (peer editor) | **Username**: the peer's name, up to 64 characters. **Address**: the peer's tunnel address with /32 (or /128), unique among peers and different from the server's. **Allowed IPs (server side)**: what the server routes to this peer, normally its own address. **Allowed IPs (client side)**: what the peer sends through the tunnel; `0.0.0.0/0` sends everything, the LAN subnet alone sends only LAN traffic. | next free address; client side `0.0.0.0/0`. On a server that also has an IPv6 tunnel address (from the image after v3.8.0): the same host number in both families, for example `10.6.0.3/32,fd00::3/128`, and client side `0.0.0.0/0,::/0`, so the peer's IPv6 uses the tunnel too. Existing peers are never changed |
+| **Save peer** | Saves this peer at once. A running server takes it live without dropping the others; a stopped server uses it at its next start. | - |
+| **Renew keys** (peer) | New key pair for this peer; its current configuration stops working and must be exported again. | - |
+| **Export** | Shows the peer's configuration with **Download** and **QR**. Available once the server runs and the peer has keys. | - |
+| **x** (delete peer) | Deletes the peer and its keys. On a running server this restarts the server: connected peers drop for a few seconds and reconnect on their own. | - |
+| **Server status** | Live `wg show` output for the server interface, every 10 seconds while the tab is open. | - |
+
+**The settings: IPsec.**
+
+| Setting | What it does | Default |
+|---|---|---|
+| **Enable IPSec VPN Server** | Starts the server now and at every boot. Changing any IPsec setting while it runs makes connected clients reconnect (Apply asks). | Off |
+| **Server address** | Read-only: what clients connect to. | - |
+| **Pre-shared Key** | 8 to 32 characters, no spaces, no `< > & "`; typed into every IKEv1 client. **Show** reveals what you type. | - |
+| **Client will use VPN to access** | *Internet only* or *Internet and local network*. | Internet and local network |
+| **Client IP address** | The first three octets of the private network handed to clients; they get .1 to .254. Must not overlap the LAN, an OpenVPN instance, the WireGuard server or the PPTP pool. | `10.10.10` (`10.10.11` when the LAN itself is 10.10.10.x) |
+| **Dead Peer Detection** / **DPD Checking Interval** | Drops clients that stopped answering so their addresses are freed; interval 10-900 seconds. | On, 10 s |
+| **DNS Server1 / 2**, **WINS Server1 / 2** | Servers pushed to clients. Empty pushes the router. | empty |
+| **IKE / ISAKMP Port** / **NAT-T Port** | Read-only: UDP 500 and 4500, fixed on this build. | 500 / 4500 |
+| **Instant Guard** | Shown only when an Instant Guard profile from stock firmware is still saved. Its app and page are gone, but the router keeps an IPsec server running for those accounts until **Turn off and remove** is pressed and applied. | - |
+| **Username and Password** | Up to eight accounts. Usernames up to 32 characters, without spaces or `@ * + \| : ? < > , . / ; [ ] \ = " & #`; passwords 5-32 characters. **Supported IKE version**: *IKEv1 + IKEv2* or *IKEv1*. | empty |
+| **IKEv2 certificate** | **Status** (*Authenticated* / *Not Authenticated*), issued to / from / expiry, **For Windows** and **For Mobile** downloads, **Renew Certificate**. A note asks for a renewal when a network change was detected. | - |
+| **Connection Status** | Read-only: real address, status with IKE version, access time, username; Instant Guard sessions are marked. | - |
+| **System Log** | The strongSwan log: **Refresh**, **Clear** (asks), **Save** (`ipsec.log`). | - |
+
+**The settings: PPTP.**
+
+| Setting | What it does | Default |
+|---|---|---|
+| **Enable VPN Server** | Starts the PPTP server now and at every boot; off disconnects its clients. | Off |
+| **Server address** | Read-only: what clients connect to. | - |
+| **Authentication** | Fixed: MS-CHAPv2 with 128-bit MPPE required. When the stored setting still allows the older options (the factory value does), **Apply now** marks the strict setting for Apply, and any PPTP Apply saves it. | MS-CHAPv2 + MPPE-128 from the first PPTP Apply |
+| **Network Place (Samba) Support** | Announces the router as WINS server so Windows network browsing works over the tunnel; forces Broadcast Support on. | On |
+| **Broadcast Support** | Relays LAN broadcasts to connected clients. | Off |
+| **Connect to DNS Server automatically** / **DNS Server1 / 2** | On pushes the router. Off: enter one or two DNS servers to push instead. | On |
+| **Connect to WINS Server automatically** / **WINS Server1 / 2** | The same for WINS. | On |
+| **MTU / MRU** | 576 to 1492. Lower both if clients stall behind PPPoE. | 1450 / 1450 |
+| **Client IP address** | First address and last octet of the client pool, up to 30 addresses, outside the DHCP pool and away from the router's own address. A pool containing the router's LAN address is refused; overlap with the DHCP pool or a reservation is shown as a note. | - |
+| **Username and Password** | Up to 32 accounts (4096 characters in all), with the connection status of each. **Static Route** per account: a network or host behind that client, with netmask, routed through its tunnel while it is connected. | empty |
+
+**Examples.**
+
+- *Phone reaches LAN devices, Internet stays local.* WireGuard peer with client-side Allowed IPs = `192.168.50.0/24`,
+  server **Access Intranet** on. Only LAN traffic uses the tunnel.
+- *Laptop uses the home connection on public Wi-Fi.* OpenVPN instance 1 with *Internet and local network*; the laptop
+  sends all its traffic through the tunnel.
+- *A site behind a client.* OpenVPN with **Manage Client-Specific Options** on, a row with Common name `branch`,
+  Subnet `198.51.100.0`, Netmask `255.255.255.0`. The router routes 198.51.100.0/24 to the client `branch`.
+
+**Limits and gotchas.**
+
+- **Warden.** While Warden blocks countries or uses feeds, only enabled WireGuard servers' listen ports are exempt.
+  OpenVPN and IPsec users from a blocked address cannot connect; whitelist their address (4.3.1.13, section 6).
+- **UPnP** cannot map a port the router listens on for VPN (`upnp_protect_svc`, 8.2).
+- **Port clashes.** The page refuses a save that puts two listeners on one port and protocol: either OpenVPN instance,
+  the WireGuard server, and the IPsec ports 500 and 4500 (from the image after v3.8.0 the check covers all of them,
+  including switching on an instance whose saved port clashes; the message names the listener in the way). TCP
+  OpenVPN on the same number as UDP WireGuard is fine. If the WireGuard server still cannot start, the system log
+  says `WireGuard server did not start: the interface could not be brought up (is UDP port N in use?)`.
+- **Guest networks.** Clients of the router's WireGuard and OpenVPN servers can open connections into an isolated guest
+  network (v3.7.8); the server's own LAN-access setting still decides. Not into a Guest Portal network, and not while
+  that network's Kill Switch is on.
+- **OpenVPN DH.** A DH group under 2048 bits is replaced with the built-in RFC 3526 2048-bit group (v3.2.6). On the
+  3006.102.10 models certificates are issued with Easy-RSA 3 (v3.6.0).
+- **OpenVPN client-specific table** is held in nvram and limited to about 1 KB per instance. Larger setups can put
+  files in `/jffs/configs/openvpn/ccd1` (or `ccd2`); they are copied into the instance's client-config directory at
+  start.
+- **WireGuard peer saves are immediate** and separate from Apply. Saving or deleting a peer with other unsaved changes
+  on the page asks first, because the page reloads.
+- **Turning the WireGuard server on** does not happen behind your back: adding the first peer does not enable it
+  (stock did).
+- **PPTP** authentication is weak; prefer WireGuard or OpenVPN. MS-CHAPv1, MPPE-40 and *No encryption* are no longer
+  offered.
+- **IKEv2 certificate.** IKEv2 clients identify the server by the DDNS host name, or by the WAN address when DDNS is
+  off. Renew the certificate after the WAN address or the DDNS name changes; every IKEv2 client must then install the
+  new one.
+- **Renewing** any server key or certificate breaks every existing client profile of that server until it is
+  re-exported.
+
+#### 4.20.5 VPN Client
+
+**What it is.** The tunnels this router opens to other networks: five **OpenVPN** clients, five **WireGuard** clients
+and one **PPTP / L2TP** connection with up to ten saved servers. Which devices use a tunnel is decided by VPN Director,
+Policy Routing or a network binding, not on this page (an OpenVPN client can also take all traffic). The OpenVPN and
+WireGuard clients are Merlin's; the PPTP / L2TP client is ASUS's. The page and the WireGuard client watchdog are
+Reaper's.
+
+Apply restarts only the client you changed. A change to a description or a Killswitch alone does not restart the
+tunnel; the routing and Killswitch rules are re-applied instead.
+
+**How to use it: add a WireGuard client from a provider's `.conf`.**
+
+1. Open **VPN > VPN Client > WireGuard** and pick a free instance (1-5) in the strip at the top.
+2. Under **Import configuration** press **Choose file**, pick the provider's `.conf`, then **Upload**. The file is
+   checked first: a file without a valid `[Interface] PrivateKey` or `[Peer] PublicKey` is refused and nothing
+   changes. An accepted file replaces every setting of the instance, and the page reloads.
+3. Enter a **Description**, for example `provider-nl`.
+4. Check **Killswitch**: on, the devices you route here lose Internet access while the tunnel is down instead of using
+   the WAN.
+5. Switch **Enable** on and press **Apply**. The status line reads *Connected* with the tunnel and public address once
+   the first handshake arrives.
+6. Route devices to it on VPN Director (4.20.2) or Policy Routing (4.4). A WireGuard client carries nothing until a
+   rule or a network binding sends traffic to it.
+
+**How to use it: route one device through a provider's OpenVPN profile.**
+
+1. Open **VPN > VPN Client > OpenVPN** and pick an instance (1-5). Switching instance reloads the page.
+2. Under **Import .ovpn file** press **Choose file**, pick the profile, then **Upload**. The instance's settings and
+   keys are replaced; its description, routing mode and Killswitch are kept. The page names any key or certificate the
+   file did not contain; paste it under **Keys and Certificate**.
+3. If the provider uses accounts, switch **Username and password** on and enter them.
+4. Set **Redirect Internet traffic** to **VPN Director rules**, switch **Killswitch** on if wanted, switch **Enable** on
+   and press **Apply**.
+5. On VPN Director add a rule: Interface *OpenVPN N*, Local IP = the device (4.20.2).
+
+**The settings: OpenVPN client.**
+
+| Setting | What it does | Default |
+|---|---|---|
+| Instance strip | Clients 1-5 with state dot and description. Switching saves the selected instance on the router and reloads; unsaved changes on the tab are lost (it asks). | 1 |
+| **Enable** | Starts the client now and after every reboot or WAN reconnect (`vpn_clientx_eas`). | Off |
+| **Status** | *Connected* with tunnel and public address, *Connecting...*, *Connection failed* with the reason (IP/Routing conflict, SSL / TLS problem, DH parameter problem, Authentication failed), *Disconnected* or *Disabled*. | - |
+| **Description** | Up to 25 characters; shown on VPN Director and VPN Status. | `Client N` |
+| **Import .ovpn file** | See above. | - |
+| **Reset: Default** | Stops the instance and deletes all its settings, keys and certificates (asks). | - |
+| **Interface Type** | TUN routes IP traffic. TAP bridges Ethernet frames and cannot use VPN Director rules. | TUN |
+| **Protocol** | UDP or TCP. | UDP |
+| **Server** | Host name or address of the server, and its port. Required when the client is enabled. | port 1194 |
+| **Server is on the same subnet** | TAP only. Off: distinct subnets cannot be bridged, the tunnel is routed instead. | On |
+| **NAT on the tunnel** | Translates LAN addresses to the tunnel address. Off: the far side must route your LAN back. Hidden for a bridged TAP client. | On |
+| **Block inbound traffic** | On: connections coming in through the tunnel are dropped. Off: the tunnel is treated like the LAN. | On |
+| **Accept DNS configuration** | What to do with DNS servers the server pushes: *Ignore*; *Relaxed* (add them); *Strict* (use them first); *Exclusive* (devices routed through this client by VPN Director use only them). | Relaxed |
+| **Redirect Internet traffic** | *No*: only routes the server pushes. *Yes, all traffic*: every LAN device uses the tunnel. *VPN Director rules*: the rules decide (TUN only). For TAP with redirection a **Gateway** field appears. | No |
+| **Killswitch** | Shown when Redirect is not *No*. On: routed devices lose Internet access while the tunnel is down. With *Yes, all traffic* that is every device on the LAN. With Redirect *No* (or a TAP client) a saved Killswitch does nothing, for VPN Director and for Policy Routing alike (4.4.7); changing Redirect away from *No* with a Killswitch still saved asks first, because it starts to count. | Off |
+| **Username and password** / **Username** / **Password** | Account authentication; username and password up to 64 characters, required when enabled. | Off |
+| **Username / Password Auth. Only** | No client certificate is sent; the server is verified with the certificate authority only, which must be present. | Off |
+| **Keys and Certificate: Edit** | Static key (tls-auth / tls-crypt), certificate authority, client certificate, client key, CRL (optional), extra chain certificates (optional). Paste each whole `-----BEGIN ... -----END` block, up to 7999 characters. Private keys are masked until **Show private keys** is ticked. The summary lists what is present. | empty |
+| **Data ciphers** | Ciphers offered for the data channel, colon separated. | built-in list |
+| **TLS control channel security** | *Disabled*, *Bi-directional auth*, *Incoming auth (0)*, *Outgoing auth (1)*, *Encrypt channel (tls-crypt)*, *Encrypt channel v2 (tls-crypt-v2)*; uses the static key and must match the server. | Disabled |
+| **Auth digest** | HMAC digest; must match the server. | Default |
+| **Log verbosity** | 0 to 6. | 3 |
+| **Compression** | *Disabled*, *None*, *LZO*, *LZO adaptive*, *LZ4*, *LZ4-V2*, *Stub*, *Stub-V2*. Compression weakens VPN security; use it only when the server requires it. | Disabled |
+| **TLS renegotiation time** | Seconds, -1 to 32767; -1 keeps the OpenVPN default. | -1 |
+| **Connection retry attempts** | 0 to 999; 0 retries forever. | 15 |
+| **Verify server certificate name** | *No*, *Common name*, *Common name prefix*, *Subject*, with the value to match; a server whose certificate name does not match is refused. Characters OpenVPN would not accept are refused by the page. | No |
+| **Custom Configuration** | Extra OpenVPN directives, one per line, up to 4095 characters. | empty |
+| **VPN Director** | Read-only: the VPN Director rules for this client and the WAN rules. Shown when Redirect is *VPN Director rules*. | - |
+
+**The settings: WireGuard client.**
+
+| Setting | What it does | Default |
+|---|---|---|
+| Instance strip | Clients 1-5. Switching is immediate (no reload); unsaved changes on the tab are lost (it asks). | 1 |
+| **Enable** | Starts the client now and after every reboot or WAN reconnect (`wgcN_enable`). | Off |
+| **Status** | *Connected* with tunnel and public address, *No handshake yet*, *Enabled* or *Disabled*. | - |
+| **Description** | Up to 25 characters; required when enabled. | empty |
+| **Import configuration** | See above. Resets the description, NAT, firewall and Killswitch to their defaults. | - |
+| **Reset: Default** | Stops the instance and deletes all its settings (asks). | - |
+| **Enable NAT** | Translates LAN addresses to the tunnel address. Off: the far side must route your LAN back. | On |
+| **Block inbound traffic** | On: connections coming in through the tunnel are dropped. | On |
+| **Killswitch** | On: devices routed through this client lose Internet access while the tunnel is down. | Off |
+| **Private Key** | The `[Interface] PrivateKey`, 44 base64 characters ending with `=`. Never shown; the line beside it says *A key is saved (hidden)* or *No key saved*. **Show** reveals what you type. | - |
+| **MTU** | 576 to 1500; empty keeps the WireGuard default. | empty |
+| **Address** | Tunnel address(es) with prefix length, comma separated, for example `10.8.0.2/32, 2001:db8::2/128`. Required when enabled. | - |
+| **DNS Server** | DNS server addresses the tunnel provides, comma separated (addresses only). Used by VPN Director's exclusive-DNS rules for this client. | empty |
+| **Public Key** | The server's `[Peer] PublicKey`, 44 characters. | - |
+| **Pre-shared Key** | Optional, 44 characters. | - |
+| **Allowed IPs** | Destinations sent through the tunnel, comma separated with prefix length; `0.0.0.0/0` and `::/0` mean everything. Limited to 996 bytes; the counter shows the budget. | - |
+| **Endpoint** | Host name or address of the server, and its UDP port. | - |
+| **Persistent keepalive** | Seconds between keepalive packets, 1 to 65535. | 25 |
+| **VPN Director** | Read-only: the VPN Director rules for this client and the WAN rules. | - |
+
+**The settings: PPTP / L2TP client.**
+
+| Setting | What it does | Default |
+|---|---|---|
+| **Enable** | Connects now and after every reboot or WAN reconnect. Turning it off keeps the settings. | Off |
+| **Status** | *Connected*, *Connecting...*, *Connection failed* (authentication failed, IP/Routing conflict), *Disconnected*, *Disabled*. | - |
+| **VPN type** | PPTP or L2TP. | PPTP |
+| **Server**, **Username**, **Password** | The connection; required when enabled. | - |
+| **Encryption** | PPTP only. New saves use MPPE 128-bit with MS-CHAPv2. A weaker stored value is shown marked *weak encryption* and is replaced at the next save of the connection. | MPPE 128-bit |
+| **Use the server's DNS** | Uses the DNS servers the PPTP / L2TP server hands out while the tunnel is up. | On |
+| **Route all Internet traffic through the tunnel** | Off: only static routes whose interface is VPN use the tunnel (link to the Static Route List). | On |
+| **Saved servers** | Up to ten servers: description, type, server, username, password. **Use** copies a server into the connection and switches Enable on; **Edit** loads it into the form; **x** deletes it. The dot marks the one in use. | empty |
+
+**WireGuard client watchdog (Reaper).** Once a minute, while the primary WAN is connected, the router looks at every
+enabled WireGuard client that is not connected (no handshake in the last three minutes) and restarts it when one of
+these holds:
+
+- its interface is missing;
+- its server name resolves now, but no address was stored when the client started (DNS was not up yet at boot);
+- its server name now resolves to an address other than the stored one;
+- it has had no handshake for 5 minutes. The client always sends a keepalive, so a working tunnel is never that quiet.
+
+The first restart happens at once; after that the watchdog waits 1, 2, 4 and 8 minutes, then 15 minutes between
+restarts. The count starts again once the client has been connected (or the WAN down) in between. Each restart is
+logged:
+
+```
+WireGuard: client 2 is not connected: no handshake for 5 minutes - restarting it (try 3)
+```
+
+The state is kept in `/etc/wg/wd<N>` (RAM). The stock check compared the stored address with the new one in a way that
+was always true when nothing was stored, and ignored a client whose server was given as an address; such a client
+stayed down until it was switched off and on by hand (v3.7.8). The address the name resolved to is kept in
+`wgcN_ep_addr_r` and is the endpoint the tunnel uses: do not clear it by hand.
+
+**On-demand start (Reaper).** When a network on the Network page is bound to a VPN profile, choosing the profile
+switches that client on in the same save, and every network change starts a bound WireGuard client that is switched on
+but not running, once the router's clock is set. The log says
+`WireGuard: client N is used by a network and was not running - starting it`. The router never switches a client on by
+itself. On the 3006.102.10 models, a tunnel that drops and comes back also gets its DNS servers back, so a network
+bound to it keeps resolving names (v3.7.9); the 3006.102.8 base has no such recovery path.
+
+**Examples.**
+
+- *Two providers side by side.* WireGuard 1 for one provider, WireGuard 2 for another; VPN Director rules send the
+  television to 1 and a laptop to 2. Each client's Killswitch is set for its own devices.
+- *All traffic through one OpenVPN client.* Redirect Internet traffic *Yes, all traffic*, Killswitch on. Every LAN
+  device uses the tunnel and has no Internet while it is down. A VPN Director *WAN* rule (4.20.2) or a Policy Routing
+  *WAN* rule (4.4) exempts a device or a destination.
+
+**Limits and gotchas.**
+
+- **Killswitch and a switched-off client.** The Killswitch applies only while the client is enabled; a switched-off
+  client's traffic uses the WAN (4.4.7).
+- **TAP** OpenVPN clients cannot use VPN Director rules; the option is disabled and a saved value falls back to
+  *Yes, all traffic*.
+- **WireGuard Allowed IPs.** A VPN Director or Policy Routing rule that sends a device's Internet traffic to a
+  WireGuard client needs `0.0.0.0/0` (and `::/0` for IPv6) here; the diagnostics bundle's section 14d warns when a
+  rule's client has no default-covering route (4.4.9). The value is held in nvram, hence the 996-byte limit.
+- **Keys are never shown.** An empty key field with *A key is saved (hidden)* means the stored key stays; type a new one
+  only to replace it.
+- **The PPTP / L2TP Apply** no longer stops the OpenVPN clients (stock's dispatch stopped every OpenVPN client and did
+  not restart them).
+- PPTP authentication is weak and L2TP without IPsec is not encrypted; keep them only for servers that offer nothing
+  else.
+- A WireGuard or OpenVPN client kept from the stock firmware's provider list is no longer switched off at every boot
+  (v3.7.7).
+
+#### 4.20.6 Tor
+
+**What it is.** A transparent Tor proxy on the router (ASUS's feature; Tor itself is the Tor Project's daemon). The
+selected LAN devices have their TCP connections and DNS queries redirected into Tor; everything else the router would
+forward for them (UDP, ping, voice, games) is dropped so nothing leaks around Tor. Tor runs as its own user with its
+database in `/tmp`, backed up to `/jffs`, and needs a few minutes after a start before connections work. Off at factory
+(`Tor_enable` `0`). The page is Reaper's own.
+
+**How to use it: one device through Tor.**
+
+1. Open **VPN > Tor** and switch **Enable Tor** on.
+2. Set **Redirect** to **Selected devices only**.
+3. In **Devices** pick the device from the list or type its MAC address, for example `00:00:5E:00:53:21`, and press
+   **Add**.
+4. Press **Apply**. The page asks first: the device's TCP and DNS traffic goes through Tor and all its other traffic is
+   dropped. Tor and the firewall restart.
+5. Wait a few minutes for Tor to connect. The pill reads *Running* while the daemon runs, *Enabled, not running* when it
+   is enabled but not running.
+
+**The settings.**
+
+| Setting | What it does | Default |
+|---|---|---|
+| **Enable Tor** | Starts the Tor daemon and redirects the selected devices through it. | Off |
+| **SOCKS port** | Port for LAN applications that speak SOCKS5 to Tor directly. | 9050 |
+| **Transparent port** | Port the redirected TCP connections land on. | 9040 |
+| **DNS port** | Port the redirected DNS queries land on. The three ports must differ (1-65535). | 9053 |
+| **Redirect** | *Every LAN device* or *Selected devices only*. | Every LAN device (an empty list) |
+| **Devices** | The redirected devices by MAC address, with their names; **Add** and **x** (delete). About 55 devices fit; the counter shows the byte budget. | empty |
+| **Apply** / **Discard** | Saves and restarts Tor and the firewall / reloads the page. | - |
+
+**Limits and gotchas.**
+
+- **Every LAN device** means the whole main LAN depends on Tor: while Tor is down or still connecting, those devices
+  have no Internet, and nothing but TCP and DNS works for them at any time. The page asks before turning Tor on or
+  widening to the whole LAN.
+- *Selected devices only* with an empty list is refused: the router reads an empty list as every device.
+- **IPv6.** A device selected by MAC address is redirected and filtered on IPv6 as well. An entry by IPv4 address or
+  range (rc accepts them; the page keeps any present but adds MAC addresses only) does not cover that device's IPv6.
+- NTP queries (UDP 123) from the redirected devices are redirected to the router.
+- The device list is held in nvram and limited to about 1 KB (about 55 MAC addresses).
+- Tor is not a VPN client: VPN Director and Policy Routing cannot target it.
+
+### 4.21 Network: guest networks, VLANs and the Guest Portal
+
+**What it is.** The **Network** page (menu *Network*; on a model without the Wi-Fi-per-network feature the menu reads
+*Guest Network*) is the stock ASUS **Guest Network Pro** editor (`SDN.asp`, `sysdep/FUNCTION/SDN/`). Each card on it
+is one network: a Wi-Fi name (SSID) on chosen bands and AiMesh nodes, usually with its own subnet, bridge (`br5x`),
+DHCP server and resolver, and optionally a VLAN tag, a VPN client, a schedule and a guest portal. The settings live
+in the `sdn_rl`, `subnet_rl`, `vlan_rl`, `apgN_*` and `sdn_access_rl` NVRAM keys.
+
+What is stock and what is Reaper's:
+
+| Part | Owner |
+|---|---|
+| The editor, the network types, Wi-Fi, subnet, DHCP, schedule, MAC filter, bandwidth limiter, portal pages | Stock ASUS (kept by Asuswrt-Merlin) |
+| **Guest isolation** (what a guest network may reach), its DNS rules, the VPN and policy-routing exits | Reaper (`rc/reaper_guest.c`) |
+| Guest Portal DNS (Cloudflare for Families by default), the portal secret, the passcode checks | Reaper |
+| mDNS across networks (the reflector), the Default IoT Network port fix, the VPN client switched on with its network | Reaper |
+| The Wi-Fi key masked in the reconnect card after Apply; the quick connect sheet that stays open to print | Reaper |
+| The LAN-port (VLAN) assignment per AiMesh node | Stock logic, Reaper page (LAN > VLAN, 4.22.4) |
+
+All supported models have this editor. The separate stock pages **Guest Network**, **Free WiFi** and **Captive
+Portal** appear in the menu only on a model without it, so on Reaper's models the Guest Portal is a network type
+on this page (4.21.7). The Network page and the LAN pages apply at once; they do not use the Apply-and-Keep
+countdown of 2.7. Saving a network restarts Wi-Fi (`restart_wireless;restart_sdn N`), so wireless devices on every
+network drop for a moment.
+
+#### 4.21.1 The page and the network types
+
+The page shows one card per network: its name, its connection types (wired, Wi-Fi, Wi-Fi 7), tags (**VPN Client**,
+**VPN Server**, **Free WiFi**, **Message Board**, a countdown for one-time access) and an on/off switch. Clicking a
+card opens its editor; **Add a Network** opens the type list; **Quick Start** is the same list with descriptions.
+The model sets the maximum number of networks; when it is reached the page says *Your rules have reached the
+maximum*.
+
+If the router has no **main network** card yet (a router still in its factory state), a Reaper notice at the top
+points to **Set up this router** (2.3); the main network is created at the first boot after that setup.
+
+| Type | Made for | What the wizard sets by default |
+|---|---|---|
+| **Guest Network** | Visitors | Own subnet; **Set AP Isolated on**; **WiFi Scheduling on**, with *Scheduled* or *One Time Access*; no intranet access |
+| **Kid's Network** | Children's devices | Own subnet; WiFi Scheduling on; no intranet access; a *Kid's Network LED* switch on models with that LED; where the model offers it, **Portal Type** preselected to **Message Board** (choose None for no page) |
+| **IoT Network** | Cameras, speakers, plugs | **Use same subnet as main network: on**; 2.4 GHz only; optional *Sync to all AiMesh node(s)* (the Default IoT Network, 4.21.5) |
+| **VPN Network** | Devices that must leave by a VPN | Own subnet; **Access Intranet to the Main Network on**; a VPN client with its Kill Switch on |
+| **Multi-Link Operation (MLO)** | Wi-Fi 7 devices | An MLO network over at least two bands; see 2.8 |
+| **Customized Network** | Anything else | Own subnet; every switch off |
+| **Guest Portal** | Walk-in guests | Own subnet; Set AP Isolated on; a sign-in page (4.21.7). Not on BQ16 / BQ16 Pro |
+| **Gaming Network** | Game consoles | Only on models with ASUS's gaming network feature |
+| **Employee**, **Scheduled Network** | Offices | Only on ASUS business models |
+
+The type only chooses the starting values. After creation every network has the same editor; the type is shown
+as the card's title and decides which extra tabs appear (Portal for Guest Portal and, with a Message Board, Kid's
+Network).
+
+**How to use it: add a network.**
+
+1. **Network > Add a Network**, pick the type.
+2. Enter the **Network Name (SSID)** and, unless the type allows Open, the **Network Password**.
+3. Open **More Config** for the Wi-Fi band, the AiMesh nodes, the schedule, the bandwidth limiter and *Use same
+   subnet as main network*.
+4. **Apply**. Wi-Fi restarts; the new card appears. The router builds the bridge, its DHCP server and resolver, and
+   re-applies guest isolation, Gatekeeper (4.2.5) and mDNS for every network.
+5. Open the card to set what the wizard does not ask: Access Intranet, DNS, IPv6, MAC filter, VPN (4.21.2).
+
+#### 4.21.2 The network editor: every setting
+
+The editor has the tabs **Network**, **VPN**, **Clients** and, where it applies, **Portal**. The Network tab has
+three sections: **General**, **Advanced Settings** and **AiMesh**.
+
+**General**
+
+| Setting | What it does | Default |
+|---|---|---|
+| **WiFi7 Mode** | Wi-Fi 7 (802.11be) for this SSID. On requires WPA2/WPA3-Personal or WPA3 (or the Enterprise equivalents); choosing another method turns it off, with a warning | Per type |
+| **MLO Fronthaul for Clients** | Main network and Gaming Network on MLO models: offer MLO to clients on this SSID | Off |
+| **Network Name (SSID)** | The Wi-Fi name, up to 32 characters, no `"`. The QR icon beside it shows a code to join | - |
+| **WiFi Band** | 2.4 / 5 / 6 GHz combinations, or **None**: a wired-only network (no SSID; the Wi-Fi rows hide). The main network has band check boxes instead | 2.4 + 5 GHz (IoT: 2.4 GHz) |
+| **Security** | Guest and Guest Portal: **Open** or **Password**. Main network: Open, Password or **RADIUS Setting** (Enterprise) | Password (Guest Portal: Open) |
+| **Authentication Method** | WPA2-Personal, WPA/WPA2-Personal, WPA2/WPA3-Personal, WPA3-Personal. 6 GHz: WPA3-Personal only. MLO: WPA2/WPA3 or WPA3. RADIUS: WPA2-, WPA/WPA2-, WPA2/WPA3-, WPA3-Enterprise and WPA3-Enterprise 192-bit | WPA2-Personal; 6 GHz WPA3-Personal |
+| **WPA Encryption** | AES, TKIP, TKIP+AES, AES+GCMP256, Suite B (as the method allows) | AES |
+| **Network Password** | 8 to 63 characters, or 64 hex digits; no spaces | - |
+| **Server IP Address / Server Port / Connection Secret** | The RADIUS server, with Enterprise security | - |
+| **Print the WiFi quick connect sheet** | A printable page with the SSID, password and a QR code. From v3.7.8 the sheet stays open until printed | - |
+| **Bandwidth Limiter** | Download and upload caps in Mb/s for the whole network. Turning it on **turns hardware acceleration off** (the page asks first). Not offered on IoT, Default IoT, main or portal networks | Off |
+| **Access Intranet** | Which other networks this one may reach: **Main Network** and each network that has its own subnet (`SSID (VLAN n)`). See 4.21.3 | Unticked, except VPN Network (Main Network ticked) |
+| **WiFi Scheduling** | When the SSID is on. **Scheduled**: weekly time slots. **One Time Access** (Guest Network): the SSID runs for a set time (2 hours preselected, quick choices or Custom) and the card counts down | Guest and Kid's: on; others off |
+| **LED** | The network's LED effect, on models with it | Kid's / VPN / Gaming: on |
+| **Enable MAC Filter** | **Disable**, **Accept** (only listed devices may join) or **Reject** (listed devices may not), with a MAC list | Disable |
+
+The stock **AdGuard** switch is not shipped (Reaper removed the ASUS cloud DNS service); use Wallguard (4.3.3)
+instead.
+
+**Advanced Settings** (router mode; only for a network with its own subnet)
+
+| Setting | What it does | Default |
+|---|---|---|
+| **Enable the DHCP Server** | The network's own DHCP server | As the main LAN when created |
+| **LAN IP** | The router's address on this network; the network is the subnet around it. The pool is `.1`-`.254` of a new /24 | Picked by the router |
+| **Subnet Mask** | 255.255.255.0 (253 clients) down to 255.255.255.240 (13 clients) | The main LAN's |
+| **Lease time** | Seconds, 120 to 604800 | The main LAN's when created |
+| **Manually Assigned IP around the DHCP list** | Reservations for this network: MAC, address inside the pool, optional DNS server and host name (the device's DNS name on this network) | Empty |
+| **VLAN ID** | The 802.1Q tag of the network, 3 to 4093. **Assign** opens the VLAN profiles (4.22.4) | Picked by the router |
+| **Hide SSID** | The SSID is not broadcast; devices must enter it by hand | Off |
+| **DNS Server** | **Default** (the router's resolver for this network) or **Assign**: a provider from the list or two addresses. See 4.21.6 | Copied from the main LAN's *Handed to clients* servers (4.22.2) when the network is created; empty = Default |
+| **Set AP Isolated** | Wi-Fi devices on this SSID cannot reach each other. Also keeps the network out of the mDNS reflector (4.21.8) | Guest and Guest Portal: on |
+| **IPv6** | IPv6 for this network: **Auto Configuration Setting** *Auto* (SLAAC) or *Stateful* (DHCPv6), the pool's first and last host part (up to 4 hex digits), up to three IPv6 DNS servers. Reaper keeps these on screen for a wired-only network (WiFi Band None), where stock hid them | Off |
+| **Smart Connect Rule** | Opens the Smart Connect page, on models with band steering | - |
+
+**AiMesh**: the router and each node, with a tick for the nodes that broadcast this SSID and the bands each can
+carry. A node whose bands are full for SSIDs cannot take another network; older nodes cannot sync every band.
+
+**VPN tab** (router mode, not for a network on the main subnet): **VPN** on/off; a list of **VPN Client** profiles
+(`OVPN1..5`, `WG1..5`) and, if any, the router's own **VPN Server** profiles; **VPN Client Kill Switch**.
+See 4.21.4.
+
+**Clients tab**: the devices online on this network, *All list*, *Wired* or *Wireless*.
+
+**Portal tab**: 4.21.7.
+
+**Delete** (the bin icon, or the button at the bottom) removes the network.
+
+#### 4.21.3 What a guest network may reach (guest isolation)
+
+Reaper's rule: **a guest or Guest Portal network never reaches devices on non-guest networks or the router's own
+features.** It reaches the internet (or its VPN client) and the router only for DHCP and DNS. That holds on every
+path, including while its VPN tunnel is down: there is no fallback onto the main LAN.
+
+Which networks are isolated:
+
+| Network | Isolated by Reaper |
+|---|---|
+| A network with its own subnet and **Main Network not ticked** in Access Intranet (Guest, Kid's, Customized, an IoT network with its own subnet, a VLAN-only network from 4.22.4) | **Yes** |
+| Two such networks **ticked in each other's** Access Intranet list | **Yes, both**: their devices reach each other, and nothing else changes for either (below) |
+| A **Guest Portal** network (and a Kid's Network with a **Message Board**), whatever Access Intranet says | **Yes** |
+| A network with its own subnet and **Main Network ticked** in Access Intranet | No: treated as part of your own network |
+| A network with **Use same subnet as main network** on (the IoT wizard's default, the Default IoT Network) | No: its devices are on the main LAN |
+| The main network | Never |
+
+What an isolated network gets, IPv4 and IPv6 (rules `REAPER_GUI` for the router, `REAPER_GUF` for forwarding;
+deny-only, so the stock rules, Gatekeeper and the firewall still decide what they let through):
+
+| Direction | Allowed | Dropped |
+|---|---|---|
+| To the router | DHCP (UDP 67 / 547), DNS (port 53) to the network's own gateway address, IPv6 neighbour discovery, replies to connections the router started, the redirects the router itself made (Gatekeeper's waiting room, DNS Director), AiMesh nodes; a portal also its sign-in ports | Everything else on every router address: the web interface, SSH, ping, NTP, mDNS, the encrypted DNS server |
+| Out through the router | The WAN; the network's bound VPN client; a VPN client that VPN Director, an OpenVPN *redirect all* client or a Policy Routing rule sends it to (4.21.4); DNS queries DNS Director redirected (port 53 only) | The main LAN, every other guest network, the router's VPN clients it is not routed to |
+| Into the network | Replies; port forwards from the WAN; connections from clients of the router's **own** WireGuard / OpenVPN server (the server's own access setting still decides) | Everything from the main LAN and from other networks |
+
+Consequences an owner meets:
+
+- **A printer, NAS or Chromecast on the main LAN is unreachable** from an isolated network. Tick **Main Network** in
+  Access Intranet (and accept that the network is then not isolated), or put the devices on the same network.
+- **A DNS server on the main LAN cannot be set as the network's DNS Server** (4.21.6): the guests cannot reach it.
+  Use DNS Director's row for the network instead (4.22.2); a redirected query on port 53 passes.
+- **Linking two guest networks (from the image after v3.8.0).** Ticking another network (not Main Network) in
+  Access Intranet links exactly those two: a device on either can open connections to a device on the other. Both
+  stay isolated from the main LAN and from the router's own services, keep their own DNS and VPN rules, and stay
+  out of mDNS relaying. A link to a network that itself has Main Network ticked is not honoured (that network holds
+  your own devices). Before this, any tick took both networks out of guest isolation altogether: they got the
+  router's pages and main-LAN names back. If you relied on that, tick **Main Network** for the network instead.
+- **A Guest Portal with Main Network ticked** reaches the **main LAN only**: never another guest network, never
+  the router, and nothing on the main LAN can open a connection into the portal. A portal ticked together with
+  any other network gets nothing from that tick (from the image after v3.8.0; before, it opened the main LAN to
+  the portal's guests).
+- **Set AP Isolated** is a different control: it stops Wi-Fi devices on the same SSID reaching each other. Isolation
+  between networks works without it.
+- Saving any network, a firewall restart and every VPN Director change rebuild the rules; existing connections from
+  the network are dropped so that they meet the new rules. A rule the kernel refuses is logged as
+  `guest isolation: N rule(s) refused`. The generated script is `/tmp/rguest/apply.sh`.
+
+Checking it over SSH:
+
+```
+iptables -nvL REAPER_GUF | head -40     # per-network forward rules
+iptables -nvL REAPER_GUI | head -40     # per-network rules to the router
+grep '^#' /tmp/rguest/apply.sh          # one comment line per isolated network and its exits
+```
+
+#### 4.21.4 A network that uses a VPN
+
+**Binding a network to a VPN client** (VPN tab): every device on the network leaves by that client. The clients
+are defined on the VPN pages (4.20 VPN); the list shows `OVPNn` and `WGn` profiles. Reaper behaviour:
+
+- **Choosing a client switches it on** with the same save (v3.7.8). A WireGuard client is started when the network
+  is applied; taking the binding away never switches a client off.
+- **The Kill Switch starts on** for a new binding (Reaper; a saved network keeps its own setting). On: the network
+  leaves **only** by the tunnel, IPv4 and IPv6; while the tunnel is down it has no internet. Off: it leaves by the
+  tunnel while it is up and by the WAN while it is down. **Neither** falls back onto the main LAN.
+- IPv6 of a bound network goes into the tunnel (v3.7.9), as does its DNS: a bound network uses the tunnel's DNS
+  servers, and they are rebuilt when a WireGuard tunnel reconnects by itself.
+- The Kill Switch can only be switched on with a VPN **client** selected; with a VPN Server profile the page refuses.
+- A VPN Network (wizard) has **Access Intranet to Main Network ticked**, so Reaper does not isolate it (4.21.3).
+  Untick it for a VPN network guests use.
+
+**Routing a network into a VPN without binding it (v3.8.0).** A guest network that VPN Director (4.20 VPN) or an
+OpenVPN client set to *redirect all* traffic sends into a tunnel reaches the internet through it. Reaper reads, at
+every firewall build and network change:
+
+- each enabled VPN Director rule whose target is `OVPN1..5` (only while that client is in VPN Director mode) or
+  `WGC1..5`, and whose source is empty / `0.0.0.0` or overlaps the network's IPv4 subnet; the exit keeps the rule's
+  own source and destination;
+- each OpenVPN client with *redirect all* (`vpn_clientN_rgw` `1`);
+- Policy Routing rules (4.4) that send the network's devices to a VPN client.
+
+Not on a Guest Portal network, and not on a network whose Kill Switch is on (it keeps its bound client only).
+Changing VPN Director's rules re-applies isolation at once. IPv4 only, as VPN Director is.
+
+**How to use it: a network that leaves by WireGuard.**
+
+1. Set up and test the WireGuard client (4.20 VPN).
+2. **Network > Add a Network > VPN Network** (or open an existing network, **VPN** tab).
+3. Switch **VPN** on, pick `WGn`, leave **VPN Client Kill Switch** on. For a guest network, untick **Main Network**
+   under Access Intranet.
+4. **Apply**. The client starts if it was off.
+5. Check from a device on the network that its public address is the VPN's.
+
+**Example: one guest VLAN through OpenVPN by VPN Director.** Guest network `198.51.100.0/24`, OpenVPN client 1 in
+VPN Director mode, rule *enabled, source `198.51.100.0/24`, target OVPN1*. The guest network leaves by `tun11`; the
+main LAN stays closed to it. With the network's own Kill Switch on, only a binding counts and the rule is ignored by
+the isolation layer.
+
+#### 4.21.5 IoT networks and the Default IoT Network
+
+The IoT wizard starts with **Use same subnet as main network on**: its devices get main-LAN addresses and **can
+reach your computers**. That suits smart-home devices an app on your phone must find. To fence them off, switch it
+**off**: the network gets its own subnet and Reaper isolates it.
+
+**Sync to all AiMesh node(s)** (IoT wizard, AiMesh models) makes the network the **Default IoT Network**
+(`sdn_name` `LEGACY`): one 2.4 + 5 GHz SSID on every node, with no AiMesh section in its editor. Only one may exist.
+Its LAN ports are assigned on LAN > VLAN (Access mode, 4.22.4). **From v3.8.0, editing the Default IoT Network on
+this page keeps its per-node LAN-port rows**; earlier an edit reset them to *All (Default)*.
+
+**How to use it: an IoT network that cannot reach the PCs.**
+
+1. **Add a Network > IoT Network**. Name it, set a password.
+2. Switch **Use same subnet as main network** off. Leave the band at 2.4 GHz unless the devices support 5 GHz.
+3. **Apply**. Open the card: leave **Access Intranet** unticked. Optionally switch **Set AP Isolated** on so the
+   devices cannot reach each other either.
+4. Join the devices. They reach the internet and nothing on the main LAN; the phone app controls them through the
+   vendor's cloud. For a device the phone must reach directly (casting, a local hub), use the main network instead.
+5. Optionally give the network a Wallguard profile (4.3.3.5).
+
+#### 4.21.6 DNS for a network
+
+Each network with its own subnet has its own resolver (a dnsmasq instance on its gateway address) with Dreadwatch,
+Wallguard and the encrypted-DNS block in it, as on the main LAN.
+
+| Situation | What devices use for DNS |
+|---|---|
+| **DNS Server** = Default | The network's gateway (its resolver). Encrypted DNS is offered by DHCP option 162 only where the network may reach the router for it: not on an isolated network and not on a portal (4.3.4.5) |
+| **DNS Server** = assigned addresses | Those addresses are handed out by DHCP. On an isolated network an address on the main LAN is unreachable (4.21.3) |
+| Network bound to a VPN client | The tunnel's DNS |
+| **Guest Portal** network | Always the network's own resolver: a hand-set DNS server on the device is redirected to it and DNS-over-TLS (port 853) is dropped. The **DNS Server** setting picks the resolver's upstream (below) |
+| DNS Director row for the network (LAN > DNS) | Forced to the chosen resolver (4.22.2) |
+
+**Names.** The resolver of an isolated network or a portal does not read the router's host list
+(`no-hosts`): guests cannot look up the main LAN's reservation names. A network with Main Network ticked in Access Intranet keeps them.
+Reverse names between the main LAN and VLANs: 4.14b.
+
+**Guest Portal upstream (Reaper).** On a portal network without a VPN binding, the DNS Server setting decides where
+guest lookups go after the router's own filters:
+
+| DNS Server | Upstream |
+|---|---|
+| Empty (Default) | **Cloudflare for Families** (`1.1.1.3`, `1.0.0.3`) over DNS-over-TLS: malware and adult content blocked |
+| Every address a known provider (Cloudflare, Quad9, Google, CleanBrowsing, Control D, CIRA Canadian Shield) | Those providers over DNS-over-TLS |
+| At least one other address (for example your own resolver) | Plain DNS to the address(es) set |
+
+The certificate is checked once the router's clock is set. A portal bound to a VPN uses the tunnel's DNS. The
+editor shows this rule under the DNS Server row of a portal network.
+
+#### 4.21.7 The Guest Portal
+
+**What it is.** A network whose devices see a sign-in page before they get the internet (the stock captive portal,
+`chilli`). Reaper's models offer the **Free WiFi** portal type and, on the Kid's Network, the **Message Board**.
+**BQ16 and BQ16 Pro have no captive portal**: the type is not offered. The wizard type is shown only in router (or
+WISP) mode and only when the model reports portal support (`captivePortal` and `cp_freewifi`).
+
+**Portal tab settings (Free WiFi)**
+
+| Setting | What it does | Default |
+|---|---|---|
+| **Portal Type** | **None** (no portal) or **Free WiFi**. Each portal type serves one network; a type in use is marked *(Used)*, and only one type can be active at a time | Free WiFi (Guest Portal) |
+| **Brand Name** | The title on the sign-in page, up to 40 characters | - |
+| Background image | Click the preview to upload JPG, PNG or SVG, up to 10 MB (2 MB after compression) | Stock image |
+| **Connection Timeout** (minutes) | The guest's session time; when it expires, the connection is cut and the guest signs in again | 60 |
+| **Landing Page (Redirect to your website)** | Where the guest is sent after signing in, up to 256 characters. Empty: the success page | Empty |
+| **Add your own Passcode** / **Passcode** | Guests must enter this code. Up to **15** characters, printable ASCII, no spaces, no `<` or `>` | Off |
+| **Add your own Terms of Service** / **Terms of Service** | A tick box the guest must accept, with your text (up to 5120 characters; a template is filled in) | On |
+
+The live preview beside the settings shows the page as a phone will.
+
+**Message Board** (Kid's Network, where offered): **Description** (up to 80 characters) and a background image,
+shown on a page before the device gets the internet. A network with a Message Board is treated as a portal by guest
+isolation.
+
+**What Reaper adds and changes**
+
+- The passcode can be set **in the wizard**, not only on the Portal tab afterwards (v3.7.6), and a passcode longer
+  than 15 characters is refused at Apply (longer ones never signed in).
+- **The passcode is matched by the portal network's subnet (v3.8.0)**, so a correct passcode and the terms page are
+  accepted on every subnet size.
+- Each router makes its own **portal secret** the first time a portal starts (stock used one public value on every
+  router); it is never shown (8.2).
+- The portal network is **exempt from Gatekeeper** (4.2.5): its sign-in page is its gate.
+- Isolation: guests reach the internet and the router's DHCP, DNS and sign-in ports only; **IPv6 gets nothing** on
+  a portal (the portal is IPv4-only); Access Intranet opens the main LAN only (4.21.3). VPN Director routing does
+  not apply to a portal; a VPN binding does.
+- Guest DNS: 4.21.6.
+- The Traffic Analyzer's Live tab has a Guest Portal panel with each guest's speed and session time (4.7).
+- The portal starts and stops with its network, and a saved change is applied even on a router with AiMesh, where
+  stock built nothing until a reboot (v3.7.7).
+
+**How to use it: a Guest Portal with a passcode.**
+
+1. **Network > Add a Network > Guest Portal**.
+2. **Network Name**: for example `Cafe-Guest`. Security stays **Open**: the portal is the gate.
+3. **Portal Type**: Free WiFi. Enter the **Brand Name**; upload a background if wanted.
+4. Switch **Add your own Passcode** on and enter the code (15 characters at most).
+5. Keep or edit the **Terms of Service**; set **Connection Timeout** (for example 120 minutes).
+6. **Apply**. Join from a phone: the *Sign in to network* sheet opens; accept the terms, enter the code.
+7. Optional: the network's **DNS Server** picks the guests' filter (4.21.6); a Wallguard profile adds ad blocking.
+
+**Limits and gotchas**
+
+- One Free WiFi network per router.
+- The portal is IPv4 only; guests' devices get no IPv6 on a portal network.
+- A portal guest cannot use its own DNS-over-TLS; a browser with DNS-over-HTTPS to an outside provider still works
+  through the internet (the encrypted-DNS block of 4.3.4.6 covers that).
+
+#### 4.21.8 mDNS across networks
+
+Casting, AirPlay and printer discovery use mDNS, which does not cross networks by itself. With **mDNS across
+networks** on (Administration > Tweaks, `reaper_mdns_reflect` `1`, the default; 8.2), the router relays mDNS between:
+
+- the main network, and
+- every network with **Main Network** ticked in Access Intranet (its devices are main-network devices on another
+  SSID),
+
+leaving out any network with **Set AP Isolated** on (the main network too, if a radio has it on), every isolated
+network and every Guest Portal. On isolated networks and portals the router no longer answers mDNS at all. A
+relayed announcement never goes back to the network it came from. The system log lists the left-out bridges with
+the reason (for example `br54 AP isolated, br55 no intranet access`).
+
+To cast from a guest network to a TV on the main LAN, the guest network needs Access Intranet to the Main Network
+and AP isolation off, which means it is no longer isolated: decide which matters more.
+
+#### 4.21.9 How the other features treat guest networks
+
+| Feature | On guest networks | See |
+|---|---|---|
+| Gatekeeper | Enforced on every network except a Guest Portal | 4.2.5 |
+| Wallguard | A network can have its own profile; a device rule beats it | 4.3.3.5 |
+| Dreadwatch, Warden | Every network's resolver and the shared firewall chains | 4.3.1, 4.3.2 |
+| Encrypted DNS server | Answers on each guest/VLAN address; not offered by DHCP on isolated networks or portals | 4.3.4.5 |
+| DNS Director | One row per network on LAN > DNS; the global mode does not cover a network whose row is *No redirection* | 4.22.2 |
+| Policy Routing / VPN Director | Exits honoured by isolation (4.21.4) | 4.4, 4.20 VPN |
+| Device names | Hostnames from the network's DHCP; reverse names between the main LAN and VLANs | 4.8.1, 4.14b |
+
+#### 4.21.10 Examples
+
+**A guest Wi-Fi for visitors.**
+
+1. **Add a Network > Guest Network**. Name `Home-Guest`, Security **Password**, a password you can read out.
+2. **WiFi Scheduling**: on, **One Time Access**, 4 hours, for an evening; or **Scheduled** for regular hours.
+3. **Apply**. **Print the WiFi quick connect sheet** gives visitors the QR code.
+4. Leave Access Intranet unticked and Set AP Isolated on: visitors reach the internet and nothing else.
+
+**A kids' network with a schedule.**
+
+1. **Add a Network > Kid's Network**. Name, password.
+2. **WiFi Scheduling** is on: set the weekly hours (for example school days 07:00 to 21:00).
+3. **Apply**. Outside those hours the SSID is off.
+4. For content filtering: Wallguard profile with safe search (4.3.3.6), or DNS Director's row for the network set to
+   a family filter (4.22.2).
+5. Note: the network is isolated; a printer on the main LAN is not reachable unless you tick Main Network.
+
+**A wired-only VLAN for a switch port.** Add a **Customized Network**, **WiFi Band: None**, then assign the LAN port
+on LAN > VLAN in Access mode (4.22.4). The IPv6 switch stays available on a wired-only network.
+
+#### 4.21.11 Limits and gotchas
+
+- **IoT wizard default.** *Use same subnet as main network* is on; such an IoT network is not separated from your
+  PCs (4.21.5).
+- **VPN Network default.** Access Intranet to the main network is ticked; the network is not isolated (4.21.4).
+- **Bandwidth Limiter** turns the router's hardware acceleration off (the page asks first); flows then run on the
+  CPU (4.9 shows the split).
+- **A new network copies the main LAN's DHCP DNS servers** (LAN > DNS > *Handed to clients*) into its own DNS Server
+  setting. If those name a resolver on the main LAN, an isolated network cannot reach it: set the network's DNS
+  Server back to Default.
+- **Kid's Network with a Message Board** is a portal network for isolation: no IPv6, no Access Intranet beyond the
+  main LAN (4.21.7).
+- **Wi-Fi restarts on every save** on this page; wireless devices on all networks reconnect.
+- **A network on the main subnet** has no Advanced address settings, no VPN tab and no Access Intranet: it is the
+  main LAN on another SSID.
+- **MLO**: one active MLO network at most (the model's limit), at least two bands; power-cycle after switching MLO
+  (2.8).
+- **6 GHz** requires WPA3-Personal; a network on 6 GHz with an older device must also offer 2.4 or 5 GHz.
+- **IPv4 only** for VPN Director exits and for the portal.
+- The LAN page refuses a main LAN address that overlaps a guest network's subnet (4.22.1).
+
+### 4.22 LAN
+
+**What it is.** Four Reaper pages replace the stock LAN pages, saving the same NVRAM keys: **LAN** (`Reaper_LAN.asp`:
+address, DHCP server, switch, multicast), **DNS** (`Reaper_DNS.asp`), **IPTV** (`Reaper_IPTV.asp`) and **VLAN**
+(`Reaper_VLAN.asp`). Each page posts only the settings you changed, writes nothing on load, and restarts only what
+the change needs; a change that drops connections asks first. A tab that did not load says so, and Apply then leaves
+its settings unchanged. The stock **Multi-subnet** page (`Advanced_MultiSubnet_Content.asp`) appears only on models
+with ASUS's tag-based VLAN feature; none of Reaper's models has it.
+
+#### 4.22.1 LAN IP and DHCP server
+
+**LAN** has four tabs: **Addressing**, **DHCP Server**, **Switch Control** and **Multicast** (a tab is hidden where
+stock hid the page: Multicast in access point mode, for example).
+
+**Addressing**
+
+| Setting | What it does | Default |
+|---|---|---|
+| **Host Name** | The router's name on the LAN (letters, digits, `-` and `_`, at least two characters, not starting with `-` or `_`). Devices reach it as *name* or *name.domain* | - |
+| **Router's Domain Name** | Optional. Appended to device names handed out by DHCP, e.g. `laptop.home.arpa`. One field (stock had two) | Empty |
+| **Get LAN IP Automatically?** | Access point mode only: on takes the address from the main router; off uses the fields below | - |
+| **IP Address** | The router's own LAN address. Changing it moves every device to the new subnet | `192.168.50.1` |
+| **Subnet Mask** | /1 to /30 | `255.255.255.0` |
+| **Default Gateway**, **Connect to DNS Server automatically**, **DNS Server1/2** | Access point mode only: the main router's address and DNS | - |
+
+A new LAN address recomputes the DHCP pool (network + 2 to broadcast - 1) and the page shows where it moves. Apply
+then lists what still points at the old subnet (reservations, port forwards, static routes, DMZ, VPN Fusion rules),
+asks, restarts the network (about 35 seconds without connection) and reopens the page at the new address. Changing
+the host name or domain restarts only the services that use them (and regenerates the router's self-signed
+certificate). The page refuses an address that overlaps the WAN (both WANs with Dual WAN) or any guest network's
+subnet.
+
+**DHCP Server**
+
+| Setting | What it does | Default |
+|---|---|---|
+| **Enable the DHCP Server** | The main LAN's DHCP server. Off: devices get no address when their lease ends (the page warns) | On |
+| **IP Pool Starting / Ending Address** | The range handed out. Must be inside the LAN subnet; a reversed pair is swapped; a pool outside the subnet's block is offered a correction | `192.168.50.2` - `192.168.50.254` |
+| **Lease time** | Seconds, 120 to 604800 | `86400` (24 hours) |
+| **Default Gateway** | Optional gateway handed to devices. Empty: the router | Empty |
+| **Log DHCP and RA queries** | Off keeps every lease and router advertisement out of the system log (stock *Hide DHCP/RA queries*, shown the plain way round) | On (`dhcpd_querylog` `1`) |
+
+The DNS and WINS servers handed to devices are on LAN > DNS (4.22.2). Changes here restart the DHCP / DNS service
+only, not the network.
+
+**Manual Assignment (DHCP reservations)**
+
+| Setting | What it does | Default |
+|---|---|---|
+| **Enable Manual Assignment** | Reservations take effect only while this is on. Adding a reservation turns it (and the DHCP server) on | Off (`dhcp_static_x` `0`) |
+| **MAC address** | The device. The field lists this LAN's connected devices that have no reservation yet (name and address); picking one fills the address | - |
+| **IP Address** | Inside the LAN subnet; not the router's own address; not already reserved | - |
+| **DNS (optional)** | A DNS server handed to this device only, IPv4 | Empty |
+| **DNS name** | The device's **DNS name**: other devices reach it as *name* and *name.domain*, and Wallguard's `$client=` can use it. It is **not** the device's Name (4.8.1) and is never shown as one; the **Name** column beside it shows the Devices page name, read-only | Empty |
+
+Up to **64** reservations; the counter shows the use. **Edit** puts a row back into the add fields; **Delete** asks
+first when a VPN Fusion policy uses the address. **Export CSV** saves `dhcp_manual_list.csv`; **Import CSV** replaces
+the whole list (columns MAC, IP, DNS, hostname; the first line is a header; every row is checked, and the import
+stops at the first bad line with its number). The Devices page's **Pin IP** (4.8.2) writes into the same list.
+
+**How to use it: a DHCP reservation.**
+
+1. **LAN > LAN > DHCP Server**. In **Manual Assignment**, open the MAC list and pick the device (or type its MAC).
+2. Enter the address, for example `192.168.50.20`. Prefer an address outside the pool; shrink the pool if needed.
+3. Optional: a **DNS name** such as `nas`; the device is then `nas` and `nas.<domain>` for every device on the main LAN.
+4. **Add**, then **Apply**. The device moves to the address at its next lease renewal (or reconnect).
+5. To change what the pages *show* for it, rename it on the Devices page instead (4.8.1).
+
+**Switch Control**
+
+| Setting | What it does | Default |
+|---|---|---|
+| **Jumbo Frame** | Frames up to 9000 bytes on the LAN ports. Every device on the path must support them. Reboots the router. Hidden on models without it | Off |
+| **Spanning Tree Protocol** | Stops loops when switches are cabled in a ring. Restarts the network for about 35 seconds | On (`lan_stp` `1`) |
+| **Bonding / Link aggregation** | 802.3ad for one wired client on two ports (the page names them: LAN1 + LAN2 on RT-BE96U / BE88U / BE86U; a port pair choice on the GT-BE98 family; LAN4 + LAN5 on BQ16). Reboots | Off |
+
+Bonding is refused, with the reason, while one of its ports is the Dual WAN LAN port, the IPTV set-top box port or
+carries a guest-network VLAN, or while automatic WAN port detection is on (WAN Ports, 4.19).
+
+**Multicast**
+
+| Setting | What it does | Default |
+|---|---|---|
+| **Enable multicast routing** | The IGMP proxy, so LAN devices can join multicast streams from the WAN (IPTV) | Off |
+| **Default IGMP version** | IGMP v1, v2 or v3 (shown with multicast routing on) | v3 |
+| **Fast leave** | Stop a stream as soon as the last device leaves it | Off |
+| **Enable efficient multicast forwarding (IGMP Snooping)** | Send multicast only to the Wi-Fi clients that asked for it | Off on the wired bridge (8.3) |
+| **UDP Proxy (Udpxy)** | Port 1024 to 65535: relays multicast streams to devices as HTTP. 0 or empty: off | `0` |
+
+An ISP profile on the IPTV page can fix some of these; the page then hides them and says so. With an IPTV set-top
+box port in use, multicast routing is locked off (a hardware limit of the platform).
+
+**Examples.** Renumber the LAN to `192.168.60.1/24`: set the address, Apply, read the list of rules still on the old
+subnet, confirm; reconnect devices that kept a fixed address. Reserve a printer at `192.168.50.30` with DNS name
+`printer`.
+
+**Limits and gotchas**
+
+- A reservation outside the LAN subnet does nothing; the Devices page's Network Ledger flags it (4.8.3).
+- The reservation list is limited by NVRAM size; the counter and the ledger warn.
+- A device with a private (randomized) MAC needs that feature off for this network before a reservation sticks.
+- Guest networks have their own pools and reservations on the Network page (4.21.2).
+
+#### 4.22.2 DNS
+
+**DNS** has three tabs, by direction: **Router upstream** (what the router asks), **Handed to clients** (what DHCP
+gives devices) and **DNS Director** (forced redirection). DNS changes restart DNS only, never the internet
+connection. The status line shows *DoT* or *Plain DNS*, and DNS Director's mode when it is on. The encrypted DNS
+server for devices and the blocking of DNS that goes around the router are on Bastion > Encrypted DNS (4.3.4).
+
+**Router upstream: WAN DNS Setting** (one block per WAN; both with Dual WAN)
+
+| Setting | What it does | Default |
+|---|---|---|
+| **Connect to DNS Server automatically** | Use the servers the ISP gives the WAN; the servers in use are shown beside it | On |
+| **Preset** | Fills the two fields from a provider list | - |
+| **DNS Server1 / DNS Server2** | Your own upstream servers (automatic off). A static WAN gets none from the ISP | Empty |
+
+**Router upstream: Resolver**
+
+| Setting | What it does | Default |
+|---|---|---|
+| **Forward local domain queries to upstream DNS** | Off answers names in the LAN domain locally and never asks the ISP about them | Off |
+| **Enable DNS Rebind protection** | Drops answers that point public names at private addresses | Off |
+| **Enable DNSSEC support** / **Validate unsigned DNSSEC replies** | Validate signed answers; a failed answer is dropped | Off / on |
+| **Prevent client auto DoH** | *Auto* and *Yes* tell browsers to keep using the router's DNS instead of their own DNS-over-HTTPS | Auto |
+
+**Router upstream: DNS-over-TLS** (the router's own upstream queries)
+
+| Setting | What it does | Default |
+|---|---|---|
+| **Encrypt upstream DNS** | Queries go only to the servers in the list; the WAN DNS servers are not used while this is on | Off (`dnspriv_enable` `0`) |
+| **DNS-over-TLS Profile** | **Strict** refuses a server whose certificate does not match; **Opportunistic** falls back to plain DNS | Strict |
+| Server list | **IP Address**, **TLS Port** (empty = 853), **TLS Hostname**, **SPKI Fingerprint** (optional pin); **Preset servers** fills a row. At least one server when on | Empty |
+
+**Handed to clients: DNS and WINS Server Setting** (main LAN DHCP)
+
+| Setting | What it does | Default |
+|---|---|---|
+| **DNS Server 1 / 2** | What the DHCP server tells devices. Empty: the router itself, the usual choice. A device given another server bypasses the router's filtering | Empty |
+| **Advertise router's IP in addition to user-specified DNS** | Also hand out the router after the servers above | On |
+| **IPv6 DNS Server** | Handed out over DHCPv6 (shown with IPv6 on) | Empty |
+| **WINS Server** | For old Windows name resolution | Empty |
+
+With either DNS Server field set, the router does not offer its encrypted DNS by DHCP option 162 (4.3.4.5).
+
+**DNS Director**
+
+Forces devices' plain DNS (port 53) to a chosen resolver, whatever server the device is set to use (stock Merlin
+feature; Reaper's page validates the custom servers, allows one rule per MAC, and writes the guest-network column into
+a fresh read of `sdn_rl` so that a save never undoes a Network page change).
+
+| Setting | What it does | Default |
+|---|---|---|
+| **Enable DNS Director** | The redirection on or off | Off (`dnsfilter_enable_x` `0`) |
+| **Redirect to** (global) | The mode for every device without a rule: *No redirection*; **Router** (the router's own DNS: Dreadwatch, Wallguard and the encrypted DNS features rely on it); **User defined 1-3**; *Unfiltered*: Cloudflare; *Security filters*: CleanBrowsing Security, Comodo Secure DNS, OpenDNS Home, Quad9, Yandex Safe; *Family filters*: CleanBrowsing Adult, CleanBrowsing Family, Cloudflare Family, OpenDNS Family, Yandex Family | No redirection (`dnsfilter_mode` `0`) |
+| **User defined 1 / 2 / 3** | Your own resolver addresses, IPv4 and (on HND models) IPv6. A mode that names an empty one is refused | Empty |
+| **Per-device rules** | Device (picker of connected devices), MAC, mode. A rule overrides the global mode for that device. Up to 64 | Empty |
+| **Guest Network Pro profiles** | One row per network with its own subnet, with its own mode | *No redirection* |
+
+**Order:** a device rule, then the device's network row, then the global mode. A network row set to **No
+redirection** exempts that network from the global mode: with the global mode on *Router*, a guest network is
+covered only when its own row says *Router* (or another resolver). On guest networks a redirect to a resolver on the
+main LAN passes guest isolation on port 53 only; it does not apply on a Guest Portal or with the network's Kill Switch
+on (4.21.3).
+
+**How to use it: DNS Director per device.**
+
+1. **LAN > DNS > DNS Director**, switch **Enable DNS Director** on.
+2. Global **Redirect to**: **Router**, so every device's plain DNS reaches the router's filters.
+3. Under **Per-device rules**, pick a device (for example a lab VM that must use `192.0.2.53`): enter
+   `192.0.2.53` as **User defined 1** above, then add the device's rule with mode *User defined 1*.
+4. A device that must keep its own provider: rule *No redirection*.
+5. Under **Guest Network Pro profiles**, set each guest network's row (for example *Router*, or *CleanBrowsing
+   Family* for the kids' network).
+6. **Apply**. Only DNS restarts.
+
+**Limits and gotchas**
+
+- DNS Director redirects plain DNS only. DNS-over-TLS / QUIC / HTTPS to an outside provider goes around it; the
+  Encrypted DNS block covers that (4.3.4.6).
+- A device sent elsewhere by DNS Director is not filtered by Dreadwatch or Wallguard and is refused by the router's
+  encrypted DNS server (4.3.4.5).
+- New guest networks start with their row on *No redirection*: set it when the global mode should cover them.
+
+#### 4.22.3 IPTV
+
+**What it is.** IPTV and VoIP over the internet line: an ISP profile, or the LAN port a set-top box (STB) uses, and
+the VLAN tags (stock function on a Reaper page; the multicast settings moved to LAN > Multicast, 4.22.1).
+
+| Setting | What it does | Default |
+|---|---|---|
+| **Select ISP Profile** | **None** (no IPTV tagging), a provider's profile (sets the VLANs and ports), or **Manual** (enter the VLAN IDs your provider gave you). A saved profile this firmware does not list is shown as Manual and kept unless changed | None (`switch_wantag` `none`) |
+| **Choose IPTV STB Port** | With profile None: a LAN port bridged straight to the WAN, untagged, for a set-top box | None |
+| **Internet** VID / PRIO | Manual: the VLAN ID (2 to 4094) and priority (0 to 7) for internet traffic. A wrong ID takes the internet down; empty sends it untagged | Empty |
+| IPTV port VID / PRIO, VoIP port VID / PRIO | Manual, where the manual profile has those ports: the VLAN for the STB port and for the VoIP port. Empty: the port is not used for that service | Empty |
+| **IPTV STB port**, **VoIP port**, **Bridge port** | With a provider profile: the ports it uses (read-only) | - |
+| **IPTV connection**, **VoIP connection** | A profile that runs its own WAN connection for the service: WAN Connection Type (Automatic IP, Static IP, PPPoE ...), address, DNS, authentication (802.1x MD5), user name, password, MTU / MRU, service name, access concentrator, pppd options. A blank password keeps the saved one | Per profile |
+| **Use DHCP routes** | Accept the classless static routes some IPTV providers send by DHCP: Disable, Microsoft (249), RFC3442 (121), both | Microsoft (`dr_enable_x` `1`) |
+
+**What Apply does.** Changing the profile, the STB port or any VLAN ID / priority **reboots the router** (the page
+says for how long and asks first); everything else restarts the network (20 to 30 seconds). Turning IPTV on also
+turns off, after one confirmation listing them: Dual WAN, automatic WAN port detection (the WAN is pinned to the
+default WAN port), WAN aggregation when it uses the STB port, bonding when one of its ports is an IPTV port, the
+Multi-Service WAN profiles and 802.1Q on the WAN. Nothing is changed if you cancel. Choosing **None** after a profile
+also clears the STB port (stock left the port bridged).
+
+**How to use it: IPTV on a provider VLAN.**
+
+1. Find what the provider uses: an ISP profile name, or the VLAN IDs for internet, IPTV and VoIP.
+2. **LAN > IPTV**. If the provider is listed, pick it; the ports it uses appear. Otherwise pick **Manual** and enter
+   the **Internet** VID (for example `10`) and priority, and the IPTV VID for the STB port.
+3. If the provider sends routes by DHCP, leave **Use DHCP routes** on Microsoft or RFC3442 as the provider says.
+4. **Apply**, read the list of what will be turned off, confirm. The router reboots.
+5. Plug the set-top box into the port the page names. For multicast IPTV on LAN devices (not the STB port), turn on
+   multicast routing on LAN > Multicast; it cannot run together with an STB port.
+
+**Limits and gotchas**
+
+- With an ISP profile, hardware QoS shapes the physical port, not the VLAN interface (4.5.9).
+- Automatic WAN port detection (4.19) is not available while IPTV tagging is on.
+- A port used by IPTV is locked to *All* on LAN > VLAN (4.22.4).
+
+#### 4.22.4 VLAN
+
+**What it is.** The LAN ports of the router and of every AiMesh node, each set to carry the main network, one guest
+network, or tagged VLANs; and the list of VLAN profiles. One Reaper page with two tabs replaces the two stock VLAN
+pages and saves the same settings. Shown on models with Guest Network Pro, in router and access point modes.
+
+**VLAN tab (VLAN Switch Control Settings).** One block per node that reports its Ethernet ports, with the live link
+state of each port:
+
+| Mode | What the port carries |
+|---|---|
+| **All (Default)** | The main network untagged and every VLAN tagged. Needed for a port that is also an AiMesh Ethernet backhaul |
+| **Access** | One network, untagged: pick the network (a Guest Network Pro network or a VLAN profile). The device on the port is on that network |
+| **Trunk** | Tagged VLANs: **Allow all tags** (default) or one VID. A trunk that carries several VIDs (set elsewhere) is kept as it is |
+
+A port is locked to *All*, with the reason, when it is the Dual WAN LAN port, the WAN aggregation port, a bonding
+port, an IPTV port, an external-switch port or a live WAN port. Assigning every LAN port leaves no LAN port to reach
+the router's pages; use Wi-Fi then. **Apply** restarts the network.
+
+**VLAN Profile tab.** The VLAN rows and the networks bound to them, with **Network Name (SSID)**, **VLAN ID** and
+**Port Isolation**. **Add** creates a **VLAN-only network**: VLAN ID 3 to 4093, a Customized network with no Wi-Fi on
+any node, its own subnet (the main LAN's first two octets, the VID or the first free number from 100 as the third)
+with **DHCP off**. For a VLAN with DHCP and Wi-Fi, use the Network page (4.21). **Modify** changes the VID or Port
+Isolation; **Delete** removes the network, its rows and its intranet-access pairs.
+
+**How to use it: put a wired camera on the IoT network.**
+
+1. Create the IoT network on the Network page with its own subnet (4.21.5).
+2. **LAN > VLAN > VLAN**, find the router's block (or the node's), set the camera's port to **Access** and pick the
+   IoT network.
+3. **Apply**. The network restarts; the camera gets an address from the IoT network.
+
+**How to use it: a trunk to a managed switch.** Set the uplink port to **Trunk**, *Allow all tags*; on the switch,
+tag each network's VID on the uplink. Use the VLAN ID shown on each network's card (VLAN Profile tab).
+
+**Limits and gotchas**
+
+- A VLAN-only network has no Access Intranet ticked, so Reaper isolates it like a guest network (4.21.3); with the
+  router's DHCP off, its devices need fixed addresses in its subnet or a DHCP server of their own on that VLAN.
+- The Default IoT Network keeps its Access ports when edited on the Network page (v3.8.0, 4.21.5).
+- A port in Access or Trunk mode cannot be an AiMesh Ethernet backhaul.
+
+### 4.23 WAN
+
+The WAN menu holds four tabs: **Internet Connection**, **WAN Ports** (4.19, shown when the model supports Dual WAN),
+**NAT and Port Forwarding** and **DDNS**. The menu shows only in the modes that route (router and WISP). All three pages
+below are Reaper pages that replace the stock ASUS pages and save the same settings the stock pages saved, so a value
+set on either reads back the same. What they share:
+
+- **Nothing is written when the page opens.** The stock Internet Connection page copied settings around in NVRAM on every
+  load; these pages only read.
+- **Apply posts only what you changed.** The header counts **Unsaved changes**; **Discard** reloads the page.
+- **Every restart is announced first.** A change that drops the internet connection or reboots the router asks before it
+  runs and says for how long.
+- **Passwords are never written into the page.** A password or token field is empty; a hint says whether one is saved.
+  Leaving it empty keeps the saved value, typing replaces it.
+- A panel that failed to load is marked *This section did not load, so Apply leaves its settings unchanged*. Reload the
+  page; Apply never writes the settings of a broken panel.
+
+#### 4.23.1 Internet Connection
+
+**What it is.** The settings of each internet connection (WAN): connection type, login, the provider's special
+requirements, VLAN tagging, UPnP and the USB modem. The page is split into five windows - **Connection**, **ISP
+requirements**, **VLAN**, **UPnP** and **USB modem** - and a window with nothing to show for the selected connection
+type is hidden. The pill in the header names the connection being edited and its type.
+
+**Where the DNS servers are.** The WAN DNS servers, **Forward local domain queries**, DNS rebind protection, DNSSEC and
+the DNS-over-TLS client are on **LAN > DNS** (4.22), not here. The Connection window shows the DNS servers in use for
+this WAN (*From the provider (automatic)* or *Set by hand: ...*) with a link **Set on the DNS page**.
+
+**Units.** With Dual WAN on (4.19) a **WAN Unit** bar above the windows switches between the primary and secondary
+connection; each keeps its own settings (`wan0_*`, `wan1_*`). The switch happens in the browser; with unsaved changes
+the page asks before it drops them. A USB modem used as a WAN shows its own window instead of the Ethernet ones.
+
+**Multi-Service WAN profiles.** On models that support it (`mswan`), **Add profile** adds a second service on the
+same WAN cable, carried on its own VLAN - up to seven profiles per WAN (`wan101`...`wan107` on the first WAN,
+`wan111`...`wan117` on the second). A profile offers Automatic IP, Static IP, PPPoE or **Bridge**; Bridge passes the
+profile's VLAN straight to the LAN without routing it, for a device that dials the service itself, and switches PPPoE
+relay on. **Profile active** off deletes the profile on Apply. A profile is brought up by restarting its base WAN, so
+that WAN drops too. A profile and IPTV cannot both tag the WAN: saving a profile while IPTV is set asks first, then
+turns IPTV off and reboots.
+
+**How to use it.**
+
+*Log in with PPPoE (most DSL and many fibre lines):*
+
+1. **WAN > Internet Connection > Connection.** Set **WAN Connection Type** to **PPPoE**.
+2. Leave **Get the WAN IP automatically** on unless the provider gave you a fixed address for the PPP link.
+3. Under **Account Settings**, enter the **Username** and **Password** from the provider.
+4. Leave **MTU** and **MRU** at 1492, and **Service Name**, **Access Concentrator Name** and **Host-Uniq** empty,
+   unless the provider gives values.
+5. If the provider needs a VLAN on the line (many fibre services), open **VLAN**, turn **802.1Q** on and enter the
+   **VLAN ID** (and **802.1P** priority if given). On models without that row see *VLAN* below.
+6. Press **Apply** and confirm. The connection drops for up to a minute while the session is set up; the header pill
+   and the dashboard show it come back.
+
+*Use a fixed address from the provider:*
+
+1. Set the WAN's DNS servers by hand on **LAN > DNS** first. A switch to **Static IP** is refused until that WAN has
+   DNS servers set by hand, because a static connection gets none from the provider.
+2. Set **WAN Connection Type** to **Static IP** and enter **IP Address**, **Subnet Mask** and **Default Gateway**.
+3. Apply. The confirmation warns that a wrong address, mask or gateway leaves the connection offline; fix it from a
+   device on the LAN.
+
+*Clone a MAC address (a provider that locks the line to one device):* **ISP requirements > MAC Address**, then
+**Use this device's MAC** (shown when the router knows the MAC of the device you are browsing from) or type the
+address, and Apply. The confirmation notes that some providers hold the old lease for several minutes.
+
+**The settings.** Rows appear only for the connection types they apply to.
+
+*Connection window*
+
+| Setting | What it does | Default |
+|---|---|---|
+| WAN Connection Type | Automatic IP (DHCP), Static IP, PPPoE, PPTP, L2TP; on models that report it (`s46`), the Japanese IPv4-over-IPv6 types v6plus, OCN Virtual Connect, DS-Lite and IPv6 Option; Bridge for a Multi-Service WAN profile. A help line under the selector says what the type is for. | Automatic IP (`wan_proto` `dhcp`) |
+| Enable WAN | Off takes this connection down until you turn it back on. | On |
+| Enable NAT | Shares the one public address with the LAN. Turn it off only if the provider routes a subnet to you. Not shown for Bridge. | On (`wan_nat_x` `1`) |
+| Get the WAN IP automatically | PPPoE, PPTP, L2TP: on, the provider assigns the address of the PPP or VPN link; off, enter it below. | On |
+| IP Address, Subnet Mask, Default Gateway | Static IP, or a PPP type with the switch above off. The gateway is optional for PPP types and may not equal the address. | - |
+| DNS servers | Read-only line and link to LAN > DNS (4.22). On a Multi-Service WAN profile the DNS rows are on this page instead: **Connect to DNS Server automatically**, **DNS Server1**, **DNS Server2**. | From the provider |
+| Authentication | Automatic IP and Static IP: **802.1x MD5** only if the provider asks for it; it uses the username and password below. | None |
+| Username, Password | PPP types, and 802.1x MD5. The password field stays empty; *Show password* shows only what you typed. | - |
+| PPP Authentication | Auto, PAP or CHAP. | Auto |
+| Disconnect after time of inactivity | PPPoE and PPTP: seconds without traffic before the link hangs up; 0 keeps it up. | 0 |
+| MTU, MRU | PPPoE, 128 to 1500. A value above 1492 asks for RFC 4638 baby jumbo frames; the page then raises the other value to match so both sides agree. | 1492, 1492 |
+| Service Name, Access Concentrator Name | PPPoE, only when the provider names them. | Empty |
+| Host-Uniq | PPPoE tag, hexadecimal digits only. | Empty |
+| PPTP Options | Auto, No Encryption, MPPE 40, MPPE 128. | Auto |
+| Internet Detection | PPP types: how a dead link is noticed - Disable, **PPP Echo** or **DNS Probe**. | PPP Echo |
+| PPP Echo Interval, PPP Echo Max Failures | With PPP Echo: seconds between echo requests, and misses before the link is restarted. | 6, 10 |
+| DNS probe max failures | With DNS Probe: failed lookups in a row before the link is restarted. One value shared by every WAN (`dns_delay_round`). | 2 |
+| Additional pppd options | PPP types: extra options passed to pppd as typed. | Empty |
+
+*ISP requirements window*
+
+| Setting | What it does | Default |
+|---|---|---|
+| Class-identifier (Option 60) | Automatic IP: the DHCP vendor class some providers require. | Empty |
+| Client-identifier (Option 61) | Automatic IP: a typed identifier, or tick **IAID/DUID** to send the RFC 4361 identifier instead. | Empty |
+| VPN Server | PPTP and L2TP: host name or address of the provider's server, up to 64 characters. | Empty |
+| Enable VPN + DHCP Connection | PPPoE: the stock option that also keeps a DHCP lease on the WAN port alongside the PPPoE session. | On |
+| Host Name | The name the router gives the provider (letters, digits, dot, dash, underscore; 32 characters). | Empty |
+| MAC Address | Only if the provider locks the line to one MAC; empty uses the router's own. **Use this device's MAC** fills in the browsing device's address. | Empty |
+| DHCP query frequency | Automatic IP: Normal Mode, Aggressive Mode or Continuous Mode for lease requests. | Aggressive Mode |
+| MTU | Not PPPoE: 1280 to 1500; empty or 1500 for almost every line. Saving a switch to PPPoE puts it back to 1500. | 1500 |
+| Enable DHCP Filter | Bridge profiles only. | On (new profile) |
+| DS-Lite: Connection type, AFTR Address, B4 IPv4 Address | DS-Lite: Auto, or Manual with the AFTR (IPv6 address or host name) and B4 address. With Auto, the AFTR and B4 the router learned are shown, refreshed every 10 seconds. | Auto |
+| Update MAP | v6plus, OCN Virtual Connect, IPv6 Option: asks the provider for a new MAP rule. The internet drops for one to two minutes; it asks first. | - |
+| Extend the TTL value | Adds one to the TTL of incoming packets, so devices behind the router look one hop closer. | Off (`ttl_inc_enable` `0`) |
+| Spoof LAN TTL value | Sends every LAN packet out with the same TTL, for providers that detect shared connections. | Off (`ttl_spoof_enable` `0`) |
+
+A change to the two TTL switches alone reloads the firewall only; the connection is not restarted.
+
+*VLAN window*
+
+| Setting | What it does | Default |
+|---|---|---|
+| 802.1Q, VLAN ID, 802.1P | Tags this connection with a VLAN (ID 2 to 4094, priority 0 to 7) for providers that need one. A wrong VLAN ID takes the connection down. Turning 802.1Q on while IPTV is set asks first, turns IPTV off and reboots. | Off |
+| Enable WAN Aggregation | Joins the WAN port and a LAN port into one faster link to a modem that supports it (models with `wanbonding`; Automatic IP or Static IP only). Turning it on or off reboots the router; with Dual WAN on, Dual WAN is turned off, and with IPTV on LAN 4, IPTV is turned off, each asked first. Switching the WAN to a PPP type turns aggregation off. | Off |
+
+The 802.1Q rows exist only on models with Multi-Service WAN. On the others (for example the GT-BE98, GT-BE19000 and
+BQ16) the window says so instead: set the provider's VLAN on **LAN > IPTV** with ISP profile *Manual Setting* and the
+VLAN ID as *Internet VID*; saving it there reboots the router.
+
+*UPnP window* (the base WANs only; not shown for a profile)
+
+| Setting | What it does | Default |
+|---|---|---|
+| Enable UPnP | Lets LAN devices open ports on this connection by themselves (games and consoles use it). Per WAN (`wan0_upnp_enable`). | Off (8.1) |
+| Allow IPv6 pinholes (IGD:2) | Lets devices open IPv6 firewall holes through UPnP. Shown on models with IGD:2 support. | Off |
+| Secure UPnP mode | A device may open ports only to itself. | On |
+| Protect router service ports | Refuses a mapping that would take over a port the router itself uses for VPN or SSH (Reaper, 8.2). | On |
+| Allowed internal ports | The range of LAN-side ports a mapping may point at. | 1024 - 65535 |
+| Allowed external ports | The range of WAN-side ports a mapping may claim. Reaper starts it at 1024 so no device can claim 22, 53 or 443. | 1024 - 65535 |
+
+A UPnP-only change reloads the firewall and the UPnP service; the connection stays up.
+
+*USB modem window* (shown when USB is one of the WANs on WAN Ports)
+
+| Setting | What it does | Default |
+|---|---|---|
+| Select USB Device | **Auto**, or **Legacy** for phones and modems that act as a network card (only the MTU applies to them). | Auto |
+| APN Configuration | Auto reads APN, dial number and user from the SIM (shown read-only); Manual Setting shows the fields. | Auto |
+| Telecommunications Standards | WCDMA (UMTS) / LTE, CDMA2000 (EVDO), TD-SCDMA (WiMAX where supported). | WCDMA / LTE |
+| APN Service, Dial Number, Username, Password | Manual only. | - |
+| Authentication | None, PAP, CHAP, PAP / CHAP. | None |
+| PIN code | Shown when the SIM asks for one; empty keeps the saved PIN. | - |
+| USB Adapter | Auto or a named modem model. | Auto |
+| USB MTU | 0 or empty keeps the modem's own value. | - |
+
+Every USB modem save reboots the router (as stock).
+
+**What Apply restarts.** A connection setting restarts that WAN (`restart_wan_if <unit>`): its devices lose the
+internet for about 10 to 30 seconds, up to a minute for PPPoE. The confirmation adds, as they apply: the old and new
+connection type, *This connection is turned off*, the static-address warning, the MAC/VLAN warning. The router
+**reboots** instead for WAN aggregation, an IPTV conflict answer, a USB modem change, and an automatic-port pin: with
+automatic WAN port detection on (4.19), switching to Static IP, PPTP or L2TP, turning 802.1Q or aggregation on, or
+saving a Multi-Service WAN profile pins the WAN to the default WAN port, asks first and reboots. Switching into v6plus,
+OCN Virtual Connect or IPv6 Option resets the MAP rule first.
+
+**Examples.**
+
+- *Fibre with PPPoE on VLAN 10:* type PPPoE, username and password, VLAN window 802.1Q on, VLAN ID `10`. Apply once;
+  the confirmation lists the drop and the VLAN change.
+- *Cable modem that remembers the old router:* Automatic IP; ISP requirements > MAC Address = the old router's WAN MAC
+  (`00:00:5e:00:53:10`), or power the modem off for a few minutes after connecting the new router.
+- *Provider needs a DHCP vendor class:* Automatic IP, Class-identifier = the string the provider gives.
+
+**Limits and gotchas.**
+
+- **Static IP needs DNS first**, on LAN > DNS (above).
+- **PPPoE MTU and the WAN MTU are separate settings.** The WAN MTU row is hidden for PPPoE; the PPP link uses MTU/MRU.
+- **Reaper re-dials a dead PPPoE link** on its own: the self-monitor's WAN bounce (`reaper_wanbounce_enable`, on at
+  factory, 8.2) fires only after the link has failed all three reachability probes after the boot grace period.
+- **UPnP is off at factory** and opens ports without asking when on. Prefer explicit port forwards (4.23.2) and keep
+  Secure mode and the service-port protection on.
+- **Management stays off the WAN** (2.13): nothing on this page opens the web interface or SSH to the internet.
+- The second-WAN copies that only some ASUS builds read (`MULTIWAN_CFG`), the mobile country/ISP picker and the S46
+  MAP-E table are not carried over from the stock page.
+
+#### 4.23.2 NAT and Port Forwarding
+
+**What it is.** One page for the four stock NAT pages, one window each: **Port Forwarding**, **Port Trigger**, **DMZ**
+and **NAT Passthrough**. The lists keep the stock record formats (`vts_rulelist`, `autofw_rulelist`), and a row
+nobody edited is written back byte for byte. Nothing is saved until **Apply**; most changes reload only the firewall,
+which takes a few seconds. These are IPv4 rules; IPv6 has no NAT, and letting inbound IPv6 reach a device is a firewall
+rule (4.1).
+
+**This page or Firewall > Forwards?** Both forward ports. This page is the stock list, applied at once with no
+countdown. **Firewall > Forwards** (4.1.7) is Reaper's rules engine: source restriction by objects, schedules, and the
+Apply-and-Keep countdown (2.7). Use one place per port, so a forward is never defined twice. **System Log > Port
+Forwarding** (4.26.6) lists every forward in effect, from both; the link **See the forwards in effect now** opens it.
+
+**How to use it.** Before any forward or DMZ, give the target device a fixed address (**Devices**, 4.8.2), or the
+rule will one day point at whatever device picked up that address.
+
+*Forward a port to a game console:*
+
+1. **WAN > NAT and Port Forwarding > Port Forwarding.** Turn **Enable Port Forwarding** on.
+2. In **Quick Select**, pick the game (for example *Xbox Live*: external port `3074`, protocol BOTH). The preset fills
+   the editor; it saves nothing yet.
+3. Enter the console's address in **Internal IP Address** (`192.168.50.20`; the field offers the known devices).
+4. Press **Add**, then **Apply**.
+
+*Forward HTTPS to a NAS, from one office only:*
+
+1. Service Name `NAS`, Protocol `TCP`, External Port `8443`, Internal Port `443`, Internal IP `192.168.50.30`,
+   Source IP `198.51.100.0/24`.
+2. **Add**, **Apply**. Only addresses in 198.51.100.0/24 can connect; everyone else scanning port 8443 finds nothing.
+
+*Open everything to one device (DMZ):*
+
+1. **DMZ** window: turn **Enable DMZ** on and enter **IP Address of Exposed Station** (`192.168.50.40`).
+2. Apply. Every unsolicited connection from the internet that no other rule takes goes to that device.
+
+**The settings.**
+
+*Port Forwarding*
+
+| Setting | What it does | Default |
+|---|---|---|
+| Enable Port Forwarding | Off keeps the rules but forwards nothing. | Off (`vts_enable_x` `0`) |
+| Quick Select | Presets: the stock server list (FTP, HTTP, SMTP, DNS, SNMP, GRE, IPv6 Tunnel, IPSec, OpenVPN, PPTP, L2TP and others) and game list (Age of Empires, BitTorrent, Counter Strike, PlayStation2, Warcraft III, WOW, Xbox Live). Fills the editor only. | - |
+| Service Name | A label, up to 30 printable characters (no angle brackets, apostrophe or percent). | - |
+| Protocol | TCP, UDP, BOTH (TCP and UDP) or OTHER (an IP protocol by number). | TCP |
+| External Port | Single ports and ranges, comma separated: `80,443,8000:8010`. Each 1 to 65535, ranges ascending. Stored normalised (spaces and leading zeros removed, `-` and `~` written as `:`), because the firewall drops a rule whose port has a dash. With OTHER the field is **Protocol number**, 1 to 255 (GRE is 47). | - |
+| Internal Port | Optional, one port; empty keeps the external port. Not used with OTHER. | Empty |
+| Internal IP Address | The LAN device. The router's own address and the LAN network and broadcast addresses are refused; an address off the LAN subnet asks first. | - |
+| Source IP | Optional: only this IPv4 address or subnet (`a.b.c.d/nn`) may connect. | Empty (anyone) |
+
+Limits: 64 rules and 8192 bytes for the whole list; a line under the table shows *N of 64 rules, X of 8192 bytes*. The
+same source, external port and protocol twice is refused as a duplicate (BOTH collides with TCP and with UDP). Click
+**Edit** on a row to load it into the editor (the button reads **Save**), the cross to delete it. A row the firewall
+cannot read is greyed and tagged *Ignored by the router*.
+
+**Also forwarded by the router** lists the other rules in the same forwarding chain, set on their own pages: remote web
+access (*TCP port to the router*, when web access from the WAN is on), Open NAT game rules, and the DMZ target.
+
+*Port Trigger*
+
+| Setting | What it does | Default |
+|---|---|---|
+| Enable Port Trigger | Off keeps the rules but opens nothing. | Off (`autofw_enable_x` `0`) |
+| Well-Known Applications | Presets (Quicktime 4 Client, Real Audio). | - |
+| Description | Up to 18 characters. | - |
+| Trigger Port, Protocol | When a LAN device sends to this port (a port or a range `a:b`), TCP or UDP... | - |
+| Incoming Port, Protocol | ...the router opens this port or range to that device for a while. | - |
+
+Limits: 32 rules, 2048 bytes. Triggering suits an application that calls out first and expects the far end to connect
+back; a forward is the better choice for a server.
+
+*DMZ*
+
+| Setting | What it does | Default |
+|---|---|---|
+| Enable DMZ | Off clears the address. | Off (`dmz_ip` empty) |
+| IP Address of Exposed Station | The device that receives every unsolicited connection no other rule takes. Use it only for a device that protects itself: it is reachable on every port. | - |
+
+An FTP server behind the DMZ still needs a forward: **Add the FTP rule** opens the FTP preset in the Port Forwarding
+editor.
+
+*NAT Passthrough*
+
+| Setting | What it does | Default |
+|---|---|---|
+| PPTP, L2TP, IPSec Passthrough | Protocol helpers for VPNs from LAN devices to the internet. Turning one off blocks that VPN type. | On |
+| RTSP, H.323 Passthrough | Helpers for streaming and video calls. | Off |
+| SIP Passthrough | The SIP helper. Turning it on restarts the whole network (about 30 seconds); it asks first. | Off (`fw_pt_sip` `0`) |
+| PPPoE Relay | Lets LAN devices dial their own PPPoE session through the router. A change restarts only the relay. | Off |
+| PPPoE relay interface | Primary or Secondary WAN; shown with Dual WAN in Load Balance. | Primary |
+| FTP Passthrough | Active-mode FTP from LAN devices to outside servers. Off by default because the FTP helper lets a hostile FTP server open connections towards the device. Passive FTP, the router's own FTP server and a forwarded FTP port work either way (Reaper). | Off (`nf_ftp` `0`) |
+| FTP ALG port | The FTP helper follows port 21 and this port, 1 to 65535. | 2021 |
+
+A helper works only on its own ports while its switch is on (8.3).
+
+**Examples.**
+
+- *Remote desktop to one PC, from a known address:* TCP, External `53389`, Internal `3389`, IP `192.168.50.25`,
+  Source `203.0.113.7`.
+- *Forward a GRE tunnel:* Protocol OTHER, Protocol number `47`, Internal IP of the tunnel endpoint.
+- *A range for a game server:* BOTH, External `27015:27030`, Internal Port empty.
+
+**Limits and gotchas.**
+
+- **A forward of the remote-web-access port never matches.** With web access from the WAN on, the router takes that TCP
+  port first; the page warns *A rule uses TCP port N, which remote web access already sends to the router*. Keep remote
+  access off (2.13).
+- **Forwarding TCP 21 while the USB FTP server is on** makes the FTP server unreachable from the internet; the page warns.
+- **DMZ exposes the device completely.** A forward of the ports it needs is almost always enough.
+- **Japanese v6plus, OCN Virtual Connect and IPv6 Option lines with a shared address** reach only the provider's port
+  set; a port outside it asks before it is saved.
+- The second-WAN lists (`vts1_rulelist`, `dmz1_ip`) belong to ASUS builds no Reaper model uses and are not shown.
+- This page has no NAT-acceleration switch; Connections (4.9) shows which flows the accelerator carries.
+
+#### 4.23.3 DDNS
+
+**What it is.** Two panels. **DDNS Setting** keeps a host name pointed at the router's WAN address through a dynamic
+DNS provider; it opens no ports by itself. **HTTPS/SSL Certificate** chooses the certificate the router's HTTPS web
+interface and its other TLS services use (Encrypted DNS, 4.3.4; FTP over TLS).
+
+ASUS DDNS (`asuscomm.com`) is not part of Reaper (1.2): it is not offered, and a router that had it saved shows *ASUS
+DDNS (asuscomm.com) is no longer part of this firmware, so this saved setting does nothing. Choose another provider*.
+The ASUS deregister, transfer and privacy-policy flows went with it. **Let's Encrypt via DNS** and the `ddns-start`
+script checks are Reaper's; the **Custom** provider (`ddns-start`) is Merlin's; the rest is stock.
+
+**How to use it.**
+
+*A DDNS name with a Let's Encrypt certificate:*
+
+1. Create the host name at your DDNS provider (for example `home.example.com`) and note the user name and password or
+   key it gives you.
+2. **WAN > DDNS.** Turn **DDNS** on, choose the provider under **Server**, enter **Host Name**, **Username or E-mail
+   Address** and **Password or DDNS Key**.
+3. Under **Certificate**, choose **Free Certificate from Let's Encrypt**. It can be chosen once DDNS is on with a
+   provider; until then it is greyed and the hint says what it needs. Leave **I agree to Let's Encrypt** ticked.
+4. Make sure TCP port 80 on the WAN reaches the router: Let's Encrypt checks the name over it.
+5. Apply. The page asks first: *The new certificate is used after you sign out; browsers that trusted the old one ask
+   again*. The **Server Certificate** status reads *Authorizing*, then *Updating...*, then *Active* with the new issuer
+   and expiry. The certificate renews by itself.
+
+*A certificate without DDNS or an open port:* choose **Let's Encrypt via DNS (no DDNS)** and follow 4.3.4.3 (Cloudflare,
+deSEC or DuckDNS API token; about two minutes; renewed daily from 30 days before expiry).
+
+*Your own certificate:* choose **Import Your Own Certificate**, pick the **Private Key** (`.pem`/`.key`, no passphrase)
+and the **SSL Certificate** (`.pem`/`.crt`/`.cer`), press **Upload**, then **Apply**.
+
+**The settings.**
+
+| Setting | What it does | Default |
+|---|---|---|
+| DDNS | Publishes the WAN address under your host name. | Off (`ddns_enable_x` `0`) |
+| Interface | Auto, Primary WAN or Secondary WAN; shown with Dual WAN in Load Balance. | Auto (`ddns_wan_unit` `-1`) |
+| Server | The provider: DynDNS (plain, CUSTOM, STATIC), selfHOST.de, ZoneEdit, DNS-O-Matic, HE.NET, Dynu, Cloudflare, Pubyun, Tunnelbroker, No-IP, Oray (on builds that carry it), Namecheap, FreeDNS (afraid.org), FreeMyIP, deSEC (dedyn.io), or **Custom (ddns-start script)**. Google Domains is listed, marked *(service closed)*, only while it is the saved provider. | None |
+| Host Name | The name to publish. Labelled **Tunnel ID** for Tunnelbroker. | - |
+| Username or E-mail Address | Labelled **Domain name** for Namecheap, **Username** for FreeDNS, **Account name** for Tunnelbroker; not shown for HE.NET. | - |
+| Password or DDNS Key | Labelled **Update key** for Tunnelbroker. Empty keeps the saved one. | - |
+| Enable wildcard | Also publishes `*.hostname`, on providers that support it (not Tunnelbroker, HE.NET, selfHOST.de, Dynu, Cloudflare, Pubyun). | Off |
+| IPv6 Update | Also publishes the router's IPv6 address. Shown when IPv6 is on (4.24); not for Pubyun. | On (`ddns_ipv6_update` `1`) |
+| WAN IP and hostname verification, Check every | Checks now and then that the name still points at the WAN address and updates it if not; every N minutes, 30 or more. | Off; 60 minutes |
+| Forced update every (days) | 0 to 365; 0 updates only when the address changes. | 21 |
+| Registration | The provider's last answer (*Registration is successful*, *Authentication failed*, *No response from the DDNS server*, and so on) and **Update**, which sends an update now without saving anything. | - |
+| Certificate | **Free Certificate from Let's Encrypt** (needs DDNS on and TCP port 80 reachable), **Let's Encrypt via DNS (no DDNS)** (4.3.4.3), **Import Your Own Certificate**, **Self-signed (made by the router)**. The two Let's Encrypt choices are offered only on builds with Let's Encrypt. | Self-signed (`le_enable` `0`) |
+| DNS provider, Domain name, API token, Certificate request | Let's Encrypt via DNS only (4.3.4.3, 8.2). | Cloudflare |
+| I agree to Let's Encrypt | Shown when switching to either Let's Encrypt choice. Applying with it unticked asks, then falls back to Self-signed. | Ticked |
+| Server Certificate | Status, Issued to, Issued by, Expires on, and **Export**. | - |
+| Root / intermediate certificate | Shown for the self-signed certificate (and an import that carried its CA): the router's own root, with **Export**, to install on devices that should trust the self-signed certificate. | - |
+
+Renewing the self-signed certificate is on **Administration > System**.
+
+**Custom provider.** **Custom** runs `/jffs/scripts/ddns-start` on every update; JFFS custom scripts must be on
+(Administration > System). The page checks the script: a missing file (*the router runs only that exact name, with no
+extension*, with the name of a near miss such as `ddns-start.sh` to rename), or a file that is not executable (*chmod +x
+/jffs/scripts/ddns-start*).
+
+**Examples.**
+
+- *Update a Hurricane Electric tunnel endpoint (4.24):* Server Tunnelbroker, Tunnel ID, Account name and Update key from
+  the broker; the tunnel follows a changing WAN IPv4 address.
+- *deSEC name with a DNS-validated certificate:* DDNS with Server deSEC for the address, and Certificate *Let's Encrypt
+  via DNS* with provider deSEC for the certificate - nothing inbound needed for the certificate.
+
+**Limits and gotchas.**
+
+- **DDNS opens nothing.** Reaching a service by name still needs a forward (4.23.2) or the service on the router.
+- **A Let's Encrypt certificate needs HTTPS on the web interface to be useful.** With the web interface on HTTP only,
+  the hint says browsers are not served it; set *Web access protocol* on Administration > System to HTTPS or HTTP +
+  HTTPS.
+- **A new certificate reaches the web interface after you sign out;** Encrypted DNS and FTP over TLS restart with it.
+- **An update with nothing changed** (same server, host and address as the last update) asks before forcing another.
+- Behind a provider's carrier-grade NAT the WAN address is not public; DDNS then publishes an address nobody can reach.
+
+### 4.24 IPv6
+
+**What it is.** **IPv6** (its own menu, in router and WISP mode on models with IPv6) sets how the router gets IPv6
+from the provider and hands it to the LAN. It replaces the stock IPv6 page with the same eight connection types and the
+same row rules. IPv6 is **Disabled** at factory (8.3). Apply reconnects the WAN (`restart_net`, plus `restart_ftpd` when
+the FTP server is on); IPv6 comes back in about 30 seconds. Two differences from stock: switching the type no longer
+blanks the values saved for another type, and the header pill shows the type in use with the live LAN prefix.
+
+The IPv6 firewall is on the Firewall page (4.1; on at factory, `ipv6_fw_enable` `1`). The live IPv6 state is on
+**System Log > IPv6**. On a v6plus, OCN Virtual Connect, DS-Lite or IPv6 Option WAN (4.23.1) the type selector is
+locked: the WAN type owns the IPv6 setup.
+
+**The connection types.**
+
+| Type | What it is |
+|---|---|
+| Disable | IPv6 off; LAN devices get no IPv6 from the router. |
+| Native | The provider assigns IPv6 with DHCPv6 and router advertisements. Most providers use this. |
+| Static IPv6 | WAN address, gateway and LAN address entered by hand, as the provider gave them. |
+| Passthrough | The router relays the provider's IPv6 to the LAN (router advertisements, DHCPv6 and neighbour discovery) instead of routing a prefix of its own. Shown on models that support it. |
+| FLET'S IPv6 service | Passthrough for the NTT FLET'S service in Japan. |
+| Tunnel 6to4 | Builds a `2002::/48` prefix from the public IPv4 address and tunnels through a public relay. Few networks still support it. |
+| Tunnel 6in4 | A tunnel from a broker such as Hurricane Electric. |
+| Tunnel 6rd | A tunnel run by the provider; settings from the provider's DHCP (option 212) or entered by hand. |
+
+**How to use it.**
+
+*Native IPv6 with a /56 from the provider:*
+
+1. **IPv6.** Set **Connection type** to **Native**.
+2. With a PPPoE, PPTP or L2TP WAN, set **Interface**: **PPP** asks for IPv6 inside the PPP session, **Ethernet** on the
+   WAN port directly. Most PPPoE providers use PPP; leave **Accept Default Route** on.
+3. Leave **Prefix delegation (DHCP-PD)** on.
+4. Set **WAN Prefix Length** to `56`. With DHCP-PD this is the prefix size the router asks the provider for: 48 to
+   64, or empty / `0` to let the provider choose. From the image after v3.8.0 the page refuses another value (before,
+   it was saved and silently ignored), and the system log says `Requested: none (provider default)` when no size
+   is asked. Guest and VLAN networks get public IPv6 addresses only from a /56 or larger prefix, so `64` (the
+   factory value) leaves them without IPv6 Internet where the provider follows the request.
+5. **Auto Configuration Setting**: Stateless (SLAAC) suits nearly every network. Leave **Enable Router
+   Advertisement** and **Connect to DNS Server automatically** on.
+6. Apply. Within about 30 seconds **LAN IPv6 Prefix** and **LAN Prefix Length** show what the provider delegated
+   (for example `2001:db8:4400::` and 56), and **LAN IPv6 Address** the router's own address.
+
+*A 6in4 tunnel from a broker:*
+
+1. Create the tunnel at the broker with your WAN IPv4 address as the client endpoint. Some brokers require that the
+   address answers ping while the tunnel is created; WAN ping is off at factory (Firewall > General, 8.3).
+2. **IPv6 > Connection type: Tunnel 6in4.**
+3. **Server IPv4 Address**: the broker's server (`203.0.113.1`). **Client IPv6 Address** and its length: your side of
+   the tunnel (`2001:db8:a::2` / `64`). **Server IPv6 Address** (optional): the broker's side (`2001:db8:a::1`).
+4. **LAN IPv6 Prefix** and **LAN Prefix Length**: the routed prefix the broker gave you (`2001:db8:b::` / `64`).
+5. **Tunnel MTU** `0` (automatic) or the broker's value (1280 to 1480); **Tunnel TTL** `255`.
+6. Leave **Enable Router Advertisement** on, enter **IPv6 DNS Server 1** (`2001:db8:53::53` here; use a real resolver),
+   Apply.
+7. If your WAN IPv4 address changes, keep the tunnel endpoint current with the broker's DDNS updater (4.23.3).
+
+**The settings.** Rows appear only for the types they apply to.
+
+| Setting | What it does | Default |
+|---|---|---|
+| Connection type | The eight types above. | Disable (`ipv6_service` `disabled`) |
+| Interface | Native, Static, Passthrough on a PPP-type WAN: PPP or Ethernet. FLET'S always uses Ethernet. | PPP |
+| Accept Default Route | Native over PPP: use the default route the provider announces on the PPP link. | On |
+| Prefix delegation (DHCP-PD) | Native: ask the provider for a prefix to number the LAN. Turn it off only if the provider gave you a fixed LAN address to enter below. | On |
+| Release prefix on exit | Native and Passthrough: tells the provider to release the delegated prefix when the router disconnects. | On |
+| IPv4 Anycast Relay | 6to4: the relay address. | `192.88.99.1` |
+| Server IPv4 Address, Client IPv6 Address / length, Server IPv6 Address | 6in4 (above). | - |
+| DHCP Option | 6rd: on, take the 6rd settings from the provider's DHCP (option 212); off, enter them below. | On |
+| IPv6 Prefix / length, IPv4 Border Router, IPv4 Router Mask Length | 6rd by hand, as the provider gives them (mask 0 to 32). | - |
+| Tunnel MTU | Tunnels: 0 picks it automatically; otherwise 1280 to 1480. | 0 |
+| Tunnel TTL | Tunnels: 0 to 255. | 255 |
+| WAN IPv6 Address, WAN Prefix Length, WAN IPv6 Gateway | Static: the WAN side (gateway optional). Native with DHCP-PD: only WAN Prefix Length, the size requested (above). | WAN Prefix Length 64 |
+| LAN IPv6 Address | Static, and Native without DHCP-PD: the router's LAN address; the LAN prefix is derived from it. Read-only for the other types. | - |
+| LAN IPv6 Prefix, LAN Prefix Length | 6in4: entered. Static and Native without PD: length entered (3 to 126; 112 at most with Stateful). Otherwise shown as received; *Not assigned yet* until it arrives. | - |
+| Auto Configuration Setting | Native and Static: **Stateless (SLAAC)** - devices pick their own addresses; **Stateful (DHCPv6)** - the router also hands out addresses from a pool; devices without a DHCPv6 client still use SLAAC. | Stateless |
+| IP Pool Starting / Ending Address | Stateful: the last group only, 1 to 4 hex digits; the prefix in front comes from the LAN address. Start not above end. | `1000` - `2000` |
+| Lease time | Stateful: seconds, 120 to 604800. | 86400 |
+| Connect to DNS Server automatically | Native and Passthrough: take the provider's IPv6 DNS servers. | On |
+| IPv6 DNS Server 1 to 3 | When not automatic (and always for Static and tunnels); each optional. | Empty |
+| Enable Router Advertisement | Native, Static, tunnels: announce the router and its prefix so devices set up IPv6 on their own. Off: devices get no IPv6 unless configured by hand. | On (`ipv6_radvd` `1`) |
+
+**Examples.**
+
+- *Provider gives a /64 only:* Native, DHCP-PD on, WAN Prefix Length `64`.
+- *Provider with a fixed LAN prefix and no PD:* Native, DHCP-PD off, LAN IPv6 Address `2001:db8:4400::1`, LAN Prefix
+  Length `64`.
+- *Passthrough on a v6plus line:* the page notes that **Connect to DNS Server automatically** is recommended there.
+
+**Limits and gotchas.**
+
+- **The router's own prefix shows only for the saved type.** While another type is selected but not applied, the live
+  rows read *Not assigned yet*.
+- **Apply reconnects the WAN** - IPv4 included - for about 30 seconds.
+- **Changing IPv6 does not open anything inbound.** The IPv6 firewall keeps unsolicited inbound traffic out; UPnP IPv6
+  pinholes are a separate, off-at-factory switch (4.23.1).
+- The second-WAN IPv6 page of some ASUS builds (`ipv61_*`) and the "IPv6 Only" type are not carried: no Reaper model
+  builds them.
+
+### 4.25 Wireless settings
+
+The Wireless menu (hidden in Repeater and Media Bridge mode) has these tabs: **Settings** (4.25.1), **WPS**, **WDS**,
+**Wireless MAC Filter**, **RADIUS Setting**, **Roaming Block List**, **MLO** and **Wireless Quality** (4.10). Smart
+Connect Rule (4.25.8) sits under Network Tools. Each tab is a Reaper page that replaced the stock page; from v3.6.5 the
+stock WPS, WDS, MAC Filter, RADIUS, Roaming Block List and MLO pages no longer ship and their addresses open the Reaper
+pages. The pages keep the stock settings and apply them the stock way - a save restarts the wireless
+(`restart_wireless`; Wi-Fi drops for the restart) unless a section says otherwise. The per-band pages (WDS, MAC Filter,
+RADIUS) show every radio on one page, so a four-radio GT-BE98 shows four panels; the stock pages showed one band at a
+time.
+
+**Where each tab shows.** **WDS** hides on models with the ASUS UI4 layout; **Wireless MAC Filter** and **RADIUS
+Setting** hide on a model whose main network is a Network-menu profile with its own filter and server (`sdn_mainfh`);
+**Roaming Block List** shows only when this router is the AiMesh router; **MLO** shows on models with MLO and
+multi-network support (`mlo`, `mtlancfg`). The 3006.102.10 and 3006.102.8 lines use the same pages.
+
+**The Network menu holds the network itself.** On these models the main Wi-Fi network is a profile on the Network menu
+(4.21). The **network name, security (including Enterprise), the bands the network uses (one name on all bands is Smart
+Connect) and the Wi-Fi 6/7 mode** are set there, not on the Wireless tabs. Guest Network Pro networks keep their own MAC
+filter and RADIUS server there too.
+
+#### 4.25.1 Wi-Fi Settings
+
+**What it is.** **Wireless > Settings** is the one tab for every radio setting, every radio in a column, applied once
+(4.10 describes the page, the locks between settings, Wireless Mode, preamble puncturing, minimum width on Auto and
+interference mitigation; this section lists every control). Only changed fields are written, and all radios restart
+together (about 10 seconds). A greyed cell is locked by another setting and names the reason when you hover it; a dash
+means the row does not apply to that band.
+
+**How to use it.**
+
+*One network name on all bands with WPA2/WPA3:* this is set on the **Network** menu (4.21): open the main network,
+choose every band (that is Smart Connect), set the network name, choose **WPA2/WPA3-Personal** and a password, and
+Apply. 6 GHz admits only WPA3 (or Enhanced Open), by the standard, so a WPA2-only device joins on 2.4 or 5 GHz under
+the same name. The band-steering rules are on Smart Connect Rule (4.25.8).
+
+*Fix a channel for a WDS link or an old device:* **Control Channel** on the band, a fixed **Channel bandwidth**, Apply.
+The radio leaves automatic selection until you set Auto again.
+
+*Turn Wi-Fi off at night:* **Enable wireless scheduler** on the band opens a 7 x 24 grid; green hours are radio on.
+Click a cell, a day or an hour; **All on** clears it. Apply. The scheduler is held off while MLO is on.
+
+**The settings.**
+
+| Setting | What it does | Default |
+|---|---|---|
+| **Radio & Operating Mode** | | |
+| Enable Radio | Switches the radio. Refused while MLO is on; on an AiMesh router it asks first, because the setting reaches the nodes. To keep a radio off at all times use this, not the scheduler. | On |
+| Enable wireless scheduler | The weekly on/off grid (above). Locked while MLO is on or the radio is off. | Off |
+| Wireless Mode | Per band: 2.4 GHz Auto / N only / Legacy; 5 GHz Auto / AX only / N/AC/AX mixed / Legacy; 6 GHz Auto / AX only. N only and Legacy switch Wi-Fi 6 and 7 off on that band and Apply asks first; Auto, N/AC/AX mixed and AX only turn them back on (4.10). | Auto |
+| **Channel & Bandwidth** | | |
+| Channel bandwidth | The widths the driver reports for the band, or Auto. | Auto |
+| Enable 160 MHz | 5 GHz: include 160 MHz when the bandwidth is Auto (uses DFS channels). | Off (`wl_bw_160` `0`) |
+| Minimum width on Auto | 5 and 6 GHz: keep Auto at 80 MHz or wider (4.10.9). | Off |
+| Fit channels to AiMesh nodes | 5 and 6 GHz, one switch: keep the channel picker on channels every registered node can use (8.2). The cell shows its state, for example *No AiMesh node registered* or *Every node can use this channel*. | On (`amas_chanfit` `1`) |
+| Control Channel | Auto or a channel. | Auto |
+| BW320 Channel Range | 6 GHz at 320 MHz: which 320 MHz block (needs a fixed control channel). | - |
+| Extension Channel | 2.4 GHz at 40 MHz with a fixed channel: Above or Below. | - |
+| Auto channel options | Extra channels automatic selection may pick: 2.4 GHz channels 12 and 13; 5 GHz DFS channels and U-NII-4; 6 GHz preferred scanning channels (PSC) only. Editable while the channel is Auto; a fixed DFS channel still moves when radar is detected. | 12/13 off; DFS on (`acs_dfs` `1`); U-NII-4 off; PSC on (`psc6g` `1`) |
+| Preamble puncturing, Punctured slice, Dynamic sensitivity, Monitoring source, Minimum gain, Minimum hold time | 5 and 6 GHz (4.10.1 to 4.10.8). | Off |
+| Interference mitigation | Driver default, or Add hardware ACI mitigation (4.10.10). | Driver default |
+| **Clients & Roaming** | | |
+| Max Number of Client Connection | 1 to 128 clients on the band. | 128 |
+| Roaming assistant | Disconnects a client whose signal drops below the threshold so it can move to a stronger router or node: -90 to -40 dBm, or off. | -70 dBm |
+| WiFi Agile Multiband | Wi-Fi Alliance MBO signalling for steering; needs Protected Management Frames, set on the Network menu. | - |
+| Target Wake Time | Wi-Fi 6 clients schedule their wake-ups; needs 802.11ax on the band. | Off (`wl_twt` `0`) |
+| Group Key Rotation Interval | Seconds between WPA group key changes, 0 to 2592000; 0 = never. | 3600 |
+| **Rates, Modulation & Aggregation** | | |
+| 802.11b mode (preamble) | 2.4 GHz: Long or Short; shows *Disable 802.11b* and locks while that is set. | Long |
+| Disable 802.11b | 2.4 GHz: drops the 1, 2, 5.5 and 11 Mbps rates so no 802.11b client can join and slow the band. | - |
+| Multicast Rate (Mbps) | Auto or a fixed rate (CCK rates on 2.4 GHz only). | Auto |
+| Modulation Scheme | Highest QAM for Wi-Fi 4 and 5 clients: 2.4 GHz up to MCS 7, 9 or 11; 5/6 GHz up to MCS 9 or 11. Locked in Legacy. | - |
+| Optimize AMPDU aggregation | Optimises the number of MPDUs in an AMPDU. | Off |
+| AMPDU RTS | RTS for every AMPDU; off also parks RTS Threshold. | On |
+| RTS Threshold | 0 to 2347. | 2347 |
+| Fragmentation Threshold | 256 to 2346 bytes; editable in Legacy only, as stock. | 2346 |
+| **Spatial - OFDMA, MU-MIMO & Beamforming** | | |
+| OFDMA / MU-MIMO | Disable, DL OFDMA, DL / UL OFDMA, DL/UL OFDMA + MU-MIMO; needs 802.11ax on the band. | DL/UL OFDMA + MU-MIMO (`wl_ofdma` `3`) |
+| Multi-User MIMO | Follows the OFDMA choice, as stock derives it at every apply. | On |
+| Explicit Beamforming | Client and router exchange channel estimates; MU-MIMO requires it. | On |
+| Universal Beamforming | Implicit beamforming for clients that cannot report estimates. | Off |
+| **Coexistence & Multicast** | | |
+| Bluetooth Coexistence | 2.4 GHz: Disable, Enable, Pre-emptive (no 1/2 Mbps rates and no TX bursting). | Disable |
+| Enable IGMP Snooping | Optimises wireless multicast by watching IGMP. | On (`wl_igs` `1`) |
+| Reducing USB 3.0 interference | Shown in the 2.4 GHz column on models with USB 3: runs the USB ports at USB 2.0 speed. A change reboots the router. | - |
+| **WMM / Airtime QoS** | | |
+| Enable WMM | Auto, Enable, Disable; a choice in Legacy only, always on otherwise. | On |
+| Enable WMM No-Acknowledgement | More throughput, more errors in a noisy band. | Off |
+| Enable WMM APSD | WMM power-save delivery. | On |
+| Airtime Fairness | Shares airtime between links. | - |
+| **Beacon & Timing** | | |
+| DTIM Interval | 1 to 255 (4.10.13: Reaper sets 1). | 1 |
+| Beacon Interval | 20 to 1000 ms. | 100 |
+| Enable TX Bursting | Frame bursting. | On |
+| **Power** | | |
+| Tx power adjustment | Performance (100), Good, Fair, Balanced, Power saving (0). | Performance |
+
+**Limits and gotchas.**
+
+- **One Apply restarts every radio**, so every Wi-Fi client reconnects. A change to puncturing or mitigation rows only is
+  applied live, with no restart (4.10.3).
+- **MLO locks parts of this page**: the scheduler, and switching a radio off.
+- A value a rule forces (for example MU-MIMO following OFDMA) is written at Apply if the stored value disagrees.
+
+#### 4.25.2 WPS
+
+**What it is.** Wi-Fi Protected Setup: joins a device by a button press or a PIN instead of typing the password. WPS is
+**off at factory** (8.1); its PIN method is weak by design. Turn it on only for a device with no other way in, and off
+again afterwards. Stock feature, Reaper page.
+
+**How to use it.**
+
+1. **Wireless > WPS.** Choose the band in **Current Frequency** first (2.4 or 5 GHz; 6 GHz cannot run WPS). The band can
+   only be changed while WPS is off.
+2. Turn **Enable WPS** on. This applies at once and restarts the wireless.
+3. **WPS Method**: **Push button**, then **Start** and press the WPS button on the device; or **Client PIN Code**, type
+   the device's 8-digit PIN (one space or hyphen in the middle is accepted) and press **Start**.
+4. **Connection Status** follows the exchange (a spinner while it runs).
+5. Turn **Enable WPS** off.
+
+**The settings.**
+
+| Setting | What it does | Default |
+|---|---|---|
+| Enable WPS | On/off; applies at once with a wireless restart. Refused, with the reason, when the band's network is hidden, uses WPA or WEP only, uses WPA3-Personal, or the radio is off. | Off |
+| Current Frequency | The radio WPS runs on. Locked while WPS is on. | - |
+| Connection Status | The WPS state; *Not used* while off. | - |
+| Configured | Yes/No. With Yes, **Reset** generates a new network name and key on that band; it asks first. | - |
+| AP PIN Code | The router's own PIN, for a device that asks for the access point's PIN. | - |
+| WPS Method | Push button or Client PIN Code. A PIN must be 8 digits with a valid checksum. | Push button |
+
+**Limits and gotchas.** WPS is refused for a hidden network, for WPA-only or WEP security and for WPA3-Personal alone;
+WPA2-Personal and WPA2/WPA3-Personal work. **Reset** changes the network name and password on that band: every device
+must be joined again.
+
+#### 4.25.3 WDS
+
+**What it is.** WDS (Wireless Distribution System) links this router's radio directly to other access points, bridging
+their networks into one. Each peer must list this router's radio MAC address, and both ends need the same band and the
+same fixed channel. Stock feature, Reaper page; the peer scan uses Reaper's site survey, which covers 6 GHz and runs only
+when you press **Scan now**.
+
+**How to use it (a WDS bridge between two routers):**
+
+1. On both routers, set the band to the same fixed **Control Channel** (and width) on Wireless > Settings. A band on
+   Auto shows *This band uses the Auto channel. WDS peers must share one fixed channel* with a link.
+2. **Wireless > WDS** on this router: note the band's **MAC address** shown at the top of its panel.
+3. Set **AP Mode** to **Hybrid** (access point and WDS) or **WDS Only** (bridge only, no clients on that band).
+4. Turn **Connect to APs in list** on, then add the peer: **Scan now** and pick it under **AP Survey**, or type its
+   radio MAC address, and press **Add**.
+5. Apply (the wireless restarts). Do the same on the peer with this router's MAC address.
+
+**The settings.** Per band:
+
+| Setting | What it does | Default |
+|---|---|---|
+| AP Mode | **AP Only** (no WDS), **WDS Only**, **Hybrid**. With AP Only the list is greyed. | AP Only (`wlN_mode_x` `0`) |
+| Connect to APs in list | On: bridge only to the listed peers. Off: accept any WDS peer (lazy WDS). | Off |
+| Remote AP List | Up to 4 peer MAC addresses, with the network name from the last scan. | Empty |
+| AP Survey, Scan now | Scans this radio's channels and lists the networks heard, strongest first. The radio leaves its channel briefly. Refused while a capture or Auto Scan runs on Wireless Quality. | - |
+
+**Limits and gotchas.** A band that serves as the router's repeater uplink is not editable. Wireless channel, width and
+mode are not posted from this page (stock re-sent stale copies). With **Connect to APs in list** off, any WDS peer that
+knows the band can attach; keep it on. AiMesh (the AiMesh menu) is the other way to extend coverage between ASUS
+routers.
+
+#### 4.25.4 Wireless MAC Filter
+
+**What it is.** A per-band list of device MAC addresses the radio admits (**Accept**) or refuses (**Reject**). It acts
+on the main network of each radio; guest networks keep their own filter on the Network menu (4.21). Stock feature,
+Reaper page; changing between Accept and Reject keeps the list (stock emptied it).
+
+**How to use it (block one device from Wi-Fi):**
+
+1. Find the MAC address the device uses on this network: **Devices** (4.8). Phones use a private address per network,
+   so take the one shown there, not the one printed on the device.
+2. **Wireless > Wireless MAC Filter.** On each band's panel, turn **Enable MAC Filter** on and set **MAC Filter Mode** to
+   **Reject**.
+3. Pick the device under **Device** (wireless devices online now) or type its MAC (`00:00:5e:00:53:21`), press **Add**.
+4. Repeat on every band the device could use, then Apply (the wireless restarts).
+
+**The settings.** Per band:
+
+| Setting | What it does | Default |
+|---|---|---|
+| Enable MAC Filter | Off: no filtering. | Off (`wlN_macmode` `disabled`) |
+| MAC Filter Mode | **Accept**: only the devices in the list can connect. **Reject**: the devices in the list cannot connect. | Accept (when first turned on) |
+| List (Device, MAC address) | Up to 64 entries per band; names come from the Devices page. | Empty |
+
+**Limits and gotchas.**
+
+- **Accept with an empty list is refused**: it would cut off every wireless device on that band.
+- **A MAC filter is not access control.** A device can change its MAC, and a phone's private address changes when the
+  private-address setting is reset. Gatekeeper (4.2) holds devices at the gate across wired and wireless.
+- Accept mode keeps out every new device, including a new phone of your own, until its MAC is added on each band.
+
+#### 4.25.5 RADIUS Setting
+
+**What it is.** The RADIUS server each radio uses when its network is set to an Enterprise mode (WPA2-Enterprise,
+WPA3-Enterprise and their mixes; 802.1X). **Enterprise Wi-Fi is available in Reaper**: the main network's security,
+including the Enterprise modes and their RADIUS server, is chosen on the **Network** menu (4.21); Employee networks there
+take their own server. This tab edits the per-radio server settings (`wlN_radius_*`) and shows, per band, whether they are
+in use: *In use: Authentication Method on this band is WPA2-Enterprise*, or *Not in use right now: ... A RADIUS server is
+used only with WPA2-Enterprise or WPA3-Enterprise*. Stock feature, Reaper page.
+
+**How to use it (enterprise Wi-Fi with a RADIUS server):**
+
+1. Set up the RADIUS server (for example on a LAN host at `192.168.50.5`, UDP port 1812) with this router as a client
+   and a shared secret.
+2. **Network** menu (4.21): open the main network, set its security to **WPA2-Enterprise** (or WPA3-Enterprise where
+   offered) and enter the server address, port and secret in its RADIUS settings. Apply.
+3. **Wireless > RADIUS Setting**: each band's line should read *In use*. If the server details here differ, set them to
+   the same values and Apply.
+4. Join a device with its user name and password (or certificate) as the RADIUS server requires.
+
+**The settings.** Per band:
+
+| Setting | What it does | Default |
+|---|---|---|
+| Server IP Address | IPv4, or IPv6 in router mode. Empty clears the server. | Empty |
+| Server Port | 1 to 65535. | 1812 |
+| Connection Secret | The shared secret, up to 64 printable characters, no double quote at either end. The field stays empty; a saved secret shows as dots, and typing replaces it. **Show password** shows what you typed. | Empty |
+
+**Limits and gotchas.** With Smart Connect grouping bands, the lead band's server is copied to the others at the
+wireless restart. Guest and portal networks do not offer RADIUS.
+
+#### 4.25.6 Roaming Block List
+
+**What it is.** A list of wireless devices the Roaming Assistant leaves alone: they are not steered between the AiMesh
+router and its nodes. The list goes to the nodes through AiMesh. Shown only when this router is the AiMesh router.
+Stock feature, Reaper page; the list is read from all three radios and written to all three, so a list that had drifted
+apart on stock no longer loses entries.
+
+**How to use it (keep a device on the main router):**
+
+1. Join the device where it should stay (near the main router).
+2. **Wireless > Roaming Block List.** Turn **Enable roaming deny list** on.
+3. Pick the device under **Device** or type its MAC address, press **Add**, then Apply (the wireless restarts).
+
+The device then stays on the router or node it chose itself; the router no longer disconnects it to push it towards a
+stronger one. Whether it later roams on its own is the device's decision.
+
+**The settings.**
+
+| Setting | What it does | Default |
+|---|---|---|
+| Enable roaming deny list | On: the listed devices are exempt from roaming steering. | Off (`rast_static_cli_enable` `0`) |
+| List (Device, MAC address) | Up to 64 devices; the same list on every radio (`wl0/1/2_rast_static_client`). | Empty |
+
+**Limits and gotchas.** The Roaming Assistant itself (threshold, or off) is on Wireless > Settings, per band. A separate
+Tweaks switch (8.2, `disable_exap`) stops the assistant disconnecting a device an AiMesh node reports as its own.
+
+#### 4.25.7 MLO
+
+**What it is.** Wi-Fi 7 Multi-Link Operation: a device connects on several bands at once. The **MLO** switch is the
+master for both MLO backhaul (AiMesh links) and MLO fronthaul (networks for clients). Below it, **Profile List** shows
+the MLO networks: the **AiMesh Wireless Backhaul** first, then each MLO fronthaul network with its status and any time
+remaining. Stock feature, Reaper page.
+
+**How to use it (turn MLO on):**
+
+1. **Wireless > MLO.** Turn the **MLO** switch on.
+2. The confirmation lists what changes on every band: radios that are off are switched on, wireless schedules are
+   switched off; Wi-Fi 7 is turned on with AES + GCMP-256 encryption. Then *Your router and node(s) in the AiMesh system
+   are going to reboot*. Confirm.
+3. The router (and its AiMesh nodes) reboot; the page returns when the router answers again.
+4. If afterwards no wireless device can join, or the dashboard's MLO row reads *Partial*, power-cycle the router (2.8).
+5. To add a network for MLO clients, press **Add a Network**: it opens the MLO wizard on the Network page (4.21). An MLO
+   fronthaul network is edited or removed there; **Modify** on its row opens that page.
+
+**The settings.**
+
+| Setting | What it does | Default |
+|---|---|---|
+| MLO | On: as above, then reboot. Off: every MLO fronthaul network goes off with it (the main network loses MLO and keeps its bands - the bands of every stored entry, and the band list is left alone when none can be read; other MLO networks are disabled), then reboot; it says so first. | Off (8.3) |
+| Wireless Setting > GO | Opens Wireless > Settings. | - |
+| Profile List | The MLO networks with Status (Active / Inactive). | - |
+| AiMesh Wireless Backhaul: Network Name (SSID), Hide SSID | **Modify** on the backhaul row opens them; 1 to 32 bytes. Apply restarts the wireless and that network only. | - |
+| Authentication Method | WPA3-Personal (shown). | - |
+| Wireless Security | The backhaul password, masked; **Show** fetches it on click. | - |
+
+**Limits and gotchas.** While MLO is on, Wireless > Settings refuses to switch a radio off and holds the scheduler off.
+With MLO on, the three AiMesh backhaul carriers are one link set (4.10.13). A change of the MLO switch always reboots.
+
+#### 4.25.8 Smart Connect Rule
+
+**What it is.** **Network Tools > Smart Connect Rule** sets how Smart Connect (band steering) moves devices between the
+bands that share one network name. The rules apply only to bands in the Smart Connect group; a band outside it shows
+`- -` (*Not in the Smart Connect group*), which is normal, and its settings come back when it is added. 6 GHz is left
+out of the group by default on some models. Wireless clients per band are on **System Log > Wireless Log**. Stock
+feature (Broadcom band steering), Reaper page; three stock faults are not carried (load balance could not be turned
+off, a capability choice piled bits onto the previous ones, and Restore defaults also reset the TX chain mask).
+
+**Smart Connect on or off.** On these models the main network is a Network-menu profile; the page then says so and
+**Open the Network page** opens it, where the bands of the main network are chosen (4.25.1). On a model without it,
+**Turn on** / **Turn off** switches Smart Connect here and restarts the wireless.
+
+**How to use it.** Change a value in a band's column, Apply (the wireless restarts). **Restore defaults** puts every rule
+back to its factory value, asks first and restarts the wireless.
+
+**The settings.** Per band in the group:
+
+| Setting | What it does | Default |
+|---|---|---|
+| **Steering trigger** - when a band starts moving its devices to another band | | |
+| Load balance | On: steer to balance load; the threshold rows below are greyed. | - |
+| Bandwidth utilisation | Steer when the band is busier than this, 0 to 100 %. | - |
+| RSSI | Steer a device whose signal is Less or Greater than the value, -100 to 0 dBm. | - |
+| PHY rate less than / greater than | Steer a device whose link rate is below / above the value, 0 to 11530 Mbps. | - |
+| Wireless mode | Which devices may be steered: All, 802.11ac/ax only, 802.11a/b/g/n, 802.11ax only, 802.11a/b/g/n/ac. | - |
+| **Device selection** - which devices are moved | | |
+| RSSI, PHY rate less than / greater than, Wireless mode | As above, choosing the devices to move. | - |
+| **Target bands** - where moved devices go | | |
+| Target 1, Target 2 ... | The other bands in order of preference; from the second choice on, `-` ends the list. | - |
+| Bandwidth utilisation, Wireless mode | When a band qualifies as a target. | - |
+| **Bounce detection** - stops a device being moved back and forth | | |
+| Window time, Counts, Dwell time | Within the window (s), a device moved this many times is left where it is for the dwell time (s); 0 to 9999. | 60 s, 2, 180 s |
+
+**Limits and gotchas.** Every Apply restarts the wireless. Values out of range are refused before anything is sent. A
+device that keeps its own band choice (many do) may ignore steering.
+
+### 4.26 System Log
+
+The **System Log** menu holds the router's read-out pages: **General Log**, **Wireless Log**, **DHCP leases**,
+**IPv6**, **Routing Table**, **Port Forwarding**, **Connections** and **Long-Term Storage**. All are Reaper pages; apart
+from the static-route editor on Routing Table and the settings at the foot of General Log they only read. DHCP leases,
+IPv6, Routing Table, Port Forwarding and Connections are shown in router mode only; IPv6 only while IPv6 is enabled.
+
+#### 4.26.1 General Log
+
+The system log, with **Find** / **Exclude**, **Saved exclusions** and the **Log settings**: section 2.12 describes the
+page in full, with the tags Reaper writes.
+
+**Auto refresh** reloads the log every 10 seconds while the page is in view. It is on the first time; after that the
+page keeps your choice in the browser (from the image after v3.8.0 - before, it switched itself back on at every
+visit). A private window cannot keep the choice, so there it starts on.
+
+#### 4.26.2 Wireless Log
+
+**What it is.** The devices connected to each radio, per network, with signal and link rate; Reaper's page, replacing
+the stock text dump.
+
+**Two addresses for one Wi-Fi 7 device.** A Wi-Fi 7 phone or PC joins a radio with a link address that can differ
+from the device's own address. This page reads the radios, so it lists the link address; the Devices page, DHCP
+leases and Gatekeeper list the device's own address. The name is the same in both places. Switching off the
+phone's private (random) address does not change this.
+
+**How to use it.**
+
+1. Open **System Log › Wireless Log**. Each radio has a card: **Channel**, **Channel use** and **Mode** in its
+   heading, *This radio is off.* when it is.
+2. Under each radio the networks it carries are listed by name and type (*Main network*, *Guest Network*, *IoT
+   Network*, *Guest Portal*, *Multi-Link Operation (MLO)* and the other Network-page profiles); the radio's own
+   *Primary BSS (mesh backhaul)* carries AiMesh nodes, marked *AiMesh Node*.
+3. Each client row: **Name** (the device label, 4.8.1), **IP address**, **MAC address**, **RSSI** (signal in dBm), **Rx / Tx
+   Mbps**, **Connected** (how long), **Link** (spatial streams, PHY and channel width) and **Flags**. The list opens
+   sorted by signal, strongest first; click a column heading to sort another way (kept in your browser).
+4. **Refresh every** *Off* / 3 s / 5 s / 10 s (10 s until you pick one; your pick is kept in your browser). **Refresh**
+   reads once now. Reading stops while the browser tab is hidden.
+5. **Show driver details** under **Driver details** opens the wireless driver's own low-level dump, for
+   troubleshooting (*The driver returned no details.* when it has none).
+
+**Flags**: P power save, S short guard interval, T STBC, M MU-MIMO, A associated, U authorised. A client that is
+associated but not authorised (no U) has not finished the key exchange: a wrong Wi-Fi password, or a device stuck
+mid-join.
+
+**When to use it.** To see which band and network a device is on, whether it has a usable link rate, and whether a
+device that cannot get online is associated at all. For the history of a device's signal, use Wireless Quality
+(4.10.12).
+
+#### 4.26.3 DHCP leases
+
+**What it is.** Every address the router's DHCP servers have handed out, on the main LAN and on every guest or VLAN
+network, with the time left on each lease.
+
+| Column | Shows |
+|---|---|
+| **Name** | The name you gave the device on the Devices page; empty if you have not named it (4.8.1) |
+| **Hostname** | The name the device sent; else the maker of its network card; `Private-Address` for a randomized MAC |
+| **IP address** / **MAC address** | The lease |
+| **Lease time left** | Days, hours and minutes; *Address set on the device (no DHCP)* for a device on a DHCP network that is active but holds no lease, because its address was typed in on the device itself |
+| **VLAN** | The network the lease belongs to; shown only when a lease on a guest or VLAN network exists |
+
+The pill counts the leases. Click a heading to sort (kept in your browser); rows with the same value fall back to
+address order. **Refresh** asks the DHCP servers for fresh times and reloads the page; the button shows *Working...*
+until the new list is there (about a second, longer on a big network).
+
+**DHCP leases kept across a restart (v3.8.0).** The DHCP server keeps its lease lists in RAM, so after a reboot a
+device that still held a lease was missing from this page, the Devices page and every name lookup until it renewed,
+which for a wired device can take half a day. The router now keeps a copy in flash, `/jffs/reaper/leases/` (root
+only), together with the names devices announced:
+
+- the copy is written when the set of leases changes, at least hourly while the times change, and at every reboot or
+  shutdown, before the services stop;
+- at start the copy is put back before the DHCP servers start, only where no live list exists, and only if every line
+  of it is well formed (a damaged copy is not restored);
+- the lists hold the time **left** on each lease, not an expiry date, so no clock is needed to restore them. The time
+  the router was off is not subtracted: a device that left while the router was off keeps its row until that time
+  runs out.
+
+The result: every device that still holds a lease is listed and named right after a restart. A row with *Address set
+on the device (no DHCP)* is now almost always a device with a typed-in address.
+
+**There is no Remove button.** A DHCP server has no way to make a device ask for a new address at once (the
+FORCERENEW message exists but almost no device supports it), so removing a lease would only hide a device that still
+uses its address until it next renews. To move a device to another address, reserve one on the LAN page or with **Pin
+IP** on the Devices page (4.8.2); it moves at its next renewal, or at once if you reconnect it.
+
+#### 4.26.4 IPv6
+
+Shown while IPv6 is enabled (*IPv6 is not enabled.* otherwise). Three cards:
+
+- **IPv6 configuration**: the router's IPv6 connection as the router reports it (connection type, addresses, prefix,
+  DNS servers), one item per row.
+- **IPv6 clients**: each device with its **Name**, **Hostname** (4.8.1), **MAC address** and every **IPv6 address** the router
+  has seen it use, one per line.
+- **IPv6 firewall pinholes**: the inbound IPv6 openings devices asked for over UPnP IGD2: **Protocol**, **Remote
+  address** / **port**, **Local address** / **port**. *Pinholes are off (UPnP IGD2 setting).* when the setting
+  `upnp_pinhole_enable` is off. Shown on builds with UPnP IGD2 only.
+
+**Refresh** reads again. Use it to check that a device has a global IPv6 address, and which address to use for a
+firewall rule or a ping test.
+
+#### 4.26.5 Routing Table
+
+Two tabs.
+
+**Routing table (read-only).** Every routing table on the router and the rules that choose between them, for IPv4 and
+IPv6: the **rules** (**Priority**, **Rule**, **Table**) in the order the kernel consults them, then each table in that
+order (**Main table**, **Default table**, each VPN client's table, Policy Routing's tables), with **Destination**,
+**Gateway**, **Interface**, **Source address**, **Metric** and **Origin / scope**. **Show the local table** adds the
+table of the router's own addresses, hidden by default. The stock page showed the main IPv4 table only, which hid
+every VPN Director and Policy Routing route (4.4, 4.20.2); this one is where to check that a rule points at the table
+you expect.
+
+**Static routes.** Routes to networks behind another router on your LAN or WAN (a lab router, a second site behind a
+VPN appliance).
+
+1. Switch **Enable static routes** on.
+2. Fill **Network/Host IP**, **Netmask**, **Gateway**, **Metric** (0-999, optional) and **Interface**: *LAN* (a
+   gateway on your LAN), *WAN* / *MAN* (the provider side), *VPN* (the PPTP / L2TP client's interface).
+3. **Add**. **Edit** loads a row back into the form; **Delete** removes it.
+4. **Apply**. The page asks first: the LAN and the Internet connection restart for about 10 seconds.
+
+The page refuses a network address with bits outside its netmask, a duplicate, and a list that would not fit: up to
+64 routes, and the list must stay under about 990 bytes (the counter shows rows and bytes; the router's settings
+store silently drops a longer value, so the page refuses it instead). **Discard** drops unsaved edits.
+
+Example: a lab network `198.51.100.0/24` behind a router at `192.168.50.2` on your LAN: Network/Host IP
+`198.51.100.0`, Netmask `255.255.255.0`, Gateway `192.168.50.2`, Interface *LAN*. The lab router needs a route back
+to your LAN (or NAT) as well.
+
+#### 4.26.6 Port Forwarding
+
+**What it is.** The port forwards in force right now, read-only:
+
+- **Port forwarding rules**: the forwarding (DNAT) rules in the firewall, with **Source**, **Protocol**, **External
+  port**, **Forward to**, **Local port** and **Created by**: *Port forwarding* (your rules on WAN › NAT and Port
+  Forwarding, 4.23) or *Gatekeeper (held device page)* (the redirect Gatekeeper uses to show a held device its page,
+  4.2.3).
+- **UPnP, NAT-PMP and PCP**: the forwards devices opened themselves, with **Description** and **Time left**. *UPnP is
+  off, so no device can open ports.* when UPnP is off.
+
+Use it to confirm a forward you made is active, and to see what a game console or a NAS opened without asking. To
+change a rule, use WAN › NAT and Port Forwarding; to stop devices opening ports, switch UPnP off there.
+
+#### 4.26.7 Connections and Long-Term Storage
+
+**Connections** is the live flow explorer (4.9). **Long-Term Storage** chooses where history is kept and which datasets
+are collected (4.11).
+
+### 4.27 Administration
+
+The **Administration** menu holds the router-wide settings. Its tabs, in menu order:
+
+| Tab | Page | Owner | Section |
+|---|---|---|---|
+| Operation Mode | `Advanced_OperationMode_Content.asp` | Stock | Below (shown unless the model hides the mode switch) |
+| System | `Reaper_System.asp` | Reaper page, stock settings | 4.27.1 to 4.27.6 |
+| DNS Failover | `Reaper_Failover.asp` | Reaper | 4.14a, 4.14b (routing modes only) |
+| Firmware Upgrade | `Reaper_Firmware.asp` | Reaper | 4.14 |
+| Backup & Restore | `Reaper_Backup.asp` | Reaper | 4.27.7 |
+| System Temperature | `Advanced_PerformanceTuning_Content.asp` | Stock | Only on a model with fan control; none of the current models has it |
+| Feedback | `Feedback_Info.asp` | Stock | Only where the feedback feature is built; it is not built on the current models |
+| SNMP | `Reaper_SNMP.asp` | Reaper page, Merlin agent | 4.27.8 |
+| Tweaks | `Reaper_Tweaks.asp` | Reaper | 4.17 and 4.27.9 |
+| Diagnostics | `Reaper_Diag.asp` | Reaper | 4.13 |
+| Data Export | `Reaper_Analytics.asp` | Reaper | 4.11 |
+
+**System Info** is a menu of its own (4.27.10). `Reaper_SecBanner.asp` is not a page (4.27.11).
+
+**Operation Mode** is the stock page that switches the router between the operation modes the model offers (wireless
+router and the others). The mode decides which menus exist: in a mode that does not route (access point, repeater,
+media bridge), Parental Controls, the Firewall, Traffic Manager, DNS Failover and the other routing features are
+hidden, as on stock.
+
+#### 4.27.1 System: how the page works
+
+**What it is.** Reaper's replacement for the stock System page (`Advanced_System_Content.asp`, which no longer
+ships). Every setting the stock page posted is here, under the same nvram keys, in five tabs: **Login and access**,
+**SSH**, **Time and NTP**, **Hardware** and **Maintenance**. A tab whose panels do not apply to the model or the
+operation mode is hidden.
+
+- **Apply** (top right) saves every tab at once. It posts only the settings that differ from what the router holds,
+  and restarts only the services those settings need: the time service for the time zone, NTP and the reboot
+  schedule; SSH for the SSH settings; the LEDs; USB hibernation; the web server for the protocol and the ports;
+  the firewall for remote access, access restrictions, SSH, the WAN-down notice and the local NTP server.
+  A change that needs nothing restarted is only saved.
+- **Unsaved changes: N** counts the edited settings; each tab with an edit carries a dot. **Discard** reloads the page.
+- A setting that fails its check opens its tab, marks the row in red and names the rule. Nothing is saved until every
+  check passes.
+- A panel that fails to load says so (*This section did not load, so Apply leaves its settings unchanged*). Apply then
+  leaves that panel's settings as they are rather than posting blanks.
+- Changing the **web protocol or a web port** restarts the web server; the page follows the interface to its new
+  address after about 10 seconds.
+- Changing the **USB mode** asks first and reboots the router.
+
+The header pill shows the time zone in effect (amber while none is chosen).
+
+#### 4.27.2 System > Login and access
+
+**What it is.** The router login, the web interface on the LAN, its certificate, web access from the internet and the
+list of addresses allowed to reach the interface and SSH.
+
+**How to use it: change the login**
+
+1. Open **Administration > System**, tab **Login and access**, panel **Router Account**. The current login name is
+   shown; press **Change login**.
+2. Enter the **Current login password** (not asked while the password is still the factory one).
+3. Enter the **New login name** and the **New password** twice. Press the box's own **Apply**.
+4. The router saves the account and signs you out. Sign in with the new name and password.
+
+The new password is also the SSH password (4.27.3). The login name is also the SNMPv3 user name (4.27.8) and the
+first account of the USB file services (4.28.2), so those follow the change.
+
+**Rules for the login.** Name: 2 to 32 letters, digits, `-` or `_`, starting with a letter or digit; not `root`,
+`guest` or `anonymous` in any case; the sign-in compares the name exactly (2.3). Password: 5 to 32 printable ASCII
+characters, not starting or ending with `"`, not equal to the login name and not the factory default. On a model that
+reports the secure-default flag the password needs 10 or more characters with a letter, a digit and a symbol. A wrong
+current password is refused; repeated failures sign you out as the login page does.
+
+**The settings**
+
+| Setting | What it does | Default |
+|---|---|---|
+| Router Login Name / **Change login** | The admin account for the web interface and SSH (`http_username`, `http_passwd`). | `admin` / `admin` (8.3) |
+| Enable Login Captcha | Shows a CAPTCHA on the login page to slow password guessing (`captcha_enable`). Shown where the model offers it. | Off |
+| Web access protocol | HTTP, HTTPS, or HTTP + HTTPS on the LAN (`http_enable` 0 / 1 / 2). Greyed out at HTTP on a model without HTTPS. | HTTP + HTTPS |
+| HTTP LAN port | Port of the plain-HTTP interface (`http_lanport`), 1 to 65535. Hidden with HTTPS only. | 80 |
+| HTTPS LAN port | Port of the HTTPS interface (`https_lanport`), 1 to 65535; the link beside it opens that address. Must differ from the HTTP port. | 8443 |
+| Auto Logout | Minutes of inactivity before the session ends (`http_autologout`); 0 keeps it open, otherwise 10 to 999. Applies to Reaper and stock pages alike. | 30 |
+| Installed server certificate | Issued to, Issued by and Expires of the web interface certificate (HTTPS models). Read only. | - |
+| Export Server Certificate | Downloads the certificate with its key (`cert_key.tar`). | - |
+| Export root certificate | Downloads the root certificate (`cert.crt`) to install as trusted on your computers. | - |
+| Renew server certificate / Renew root certificate | Generates a new self-signed certificate (the root renewal asks first). The web interface reloads; sign in again. | - |
+| Enable Web Access from WAN | Opens the web interface on the WAN (`misc_http_x`). Router mode only. On an HTTPS model it is HTTPS only; switching it on while the LAN protocol is HTTP only changes the protocol to HTTP + HTTPS. | Off |
+| HTTPS Port of Web Access from WAN | The WAN port (`misc_httpsport_x`), 1024 to 65535; must differ from the SSH port while SSH is on. (`misc_httpport_x`, 8080, on a model without HTTPS.) | 8443 |
+| Reachable at | The address the interface answers at from the internet: the DDNS host name when DDNS is on, else the WAN address. Read only. | - |
+| Enable Access Restrictions | Only the listed addresses may open the web interface or SSH (`enable_acc_restriction`, `restrict_rulelist`; the legacy `http_client` and `http_clientlist` are kept in step). The list takes IPv4 addresses, and **IPv6 access to the web interface and SSH is blocked while this is on** (otherwise any device could go around the list over IPv6); the page says so, and asks first when you are connected over IPv6 yourself. Router mode only. | Off |
+| Address list | Up to 4 entries: an IPv4 address or subnet (`192.168.50.10`, `192.168.50.0/24`), each with **Enabled**, **Web interface** and **SSH** ticks. | Empty |
+
+The certificate buttons shown depend on the certificate type chosen on **WAN > DDNS** (4.23): with a Let's Encrypt
+certificate only the server certificate can be exported, and with an imported certificate the root certificate cannot
+be renewed here. With the protocol at HTTP only, the renew buttons are hidden. The link
+**Manage the certificate on the DDNS page** opens that page.
+
+**Examples**
+
+- Admin only over HTTPS on port 8443: protocol **HTTPS**, HTTPS LAN port `8443`, **Apply**. The browser moves to
+  `https://192.168.50.1:8443/`. Install the exported root certificate on your computer, or accept the warning once.
+- Only one management PC: **Enable Access Restrictions** on, add `192.168.50.10` with **Web interface** and **SSH**
+  ticked, **Apply**. Every other device on every network now gets no answer on the web and SSH ports.
+
+**Limits and gotchas**
+
+- Keep **Enable Web Access from WAN** off (2.13). The Firewall Status tab's exposure card (4.1.1) lists what is open.
+- An access restriction list needs at least one enabled entry with **Web interface** ticked; the page refuses one
+  without, because it would lock everyone out of the interface.
+- The access restriction is enforced by the firewall on the web ports and the SSH port, from every side, the LAN
+  included. Its addresses are IPv4 only, and once the list holds an entry, the web interface and SSH are refused over
+  **IPv6** altogether (the IPv6 rule ends in a drop with no entry that could match).
+- A device whose address changes falls out of the list. Pin it first (4.8.2).
+- The certificate buttons and a protocol or port change all restart the web server; open sessions end.
+
+#### 4.27.3 System > SSH
+
+**What it is.** The router's SSH server (dropbear, from Asuswrt-Merlin). It gives a root shell, and SFTP: an
+`sftp-server` ships in the image, so files on a USB disk can be copied over SSH without FTP. No Telnet server ships
+at all (8.3).
+
+**How to use it: allow SSH with a key, from the LAN only**
+
+1. On your computer, make a key pair if you have none (`ssh-keygen -t ed25519`) and copy the one line of the
+   **public** key (`~/.ssh/id_ed25519.pub`).
+2. Open **Administration > System**, tab **SSH**. Set **Enable SSH** to **LAN only**.
+3. Leave **SSH Port** at 22 or choose another (1 to 65535, not a web or OpenVPN server port).
+4. Paste the public key line into **Authorized Keys** (one key per line).
+5. Switch **Allow Password Login** off, so only the key is accepted. The page refuses this with no key present.
+6. Press **Apply**, then connect: `ssh admin@192.168.50.1` (the router login name, 4.27.2).
+
+**The settings**
+
+| Setting | What it does | Default |
+|---|---|---|
+| Enable SSH | **No**, **LAN only** (`sshd_enable` 2) or **LAN and WAN** (`1`). The WAN choice exists in router mode only; in other modes a stored `1` reads as LAN only. | No |
+| SSH Port | The port SSH listens on (`sshd_port`). | 22 |
+| Allow Password Login | Accept the router password as well as keys (`sshd_pass`). Off = keys only. | On |
+| Allow SSH port forwarding | Lets an SSH client open local and remote tunnels through the router (`sshd_forwarding`). | Off |
+| Authorized Keys | Public keys allowed to log in, one per line (`sshd_authkeys`; written to root's `authorized_keys` when SSH starts). | Empty |
+| Idle Timeout | Minutes before an idle shell session is closed (`shell_timeout`, stored in seconds); 0 keeps it open, otherwise 10 to 999. Shown even with SSH off. | 20 (1200 s) |
+
+**Examples**
+
+- SFTP to a USB disk: `sftp admin@192.168.50.1`, then `cd /mnt/<volume label>`.
+- A non-standard port: SSH Port `2222`, then `ssh -p 2222 admin@192.168.50.1`.
+
+**Limits and gotchas**
+
+- **LAN and WAN** puts a root login on the internet. Do not use it (2.13); a VPN into the LAN is the safer path. When
+  it is on with the IPv6 firewall, Reaper drops a flood of new connections from one /64 (2.9).
+- Combine SSH with **Enable Access Restrictions** (4.27.2) and tick **SSH** on the entries that may use it.
+- With the Security Review on (2.9), a change to the authorized keys is reported as a change.
+- The idle timeout ends a shell left open; a running copy over SFTP is not idle.
+
+#### 4.27.4 System > Time and NTP
+
+**What it is.** The time zone, its daylight-saving rule, the time servers and an optional NTP server for the LAN.
+The router's clock drives every schedule (reboot, Parental Controls, Wallguard service schedules, the firmware check).
+
+**How to use it: set the time zone and NTP**
+
+1. Open **Administration > System**, tab **Time and NTP**.
+2. Choose the **Time Zone**. A zone with daylight saving shows two more rows, **DST start** and **DST end**
+   (month, week, weekday, hour), pre-filled from the bundled zone table. Change them only if your region differs.
+3. In **NTP Server** keep `pool.ntp.org` or pick `time.nist.gov` or `time.cloudflare.com` from the list; add a
+   **Secondary NTP server** if you want a fallback. A host name or an IPv4 address.
+4. Optional, router modes only: **Enable local NTP server** serves time to the LAN; **Intercept NTP client
+   requests** then answers every NTP request passing the router, so devices with hard-coded servers stay in sync.
+5. Press **Apply**. The header pill shows the zone.
+
+A reminder appears under the zone when it is more than an hour away from your browser's own offset.
+
+**The settings**
+
+| Setting | What it does | Default |
+|---|---|---|
+| Time Zone | The stock zone list (`time_zone`). A zone with DST sets `time_zone_dst` to 1. | `GMT0`; set from the browser at the first password change (2.3) |
+| DST start / DST end | The daylight-saving rule (`time_zone_dstoff`, e.g. `M3.2.0/2,M10.5.0/3`). Start and end may not be the same day. | From the zone table |
+| NTP Server | Primary time server (`ntp_server0`). | `pool.ntp.org` |
+| Secondary NTP server | Second time server (`ntp_server1`). | Empty |
+| Enable local NTP server | The router answers NTP on the LAN (`ntpd_enable`). Routing modes, where the model has it. | Off |
+| Intercept NTP client requests | Redirects LAN NTP traffic to the router's server (`ntpd_server_redir`). Shown while the local server is on. | Off |
+
+**Limits and gotchas**
+
+- Until the first successful sync after a boot the clock is not trusted: the Parental Controls page warns, Wallguard
+  keeps scheduled services blocked (4.3.3.6), and certificate checks can fail. The diagnostics report warns when the
+  clock never synchronised (2.10).
+- Warden's **Also filter the router itself** exempts NTP (UDP 123), so it cannot stop the sync (4.3.1).
+- The local NTP server's switch also restarts DNS and the firewall.
+
+#### 4.27.5 System > Hardware
+
+**What it is.** LEDs and buttons, power and memory, and the USB port behaviour. Each row appears only on a model that
+has the hardware; the tab is hidden when none applies.
+
+| Setting | What it does | Default |
+|---|---|---|
+| Enable LEDs | All front LEDs on or off (`AllLED`). | On |
+| WPS Button behavior | What the WPS button does: **WPS**, **Wi-Fi on/off** or **LED on/off** (`btn_ez_radiotoggle`, `btn_ez_mode`). Shown when the model offers more than one choice. | Model default |
+| Boost key | What the boost button does: **LED on/off**, **Aura RGB** or **DFS channels** (the last only with a DFS region) (`turbo_mode`). Models with a boost key. | Model default |
+| Power Save Mode | **Performance**, **Auto** or **Power Save** (`pwrsave_mode`). Models that offer it. | Model default |
+| Maximum page cache ratio | Share of memory the kernel may use as file cache, 5 to 90 % (`pagecache_ratio`). Models that offer it. | 90 |
+| Enable PLC sleep automatically | Powerline models only (`plc_sleep_enabled`). | Off |
+| USB Mode | USB 2.0 or USB 3.0 (`usb_usb3`). Changing it asks first and reboots the router. | USB 3.0 |
+| Enable HDD Hibernation | Spins idle USB disks down (`usb_idle_enable`). | Off |
+| Spin down idle USB disks after | Idle seconds before spin-down, 60 to 9999 (`usb_idle_timeout`). | 300 |
+| Keep spinning | Disks (`sda` to `sdi`) excluded from spin-down (`usb_idle_exclude`). | None |
+
+**Limits and gotchas**
+
+- A USB mode change takes effect only through the reboot it triggers.
+- A disk that holds the long-term store (4.11) or Entware wakes often; spinning it down saves little. Exclude it.
+
+#### 4.27.6 System > Maintenance
+
+**What it is.** The reboot schedule, WAN network monitoring (dual-WAN models), custom scripts and the WAN-down notice.
+
+**How to use it: schedule a reboot**
+
+1. Open **Administration > System**, tab **Maintenance**, panel **Reboot schedule**.
+2. Switch **Enable Reboot Scheduler** on.
+3. Where the firmware offers it, choose **Weekly** or **Monthly**. Weekly: tick the **Day(s) to Reboot**. Monthly:
+   pick the **Day of month** (1 to 31).
+4. Enter the **Time to Reboot** as hour (0 to 23) and minute (0 to 59). Press **Apply**.
+
+The router reboots at that time by its own clock (4.27.4). A weekly schedule needs at least one day ticked.
+
+**The settings**
+
+| Setting | What it does | Default |
+|---|---|---|
+| Enable Reboot Scheduler | Reboots on the schedule below (`reboot_schedule_enable`). | Off |
+| Day(s) of week / Day of month | Weekly or monthly (`reboot_schedule_type`). The choice is offered only where the firmware reports monthly support; switching type clears the other schedule. | Weekly |
+| Day(s) to Reboot | Weekdays for a weekly schedule (`reboot_schedule`, seven 0/1 flags from Sunday, then HHMM). | Sunday |
+| Day of month | Day for a monthly schedule (`reboot_schedule_month`, DD then HHMM). | 1 |
+| Time to Reboot | Hour and minute. | 03:00 |
+| DNS Query / Resolve Hostname | Network monitoring: the WAN is judged by a DNS lookup of this name (`dns_probe`, `dns_probe_host`). Dual-WAN models in router mode; the same switches as WAN > WAN Ports (4.19). | Name `dns.msftncsi.com` |
+| Ping / Ping Target | Network monitoring by ping to a host name or IPv4 address (`wandog_enable`, `wandog_target`). Same keys as 4.19. | Off |
+| Enable JFFS custom scripts and configs | Runs `/jffs/scripts` and honours `/jffs/configs` (`jffs2_scripts`). `/jffs` itself is always mounted (2.4, 2.9). | Off |
+| Enable WAN down browser redirect notice | While the WAN is down, web requests from the LAN are answered with a notice page instead of timing out (`nat_redirect_enable`). Router mode. | On |
+
+**Limits and gotchas**
+
+- A scheduled reboot ends whatever is running at that time (a USB copy, a VPN session). Pick a quiet hour; RAM-only
+  history is lost at each reboot (2.6).
+- With the WAN-down notice on, the router replaces its NAT rules with redirect rules while the WAN is down and puts
+  them back when it returns. Turn it off if a WAN outage should leave LAN traffic untouched.
+- A custom script that does not run: see *When a script seems not to run* in 2.9.
+
+#### 4.27.7 Backup & Restore
+
+**What it is.** Reaper's page for both backups and the factory reset. It replaced the stock Restore/Save/Upload
+Setting page in v2.9.8. What each file holds, sealing, and what a restore does are in **2.5**; the factory reset and
+the `/jffs` checkbox are in **8.4**. This section lists the page's controls.
+
+**The controls**
+
+| Control | What it does |
+|---|---|
+| Header chips | Model, Reaper version, and `/jffs ON` or `OFF` (amber when off). |
+| Steps 01 / 02 / 03 | **Save**, **Restore**, **Complete**. Step 03 lights up while a restore waits for its second half. |
+| **Complete restore** ribbon | Appears after the reboot of a restore that has a second half (an archive from before v3.0.6, or a settings file on the same model). One click finishes it (2.5). The same ribbon appears on the dashboard. |
+| **Download full backup** | Asks for the admin password and an optional backup passphrase (twice); downloads the `.rbk` (`.rbk.enc` when sealed). |
+| **Restore full backup...** | Picks a `.rbk` or `.rbk.enc` (up to 128 MB); asks for the passphrase of a sealed file; checks model, `/jffs` health and the archive, then restores and reboots. |
+| **Export settings** | Asks for the admin password and an optional passphrase; downloads `reaper-settings-<model>-<version>-<date>.json` (`.json.enc` when sealed). |
+| **Import settings** | Picks a `.json` or `.json.enc` (up to 12 MB). Same model: settings restore and reboot. Other model: only the Reaper half, no reboot; the page reports *Imported: N setting(s), M list(s), K rejected*. |
+| Factory default: **Restore to factory default settings while clearing all content and data logs** | Ticked by default: the reset also erases `/jffs`. Unticked: only nvram is cleared (8.4). |
+| Factory default: **Restore** | Asks for confirmation, then resets and reboots. |
+
+**How to use it**
+
+1. Before a reflash or a reset: **Download full backup**, give a passphrase, and keep the file off the router.
+2. To move your Reaper configuration to a different model: **Export settings** on the old router, **Import
+   settings** on the new one, then open Firewall and Policy Routing and press **Apply** and **Keep** (2.7).
+3. To reset: decide whether `/jffs` should survive (8.4), set the checkbox, **Restore**. Reconnect to the open
+   factory network `ASUS_xx` or a wired port and open the address the page shows.
+
+**Limits and gotchas**
+
+- Five wrong admin passwords lock exports for a minute. A lost passphrase cannot be recovered.
+- If the router has not gone down within 3 minutes of a reset request, the page says the reset was not accepted and
+  releases itself; nothing was changed.
+- The page's **?** opens 2.5 of this guide.
+
+#### 4.27.8 SNMP
+
+**What it is.** Reaper's page for the router's SNMP agent (net-snmp, from Asuswrt-Merlin). Only **SNMPv3** is
+served: v1 and v2c send the community string in clear text and are not configured at all, whatever the old
+`roCommunity` / `rwCommunity` values say (since v1.7.8). The tab shows on models built with SNMP.
+
+**How to use it**
+
+1. Open **Administration > SNMP** and switch **Enable SNMP** on.
+2. Optionally fill **System name**, **System location** and **System contact** (reported as `sysName`,
+   `sysLocation`, `sysContact`).
+3. Under **SNMPv3 user**, the **User name** is the router login name (4.27.2). Keep **Authentication** at **SHA** and
+   **Privacy** at **AES**, and enter the two passwords (8 to 64 printable characters, no spaces).
+4. Leave **Allow access from WAN** off unless a monitoring server outside your network must poll the router.
+5. Press **Apply**. The pill reads **Agent on**.
+6. Poll from the LAN, for example:
+   `snmpwalk -v3 -l authPriv -u admin -a SHA -A '<auth password>' -x AES -X '<privacy password>' 192.168.50.1 system`
+
+**The settings**
+
+| Setting | What it does | Default |
+|---|---|---|
+| Enable SNMP | Starts the agent (`snmpd_enable`). It listens on UDP 161 of the main LAN address only, and of the LAN's global IPv6 address when the router holds one. | Off |
+| Allow access from WAN | Opens UDP 161 on the WAN interface only and makes the agent answer on the WAN address (`snmpd_wan`). The agent listens on the WAN address only while that address is up, and starts again when the WAN comes up or changes address; it never listens on every interface. Over the WAN nothing can be changed by SNMP (read-only), and SNMPv3 with your passwords is still required. Before the image after v3.8.0 the switch opened the firewall but the agent answered on the LAN address only, so a server outside got no answer over IPv4. Router mode only. | Off |
+| System name / location / contact | Free text the agent reports (`sysName`, `sysLocation`, `sysContact`). | Empty |
+| User name | The router login name. Read only. | `admin` |
+| Authentication | **SHA** or **MD5** (`v3_auth_type`). | SHA |
+| Authentication password | `v3_auth_passwd`. Never sent back to the page: a stored password shows as `********`; an empty field keeps it. | Empty |
+| Privacy (encryption) | **AES**, **DES** or **None** (`v3_priv_type`). None = authenticated but unencrypted. | AES |
+| Privacy password | `v3_priv_passwd`, same rules. Hidden with Privacy None. | Empty |
+| Show passwords | Unmasks the two fields while you type. | - |
+
+**Limits and gotchas**
+
+- The agent is not created without the passwords it needs; the page refuses to enable SNMP without them.
+- Changing the router login renames the SNMPv3 user; update the monitoring server.
+- **What SNMP SET can change (from the image after v3.8.0).** The user reads the whole tree and can SET three objects only: `sysContact`, `sysName` and `sysLocation`. Everything else answers *noAccess* to a SET: interface state, the agent's own user and access tables, the tunnel tables. Stock gave the user write access to every writable object (`rwuser`), which included a module loader that loads a library by path as root; that module is no longer in the build. With **WAN access** on, nothing is writable. For a wider SET, add your own `view` / `access` lines to `/jffs/configs/snmpd.conf.add`.
+- A guest or IoT network does not reach the agent: it answers on the main LAN address only.
+
+#### 4.27.9 Tweaks: the other settings
+
+**Administration > Tweaks** (`Reaper_Tweaks.asp`) has four panels. 4.17 describes the first, **Warden** (the feed
+update schedule). The other three:
+
+**Connection tracking.** How many connections the router tracks and how long an idle one is kept. The defaults suit
+almost every network; Apply restarts connection tracking.
+
+| Setting | What it does | Default |
+|---|---|---|
+| Connection limit | Maximum tracked connections, 256 to 300000 (`ct_max`). The default is also the maximum, so it can only be lowered. If the log reports the table as full, look for a device that opens very many connections, or shorten the idle timeouts. | 300000 |
+| TCP: established | Seconds before an idle established connection is dropped, 1 to 432000 (`ct_tcp_timeout`). | 2400 |
+| TCP: SYN sent / SYN received / FIN wait / TIME wait / close / CLOSE wait / last ACK | Timeouts of connections that are opening or closing, 1 to 86400 s each (`ct_tcp_timeout`). | 120 / 60 / 120 / 120 / 10 / 60 / 30 |
+| UDP: assured / UDP: unreplied | A UDP flow is assured once replies have been seen (`ct_udp_timeout`). | 180 / 30 |
+
+**Advanced tweaks.**
+
+| Setting | What it does | Default |
+|---|---|---|
+| Redirect the login page to the router domain name | Opening the router by its IP address switches the browser to `www.asusrouter.com` (`http_dut_redir`). | Off |
+| Drop IPv6 neighbour solicitation floods on the WAN | Drops multicast neighbour solicitations arriving on the WAN, for providers that flood them (`ipv6_ns_drop`). Restarts the firewall. | Off |
+| Answer WPAD requests with an empty entry | The DHCP server answers the WPAD option with an empty value, so Windows stops searching for a proxy file (`dhcpd_send_wpad`). Restarts DNS and DHCP. | On |
+| mDNS across networks | Devices on the main network and on every network with **Main Network** ticked in Access Intranet find each other (casting, printers, AirPlay); avahi relays mDNS between those networks (`reaper_mdns_reflect`). Networks with **Set AP Isolated**, networks without intranet access and Guest Portals are left out, and the router does not answer mDNS on the last two. Routing modes. | On |
+
+**Wireless stability** (see also 8.2). For a router that freezes or drops every device at once. Switch on one at a
+time and give each a few days.
+
+| Setting | What it does | Default |
+|---|---|---|
+| Radio call timeout | How long the router waits for a radio to answer one call, 2000 to 5000 ms (`reaper_dhd_ioto`); recommended 3000. The driver's own wait is 5000 ms. Too short can make the driver give up on a radio. Applied at once, no Wi-Fi restart. | Off |
+| Keep devices that a node claims | The router no longer disconnects a device because an AiMesh node reported it joined the node (`disable_exap`); a device that really moved leaves by inactivity. | Off |
+| ASUS background DFS rule | The router stops checking radar channels in the background (`reaper_bgdfs_stock`); a later move to a DFS channel then waits for the full check (about 1 minute, 10 on weather-radar channels). Wi-Fi restarts. | Off |
+
+**Not on the page any more: Portal secret.** The Guest Portal sign-in secret has no control here. Each router makes
+a random secret of its own the first time a portal starts, and keeps it.
+
+#### 4.27.10 System Information
+
+**What it is.** A read-only Reaper page (its own menu, **System Info**) that replaced the stock `Tools_Sysinfo.asp`
+in v3.1.8. It reads the same router data as the stock page, grouped by question. Nothing on it changes a setting.
+Uptime sits in the header.
+
+| Card | What it shows |
+|---|---|
+| This router | Model, serial number, LAN MAC address, firmware, build, bootloader, wireless driver version per radio, operation mode, uptime. |
+| Processor | CPU, cores, clock, load average over 1, 5 and 15 minutes against the core count, per-core usage bars, CPU and per-radio temperatures. |
+| Memory | Used, buffers, cache and free as one bar; total, **Available** and swap. *Available* is the figure that matters: buffers and cache are handed back on demand, so a low *Free* on a busy router is normal. |
+| Storage | NVRAM used of its fixed size, and JFFS used. A full NVRAM is what stops settings saving (2.4). |
+| Network capacity | Active connections against the router's connection-tracking maximum, with the headroom left (the limit is set on Tweaks, 4.27.9); hardware acceleration state; per radio the wireless clients associated, authorised and authenticated. An off radio reads *off*. |
+| Add-on board | Model, hardware, firmware and address of an add-on board; shown only on a router that reports one. |
+| Capabilities | The features this image was built with, by name. They decide which pages and options exist, which is why a setting another model has can be absent here. |
+
+The figures refresh every 2.5 to 5 seconds while the page is open. Band labels come from each radio's band, so a
+quad-band model is labelled correctly.
+
+#### 4.27.11 The security banner
+
+`Reaper_SecBanner.asp` is not a page and has no menu entry. It is the text of the first-boot banner (2.3), fetched by
+every signed-in admin page while the login or the Wi-Fi is still at its factory value; it is never served before
+login. Opening its address shows nothing useful, and since v3.7.1 the login no longer lands on it.
+
+---
+
+### 4.28 USB Application
+
+The **USB Application** menu exists on models with USB. Its tabs: **USB Application** (the overview), **Media
+Server**, **Network Place (Samba) Share**, **NFS Exports** (only where built), **FTP Share** and **USB Disks** (4.12).
+The overview, Media Server, Samba and FTP are Reaper pages since v3.7.1; they write the stock settings through the
+stock handlers, and the stock pages they replace no longer ship (their old addresses open the new pages). The
+Printer Server and Time Machine pages are stock (4.31). Formatting, the health scan and safe removal are on **USB
+Disks** (4.12); filesystems are in 2.6.
+
+The services are off at factory (8.3). The USB application network installer is gone (1.2).
+
+#### 4.28.1 The USB Application page
+
+One card per USB service with its state (**Enabled** / **Disabled**): Network Place (Samba) Share, FTP Share, Media
+Server (on when DLNA or iTunes is on), Network Printer Server, Time Machine, 3G/4G (router mode on models with modem
+support; it opens WAN > Internet Connection) and USB Disks. A card opens its page. Below, every partition with its
+free and total space and a **read-only** tag where it is mounted read-only; the file services share these partitions.
+
+#### 4.28.2 Accounts and folder rights (Samba and FTP)
+
+**What it is.** Samba and FTP share one set of accounts and one folder tree; each page shows the same panels and sets
+that protocol's rights.
+
+- **Accounts.** The first account is the router login (tagged *router login*); it cannot be renamed or deleted here,
+  and follows the router login (4.27.2). **Add account**, **Modify account** and **Delete account** manage the others.
+  A name starts with a letter and holds letters, digits and `-`, not `root`, `guest` or `anonymous`; a password is
+  1 to 32 printable ASCII characters. The number of accounts is capped by **Maximum number of concurrent connections**
+  (stock behaviour).
+- **Folders and access rights.** For the selected account, one row per partition and per top-level folder on it, with
+  one radio per right. Samba: **Read/write**, **Read**, **No**. FTP: **Read/write**, **Write**, **Read**, **No**.
+  Changes collect as pending (**Unsaved changes: N**) and are written by **Save**; **Discard** drops them. Each
+  changed folder is saved on its own and Samba and FTP restart each time, so transfers in progress are interrupted.
+  With guest or anonymous access on, the rights grid is greyed out.
+- **Folders.** **Add folder** on a partition row creates a top-level folder; **Rename** and **Delete** act on a folder
+  row. A name holds letters, digits, spaces, `-` and `_`; one over 12 characters asks first (some Windows versions do
+  not show it). **Delete removes the folder and every file in it**; type `DELETE` to confirm. A read-only partition
+  offers no folder actions.
+
+#### 4.28.3 Network Place (Samba) Share
+
+**What it is.** The SMB file server (Samba 4, from Asuswrt-Merlin) sharing the USB disks with Windows, macOS and
+Linux. Shares are named after their folder (4.12). A refused SMB login is written to the system log with the user,
+the client's address and the reason; successful logins are not logged.
+
+**How to use it: share a USB folder over SMB with a password**
+
+1. Plug the disk in; check it on **USB Disks** (4.12).
+2. Open **USB Application > Network Place (Samba) Share**. Switch **Enable Share** on; leave **Allow guest login** off.
+3. Keep **Samba protocol version** at **SMB2 + SMB3**, or choose **SMB3 only (encrypted)** if every client is recent.
+4. Press **Apply** and confirm. Samba starts.
+5. Under **Accounts**, **Add account**: name `family`, a password twice, **Add**.
+6. Select `family`; under **Folders and access rights**, **Add folder** on the partition, name `Photos`, then set
+   `Photos` to **Read/write** and the other folders to **No**. Press **Save**.
+7. Connect: `\\192.168.50.1\Photos` on Windows, `smb://192.168.50.1/Photos` on macOS, with the account's name and
+   password.
+
+**The settings**
+
+| Setting | What it does | Default |
+|---|---|---|
+| Enable Share | Starts Samba (`enable_samba`). Saved with Apply after a confirmation. | Off |
+| Allow guest login | Anyone on the LAN reaches every share without a password (`st_samba_mode` share mode). Asks first. Not offered in Korean-territory units. | Off (accounts) |
+| Device Name | NetBIOS name (`computer_name`), up to 15 letters, digits and `-`, stored in upper case. Empty = the router's LAN host name. | Empty |
+| Work Group | Windows workgroup (`st_samba_workgroup`), up to 15 characters, upper case. | `WORKGROUP` |
+| Samba protocol version | **SMB2 only**, **SMB2 + SMB3**, **SMB3 only (encrypted)** (`smbd_protocol` 1 / 2 / 3). | SMB2 + SMB3 |
+| Maximum number of concurrent connections | 1 to 99 (`st_max_user`). Shared with FTP; also the account cap. | 5 |
+| Simpler share names | Shares named after the folder without the disk name (`smbd_simpler_naming`). | On |
+| Force as master browser | Samba claims the network browse master role (`smbd_master`). | Model default |
+| Set as WINS server | Samba acts as a WINS server (`smbd_wins`). | Off |
+
+Apply restarts Samba, FTP and DNS.
+
+**Limits and gotchas**
+
+- Guest login opens every share to every LAN device, and the firmware maps share guests to the admin account (4.11).
+  Do not use it on a disk that holds the long-term store.
+- **SMB3 only** refuses every client that cannot speak SMB3 (Windows 7 and many older players and NAS boxes).
+- Samba's Spotlight search is off (v3.7.2).
+
+#### 4.28.4 FTP Share
+
+**What it is.** The FTP server (vsftpd, from Asuswrt-Merlin). The page warns that FTP sends passwords and files
+unencrypted unless TLS is on, and links to SSH, where SFTP is encrypted (4.27.3).
+
+**How to use it: FTP with TLS**
+
+1. Open **USB Application > FTP Share**. Switch **Enable FTP** on; leave **Enable WAN access** and **Allow anonymous
+   login** off.
+2. Keep **Enable TLS support** on (factory value).
+3. Press **Apply** and confirm.
+4. Give an account **Read/write** or **Read** on the folders it needs (4.28.2) and **Save**.
+5. Connect with a client set to **explicit FTP over TLS** on port 21 (FileZilla: *Require explicit FTP over TLS*),
+   host `192.168.50.1`. The server presents the web interface certificate (4.27.2); accept it or trust the exported
+   root certificate.
+
+**The settings**
+
+| Setting | What it does | Default |
+|---|---|---|
+| Enable FTP | Starts the FTP server on TCP 21 (`enable_ftp`). Asks first. | Off |
+| Enable WAN access | Opens TCP 21 and the passive ports `ftp_pasvport` to +30 (57530 to 57560) on the WAN, IPv4 and IPv6 (`ftp_wanac`). Asks first. Router mode. | Off |
+| Allow anonymous login | Anyone may log in without a password, with upload rights (`st_ftp_mode` share mode). Asks first. Cannot be saved together with TLS. Not offered in Korean-territory units. | Off (accounts) |
+| Enable TLS support | FTPS with the web interface certificate (`ftp_tls`). Shown on models with FTP TLS. With it on, logins and transfers must use TLS. | On |
+| Maximum number of concurrent connections | 1 to 99 (`st_max_user`). Shared with Samba. | 5 |
+| Character set on FTP Server | **UTF-8**, **Big5**, **GBK**, **Russian**, **Czech** (`ftp_lang`), for clients that send file names in a legacy code page. | UTF-8 |
+
+**Limits and gotchas**
+
+- Plain FTP clients cannot log in while TLS is on. Turning TLS off shows *TLS disabled is insecure*.
+- A port forward that sends WAN port 21 to another LAN host conflicts with the router's FTP server; the page says so.
+  Give that forward another external port.
+- With WAN access on, the port is open to every address Warden (4.3.1) does not block, and the internet can try
+  passwords. Prefer SFTP over SSH from the LAN, or a VPN.
+
+#### 4.28.5 Media Server
+
+**What it is.** Two media servers from Asuswrt-Merlin: **DLNA** (minidlna) for TVs, consoles and media players, and
+**iTunes** (DAAP, mt-daapd) for music clients. DLNA serves the main LAN only.
+
+**How to use it: serve media to a TV**
+
+1. Open **USB Application > Media Server**. In **DLNA**, switch **Enable UPnP Media Server** on.
+2. Set **Media Server Name** (a valid host name; empty or invalid = the router's name).
+3. **Media Server Path Setting**: **All Disks Shared**, or **Manual Media Server Path** to list folders: pick the
+   partition and folder, tick **Audio**, **Images** and/or **Video**, **Add**. Repeat up to 10 folders.
+4. Press **Apply**. **Media Server Status** reads **Scanning...** while the library is built, then **Idle**.
+5. On the TV, open its media or DLNA source and choose the server by its name.
+
+**The settings**
+
+| Setting | What it does | Default |
+|---|---|---|
+| Enable iTunes Server | Starts the DAAP server (`daapd_enable`). It serves the whole disk area (`dms_dir`), not the DLNA folder list. | Off |
+| iTunes Server Name | `daapd_friendly_name`; empty or invalid = the router's name. | Empty |
+| Enable UPnP Media Server | Starts DLNA (`dms_enable`) on the main LAN. | Off |
+| Media Server Name | `dms_friendly_name`; the page flags a name the router would replace. | Empty |
+| Media Server Status | **Scanning...** or **Idle**, polled every 5 s while DLNA is on. | - |
+| Rebuild the whole database at start | Full rescan at each start (`dms_rebuild`). Use once after moving many files. | Off |
+| Enable the status web page | minidlna's status page on port 8200 (`dms_web`). | Off |
+| Media Server Path Setting | **All Disks Shared** or **Manual Media Server Path** (`dms_dir_manual`). | All Disks Shared |
+| Folder list | Up to 10 rows of folder and content types (`dms_dir_x`, `dms_dir_type_x`); the stored paths may total 128 characters. **New folder** creates a folder; the picker never deletes. | Empty |
+
+Apply restarts both media servers. New files are picked up while the server runs, without a rebuild.
+
+**Limits and gotchas**
+
+- Devices on guest or IoT networks do not see the DLNA server.
+- A folder list over 128 characters is refused rather than cut (stock lost it).
+- The library database is kept on the largest writable USB volume (`.minidlna`), else in RAM.
+
+#### 4.28.6 NFS Exports
+
+`Advanced_AiDisk_NFS.asp` is the stock Asuswrt-Merlin NFS page (enable, NFS v2 legacy support, up to 64 exports of
+path, access list and options). The tab shows only on a model built with the NFS server. The RT-BE96U, RT-BE86U,
+RT-BE88U, GT-BE98 and GT-BE98 Pro are built without it, so the tab does not appear there.
+
+#### 4.28.7 A USB volume for the long-term store
+
+Long-Term Storage (4.11) can keep its history on a USB volume: choose **USB storage** there. The data is written
+under `/.reaper/` on the volume, the volume is pinned by its own id, and Wallguard can keep its block lists there.
+Anyone with Samba or FTP access to that volume can read the history, which maps every device with timestamps (2.6),
+so keep that volume off guest login and anonymous FTP, or keep the store on JFFS. Filesystem choice and USB timing:
+2.6.
+
+---
+
+### 4.29 Network Tools
+
+**Network Tools** holds Reaper's diagnostic pages: **Network Analysis**, **Netstat** and **Wake on LAN** (all Reaper
+pages since v3.4.9, replacing `Main_Analysis_Content.asp`, `Main_Netstat_Content.asp` and `Main_WOL_Content.asp`),
+plus **Smart Connect Rule** (4.25.8) and **WiFi Site Survey** (4.18).
+
+The three share one runner on the router: the page sends a tool and a target, the router checks the target (host
+name, IPv4, IPv6 or MAC address), builds the command from fixed options and runs it without a shell. One test runs at
+a time across the three pages (*Another network test is running*), each has a hard time limit, output is capped at
+256 KB, and every run is logged (`reaper_net: <tool> <target>`).
+
+#### 4.29.1 Network Analysis
+
+**What it is.** Ping, continuous ping with a latency graph, traceroute and name lookup, run **from the router**.
+
+**How to use it: ping and traceroute a host**
+
+1. Open **Network Tools > Network Analysis**. **Tool**: **Ping**. **Target**: `www.example.com` (a list offers
+   well-known DNS servers). **IP version**: IPv4. **Count**: 5. Press **Run** (or Enter).
+2. The output fills below; the **Latency** panel shows replies, loss, min, avg, max and jitter.
+3. For the path: **Tool**: **Traceroute**, same target, **Maximum hops** 30, tick **Do not resolve names** for a
+   faster run. **Run**.
+4. **Stop** ends a run early. A run started earlier (another tab, a reload) is shown when the page opens.
+
+**The settings**
+
+| Setting | What it does | Default |
+|---|---|---|
+| Tool | **Ping**, **Continuous ping (graph)**, **Traceroute**, **Name lookup (nslookup)**. | Ping |
+| Target | Host name, IPv4 or IPv6 address. | Empty |
+| IP version | IPv4 or IPv6 (ping and traceroute). | IPv4 |
+| Count | Ping: 1 to 100 packets. Continuous ping: 1 to 240 seconds, one ping a second. | 5 / 120 |
+| Maximum hops | Traceroute, 1 to 30; each probe waits 3 s. | 30 |
+| Do not resolve names | Traceroute prints addresses only. | Off |
+
+The time limits: ping count + 10 s, traceroute 10 s per hop + 10 s, name lookup 30 s; a run cut at its limit says
+*Stopped at the time limit*. Jitter is the mean difference between consecutive replies; the graph marks each lost
+reply with a tick on the axis.
+
+**Examples**
+
+- A Wi-Fi complaint at night: continuous ping, 240 s, to the provider's gateway, then to `198.51.100.1`. Loss on both
+  points upstream; loss only on the second, past the provider.
+- Name lookup of `www.example.com` shows what the router's own resolver answers, with the router's DNS settings in
+  effect (DNS page, 4.21).
+
+**Limits and gotchas**
+
+- The tests run from the router, not from a LAN device: Policy Routing rules for devices do not apply, and Warden's
+  self-filter (4.3.1) applies only when it is on.
+- Name lookup always asks the router's own resolver; there is no server field.
+
+#### 4.29.2 Netstat
+
+**What it is.** The sockets open **on the router itself** (its own services and connections). Connections passing
+through the router are on **Connections** (4.9); the page links there.
+
+**How to use it.** The page runs once when it opens with the defaults. Choose **Display listening server sockets** or
+**Display all sockets**, tick the protocols and columns, **Run**. Type in the search box to filter the rows; click a
+column heading to sort. UNIX sockets and other lines are shown as text below the table.
+
+| Setting | What it does | Default |
+|---|---|---|
+| Display listening server sockets / Display all sockets | Listening sockets only, or every socket. | Listening |
+| TCP / UDP / RAW / UNIX | Socket types to list. | TCP, UDP |
+| Program | Adds the process name and PID. | On |
+| Numeric addresses | Addresses and ports as numbers. | On |
+
+**Example.** To check that SSH listens only on the expected port after a change: listening sockets, TCP, search `22`.
+
+#### 4.29.3 Wake on LAN
+
+**What it is.** Sends a Wake on LAN magic packet to a computer on the network it is on (from the image after v3.8.0; before, on the main LAN only), and keeps a short list of devices to
+wake.
+
+**How to use it: wake a PC**
+
+1. Enable Wake on LAN in the PC's firmware (BIOS/UEFI) and network adapter settings. Use a wired connection.
+2. Open **Network Tools > Wake on LAN**. In **Device**, pick the PC (offline devices are listed first), or type its
+   MAC address, for example `00:00:5E:00:53:10`. Press **Wake**.
+3. The page confirms *Magic packet sent to 00:00:5E:00:53:10*. The PC starts if it can receive the packet.
+4. To keep it: under **Saved devices**, **Add a device** (picking the device fills the name and MAC), **Add**, then
+   **Apply**. Each saved row has its own **Wake** button.
+
+| Setting | What it does | Default |
+|---|---|---|
+| Device | The Devices page list (4.8); picking one fills the MAC fields. | - |
+| MAC address / **Wake** | Sends the packet as a broadcast on the device's own network: the router looks the MAC up in its address table, then in each network's DHCP leases, and sends on that network's bridge. The page says which network it used. A device the router has never seen on any network gets the packet on the main network, with a note. | - |
+| Saved devices | Name (up to 32 characters, no `<` or `>`) and MAC per entry (`wollist`). The list must stay under 1000 bytes; the page shows the count. **Apply** saves, **Discard** reverts. | Empty |
+
+**Entry names.** A saved entry shows the **Devices page Name** for the same MAC (4.8.1), and its own stored name only
+when the device has none. Renaming the device on the Devices page changes what this list shows; the stored name is
+not rewritten.
+
+**Limits and gotchas**
+
+- A device on a guest, IoT or VLAN network is woken on its own network (from the image after v3.8.0). The router must
+  have seen the device there: it is found by its address-table entry or its DHCP lease. If neither exists (for
+  example a device with a fixed address that has been off since the router restarted), the packet goes to the main
+  network and the page says so; start the device once so the router sees it, then it can be woken. The packet is
+  never sent on every network: that would show a device's address to networks it never joined.
+- A Wi-Fi device usually cannot be woken: its radio is off while it sleeps.
+- The list lives in nvram; keep it short.
+
+#### 4.29.4 Smart Connect Rule and Site Survey
+
+**Smart Connect Rule** (band-steering rules) is in 4.25.8; **WiFi Site Survey** is in 4.18.
+
+---
+
+### 4.30 Parental Controls: Time Scheduling
+
+**What it is.** Per-device internet schedules. Reaper's page (`Reaper_Parental.asp`, since v3.4.9) over the stock
+enforcement: the firewall drops a listed device's traffic towards the internet in the times you set, by the router's
+clock. A device is matched by its **MAC address**. Devices on the LAN stay reachable; only routed traffic is cut.
+The stock *Web & Apps Filters* and *Web History* tabs need the Trend Micro engine Reaper does not ship (1.2), so the
+menu shows this tab only. It needs a routing mode; in other modes the page says so and Apply is off.
+
+**The DNS-level alternative.** Wallguard's per-profile **Blocked services** and their schedule (4.3.3.6) block named
+services (social media, games, video) at set times while the rest of the internet keeps working. Time Scheduling
+takes the device off the internet entirely. The two combine.
+
+**How to use it: block a child's device on school nights**
+
+1. Find the device's MAC on the **Devices** page (4.8). If the phone uses a private (random) Wi-Fi address, that
+   address is the one to list; it changes if the phone forgets the network.
+2. Open **Parental Controls > Time Scheduling**. In **Device MAC address**, pick the device from the list or type
+   `00:00:5E:00:53:21`. **State**: **On schedule**. **Add**. (Adding a device switches **Enable Time Scheduling** on.)
+3. The schedule editor opens with stock's two starter windows, both off: Mon-Fri 21:00 to 07:00 and Sat-Sun 22:00 to
+   08:00. Keep **Mode** at **Block the Internet during these times**.
+4. Edit the first window: days **Sun, Mon, Tue, Wed, Thu**, **from** `21:00` **to** `07:00` (it runs past midnight
+   into the next day), and switch it on. Leave the second off or delete it.
+5. Check the week preview, press **Done**, then **Apply**. Devices that are now blocked lose their open connections.
+
+**The settings**
+
+| Setting | What it does | Default |
+|---|---|---|
+| Enable Time Scheduling | Enforces the device list (`MULTIFILTER_ALL`). Off keeps the list but enforces none of it. | Off |
+| Block all devices | Every device on every network of the router loses internet access, whatever the list says (`MULTIFILTER_BLOCK_ALL`); independent of the switch above. The router's pages stay reachable. Asks first. | Off |
+| State (per device) | **On schedule** (apply the times), **Blocked** (cut off at all times), **Off** (listed, unrestricted) (`MULTIFILTER_ENABLE` 1 / 2 / 0). A row whose MAC the router cannot use reads **Not usable** and can only be deleted. | On schedule |
+| Device | The name shown (see below); the MAC is stored in `MULTIFILTER_MAC`, the entry's own name in `MULTIFILTER_DEVICENAME` (31 characters). | - |
+| Schedule | Summary: *Internet blocked in N time window(s)*, *Internet only in N time window(s)*, *Blocked at all times* or *No times set: not restricted*. **Edit** opens the editor. | - |
+| Mode (editor) | **Block the Internet during these times**, or **Allow the Internet only during these times** (all other times blocked). | Block |
+| Time windows (editor) | Each: on/off, days, **from**, **to** (`MULTIFILTER_MACFILTER_DAYTIME_V2`). An end before the start runs past midnight; 00:00 to 00:00 is the whole day; start equal to end otherwise is refused. **Add a time window** adds one. | Two starter windows, off |
+
+The header shows the router's time and how many listed devices are active. A banner warns while the clock has not
+been set from a time server (4.27.4).
+
+**Entry names.** A row shows the **Devices page Name** for the same MAC (4.8.1); else the entry's own stored name;
+else the device's hostname; else the MAC. The stored name is never rewritten. A stored name that begins with `@` is
+the stock firmware's marker for a permission group (a group of devices from the stock account system); the page keeps
+such an entry as it is and never creates one (a leading `@` typed into a name is removed).
+
+**Examples**
+
+- Homework hours only: Mode **Allow the Internet only during these times**, one window Mon-Fri 16:00 to 18:00, one
+  Sat-Sun 09:00 to 20:00, both on.
+- Grounded for a day: set the device's State to **Blocked**, **Apply**; back to **On schedule** the next day.
+- Bedtime for every device on a guest network: **Block all devices** is all-or-nothing for the whole router; use
+  per-device rows instead.
+
+**Limits and gotchas**
+
+- Up to 16 devices (or the model's own limit), 64 windows per device and 128 windows in all; the MAC and state lists
+  must also fit nvram's 1 KB limit. The page shows the budget and refuses a change that does not fit.
+- **Allow only** with no window switched on is refused: the router would leave that device unrestricted.
+- A device that changes its private MAC, or joins over a VPN, is not matched. Gatekeeper (4.2) and Wallguard profiles
+  (4.3.3.5) are the tools for unknown devices.
+- Schedule entries the editor does not model are kept unchanged and counted under the editor.
+- If the stored lists are out of step (an older edit), the page says so; the next change rewrites all of them.
+
+---
+
+### 4.31 Other menus
+
+#### 4.31.1 AiMesh
+
+**AiMesh** (`AiMesh.asp`) is the stock AiMesh page: the mesh topology, node search and add, and per-node settings. It
+keeps the stock layout with a Reaper stylesheet (3). The menu shows on a router that can be an AiMesh router in its
+current mode. AiMesh is kept because nothing open replaces it, and its sync and discovery services are closed vendor
+binaries (1.1). Related: adding a new Reaper node (2.2), node firmware updates (4.14), backhaul parking (4.10.13), the
+roaming block list (4.25) and **Keep devices that a node claims** (4.27.9).
+
+#### 4.31.2 Traffic Manager > Internet Speed
+
+**Internet Speed** (`AdaptiveQoS_InternetSpeed.asp`) is the stock Ookla speed test, shown on models built with it
+(all current models). A test you start sends traffic to Ookla's servers; nothing runs on its own. All models use ASUS's
+102_40585 setup: 100 free tests, then 3 per 24 hours once setup is complete, and the page says when the quota is used
+up (v3.6.3). Reaper's changes are fixes only: the page loads at once inside the shell, a run no longer gives up early
+or freezes the browser, and a failed run says why. Several runs at a quiet hour give the upload figure QoS needs
+(4.5.2).
+
+#### 4.31.3 Network Printer Server
+
+`PrinterServer.asp` is the stock page, opened from its card on the USB Application page (4.28.1); it has no tab of its
+own. It switches the USB printer server on or off (`usb_printer`, off at factory) and describes the two ways to print:
+ASUS's EZ printer sharing utility and LPR. Shown on models with printer support.
+
+#### 4.31.4 Time Machine
+
+`Advanced_TimeMachine.asp` is the stock page for macOS Time Machine backups over AFP (netatalk), opened from its card
+on the USB Application page; it has no tab of its own. Settings: **Enable Time Machine** (`timemachine_enable`, off at
+factory), the target partition and a volume size limit (`tm_vol_size`). The AFP server has Reaper's CVE fixes and
+offers the DHX2 login only (v3.7.2). The backup folder is root's own on the volume.
+
+---
+
 ## 5. Efficiency and good practice
 
 1. **Know the layer order.** Traffic meets **Warden → Gatekeeper → the rules engine**, in that order, on every base chain. Use Warden for "never talk to these ranges or countries", Gatekeeper for "which devices are allowed at all", the Firewall rules for the specific policy between them, and Egress defaults for the short "this device gets no internet". Do not re-express a Warden block as a firewall rule, or a Gatekeeper block as a Policy Routing Block; one layer, one job.
@@ -2595,11 +5730,11 @@ the WAN port actually in use, resolved the way this page resolves it (v3.6.3).
 | Dreadwatch is on but shows no blocked lookups | Bastion › Dreadwatch: **Test now**, the Coverage card; log `rwarden: threat domains:` | Press **Test now**. *Blocked* means the list works and no device has looked up a listed name through this router — or they resolve elsewhere (Coverage), typically a device set to its own encrypted DNS provider: move the encryption to the router (4.3.2.8, *Encrypt at the router*). *Not blocked* means the list is not loaded yet: **Update feeds now**. *Counting is not active yet*: the next list update starts it (4.3.2.7). |
 | Wallguard: safe search or YouTube Restricted Mode not applied | Bastion › Wallguard: the profile's **Edit** (a warning under *Safe search*), **Why?** | The device has another profile (Devices and networks), the enforcement addresses have not been looked up yet (warning: they come with the next list update, or **Update lists now**), or the browser uses its own encrypted DNS (4.3.4.6). |
 | Wallguard: a blocked service still works on a schedule | The profile's schedule, the router's time (System Log › General) | Outside the schedule's ranges the service is allowed by design; check the days and that the range is not reversed. A wrong router time zone moves every range. |
-| Wallguard: a site or app stopped working | Bastion › Wallguard: **Unbreak**, pick the device | Allow the name it was refused for 24 hours or always (4.3.3.7). Several names in a row usually belong to one service; allow them one at a time. A device that must never be filtered: give it the **Bypass** profile. |
+| Wallguard: a site or app stopped working | Bastion › Wallguard › Overview: **Fix a device**, pick the device | Allow the name it was refused for 24 hours or always (4.3.3.7). Several names in a row usually belong to one service; allow them one at a time. A device that must never be filtered: give it the **Bypass** profile. |
 | Wallguard: a rule change does not take effect after the USB stick was removed | Bastion › Wallguard: the line under *Lists*; the system log (`wallguard`) | The lists live on the USB volume (Long-Term Storage, *Wallguard block lists*) and it is not mounted: the table in use stays rather than lose those names. Reattach the volume, or **Update lists now** to download into RAM. |
 | Wallguard is on but nothing is blocked | Bastion › Wallguard: the pill, *Lists*, **Why?** with a listed name | *Waiting for lists*: the first download has not finished — the WAN must be up; **Update lists now**. A list in state *failed*: its host cannot be reached. *Why?* says blocked but the device still shows ads: it resolves elsewhere (its own encrypted DNS, a VPN) or the ads share the content's host name (4.3.3.14). |
 | Encrypted DNS: a device does not connect | Bastion › Encrypted DNS: the state banner, *Refused*, the Certificate and *Where it answers* cards | *Self-signed* on the Certificate card: only Android's *Automatic* setting works — add a Let's Encrypt or uploaded certificate (4.3.4.3). A device DNS Director sends elsewhere is refused on purpose. *Not running: waiting for the router's certificate*: the web interface has no certificate yet. An address marked *could not listen here*: another service holds port 853 there. |
-| A phone or browser has no DNS after *Block encrypted DNS that goes around the router* was switched on | The device's Private DNS / secure-DNS setting | It is set to one named outside provider, which the block refuses on purpose. Set it to automatic (Android *Automatic*, the browser's default) or to the router's Encrypted DNS; or exempt the device with DNS Director *No filtering* (4.3.4.7). |
+| A phone or browser has no DNS after *Block encrypted DNS that goes around the router* was switched on | The device's Private DNS / secure-DNS setting | It is set to one named outside provider, which the block refuses on purpose. Set it to automatic (Android *Automatic*, the browser's default) or to the router's Encrypted DNS; or exempt the device with DNS Director *No redirection* (4.3.4.7). |
 | *Block encrypted DNS*: the list shows only the built-in addresses | Encrypted DNS card: the list line; log `encdns:` | The first download runs once the router is online and then daily at 05:25; *failed* keeps the previous list. **Update list now**; check that raw.githubusercontent.com is reachable from the router. |
 | Encrypted DNS: a phone has no internet away from home | The phone's Private DNS setting | It is set to *Private DNS provider hostname*, which applies on every network; the router (rightly) cannot be reached from outside. Use *Automatic* on phones (4.3.4.4). |
 | Encrypted DNS: the hostname works at home on Wi-Fi but not behind a second router | Encrypted DNS: the WAN-address note | Double NAT: the name points at the outer router. Use Android's *Automatic* setting or the Apple profile, which connect to the LAN address (4.3.4.11). |
@@ -2836,13 +5971,13 @@ not). `reaper_bgdfs_stock` `0`: background DFS scanning stays as shipped (on: `1
 when the switch goes off).
 
 **mDNS across networks** (Administration › Tweaks) — `reaper_mdns_reflect` `1`: devices on the main network and
-on every network with Access Intranet on can find each other (casting, printers, AirPlay); avahi relays mDNS between
+on every network with Main Network ticked in Access Intranet can find each other (casting, printers, AirPlay); avahi relays mDNS between
 those networks only. A network with Set AP Isolated on, a network without intranet access and a Guest Portal are left
 out, and on the last two the router no longer answers mDNS at all. Off (`0`): each network sees only its own devices.
 
-**Guest Portal secret** (Administration › Tweaks) — `reaper_cp_secret_own` `0`: the portal's sign-in secret is
-a random one the router makes for itself the first time a portal starts (the stock value is the same on every
-router); on: `1`, your own secret (8 to 32 characters) is used and kept. The secret itself is never shown.
+**Guest Portal secret** — the portal's sign-in secret is a random one the router makes for itself the first time a
+portal starts and keeps (the stock value was the same on every router). The secret is never shown. The Tweaks control
+for a secret of your own (`reaper_cp_secret_own`) was removed from the page on 2026-11-12.
 
 **Long-term storage and export** (4.11) — `reaper_store` `ram`, `reaper_store_ds` `dev,traf,watch,fwlog`,
 `reaper_store_vid` `` and `reaper_store_vname` `` (both empty until you pin a USB volume on the
@@ -2909,7 +6044,7 @@ turn it on. The key column is what to read with `nvram get` when you want to che
 | Router login | `admin` / `admin`; the setup banner stays until it and the Wi-Fi are changed (2.3) | `http_username`, `http_passwd` |
 | Web interface on the LAN | HTTP and HTTPS, HTTP on port 80, HTTPS on 8443 | `http_enable` `2`, `http_lanport` `80`, `https_lanport` `8443` |
 | Web interface from the WAN | Off (ports 8080 / 8443 when turned on) | `misc_http_x` `0` |
-| Only allow specified IP addresses | Off | `http_client` `0` |
+| Enable Access Restrictions (only the listed addresses reach the web interface and SSH) | Off | `http_client` `0` |
 | Idle logout | 30 minutes | `http_autologout` `30` |
 | SSH | Off; port 22 and password login when turned on | `sshd_enable` `0`, `sshd_port` `22`, `sshd_pass` `1` |
 | Telnet | No Telnet server ships in the image | — |
@@ -2946,7 +6081,7 @@ turn it on. The key column is what to read with `nvram get` when you want to che
 | UPnP | Off; when on: secure mode, external ports 1024 and up, IPv6 pinholes off, announcements every 900 s, the router's VPN and SSH ports protected | `upnp_enable` `0`, `upnp_secure` `1`, `upnp_min_port_ext` `1024`, `upnp_pinhole_enable` `0`, `upnp_ssdp_interval` `900`, `upnp_protect_svc` `1` |
 | Port forwarding, port triggering, DMZ | Off, off, none | `vts_enable_x` `0`, `autofw_enable_x` `0`, `dmz_ip` empty |
 | NAT passthrough | PPTP, L2TP and IPsec on; FTP, RTSP, H.323, SIP and PPPoE relay off. A protocol helper (ALG) works only on its own ports while its switch is on; FTP and PPTP addressed to the router itself (its FTP server, a forwarded FTP port, its PPTP server) always get theirs | `fw_pt_pptp`, `fw_pt_l2tp`, `fw_pt_ipsec` `1`; `nf_ftp`, `fw_pt_rtsp`, `fw_pt_h323`, `fw_pt_sip`, `fw_pt_pppoerelay` `0` |
-| NAT loopback | On | `nat_redirect_enable` `1` |
+| Redirect browsers to a notice page while the WAN is down | On | `nat_redirect_enable` `1` |
 | DDNS | Off | `ddns_enable_x` `0` |
 | DNS rebind protection | Off | `dns_norebind` `0` |
 | DNSSEC | Off (when on, unsigned replies are checked) | `dnssec_enable` `0`, `dnssec_check_unsigned_x` `1` |

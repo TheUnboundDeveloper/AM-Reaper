@@ -1,6 +1,6 @@
 # Build Provenance — from published image back to source
 
-> **Doc status:** current as of **v3.8.0** · 2026-11-15 <!--@stamp-->
+> **Doc status:** current as of **v3.8.1** · 2026-11-16 <!--@stamp-->
 
 This document lets anyone verify, end to end, that a published Reaper firmware
 image was built from exactly the source published in this repository — with
@@ -28,7 +28,7 @@ Each link is pinned and independently checkable:
 
 1. **Base** — Asuswrt-Merlin `3006.102.8-beta2`, commit
    `a7ebfa133ad7e5efc23ed6bb8ee912bc72fd00b3`, from upstream
-   `RMerl/asuswrt-merlin.ng`. Reaper changes ride the [`patches/`](../patches) series;
+   `Asuswrt-Merlin/asuswrt-merlin.ng`. Reaper changes ride the [`patches/`](../patches) series;
    upstream carry-forwards (e.g. the Merlin 3006.102.8 update that became v2.1.2) are
    **cherry-picked, not rebased**, so the base — and therefore this recipe — stays
    constant across this line's releases. (The 3006.102.10 line rebased onto
@@ -49,7 +49,7 @@ Each link is pinned and independently checkable:
 
 ```sh
 # 1. Get the pinned upstream base (includes the vendor blobs upstream ships)
-git clone https://github.com/RMerl/asuswrt-merlin.ng
+git clone https://github.com/Asuswrt-Merlin/asuswrt-merlin.ng
 cd asuswrt-merlin.ng
 git checkout a7ebfa133a          # 3006.102.8-beta2
 
@@ -128,7 +128,7 @@ fixes) were exported and **verified** to reproduce the trees above — applying
 19 carry-forward patches (`0291`–`0309`) retain their original Asuswrt-Merlin
 authorship; the Reaper-authored patches use the Reaper identity. CI reproduces
 every tree on each run. **The exported series leads the fleet:** the series runs
-to `1044` <!--@patchcount--> (v3.8.0 <!--@treever-->, RT-BE96U-only), while the newest **published** release is
+to `1056` <!--@patchcount--> (v3.8.1 <!--@treever-->, RT-BE96U-only), while the newest **published** release is
 v3.1.0 <!--@pubver-->. The sibling images (RT-BE86U / RT-BE88U / GT-BE98 /
 GT-BE98 Pro published since v2.7.6, the GT-BE19000 from v3.1.4, the ZenWiFi BQ16 from
 v3.3.2 and the BQ16 Pro from v3.3.4) are produced from their line's series plus the

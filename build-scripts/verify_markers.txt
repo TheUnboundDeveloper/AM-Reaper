@@ -1866,7 +1866,7 @@ usr/sbin/httpd|Private-Address|1
 usr/sbin/httpd|!reaper_leases.cgi
 www/Reaper_Leases.asp|!data-rm=
 usr/sbin/httpd|reaper_devnames|1
-www/reaper_util.js|hook=get_clientlist();reaper_devnames()|1
+www/reaper_util.js|hook=get_clientlist()%3Breaper_devnames()|1
 www/Reaper_LAN.asp|function hostCell(r){ return r.host ? hx(r.host) : '-'; }|1
 # 2026-11-15 (owner, Paramount+ field report) Wallguard: the device MAC is recorded for every block, a CNAME block
 # is recorded under the asked name with its listed chain entry and lifted by an allow of the asked name; Unbreak
@@ -1880,3 +1880,63 @@ www/Reaper_Wallguard.asp|stat.bstat|1
 # Devices tab with blocked lookups per device (wallguard.sh devcounts). test_wallguard_tabs_20261115.py.
 www/Reaper_Wallguard.asp|reaper_wg_tab|1
 usr/sbin/httpd|devcounts %d|1
+# 2026-11-16 (docs review, image 1) the apply-token hook reads jQuery's "+" as a space before it decodes a JSON
+# save body: a network name with spaces was stored as "My+Wifi+Network". test_token_hook_plus.py.
+usr/sbin/httpd|s.replace(/\+/g,'%20')|1
+# 2026-11-16 (docs review, image 1) an OpenVPN client's Killswitch counts only while the tunnel carries the default
+# route (Redirect all or VPN Director, TUN): with Redirect No a Policy Routing rule to that client was refused
+# while the tunnel was up. rc, the Rule Status walker and the pages share the one test.
+# test_pbr_apply_script.py, test_fwsim.py (C6), test_reaper_vpnclient.py.
+sbin/rc|vpn_client%c_rgw|1
+usr/bin/reaper_fwsim|vpn_client%d_rgw|1
+usr/sbin/httpd|"omode":[|1
+www/Reaper_VPNDirector.asp|function ovKs(n)|1
+www/Reaper_VPNClient.asp|'vpn_client_enforce', 'vpn_client_if')) S.push('start_vpnrouting' + OU);|1
+# 2026-11-16 (docs review, image 1) SNMPv3: the user keeps SET for sysContact / sysName / sysLocation only
+# (group / view / access lines in place of rwuser); the module loader left the net-snmp build.
+# test_reaper_snmp_tweaks.py. rc holds the lines only on a build with snmpd.
+sbin/rc|access reaper_g|1||RTCONFIG_SNMPD
+# 2026-11-16 (docs review, image 1) guest isolation and Access Intranet pairs: only a pair with the Main Network
+# takes a network out of guest isolation; a pair between two guest networks forwards between those two only (both
+# stay closed to the router and the main LAN); a Guest Portal reaches the main LAN only when Main Network itself
+# is ticked. test_guest_isolation.py, test_mdns_reflector.py, test_portal_guest_dns.py, test_fwsim.py (G3).
+sbin/rc|(Access Intranet): devices of these networks reach each other; the router and the main network stay closed|1||RTCONFIG_MULTILAN_CFG
+# 2026-11-16 (owner) SNMP "Allow access from WAN" works: the agent also binds each WAN address that is up (the
+# firewall opened UDP 161 while the agent listened on the LAN address only) and wan_up() starts it again; SNMP and
+# its WAN access stay off at factory. test_reaper_snmp_tweaks.py.
+sbin/rc|agentAddress %s|1||RTCONFIG_SNMPD
+# 2026-11-16 (docs review, image 2) VPN pages: a switched-off client blocks nothing (the wording said its Killswitch
+# blocks); Policy Routing shows "pushed routes only" for an OpenVPN client at Redirect No and VPN Director marks a rule
+# to a client that is not in VPN Director mode; a new WireGuard peer gets an IPv6 address and ::/0 on a dual-stack
+# server; one port-clash check across OpenVPN, WireGuard and IPsec; rc says when the WireGuard server could not start.
+# test_review_2026_11_16_vpn.py, test_reaper_vpnserver.py.
+www/Reaper_VPNRouting.asp|OMODE|1
+www/Reaper_VPNServer.asp|function peerDefaults(|1
+www/Reaper_VPNServer.asp|function portClash(|1
+sbin/rc|WireGuard server did not start|1
+www/EN.dict|!client off, Killswitch blocks
+# 2026-11-16 (docs review, image 2) Wake on LAN is sent on the device's own network (the page always sent it on
+# the main network; a wake for a guest / VLAN device went nowhere): httpd finds the bridge from the ARP table or the
+# network's lease file, else the main network with a note. test_wol_auto_bridge.py.
+www/Reaper_WOL.asp|tool=wake&iface=auto|1
+usr/sbin/httpd|/var/lib/misc/dnsmasq-%d.leases|1
+# 2026-11-16 (docs review, image 2) IPv6: the Native WAN prefix length is checked on the page (empty, 0 or 48-64)
+# and the log says when no size is requested; Access Restrictions say that IPv6 access is blocked and ask first
+# when the page is open over IPv6; MLO off keeps the bands of every stored entry and never writes an empty band
+# list; the Firewall Auto refresh switches are kept per browser.
+# test_reaper_ipv6setup.py, test_reaper_system.py, test_native_wave_mlo.py, test_fw_tab_messages_2026_11_08.py.
+www/Reaper_IPv6Setup.asp|pdLenOk(|2
+sbin/rc|Requested: none|1
+www/Reaper_System.asp|String(location.hostname).indexOf(':') >= 0|1
+www/Reaper_MLO.asp|function allBands(dut)|1
+www/Reaper_MLO.asp|!firstBands(
+www/Reaper_Firewall.asp|reaper_fw_st_auto|2
+www/Reaper_Firewall.asp|reaper_fw_wt_auto|2
+# 2026-11-16 img2d: several appGet hooks are joined with %3B (httpd ends a parameter at a plain ';'); the dashboard Clients card uses the shared name helper
+www/reaper_util.js|!hook=get_clientlist();reaper_devnames()
+www/Main_ReaperDash.asp|ReaperNames.byMac(macs[i],macs[i])|1
+www/Main_ReaperDash.asp|!reaper_devnames()
+www/Reaper_VPNServer.asp|nvram_get(vpn_server1_state)%3Bnvram_get(vpn_server1_errno)%3Bnvram_get(vpn_server2_state)%3Bnvram_get(vpn_server2_errno)|1
+# 2026-11-16 img2e: System Log keeps the Auto refresh choice per browser
+www/Reaper_Log.asp|reaper_log_auto|2
+www/Reaper_Log.asp|!on('c_auto', 'change', schedule);

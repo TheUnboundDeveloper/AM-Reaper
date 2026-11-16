@@ -1,0 +1,41 @@
+From b3c973b1f0a06416b88cd28d32dd5ce973dee507 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Sun, 15 Nov 2026 17:49:03 -0500
+Subject: [PATCH] QoS: the Web/VoIP class starts with a 90% ceiling (102.8
+ line)
+
+- The HW QoS Classful profile a new or factory-reset router starts from gave the strict-priority
+  Web/VoIP class a 100% ceiling, against the page's own guidance. It now starts at 90%. A router
+  that already holds its QoS rates keeps them; QoS itself stays off at factory.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ release/src/router/shared/defaults.c | 5 +++--
+ 1 file changed, 3 insertions(+), 2 deletions(-)
+
+diff --git a/release/src/router/shared/defaults.c b/release/src/router/shared/defaults.c
+index c64aac69da..fb72fd7bec 100644
+--- a/release/src/router/shared/defaults.c
++++ b/release/src/router/shared/defaults.c
+@@ -3109,7 +3109,8 @@ struct nvram_tuple router_defaults[] = {
+ 	{ "qos_rulelist", "<Conferencing>>3478:3481>udp>>0<SIP>>5060:5061>udp>>0<Game Console>>3074>udp>>1<Steam>>27015:27030>udp>>1<BitTorrent>>6881:6889>tcp/udp>>3<Web>>80,443>tcp/udp>>0", CKN_STR4096, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },
+ 
+ 	/* reaper 2026-08-11 (owner-set profile, replaces the v3 template):
+-	 *   Q1 Web/VoIP  p   min 15  ceil 100
++	 *   Q1 Web/VoIP  p   min 15  ceil  90   (100 until 2026-11-15: the page's own guide, RQOS_45, says never give
++	 *                                         Q1 100% - a strict-priority class at 100% can starve every class below)
+ 	 *   Q2 Gaming    p   min 15  ceil  90
+ 	 *   Q3 Streaming w20 min 20  ceil  90
+ 	 *   Q4 Downloads w5  min  5  ceil  95
+@@ -3123,7 +3124,7 @@ struct nvram_tuple router_defaults[] = {
+ 	 * ORDER IS ENGINE-VISIBLE: qos_class_names is a label list, but the rules,
+ 	 * the DSCP map (rc/qos.c dscp_map) key on the
+ 	 * QUEUE INDEX -- so this list and that map must be reordered together. */
+-	{ "qos_orates", "15-100,15-90,20-90,5-95,25-95,0-0,0-0,0-0,0-0,0-0", CKN_STR1024, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },
++	{ "qos_orates", "15-90,15-90,20-90,5-95,25-95,0-0,0-0,0-0,0-0,0-0", CKN_STR1024, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },
+ 	{ "qos_class_names", "Web/VoIP,Gaming,Streaming,Downloads,Default", CKN_STR256, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },  /* reaper: HW QoS Classful editor labels; MUST match the queue identities rc/qos.c maps by index */
+ 	/* reaper QoS v3 (HW classful, qos_type 11): aggregate port shaper + per-class
+ 	 * committed rates default ON ("0" = kill-switch); DSCP trust is a policy
+-- 
+2.25.1
+

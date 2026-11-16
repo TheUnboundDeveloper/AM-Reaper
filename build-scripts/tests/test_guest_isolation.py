@@ -104,6 +104,27 @@ int main(int argc, char **argv)
 		memset(g, 0, sizeof(g)); strcpy(g[0].ifname, "br56"); strcpy(g[0].brname, "br56"); srv_fill(g, 1);
 		printf("| %s:", g[0].ifname); for (j = 0; j < g[0].nsrv; j++) printf("%s,", g[0].srvif[j]); printf("\n");
 		return 0; }
+	case 30: case 31: case 32: case 35: { /* 2026-11-15: VPN Director list argv[2], vpn_client1..5_rgw argv[3] "a,b,c,d,e" */
+		int rgw[5] = { 0, 0, 0, 0, 0 }, i;
+		if (argc > 3) sscanf(argv[3], "%d,%d,%d,%d,%d", &rgw[0], &rgw[1], &rgw[2], &rgw[3], &rgw[4]);
+		/* the reporter's two VLANs: br54 192.168.54.0/24, br55 192.168.53.0/24 */
+		g[0].sdn_idx = 3; strcpy(g[0].ifname, "br54"); strcpy(g[0].brname, "br54"); strcpy(g[0].subnet, "192.168.54.0/24");
+		g[1].sdn_idx = 4; strcpy(g[1].ifname, "br55"); strcpy(g[1].brname, "br55"); strcpy(g[1].subnet, "192.168.53.0/24");
+		n = 2;
+		if (s == 31) { strcpy(g[0].vpnif, "wgc5"); g[0].killsw = 1; strcpy(g[1].vpnif, "tun12"); }	/* kill switch on / off */
+		if (s == 32) { strcpy(g[0].ifname, "tun22"); g[0].portal = 1; n = 1; }	/* a portal on br54 */
+		if (s == 35) { g[0].subnet[0] = 0; n = 1; }	/* no IPv4 subnet known */
+		for (i = 0; i < n; i++) rg_policy_vpn(&g[i], argc > 2 ? argv[2] : "", rgw);
+		if (argc > 4) { /* print the exits instead */
+			for (i = 0; i < n; i++) { int k; printf("%s:", g[i].ifname); for (k = 0; k < g[i].npr; k++) printf("%s|%s|%s,", g[i].pr[k].ifname, g[i].pr[k].src, g[i].pr[k].dst); printf(" "); }
+			printf("\n"); return 0;
+		}
+		break; }
+	case 34: { /* rg_cidr4 */
+		const char *t[] = { "192.168.54.0/24", "10.0.0.1", "0.0.0.0/0", "1.2.3.4/33", "1.2.3.4.5", "1.2.3", "256.1.1.1", "1.2.3.4/", "1.2.3.4/24/1", "a.b.c.d", "", "1.2.3.4/-1", "255.255.255.255/32" };
+		unsigned int a; int p, i;
+		for (i = 0; i < 13; i++) { a = 0; p = -1; printf("%d", rg_cidr4(t[i], &a, &p)); if (i == 0) printf(":%08x/%d", a, p); printf(" "); }
+		printf("\n"); return 0; }
 	case 7: /* parsers */
 		printf("%d %d %d %d %d\n", rg_access_on("<0>5<0>7", 5), rg_access_on("<0>5<0>7", 7), rg_access_on("<0>5<0>7", 6),
 		       rg_access_on("", 5), rg_access_on("<12>3", 12));
@@ -126,10 +147,12 @@ try:
     check("the block compiles with -Wall -Werror", r.returncode == 0, r.stderr)
     if r.returncode != 0:
         print("\n%d check(s) failed" % len(fails)); sys.exit(1)
-    def gen(s):
-        return subprocess.run([exe, str(s)], capture_output=True, text=True).stdout
+    def gen(s, *a):
+        return subprocess.run([exe, str(s)] + list(a), capture_output=True, text=True).stdout
     def rules(txt, fam=None):
-        L = [l for l in txt.splitlines() if l.startswith("R ")]
+        # 2026-11-15: the ten Policy Routing mark exits every plain guest network carries are checked on their own
+        # (below); the exact-list checks of the earlier rules read the chain without them
+        L = [l for l in txt.splitlines() if l.startswith("R ") and " -m mark --mark " not in l]
         # filter-table rules only; the nat DNS redirect (2026-11-13) is read through nat() below
         if fam == 4: L = [l for l in L if l.startswith("R iptables ") and not l.startswith("R iptables -t nat ")]
         if fam == 6: L = [l for l in L if l.startswith("R ip6tables ")]
@@ -313,6 +336,104 @@ try:
           and "R iptables -A REAPER_GUF -i br58 -o wgs1 -m conntrack --ctstate RELATED,ESTABLISHED -j RETURN" in r4
           and "R iptables -A REAPER_GUF -o br58 -i wgc5 -j RETURN" not in r4)
 
+    # ---- 2026-11-15 (field report, v3.7.9 beta): two guest VLANs routed to OpenVPN client 1 (tun11) and WireGuard
+    # client 2 (wgc2) by VPN Director lost the Internet - REAPER_GUF knew only the Network page's VPN binding, let them
+    # out by the WAN only, and dropped everything the router routed into the tunnel.
+    VD = "<1>Guest54>192.168.54.0/24>>OVPN1<1>Guest52>192.168.53.0/24>>WGC2"
+    tr = gen(30, VD, "2,0,0,0,0"); r4 = rules(tr, 4); r6 = rules(tr, 6)
+    check("the report: br54 (VPN Director -> OVPN1) goes out by tun11, br55 (-> WGC2) by wgc2, each with its rule's source",
+          "R iptables -A REAPER_GUF -i br54 -s 192.168.54.0/24 -o tun11 -j RETURN" in r4
+          and "R iptables -A REAPER_GUF -i br55 -s 192.168.53.0/24 -o wgc2 -j RETURN" in r4, r4)
+    check("...each network only by its own client (br54 never by wgc2 through a rule, br55 never by tun11)",
+          not [l for l in r4 if l.startswith("R iptables -A REAPER_GUF -i br54") and "wgc2" in l]
+          and not [l for l in r4 if l.startswith("R iptables -A REAPER_GUF -i br55") and "tun11" in l], r4)
+    gu = [l for l in r4 if l.startswith("R iptables -A REAPER_GUF -i br54 ")]
+    check("...after the WAN exit and before the network's DROP; the WAN fallback stays (no kill switch)",
+          gu.index("R iptables -A REAPER_GUF -i br54 -o eth0 -j RETURN")
+          < gu.index("R iptables -A REAPER_GUF -i br54 -s 192.168.54.0/24 -o tun11 -j RETURN")
+          < gu.index("R iptables -A REAPER_GUF -i br54 -j DROP"), gu)
+    check("...IPv4 only (VPN Director writes IPv4 ip rules): the IPv6 chain has no rule exit",
+          not [l for l in r6 if " -s 192.168." in l or ("-o tun11 -j RETURN" in l) or ("-o wgc2 -j RETURN" in l)], r6)
+    check("...still deny-only, nothing toward a bridge or the router: every new exit leaves by a VPN client interface",
+          " -j ACCEPT" not in tr and [l for l in r4 if "REAPER_GUI" in l and "br54" in l] == [l.replace("br56", "br54") for l in rules(t1, 4) if "REAPER_GUI" in l]
+          and all(re.search(r" -o (tun1[1-5]|wgc[1-5]) ", l) for l in rules(tr) if (" -s " in l or " -d " in l) and "REAPER_GUF" in l))
+    check("...the script names the route on the network's line",
+          "#   VPN Director / redirect-all routes it to tun11 (from 192.168.54.0/24 to any)\n" in tr)
+    check("the same list as before the fix routes nothing else: without a VPN Director list the chain is the v3.7.9 one",
+          rules(gen(30, "", "0,0,0,0,0")) == [l for l in rules(tr) if " -s 192.168." not in l], rules(gen(30, "", "0,0,0,0,0")))
+
+    def ex(lst, rgw="2,2,2,2,2", s=30):
+        return gen(s, lst, rgw, "print").strip()
+    check("an OpenVPN rule counts only while that client is in VPN Director mode (rgw 2/3; none 0 / all 1 write no Director rule)",
+          ex(VD, "0,0,0,0,0") == "br54: br55:wgc2|192.168.53.0/24|," and ex(VD, "3,0,0,0,0").startswith("br54:tun11|192.168.54.0/24|,"),
+          (ex(VD, "0,0,0,0,0"), ex(VD, "3,0,0,0,0")))
+    check("OpenVPN 'redirect all' (rgw 1): every guest network out by that client, whole; 'none' (0) adds nothing",
+          ex("", "0,0,1,0,0") == "br54:tun13||, br55:tun13||," and ex("", "0,0,0,0,0") == "br54: br55:",
+          (ex("", "0,0,1,0,0"), ex("", "0,0,0,0,0")))
+    check("a disabled rule, a WAN rule, an unknown target and a source on another network route nothing here",
+          ex("<0>off>192.168.54.0/24>>OVPN1<1>w>192.168.54.0/24>>WAN<1>x>192.168.54.0/24>>OVPN6<1>y>>>WGC0<1>z>192.168.50.0/24>>WGC1") == "br54: br55:",
+          ex("<0>off>192.168.54.0/24>>OVPN1<1>w>192.168.54.0/24>>WAN<1>x>192.168.54.0/24>>OVPN6<1>y>>>WGC0<1>z>192.168.50.0/24>>WGC1"))
+    check("source any (\"\" or 0.0.0.0): every network, with the rule's destination; any/any = the whole client",
+          ex("<1>a>>10.0.0.0/8>WGC1<1>b>0.0.0.0>0.0.0.0>OVPN2") == "br54:wgc1||10.0.0.0/8,tun12||, br55:wgc1||10.0.0.0/8,tun12||,",
+          ex("<1>a>>10.0.0.0/8>WGC1<1>b>0.0.0.0>0.0.0.0>OVPN2"))
+    check("a source that covers or sits inside the network counts with that source (a /16 over both, one device in br54)",
+          ex("<1>a>192.168.0.0/16>>WGC3<1>b>192.168.54.10>>OVPN4") == "br54:wgc3|192.168.0.0/16|,tun14|192.168.54.10|, br55:wgc3|192.168.0.0/16|,",
+          ex("<1>a>192.168.0.0/16>>WGC3<1>b>192.168.54.10>>OVPN4"))
+    check("malformed: a bad source / destination, 4 or 6 fields - the rule is skipped (Merlin's ip rule fails on it too)",
+          ex("<1>a>1.2.3.4.5>>WGC1<1>b>>abc>WGC1<1>c>192.168.54.0/24>WGC1<1>d>192.168.54.0/24>>WGC1>x<1>e>192.168.54.0/33>>WGC1") == "br54: br55:",
+          ex("<1>a>1.2.3.4.5>>WGC1<1>b>>abc>WGC1<1>c>192.168.54.0/24>WGC1<1>d>192.168.54.0/24>>WGC1>x<1>e>192.168.54.0/33>>WGC1"))
+    check("duplicates collapse, and a whole-client exit covers that client's later rules",
+          ex("<1>a>192.168.54.0/24>>WGC1<1>a2>192.168.54.0/24>>WGC1<1>b>>>WGC1<1>c>192.168.54.5>>WGC1") == "br54:wgc1|192.168.54.0/24|,wgc1||, br55:wgc1||,",
+          ex("<1>a>192.168.54.0/24>>WGC1<1>a2>192.168.54.0/24>>WGC1<1>b>>>WGC1<1>c>192.168.54.5>>WGC1"))
+    many = "".join("<1>d%d>192.168.54.%d>>WGC%d" % (i, i, 1 + i % 5) for i in range(1, 60))
+    pm = ex(many).split()[0][len("br54:"):].rstrip(",").split(",")
+    check("budget: 59 device rules give at most %d exits, the overflow becomes whole-client exits (never dropped)" % 24,
+          len(pm) <= 24 and sorted(set(p.split("|")[0] for p in pm if p.endswith("||"))) == ["wgc1", "wgc2", "wgc3", "wgc4", "wgc5"]
+          and len([p for p in pm if not p.endswith("||")]) == 14, pm)
+    check("no IPv4 subnet known: only a rule for every source names the network",
+          ex("<1>a>192.168.54.0/24>>WGC1<1>b>>>WGC2", s=35) == "br54:wgc2||,", ex("<1>a>192.168.54.0/24>>WGC1<1>b>>>WGC2", s=35))
+    p34 = gen(34).split()
+    check("rg_cidr4: address or CIDR only, every part in range",
+          p34 == ["1:c0a83600/24", "1", "1", "0", "0", "0", "0", "0", "0", "0", "0", "0", "1"], p34)
+
+    tk = gen(31, VD + "<1>all>>>WGC4", "2,1,0,0,0"); r4 = rules(tk, 4)
+    check("kill switch on (br54 bound to wgc5): the bound client ONLY - no VPN Director, redirect-all or mark exit",
+          [l for l in r4 if l.startswith("R iptables -A REAPER_GUF -i br54 -o") or l.startswith("R iptables -A REAPER_GUF -i br54 -s")] ==
+          ["R iptables -A REAPER_GUF -i br54 -o br54 -j RETURN", "R iptables -A REAPER_GUF -i br54 -o wgc5 -j RETURN"]
+          and "-i br54 -o tun1" not in tk and "-i br54 -o wgc4" not in tk and not [l for l in tk.splitlines() if "-i br54" in l and "--mark" in l], r4)
+    check("kill switch off (br55 bound to tun12): bound client, WAN fallback, and the Director / redirect-all exits for the fallback",
+          "R iptables -A REAPER_GUF -i br55 -o tun12 -j RETURN" in r4 and "R iptables -A REAPER_GUF -i br55 -o eth0 -j RETURN" in r4
+          and "R iptables -A REAPER_GUF -i br55 -s 192.168.53.0/24 -o wgc2 -j RETURN" in r4
+          and "R iptables -A REAPER_GUF -i br55 -o tun12 -j RETURN" in r4 and "R iptables -A REAPER_GUF -i br55 -o wgc4 -j RETURN" in r4, r4)
+    tp = gen(32, VD + "<1>all>>>WGC4", "2,1,0,0,0")
+    check("a portal is unchanged: no VPN Director, redirect-all or mark exit (its rules as before)",
+          rules(tp) == rules(gen(32, "", "0,0,0,0,0")) and "--mark" not in tp and "VPN Director" not in tp, rules(tp))
+
+    # Policy Routing (rc/reaper_pbr.c): marks the flow in mangle PREROUTING with bits 16-19 = its target's code
+    mk = [l for l in tr.splitlines() if " -m mark --mark " in l]
+    want = []
+    for fam in ("iptables", "ip6tables"):
+        for X in ("br54", "br55"):
+            want += ["R %s -A REAPER_GUF -i %s -o %s -m mark --mark 0x%x0000/0xf0000 -j RETURN" % (fam, X, ("tun1%d" % c) if c <= 5 else ("wgc%d" % (c - 5)), c) for c in range(1, 11)]
+    check("Policy Routing: a packet carrying a client's code (1-5 OVPN1-5, 6-10 WGC1-5) may leave by that client only, v4 and v6",
+          sorted(mk) == sorted(want), mk)
+    full = [l for l in tr.splitlines() if l.startswith("R iptables -A REAPER_GUF -i br54")]
+    check("...before the network's DROP, for every plain guest network (set 1 too)",
+          max(full.index(l) for l in full if "--mark" in l) < full.index("R iptables -A REAPER_GUF -i br54 -j DROP")
+          and len([l for l in gen(1).splitlines() if "-i br56 -o" in l and "--mark" in l]) == 20)
+    pbr = read("rc/reaper_pbr.c")
+    check("...the mask and codes are reaper_pbr.c's own (PPBR_MASK bits 16-19; OVPNn = n, WGCn = 5 + n)",
+          '#define PPBR_MASK       "0x000F0000"' in pbr and "*code = t[4] - '0';" in pbr and "*code = 5 + (t[3] - '0');" in pbr
+          and '#define RG_PBR_MASK\t"0xf0000"' in gsrc)
+    if shutil.which("sh"):
+        sc = os.path.join(tmp, "apply.sh"); open(sc, "w").write(tr)
+        r = subprocess.run(["sh", "-n", sc], capture_output=True, text=True)
+        check("the generated script parses (sh -n)", r.returncode == 0, r.stderr)
+        bb = shutil.which("busybox")
+        if bb:
+            r = subprocess.run([bb, "ash", "-n", sc], capture_output=True, text=True)
+            check("the generated script parses (busybox ash -n)", r.returncode == 0, r.stderr)
+
     t6 = gen(6)
     check("no guest network left: the layer is unhooked and removed, the front chains re-pinned",
           "-D REAPER_HOOK -j REAPER_GUI" in t6 and "-D REAPER_HOOK_F -j REAPER_GUF" in t6 and "$T -X $C" in t6
@@ -337,7 +458,13 @@ check("VPN servers by interface name (wgs1-2, tun21-22), never for a portal, nev
       and "\t\tif (g[k].portal)\n\t\t\tcontinue;\n\t\tfor (s = 0; s < RG_SRV_MAX; s++) {" in gsrc
       and "if (!strcmp(g[u].ifname, srv[s]) || !strcmp(g[u].brname, srv[s]))" in gsrc
       and "if (!c && g[k].nsrv < RG_SRV_MAX)" in gsrc
-      and gsrc.count("if (!g->portal && !vpn_only)") == 2 and "#define RG_SRV_MAX\t4" in gsrc)
+      and gsrc.count("if (!g->portal && !vpn_only)") == 3 and "#define RG_SRV_MAX\t4" in gsrc)
+check("VPN Director's list and the OpenVPN clients' redirect mode are read for every network (2026-11-15)",
+      'f_read_string(OVPN_FS_PATH "/vpndirector_rulelist", vd, sizeof(vd))' in gsrc
+      and 'snprintf(key, sizeof(key), "vpn_client%d_rgw", u + 1);' in gsrc
+      and "\t\tfor (k = 0; k < n; k++)\n\t\t\trg_policy_vpn(&g[k], vd, rgw);" in gsrc
+      and gsrc.index("REAPER-GUEST-PURE-END") < gsrc.index("rg_policy_vpn(&g[k], vd, rgw);") < gsrc.index("rg_write(f, g, n, wan4, nw4, wan6, REAPER_HOOK_RUN);")
+      and 'snprintf(filename, sizeof(filename), "%s/vpndirector_rulelist", OVPN_FS_PATH);' in read("libovpn/amvpn_routing.c"))
 check("the script is root's own, published atomically, run under the firewall lock",
       "reaper_secure_dir(RG_DIR, 0700);" in gsrc and "rename(RG_APPLY \".tmp\", RG_APPLY)" in gsrc
       and 'lk = file_lock("firewall");' in gsrc and 'eval("sh", RG_APPLY);' in gsrc)

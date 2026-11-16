@@ -1,0 +1,54 @@
+From 247372f89a2323a93c56287b139452bd6a494286 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Sun, 15 Nov 2026 17:48:33 -0500
+Subject: [PATCH] Network page: editing the Default IoT network keeps its
+ per-node port rows (102.8 line)
+
+- Saving the Default IoT Network from the Network page rewrote its port profile without the
+  per-node rows the VLAN tab writes, so its LAN ports dropped back to All (Default). The edit now
+  carries those rows over.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ .../router/www/sysdep/FUNCTION/SDN/SDN/sdn.js  | 18 ++++++++++++++++++
+ 1 file changed, 18 insertions(+)
+
+diff --git a/release/src/router/www/sysdep/FUNCTION/SDN/SDN/sdn.js b/release/src/router/www/sysdep/FUNCTION/SDN/SDN/sdn.js
+index 2d058405b4..30b14fed9f 100644
+--- a/release/src/router/www/sysdep/FUNCTION/SDN/SDN/sdn.js
++++ b/release/src/router/www/sysdep/FUNCTION/SDN/SDN/sdn.js
+@@ -9388,6 +9388,10 @@ function set_apply_btn_status(_obj){
+ 						}
+ 						else if(is_sdn_legacy){
+ 							dut_list += get_legacy_dut_list(wifi_band);
++							/* reaper 2026-11-15 (field report): the LAN page's VLAN tab keeps this network's Access ports
++							   in per-node rows after the "*" row; an edit here wrote the "*" row alone and the ports
++							   went back to All (Default). The stored rows are carried over unchanged. */
++							dut_list += reaper_legacy_port_rows(ori_dut_list_json);
+ 						}
+ 						else{
+ 							$(_obj).find("[data-container=AiMesh_List]").find(".node_container").each(function(){
+@@ -11857,6 +11861,20 @@ function get_legacy_dut_list(_wifiband){
+ 	else if(_wifiband == "7") band = (1+16+64);//2.4G&6G
+ 	return `<*>${band}>`;
+ }
++/* reaper 2026-11-15: the per-node rows of a Default IoT Network's device list ("<MAC>wifiband>lanport", written by
++   the VLAN tab for a port in Access mode), as stored - every row but the "*" one. Only a hardware address passes. */
++function reaper_legacy_port_rows(_ori_dut_list_json){
++	let rows = "";
++	if(!Array.isArray(_ori_dut_list_json)) return rows;
++	_ori_dut_list_json.forEach(function(item){
++		const mac = String(item.mac || "");
++		if(!/^[0-9A-Fa-f]{2}(:[0-9A-Fa-f]{2}){5}$/.test(mac)) return;
++		const band = String(item.wifiband || ""), port = String(item.lanport || "");
++		if(/[<>]/.test(band + port)) return;
++		rows += "<" + mac + ">" + band + ">" + port;
++	});
++	return rows;
++}
+ function get_Offline_dut_list(_obj, _wifiband, _ori_dut_list_json){
+ 	var dut_list = "";
+ 	var $node_list = $(_obj).find("[data-container=AiMesh_List] [data-node-status=offline]");
+-- 
+2.25.1
+

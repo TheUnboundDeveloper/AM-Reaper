@@ -739,11 +739,13 @@ sbin/rc|UNTESTED recovery|1
 # v3.3.2 -- the first-boot box (GT-BE98 field report): Chrome's saved-login autofill set the
 # Wi-Fi key to the router password (same form), the login name came prepopulated, and the
 # apply bounced back to the page after a few seconds instead of showing the reboot. The Wi-Fi
-# fields now sit outside the form, nothing is prepopulated, the login name is lowercase-only,
-# and the apply ends in the shell's REBOOTING overlay with the model's reboot time.
+# fields now sit outside the form, nothing is prepopulated, and the apply ends in the shell's
+# REBOOTING overlay with the model's reboot time. 2026-11-15 (v3.7.9 field report): the
+# lowercase-only login name (v3.3.2, owner preference, no technical need) is dropped - the box
+# takes stock's chkLoginId rule (A-Z allowed); the fold must not come back.
 www/Reaper_WiFiSetup.asp|id="reboot_overlay"|1
 www/Reaper_WiFiSetup.asp|autocomplete="new-password"|2
-www/Reaper_WiFiSetup.asp|oninput="lowerLogin(this)"|1
+www/Reaper_WiFiSetup.asp|!lowerLogin
 www/Reaper_WiFiSetup.asp|!name="action_wait" value="0"
 www/Reaper_WiFiSetup.asp|!value="<% nvram_get("http_username"); %>"
 www/EN.dict|Apply & Reboot|1
@@ -1361,7 +1363,7 @@ www/Reaper_Leases.asp|var leasearray = [];|1
 www/Reaper_IPv6.asp|var ipv6cfgarray = [[]]|1
 # 2026-11-14 field report -- the IPv6 page names devices as the Devices page does (ReaperNames by MAC,
 # lease hostname as the fallback); before, a static-address device showed as <unknown>.
-www/Reaper_IPv6.asp|ReaperNames.byMac(r[1]|1
+www/Reaper_IPv6.asp|ReaperNames.name(r[1])|1
 www/Reaper_PortFwd.asp|REAPER_GKN:|1
 www/ajax_reaper_wlstatus.asp|get_wl_status|1
 www/reaper/menu.js|T('Reaper_Log.asp'|1
@@ -1844,3 +1846,37 @@ sbin/rc|-p udp --dport 53 -m conntrack --ctstate DNAT -j RETURN|1
 sbin/rc|-p tcp --dport 53 -m conntrack --ctstate DNAT -j RETURN|1
 www/Main_ReaperDash.asp|var k=d.wired?'eth':|1
 www/aimesh/aimesh_topology.html|c.isWL = d.wired ? 0 : (wl[d.band]|1
+# 2026-11-15 (v3.7.9 field reports, both lines). Guest isolation: a guest network routed to a VPN client by VPN
+# Director / OpenVPN redirect / Policy Routing keeps that exit (test_guest_isolation.py). Network page: an edit to a
+# Default IoT Network keeps the LAN ports the VLAN tab assigned (test_sdn_legacy_port_rows.py). Warden custom IP
+# feeds: $APIkey in a feed's address, the key write-only in /jffs/rwarden/cfkeys (test_warden_cfeed_apikey.py).
+sbin/rc|VPN Director / redirect-all routes it to|1||RTCONFIG_MULTILAN_CFG
+www/SDN/sdn.js|dut_list += reaper_legacy_port_rows(ori_dut_list_json);|1||RTCONFIG_MULTILAN_CFG
+sbin/rc|custom feed has no API key saved, not fetched|1
+sbin/rc|/jffs/rwarden/cfkeys custom%d|1
+usr/sbin/httpd|/jffs/rwarden/cfkeys|1
+www/Reaper_Warden.asp|class="cf-key" maxlength="200"|1
+# 2026-11-15 (owner): DHCP leases survive a restart (shared/reaper_leases.c; restored before dnsmasq, saved by rwatch
+# and at reboot), and one device-label rule in httpd (reaper_devname.c: Name = admin-given, Hostname = client-sent,
+# else the maker of a real MAC, else Private-Address). A Remove lease function was dropped the same day (owner): its
+# absence is checked. test_dhcp_leases_names.py.
+usr/lib/libshared.so|/jffs/reaper/leases|1
+sbin/rc|reaper_leases|1
+usr/sbin/httpd|Private-Address|1
+usr/sbin/httpd|!reaper_leases.cgi
+www/Reaper_Leases.asp|!data-rm=
+usr/sbin/httpd|reaper_devnames|1
+www/reaper_util.js|hook=get_clientlist();reaper_devnames()|1
+www/Reaper_LAN.asp|function hostCell(r){ return r.host ? hx(r.host) : '-'; }|1
+# 2026-11-15 (owner, Paramount+ field report) Wallguard: the device MAC is recorded for every block, a CNAME block
+# is recorded under the asked name with its listed chain entry and lifted by an allow of the asked name; Unbreak
+# keeps an hour and matches by MAC or address; stored lists are refreshed from RAM through rstore; the page shows a
+# skipped rebuild. test_wallguard_engine_20261115.py, test_wallguard_unbreak_20261115.py.
+usr/sbin/dnsmasq|%ld %s %x %c %s %s %s|1
+usr/sbin/wallguard.sh|st_push() {|1
+usr/sbin/wallguard.sh|RECKEEP=${WALLGUARD_REC_SECS:-3600}|1
+www/Reaper_Wallguard.asp|stat.bstat|1
+# 2026-11-15 (owner chose concept B) Wallguard page in five tabs (Overview / Lists / Rules / Devices / Activity), the
+# Devices tab with blocked lookups per device (wallguard.sh devcounts). test_wallguard_tabs_20261115.py.
+www/Reaper_Wallguard.asp|reaper_wg_tab|1
+usr/sbin/httpd|devcounts %d|1

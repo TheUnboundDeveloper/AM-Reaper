@@ -330,8 +330,18 @@ try:
     rc2, a2, _ = q("www.cloak.test")
     check("CNAME uncloaking: a chain into a listed name is NXDOMAIN with EDE 15", rc == 3 and ede and a == [], (rc, a, ede))
     check("...and never cached: the second lookup went upstream again", seen.get("www.cloak.test", 0) == n0 + 2, seen.get("www.cloak.test"))
-    check("...recorded as reason c with the list entry the target matched (review S-A-1: not the target itself)",
-          any(x[3] == "c" and x[5] == "tracker-cdn.test" for x in hits()) and not any(x[5] == "edge.www.tracker-cdn.test" for x in hits()), hits()[-3:])
+    # 2026-11-15 (D1): a c record names the ASKED name (what the device shows, what an allow must name) and adds a
+    # 7th field, the list entry the chain matched (review S-A-1: never the target itself)
+    check("...recorded as reason c under the asked name, with the list entry the target matched as a 7th field",
+          any(x[3] == "c" and x[5] == "www.cloak.test" and x[6:] == ["tracker-cdn.test"] for x in hits())
+          and not any("edge.www.tracker-cdn.test" in x for x in hits()), hits()[-3:])
+    # 2026-11-15 (D2): allowing the asked name is enough - its hidden CNAME target's list entry no longer blocks it
+    build("@@||ok.cloak.test^\n"); time.sleep(2.2)
+    n2 = len(hits())
+    ra, rw = q("ok.cloak.test"), q("www.cloak.test")
+    check("an allowed name is answered although its CNAME chain reaches a listed name; others still blocked",
+          ra[0] == 0 and "93.184.215.7" in ra[1] and rw[0] == 3 and not any(x[5] == "ok.cloak.test" for x in hits()[n2:]), (ra, rw))
+    build(); time.sleep(2.2)
     policy("default 7fffffff\nnet 127.0.0.3/32 0\n"); time.sleep(2.2)
     n1 = seen.get("cdn.cloak.test", 0)
     rb = q("cdn.cloak.test", src="127.0.0.3"); rb2 = q("cdn.cloak.test", src="127.0.0.3")
@@ -399,7 +409,7 @@ check("both copies of wallguard_db.h are identical", read("wallguard/wallguard_d
 fw, rf, op = read("dnsmasq/src/forward.c"), read("dnsmasq/src/rfc1035.c"), read("dnsmasq/src/option.c")
 check("dnsmasq: the option, the UDP and TCP gates (before the cache, real device), the CNAME hook, the build object",
       '{ "wallguard-dir", 1, 0, LOPT_WALLGUARD_DIR },' in op and fw.count("wallguard_answer(") == 2 and fw.count("reaper_client(&") >= 3
-      and "rc = wallguard_cname_verdict(wallguard_client, now) ? 4 : 0;" in fw and "wallguard_cname_listed(name)" in rf
+      and "rc = wallguard_cname_verdict(header, n, wallguard_client, now) ? 4 : 0;" in fw and "wallguard_cname_listed(name)" in rf
       and "wallguard.o" in read("dnsmasq/Makefile"))
 # review 2026-10-21: the CNAME verdict gets the device rednsd named (stored with the forwarded
 # query), and a listed chain is reported only after the whole reply was checked

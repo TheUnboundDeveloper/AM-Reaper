@@ -1,10 +1,10 @@
 # "Reaper" — Release Notes
 
-> **Doc status:** current as of **v3.7.9** · 2026-11-14 <!--@stamp-->
+> **Doc status:** current as of **v3.8.0** · 2026-11-15 <!--@stamp-->
 
 | | |
 |---|---|
-| **Current rung** | **v3.7.9** <!--@treever--> — `3006.102.8_Reaper_v3.7.9`. **DNS Director can send a guest network's DNS to a Pi-hole or AdGuard Home on the main network again; guest networks bound to a WireGuard client keep DNS after the tunnel drops and comes back; IPv6 on a VPN-bound network goes into the tunnel; devices cabled to an AiMesh node stay wired.** Everything in v3.7.8 is included. See [`CHANGELOG.md`](CHANGELOG.md#v379--dns-director-works-on-guest-networks-again-vpn-bound-guest-networks-keep-dns-and-ipv6-in-the-tunnel-aimesh-wired-devices-stay-wired). |
+| **Current rung** | **v3.8.0** <!--@treever--> — `3006.102.8_Reaper_v3.8.0`. **Guest networks that VPN Director routes into a VPN reach the internet; the Guest Portal passcode works on every portal subnet; Apple devices on an isolated guest network keep DNS; DHCP leases are kept across a restart; one rule for device names on every page; Wallguard shows and fixes what it blocked per device, in a tabbed page; QoS starts Web/VoIP at a 90% ceiling.** Everything in v3.7.9 is included. See [`CHANGELOG.md`](CHANGELOG.md#v380--vpn-routed-guest-networks-reach-the-internet-the-portal-passcode-on-every-subnet-dhcp-leases-kept-across-a-restart-one-rule-for-device-names-wallguard-finds-the-culprit). |
 | **Newest published** | **v3.1.0** <!--@pubver--> (2026-09-08 <!--@pubdate-->), on all five main models, both variants each — the newest **release** image, and what "current version" means in [`../README.md`](../README.md). It is the manifest the router's own update check reads ([`releases/latest.json`](../releases/latest.json)). Newer rungs also appear on the Releases page as **pre-releases**, marked `_BETA` in the filename and on the router's dashboard; the router's own update check offers those only when its beta channel is switched on. |
 | **Base** | Asuswrt-Merlin 3006.102.8 (upstream RMerl/asuswrt-merlin.ng) |
 | **Models** | ASUS **RT-BE96U** (primary) + **RT-BE86U**, **RT-BE88U**, **GT-BE98**, **GT-BE98 Pro** siblings (WiFi 7, Broadcom BCM4916), from v3.1.4 the **GT-BE19000** from v3.3.2 the **ZenWiFi BQ16** (BE25000, quad-band) and from v3.3.4 the **ZenWiFi BQ16 Pro** (BE30000, quad-band), all of which build and pass verification and publish as prereleases. |

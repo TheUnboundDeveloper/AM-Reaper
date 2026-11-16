@@ -108,8 +108,11 @@ check("S-B-5 the Network Tools argv store takes a 253-byte host name whole", "ch
 check("Q-B-1 reaper_diag reads the /jffs copy's time with date -r (no stat applet), v1.3.47",
       "_tdu=$(date -r /jffs/rwarden/dns.k.gz +%s 2>/dev/null)" in diag and "stat -c" not in diag and 'VER="REAPER-DIAG v1.3.59"' in diag)
 shp = read("www/Reaper_Wallguard.asp")
-check("Q-C2-1 the Wallguard page keeps the Assign, Pause and Unbreak targets across the 15 s poll",
-      "kt = t.value, kp = p.value, keep = u.value;" in shp and "if(kt) t.value = kt;" in shp and "if(kp) p.value = kp;" in shp and "if(keep) u.value = keep;" in shp)
+# 2026-11-15 (Wallguard tabs, concept B): the Assign target menu is gone - each Devices row has its own profile menu,
+# drawn from cfg.asg (the saved model, not a pick that a rebuild could drop), and the poll never rebuilds it while open
+check("Q-C2-1 the Wallguard page keeps the Pause and Unbreak targets across the 15 s poll; a Devices row's profile menu is not rebuilt while open",
+      "kp = p.value, keep = u.value" in shp and "if(kp) p.value = kp;" in shp and "if(keep) u.value = keep;" in shp
+      and "if(ae && ae.tagName === 'SELECT' && tb.contains(ae)) return;" in shp and "shSelect(opts, a ? a.pid : ''," in shp)
 check("Encrypted DNS: a Save that changes nothing no longer restarts rednsd (!== where === was)",
       # 2026-11-10: rednsd restarts only on a server-switch change (srvChg, built with !==); the block no longer restarts it
       "if(srvChg) sv.push('restart_rednsd');" in read("www/Reaper_EncryptedDNS.asp")

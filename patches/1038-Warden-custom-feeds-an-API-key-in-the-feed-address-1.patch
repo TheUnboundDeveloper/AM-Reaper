@@ -1,0 +1,848 @@
+From 4ac5512b7090e6d117e9a2b3cf8b2c5908eef715 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Sun, 15 Nov 2026 17:48:42 -0500
+Subject: [PATCH] Warden custom feeds: an API key in the feed address (102.8
+ line)
+
+- A custom feed address may carry $APIkey; the key is typed once in its own box, kept on the
+  router in a private file (never in the list, the page source or a settings export), and put into
+  the address only when the feed is fetched. A key stays with its feed when the list is reordered
+  or edited, and is dropped with it.
+- One new text in all 25 language packs.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ release/src/router/httpd/web.c           | 179 ++++++++++++++++++++++-
+ release/src/router/rc/rwarden.c          |  76 ++++++++--
+ release/src/router/www/BR.dict           |   1 +
+ release/src/router/www/CN.dict           |   1 +
+ release/src/router/www/CZ.dict           |   1 +
+ release/src/router/www/DA.dict           |   1 +
+ release/src/router/www/DE.dict           |   1 +
+ release/src/router/www/EN.dict           |   1 +
+ release/src/router/www/ES.dict           |   1 +
+ release/src/router/www/FI.dict           |   1 +
+ release/src/router/www/FR.dict           |   1 +
+ release/src/router/www/HU.dict           |   1 +
+ release/src/router/www/IT.dict           |   1 +
+ release/src/router/www/JP.dict           |   1 +
+ release/src/router/www/KR.dict           |   1 +
+ release/src/router/www/MS.dict           |   1 +
+ release/src/router/www/NL.dict           |   1 +
+ release/src/router/www/NO.dict           |   1 +
+ release/src/router/www/PL.dict           |   1 +
+ release/src/router/www/RO.dict           |   1 +
+ release/src/router/www/RU.dict           |   1 +
+ release/src/router/www/Reaper_Warden.asp |  48 +++++-
+ release/src/router/www/SL.dict           |   1 +
+ release/src/router/www/SV.dict           |   1 +
+ release/src/router/www/TH.dict           |   1 +
+ release/src/router/www/TR.dict           |   1 +
+ release/src/router/www/TW.dict           |   1 +
+ release/src/router/www/UK.dict           |   1 +
+ 28 files changed, 302 insertions(+), 26 deletions(-)
+
+diff --git a/release/src/router/httpd/web.c b/release/src/router/httpd/web.c
+index 902215a14c..0046b47fa8 100644
+--- a/release/src/router/httpd/web.c
++++ b/release/src/router/httpd/web.c
+@@ -26535,6 +26535,9 @@ static int rcfg_ok(const char *v, size_t max);
+ #define RDW_SRC     REAPER_RW_DIR "/dnssrc"
+ #define RDW_KEYS    REAPER_RW_DIR "/dnskeys"
+ #define RDW_SRC_MAX 16384	/* as Wallguard's lists: eight sources with request bodies */
++/* 2026-11-15 (field request): API keys of Warden's custom IP feeds ("$APIkey" in a feed's address) - "<slot> <key>",
++ * slot = the feed's place in rwarden_cfeeds, as rc numbers it (rw_cfkeys_save) */
++#define RW_CFKEYS   REAPER_RW_DIR "/cfkeys"
+ 
+ /* The page used to read these with <% nvram_get("rwarden_ban") %>. They are not
+  * in nvram any more, so serve them from the store - percent-encoded, because
+@@ -26545,10 +26548,11 @@ ej_rwarden_list(int eid, webs_t wp, int argc, char_t **argv)
+ 	char *name, *v, *p;
+ 
+ 	if (ejArgs(argc, argv, "%s", &name) < 1) return 0;
+-	/* 2026-10-27: Dreadwatch's API keys are write-only - the page learns only which slots have one */
+-	if (!strcmp(name, "dnskeys")) {
++	/* 2026-10-27: Dreadwatch's API keys are write-only - the page learns only which slots have one
++	 * (2026-11-15: the same for the keys of Warden's custom IP feeds) */
++	if (!strcmp(name, "dnskeys") || !strcmp(name, "cfkeys")) {
+ 		int ex, slot;
+-		char *c = strdup(rjf_get(RDW_KEYS, &ex)), *ln, *sv;
++		char *c = strdup(rjf_get(!strcmp(name, "cfkeys") ? RW_CFKEYS : RDW_KEYS, &ex)), *ln, *sv;
+ 
+ 		for (ln = c ? strtok_r(c, "\n", &sv) : NULL; ln; ln = strtok_r(NULL, "\n", &sv))
+ 			if (sscanf(ln, "%d", &slot) == 1 && slot >= 1 && slot <= 8)
+@@ -26894,6 +26898,127 @@ static int sh_keys_save(const char *upd)
+ 	return src_keys_save(SH_JFFS "/keys", SH_JFFS "/lists", "wallguard", upd);
+ }
+ 
++/* 2026-11-15 (field request): API keys of Warden's custom IP feeds ("$APIkey" in a feed's address, RW_CFKEYS).
++ * A feed has no slot number of its own - its key is filed under its place in the list, which is what rc and
++ * wallguard.sh's fetch read - so every save of the list files the keys again: a feed keeps its key when its name
++ * is unchanged and its addresses still point at a host the key was already sent to, wherever the feed now stands.
++ * A renamed feed, a feed pointed at another host, a feed without "$APIkey" and a feed that is gone lose theirs: a
++ * key is never sent to a host it was not typed for. */
++struct rw_cfrec { char name[28]; char h4[204]; char h6[204]; int uses; };
++
++static void rw_cf_host(const char *url, char *out, size_t sz)
++{
++	size_t n;
++
++	*out = 0;
++	if (!url || strncmp(url, "https://", 8))
++		return;
++	n = strcspn(url + 8, "/?#");
++	if (n >= sz)
++		return;
++	memcpy(out, url + 8, n);
++	out[n] = 0;
++}
++
++/* the records of a rwarden_cfeeds value into r[1..8], numbered as rc numbers them (every non-empty "<" piece
++ * counts, valid or not); the count */
++static int rw_cf_parse(const char *list, struct rw_cfrec *r)
++{
++	char *c = strdup(list ? list : ""), *tok, *sv, *f1, *f2, *e;
++	int n = 0;
++
++	memset(r, 0, 9 * sizeof(*r));
++	for (tok = c ? strtok_r(c, "<", &sv) : NULL; tok && n < 8; tok = strtok_r(NULL, "<", &sv)) {
++		n++;
++		if ((f1 = strchr(tok, '>')) != NULL)
++			*f1++ = 0;
++		if ((f2 = f1 ? strchr(f1, '>') : NULL) != NULL) {
++			*f2++ = 0;
++			if ((e = strchr(f2, '>')) != NULL)
++				*e = 0;
++		}
++		if (strlen(tok) < sizeof(r[n].name))	/* a longer name is no feed (rc skips it): it matches nothing */
++			strcpy(r[n].name, tok);
++		rw_cf_host(f1, r[n].h4, sizeof(r[n].h4));
++		rw_cf_host(f2, r[n].h6, sizeof(r[n].h6));
++		r[n].uses = (f1 && strstr(f1, "$APIkey")) || (f2 && strstr(f2, "$APIkey"));
++	}
++	free(c);
++	return n;
++}
++
++/* is host h one of the hosts the old feed o fetched from */
++static int rw_cf_known_host(const struct rw_cfrec *o, const char *h)
++{
++	return *h && ((*o->h4 && !strcasecmp(o->h4, h)) || (*o->h6 && !strcasecmp(o->h6, h)));
++}
++
++/* old_list: the list the saved keys were filed against; new_list: the list now stored; upd: "<place> <key>" sets,
++ * "<place> -" clears, places as in new_list. 0 ok, -1 a line of upd is not valid (nothing written), -2 the file
++ * could not be written. */
++static int rw_cfkeys_save(const char *old_list, const char *new_list, const char *upd)
++{
++	struct rw_cfrec o[9], n[9];
++	char okey[9][208], nkey[9][208], buf[9 * 220], *c, *ln, *sv, k[208];
++	int set[9], ex, slot, i, j, nn, same, hit;
++	size_t len = 0;
++
++	if (!src_keys_ok(upd))
++		return -1;
++	memset(okey, 0, sizeof(okey));
++	memset(nkey, 0, sizeof(nkey));
++	memset(set, 0, sizeof(set));
++	rw_cf_parse(old_list, o);
++	nn = rw_cf_parse(new_list, n);
++	c = strdup(rjf_get(RW_CFKEYS, &ex));
++	for (ln = c ? strtok_r(c, "\n", &sv) : NULL; ln; ln = strtok_r(NULL, "\n", &sv))
++		if (sscanf(ln, "%d %207s", &slot, k) == 2 && slot >= 1 && slot <= 8 && sh_key_ok(k))
++			snprintf(okey[slot], sizeof(okey[slot]), "%s", k);
++	free(c);
++	if (upd && *upd) {
++		if (!(c = strdup(upd)))
++			return -2;
++		for (ln = strtok_r(c, "\n\r", &sv); ln; ln = strtok_r(NULL, "\n\r", &sv))
++			if (src_key_line(ln, &slot, k)) {
++				set[slot] = 1;
++				snprintf(nkey[slot], sizeof(nkey[slot]), "%s", strcmp(k, "-") ? k : "");
++			}
++		free(c);
++	}
++	for (i = 1; i <= 8; i++) {
++		if (i > nn || !n[i].uses || !*n[i].name || !*n[i].h4) {
++			nkey[i][0] = 0;		/* no feed here, or one that sends no key */
++			continue;
++		}
++		if (set[i])
++			continue;		/* typed (or cleared) in this save */
++		for (same = 0, j = 1; j <= nn; j++)
++			same += !strcmp(n[j].name, n[i].name);
++		for (hit = 0, j = 1; j <= 8 && hit >= 0; j++)
++			if (!strcmp(o[j].name, n[i].name))
++				hit = hit ? -1 : j;
++		if (same == 1 && hit > 0 && okey[hit][0] && rw_cf_known_host(&o[hit], n[i].h4) &&
++		    (!*n[i].h6 || rw_cf_known_host(&o[hit], n[i].h6)))
++			snprintf(nkey[i], sizeof(nkey[i]), "%s", okey[hit]);
++	}
++	for (i = 1; i <= 8; i++)
++		if (nkey[i][0])
++			len += snprintf(buf + len, sizeof(buf) - len, "%d %s\n", i, nkey[i]);
++	if (!len)
++		return (unlink(RW_CFKEYS) == 0 || errno == ENOENT) ? 0 : -2;
++	return rjf_set(RW_CFKEYS, buf, "rwarden") == 0 ? 0 : -2;
++}
++
++/* file the keys against the feed list as it is stored now; old_list = the list before this save (NULL: unchanged) */
++static int rw_cfkeys_refile(const char *old_list, const char *upd)
++{
++	char *now = rw_list_get("cfeeds");
++	int r = rw_cfkeys_save(old_list ? old_list : (now ? now : ""), now ? now : "", upd);
++
++	free(now);
++	return r;
++}
++
+ /* 2026-10-27 (owner): Dreadwatch's sources (RDW_SRC), one line each: "hidden <row>" (a built-in row removed from the
+  * list; basics = Reaper's Basics), "off <slot>" (one of your sources kept but unticked), "custom <slot> <https-url>
+  * [options]" (Wallguard's options, sh_chk_opts). rc/rwarden.c's update.sh checks every line again. */
+@@ -28065,7 +28190,14 @@ do_reaper_warden_cgi(char *url, FILE *stream)
+ 		 * per entry); the charset gate covers them, update.sh re-filters */
+ 		static const char *names[] = { "ban", "allow", "cfeeds", "dnsallow", NULL };
+ 		char *src = get_cgi("dnssrc"), *keys = get_cgi("dnskeys"), *clean = NULL;
+-		int i, saved = 0;
++		char *cfk = get_cgi("cfkeys"), *cf_old;
++		int i, saved = 0, is_cf;
++
++		/* 2026-11-15: the custom IP feeds' API keys - checked here, before anything is written */
++		if (!src_keys_ok(cfk)) {
++			websWrite(stream, "{\"ok\":0,\"error\":\"an API key is not valid\",\"ek\":\"RWDN_L1\"}");
++			return;
++		}
+ 
+ 		/* 2026-10-27 (owner): Dreadwatch's own sources and API keys - every line is checked before anything is
+ 		 * written; the keys after the sources, so a source that is gone takes its key with it */
+@@ -28097,12 +28229,36 @@ do_reaper_warden_cgi(char *url, FILE *stream)
+ 				websWrite(stream, "{\"ok\":0,\"error\":\"list too long or has unsupported characters\",\"ek\":\"RWDN_L1\"}");
+ 				return;
+ 			}
++			/* 2026-11-15: the feeds' API keys are filed by a feed's place in the list, so they are filed
++			 * again with every save of it, at once (rw_cfkeys_save) */
++			is_cf = !strcmp(names[i], "cfeeds");
++			cf_old = is_cf ? rw_list_get("cfeeds") : NULL;
+ 			if (rw_list_set(names[i], v) != 0) {
++				free(cf_old);
+ 				websWrite(stream, "{\"ok\":0,\"error\":\"could not save the list\",\"ek\":\"RWDN_L2\"}");
+ 				return;
+ 			}
++			if (is_cf) {
++				int kr = rw_cfkeys_refile(cf_old ? cf_old : "", cfk);
++
++				free(cf_old);
++				if (kr != 0) {
++					websWrite(stream, "{\"ok\":0,\"error\":\"could not save the list\",\"ek\":\"RWDN_L2\"}");
++					return;
++				}
++			}
+ 			saved++;
+ 		}
++		if (cfk && *cfk) {
++			if (!get_cgi("cfeeds")) {	/* keys alone: against the list as stored */
++				if (rw_cfkeys_refile(NULL, cfk) != 0) {
++					websWrite(stream, "{\"ok\":0,\"error\":\"could not save the list\",\"ek\":\"RWDN_L2\"}");
++					return;
++				}
++				saved++;
++			}
++			reaper_audit("warden", "save", "custom feed API keys");
++		}
+ 		websWrite(stream, "{\"ok\":1,\"saved\":%d}", saved);
+ 		return;
+ 	}
+@@ -29475,6 +29631,8 @@ static const struct { const char *sect; const char *nv; size_t max; } rcfg_flags
+ 	 * their API keys - the keys AFTER the sources, which they are pruned against */
+ 	{ "warden", "rwarden_reset",    9   },
+ 	{ "warden", "rwarden_dnssrc",   RDW_SRC_MAX }, { "warden", "rwarden_dnskeys", 8 * 220 + 1 },
++	/* 2026-11-15: the API keys of the custom IP feeds - AFTER rwarden_cfeeds above, which they are filed against */
++	{ "warden", "rwarden_cfkeys",   8 * 220 + 1 },
+ 	/* IPv6 A3 (2026-10-07): the DHCPv6 reservation list (/jffs, shared/reaper_dhcp6.h) */
+ 	{ "dev",    "rdev_dhcp6",      8192 },
+ 	/* 2026-10-19: the security review switch (rc/rwatch.c 3h); the accepted
+@@ -29583,6 +29741,7 @@ static char *rcfg_get(int i, int *have)
+ 		return strdup(ex > 0 && jv ? jv : "");
+ 	}
+ 	if (!strcmp(nv, "rwarden_dnskeys")) f = RDW_KEYS;
++	else if (!strcmp(nv, "rwarden_cfkeys")) f = RW_CFKEYS;	/* 2026-11-15 */
+ 	else if (!strcmp(nv, "wallguard_keys")) f = SH_JFFS "/keys";
+ 	else if (!strcmp(nv, "wallguard_adv")) f = SH_JFFS "/adv";	/* 2026-11-06 */
+ 	else if (wf) f = wf->file;
+@@ -29624,6 +29783,13 @@ static int rcfg_put(int i, const char *v)
+ 		unlink(dw ? RDW_KEYS : SH_JFFS "/keys");
+ 		return (dw ? src_keys_save(RDW_KEYS, RDW_SRC, "rwarden", v) : sh_keys_save(v)) == 0 ? 0 : -1;
+ 	}
++	if (!strcmp(nv, "rwarden_cfkeys")) {
++		/* 2026-11-15: the feed list came in just before (table order); the file's keys replace this router's */
++		if (!src_keys_ok(v))
++			return -1;
++		unlink(RW_CFKEYS);
++		return rw_cfkeys_refile(NULL, v) == 0 ? 0 : -1;
++	}
+ 	if (!strcmp(nv, "wallguard_adv"))	/* 2026-11-06: Advanced rules - its own gate (sh_adv_ok) */
+ 		return (sh_adv_ok(v, strlen(v)) && (*v ? rjf_set(SH_JFFS "/adv", v, "wallguard") == 0 : (unlink(SH_JFFS "/adv"), 1))) ? 0 : -1;
+ 	if (wf || !strcmp(nv, "rwarden_dnssrc")) {	/* line by line through the page's own check */
+@@ -29804,7 +29970,7 @@ static int rcfg_import_json(const char *body, int *nflags_o, int *nlists_o, int
+ 	int i, nflags = 0, nlists = 0, rejected = 0;
+ 	int touch_gk = 0, touch_warden = 0;
+ 	unsigned touch = 0;	/* 2026-10-27: the other sections (rcfg_touch_bit) */
+-	int dw_any = 0, dw_src = 0, dw_keys = 0, wg_src = 0, wg_keys = 0;
++	int dw_any = 0, dw_src = 0, dw_keys = 0, wg_src = 0, wg_keys = 0, cf_src = 0, cf_keys = 0;
+ 
+ 	root = json_tokener_parse(body);
+ 	if (!root || json_object_get_type(root) != json_type_object) {
+@@ -29847,10 +30013,13 @@ static int rcfg_import_json(const char *body, int *nflags_o, int *nlists_o, int
+ 				if (!strcmp(n, "rwarden_dnskeys")) dw_keys = 1;
+ 				if (!strcmp(n, "wallguard_lists")) wg_src = 1;
+ 				if (!strcmp(n, "wallguard_keys")) wg_keys = 1;
++				if (!strcmp(n, "rwarden_cfeeds")) cf_src = 1;	/* 2026-11-15 */
++				if (!strcmp(n, "rwarden_cfkeys")) cf_keys = 1;
+ 			}
+ 			/* restored sources with no keys in the file: the backup had none, so none are kept */
+ 			if (dw_src && !dw_keys) unlink(RDW_KEYS);
+ 			if (wg_src && !wg_keys) unlink(SH_JFFS "/keys");
++			if (cf_src && !cf_keys) unlink(RW_CFKEYS);
+ 			/* F3: the interactive enable path snapshots the baseline so the
+ 			 * admin's own devices are admitted; an import turning it on must too */
+ 			if (!gk_was && nvram_match("gk_enable", "1")) gk_baseline_snapshot();
+diff --git a/release/src/router/rc/rwarden.c b/release/src/router/rc/rwarden.c
+index f546eddc03..48cbca0cc6 100644
+--- a/release/src/router/rc/rwarden.c
++++ b/release/src/router/rc/rwarden.c
+@@ -140,6 +140,10 @@
+ #define RW_DCUST_STR "custom1 custom2 custom3 custom4 custom5 custom6 custom7 custom8"
+ #define RW_DNS_SRC   RW_CACHE "/dnssrc"
+ #define RW_DNS_KEYS  RW_CACHE "/dnskeys"
++/* 2026-11-15 (field request): a custom IP feed's address may carry "$APIkey" where the supplier wants a key, as
++ * Wallguard's and Dreadwatch's sources do. The keys: "<slot> <key>", slot = the feed's place in rwarden_cfeeds
++ * (1..RW_CFEED_MAX), root 0600, write-only from the page; httpd writes it and keeps it in step with the list. */
++#define RW_CF_KEYS   RW_CACHE "/cfkeys"
+ /* The threat sets' ceiling. Was a bare literal repeated at six ipset-create
+  * sites AND implicitly assumed by the UI, so "surface the count against the
+  * limit" had no single number to quote. One definition, string form for the
+@@ -394,21 +398,42 @@ static int rw_valid_feedname(const char *s)
+  *            stored and then misread by a human as the trusted host.
+  * https only, and not negotiable: whatever is fetched is loaded straight into a
+  * DROP set, so an on-path attacker rewriting a plaintext feed would be choosing
+- * what the router blocks - including, without the bogon filter below, the LAN. */
++ * what the router blocks - including, without the bogon filter below, the LAN.
++ * 2026-11-15: the one "$" allowed is the literal "$APIkey", and only after the host (never in it: a key must not
++ * choose where it is sent). It stays inert - the URL is still emitted inside single quotes, and the key itself is
++ * never in this string: wallguard.sh's fetch reads it from RW_CF_KEYS and writes it, %-encoded, into a root-only
++ * curl config (the same code Wallguard's and Dreadwatch's keyed sources use). */
+ static int rw_valid_feedurl(const char *s)
+ {
+ 	static const char ok[] = "-._~:/?&=%+,[]";
+-	int n = 0;
++	size_t n, h;
+ 
+ 	if (!s || strncmp(s, "https://", 8) != 0) return 0;
+ 	if (!s[8]) return 0;
+-	for (; *s; s++, n++) {
++	h = 8 + strcspn(s + 8, "/?");
++	for (n = 0; s[n]; n++) {
+ 		if (n >= RW_CFEED_URL_MAX) return 0;
+-		if (isalnum((unsigned char)*s)) continue;
+-		if (strchr(ok, *s)) continue;
++		if (isalnum((unsigned char)s[n])) continue;
++		if (strchr(ok, s[n])) continue;
++		if (s[n] == '$' && n > h && !strncmp(s + n, "$APIkey", 7)) {
++			n += 6;
++			continue;
++		}
+ 		return 0;
+ 	}
+-	return 1;
++	return n <= RW_CFEED_URL_MAX;
++}
++
++/* 2026-11-15: the command that fetches one checked custom-feed address into $TMP. With "$APIkey" in it:
++ * wallguard.sh's fetch (https only, the size cap, the key from RW_CF_KEYS by slot, never in a command line);
++ * without: the plain curl call, unchanged. url has passed rw_valid_feedurl, so it cannot leave the single quotes. */
++static void rw_cfeed_fetch(char *out, size_t sz, const char *url, int slot)
++{
++	if (strstr(url, "$APIkey"))
++		snprintf(out, sz, "${RW_WGSH:-/usr/sbin/wallguard.sh} fetch $TMP '%s' '' " RW_CF_KEYS " custom%d </dev/null >/dev/null 2>&1",
++			 url, slot);
++	else
++		snprintf(out, sz, "$CURLC '%s' -o $TMP 2>/dev/null", url);
+ }
+ 
+ /* feed id from nvram must match a known feed (prevents arbitrary ids). */
+@@ -1291,6 +1316,7 @@ static void rw_gen_update(int warden)
+ 		for (tok = strtok_r(list, "<", &save); tok; tok = strtok_r(NULL, "<", &save)) {
+ 			char nm[RW_CFEED_NAME_MAX + 2];
+ 			char u4[RW_CFEED_URL_MAX + 2], u6[RW_CFEED_URL_MAX + 2];
++			char fx[RW_CFEED_URL_MAX + 160];
+ 
+ 			/* Bound RECORDS PARSED, not feeds emitted. Counting only successes
+ 			 * made the cap cosmetic: a value full of junk records was walked in
+@@ -1309,19 +1335,37 @@ static void rw_gen_update(int warden)
+ 				logmessage("rwarden", "custom feed \"%s\": URL rejected, feed SKIPPED", nm);
+ 				continue;
+ 			}
+-			fprintf(f,
+-			  "if $CURLC '%s' -o $TMP 2>/dev/null; then\n"
+-			  "  grep -oE '([0-9]{1,3}\\.){3}[0-9]{1,3}(/[0-9]{1,2})?' $TMP | rw_f4 >> $NEW\n"
+-			  "  OK=1\n"
+-			  "else\n"
+-			  "  logger -t rwarden \"custom feed fetch FAILED: %s\"\n"
+-			  "fi\n", u4, nm);
+-			if (rw_field(tok, 2, u6, sizeof(u6)) && *u6 && rw_valid_feedurl(u6))
++			/* 2026-11-15: an address with "$APIkey" is fetched by wallguard.sh's fetch, which fills in the key saved
++			 * for this feed's slot (nrec = its place in the list, as httpd numbers RW_CF_KEYS); 99 = no key saved.
++			 * A feed without it is fetched exactly as before. */
++			rw_cfeed_fetch(fx, sizeof(fx), u4, nrec);
++			if (strstr(u4, "$APIkey")) {
++				fprintf(f,
++				  "if %s; then\n"
++				  "  grep -oE '([0-9]{1,3}\\.){3}[0-9]{1,3}(/[0-9]{1,2})?' $TMP | rw_f4 >> $NEW\n"
++				  "  OK=1\n"
++				  "elif [ $? = 99 ]; then\n"
++				  "  logger -t rwarden \"custom feed has no API key saved, not fetched: %s\"\n"
++				  "else\n"
++				  "  logger -t rwarden \"custom feed fetch FAILED: %s\"\n"
++				  "fi\n", fx, nm, nm);
++			} else {
+ 				fprintf(f,
+-				  "if $CURLC '%s' -o $TMP 2>/dev/null; then\n"
++				  "if %s; then\n"
++				  "  grep -oE '([0-9]{1,3}\\.){3}[0-9]{1,3}(/[0-9]{1,2})?' $TMP | rw_f4 >> $NEW\n"
++				  "  OK=1\n"
++				  "else\n"
++				  "  logger -t rwarden \"custom feed fetch FAILED: %s\"\n"
++				  "fi\n", fx, nm);
++			}
++			if (rw_field(tok, 2, u6, sizeof(u6)) && *u6 && rw_valid_feedurl(u6)) {
++				rw_cfeed_fetch(fx, sizeof(fx), u6, nrec);
++				fprintf(f,
++				  "if %s; then\n"
+ 				  "  grep -oiE '([0-9a-f]{0,4}:){2,7}[0-9a-f]{0,4}(/[0-9]{1,3})?' $TMP | rw_f6 >> $NEW6\n"
+ 				  "  OK=1\n"
+-				  "fi\n", u6);
++				  "fi\n", fx);
++			}
+ 		}
+ 		free(list);
+ 	}
+diff --git a/release/src/router/www/BR.dict b/release/src/router/www/BR.dict
+index ee1fe1554c..87604d4aa1 100644
+--- a/release/src/router/www/BR.dict
++++ b/release/src/router/www/BR.dict
+@@ -7724,6 +7724,7 @@ RWDN_120=Ainda não carregado; a próxima atualização dos feeds carrega a list
+ RWDN_121=Lista criada (%1 nomes), mas o dnsmasq ainda não a usa; ela é carregada no próximo reinício do DNS.
+ RWDN_122=Nada foi salvo. Estas linhas de exceção não são nomes de host válidos:
+ RWDN_123=Domínios de ameaça (nomes de host bloqueados no resolvedor do roteador) são um ponto de aplicação diferente do bloqueio de endereços desta página, por isso têm página própria, Dreadwatch, com listas, estado e contadores próprios.
++RWDN_124=Para enviar uma chave de API com uma lista, digite $APIkey no ponto do URL onde a chave deve ficar (por exemplo https://example.com/list?key=$APIkey) e digite a chave no campo que aparece nessa linha. A chave fica no roteador e nunca mais é exibida; depois de renomear a lista ou mudar o host, digite-a novamente.
+ RFW_360=Logins com falha
+ RFW_361=%1 logins %2 com falha de %3, %4
+ RFW_362=SSH
+diff --git a/release/src/router/www/CN.dict b/release/src/router/www/CN.dict
+index 10c3bd319a..bd968c0865 100644
+--- a/release/src/router/www/CN.dict
++++ b/release/src/router/www/CN.dict
+@@ -7724,6 +7724,7 @@ RWDN_120=尚未加载；下一次订阅源更新会加载列表（“立即更
+ RWDN_121=列表已生成（%1 个名称），但 dnsmasq 尚未使用；将在下次 DNS 重启时加载。
+ RWDN_122=未保存任何内容。以下例外行不是有效的主机名：
+ RWDN_123=威胁域名（在路由器解析器处拦截的主机名）与本页的地址拦截是不同的执行点，因此有自己的页面 Dreadwatch，拥有独立的列表、状态和计数器。
++RWDN_124=要随列表发送 API 密钥，请在其网址中密钥应在的位置输入 $APIkey（例如 https://example.com/list?key=$APIkey），并在该行出现的框中输入密钥。密钥保存在路由器上，不会再次显示；重命名列表或更换主机后，需重新输入密钥。
+ RFW_360=登录失败
+ RFW_361=来自 %3 的 %2 登录失败 %1 次，%4
+ RFW_362=SSH
+diff --git a/release/src/router/www/CZ.dict b/release/src/router/www/CZ.dict
+index 570d6e16f9..bfa3f3bb1b 100644
+--- a/release/src/router/www/CZ.dict
++++ b/release/src/router/www/CZ.dict
+@@ -7724,6 +7724,7 @@ RWDN_120=Zatím nenačteno; další aktualizace feedů seznam načte (Aktualizov
+ RWDN_121=Seznam je sestaven (%1 názvů), ale dnsmasq jej zatím nepoužívá; načte se při dalším restartu DNS.
+ RWDN_122=Nic nebylo uloženo. Tyto řádky výjimek nejsou platné názvy hostitelů:
+ RWDN_123=Nebezpečné domény (názvy hostitelů blokované na resolveru routeru) jsou jiný bod vynucení než blokování adres na této stránce, proto mají vlastní stránku Dreadwatch s vlastními seznamy, stavem a čítači.
++RWDN_124=Chcete-li se seznamem posílat klíč API, napište $APIkey na místo v jeho adrese URL, kam klíč patří (například https://example.com/list?key=$APIkey), a klíč zadejte do pole, které se v daném řádku zobrazí. Klíč zůstává v routeru a už se nikdy nezobrazí; po přejmenování seznamu nebo změně hostitele jej zadejte znovu.
+ RFW_360=Neúspěšná přihlášení
+ RFW_361=%1 neúspěšných přihlášení %2 z %3, %4
+ RFW_362=SSH
+diff --git a/release/src/router/www/DA.dict b/release/src/router/www/DA.dict
+index cb1226cd55..f7c0e74378 100644
+--- a/release/src/router/www/DA.dict
++++ b/release/src/router/www/DA.dict
+@@ -7724,6 +7724,7 @@ RWDN_120=Ikke indlæst endnu; næste feed-opdatering indlæser listen (Opdater n
+ RWDN_121=Listen er bygget (%1 navne), men dnsmasq bruger den ikke endnu; den indlæses ved næste DNS-genstart.
+ RWDN_122=Intet blev gemt. Disse undtagelseslinjer er ikke gyldige værtsnavne:
+ RWDN_123=Trusselsdomæner (værtsnavne, der blokeres i routerens resolver) er et andet håndhævelsespunkt end adresseblokeringen på denne side, så de har deres egen side, Dreadwatch, med egne lister, status og tællere.
++RWDN_124=Skal der sendes en API-nøgle med en liste, så skriv $APIkey der, hvor nøglen hører til i listens URL (f.eks. https://example.com/list?key=$APIkey), og skriv nøglen i det felt, der vises i rækken. Nøglen bliver på routeren og vises aldrig igen; efter et nyt navn eller en ny vært skal den skrives igen.
+ RFW_360=Mislykkede logins
+ RFW_361=%1 mislykkede %2-logins fra %3, %4
+ RFW_362=SSH
+diff --git a/release/src/router/www/DE.dict b/release/src/router/www/DE.dict
+index d0f93fc5d1..a354730f1c 100644
+--- a/release/src/router/www/DE.dict
++++ b/release/src/router/www/DE.dict
+@@ -7724,6 +7724,7 @@ RWDN_120=Noch nicht geladen; die nächste Feed-Aktualisierung lädt die Liste (J
+ RWDN_121=Liste erstellt (%1 Namen), aber dnsmasq nutzt sie noch nicht; sie wird beim nächsten DNS-Neustart geladen.
+ RWDN_122=Nichts wurde gespeichert. Diese Ausnahmezeilen sind keine gültigen Hostnamen:
+ RWDN_123=Bedrohungsdomains (am Resolver des Routers gesperrte Hostnamen) sind ein anderer Durchsetzungspunkt als die Adresssperren auf dieser Seite und haben deshalb eine eigene Seite, Dreadwatch, mit eigenen Listen, eigenem Status und eigenen Zählern.
++RWDN_124=Soll mit einer Liste ein API-Schlüssel gesendet werden, schreiben Sie $APIkey an die Stelle der URL, an der der Schlüssel stehen soll (z. B. https://example.com/list?key=$APIkey), und geben Sie den Schlüssel in das Feld ein, das in dieser Zeile erscheint. Der Schlüssel bleibt auf dem Router und wird nie wieder angezeigt; nach einer Umbenennung oder einem Wechsel des Hosts geben Sie ihn erneut ein.
+ RFW_360=Fehlgeschlagene Anmeldungen
+ RFW_361=%1 fehlgeschlagene %2-Anmeldungen von %3, %4
+ RFW_362=SSH
+diff --git a/release/src/router/www/EN.dict b/release/src/router/www/EN.dict
+index 429920ea18..c349c6c0ec 100644
+--- a/release/src/router/www/EN.dict
++++ b/release/src/router/www/EN.dict
+@@ -7724,6 +7724,7 @@ RWDN_120=Not loaded yet; the next feed update loads the list (Update now does it
+ RWDN_121=List built (%1 names) but dnsmasq is not using it yet; it loads on the next DNS restart.
+ RWDN_122=Nothing was saved. These exemption lines are not valid host names:
+ RWDN_123=Threat domains (host names blocked at the router&rsquo;s resolver) are a different enforcement point from the address blocking on this page, so they have their own page, Dreadwatch, with their own feeds, status and counters.
++RWDN_124=To send an API key with a list, type $APIkey where the key belongs in its URL (for example https://example.com/list?key=$APIkey) and type the key in the box that appears in that row. The key stays on the router and is never shown again; after a rename or a change of host, type it again.
+ RFW_360=Failed logins
+ RFW_361=%1 failed %2 logins from %3, %4
+ RFW_362=SSH
+diff --git a/release/src/router/www/ES.dict b/release/src/router/www/ES.dict
+index fc3e9cf4f4..ed9dbdc613 100644
+--- a/release/src/router/www/ES.dict
++++ b/release/src/router/www/ES.dict
+@@ -7724,6 +7724,7 @@ RWDN_120=Aún no cargado; la próxima actualización de feeds carga la lista (Ac
+ RWDN_121=Lista creada (%1 nombres), pero dnsmasq aún no la usa; se carga en el próximo reinicio del DNS.
+ RWDN_122=No se guardó nada. Estas líneas de exención no son nombres de host válidos:
+ RWDN_123=Los dominios de amenazas (nombres de host bloqueados en el resolvedor del router) son un punto de aplicación distinto del bloqueo de direcciones de esta página, así que tienen su propia página, Dreadwatch, con sus propias listas, estado y contadores.
++RWDN_124=Para enviar una clave de API con una lista, escriba $APIkey en el punto de su URL donde debe ir la clave (por ejemplo https://example.com/list?key=$APIkey) y escriba la clave en el cuadro que aparece en esa fila. La clave se queda en el router y no vuelve a mostrarse; tras cambiar el nombre de la lista o el host, escríbala de nuevo.
+ RFW_360=Inicios de sesión fallidos
+ RFW_361=%1 inicios de sesión %2 fallidos desde %3, %4
+ RFW_362=SSH
+diff --git a/release/src/router/www/FI.dict b/release/src/router/www/FI.dict
+index fd40dfec88..379ddc4db0 100644
+--- a/release/src/router/www/FI.dict
++++ b/release/src/router/www/FI.dict
+@@ -7724,6 +7724,7 @@ RWDN_120=Ei vielä ladattu; seuraava syötepäivitys lataa luettelon (Päivitä
+ RWDN_121=Luettelo on koottu (%1 nimeä), mutta dnsmasq ei vielä käytä sitä; se ladataan seuraavassa DNS-uudelleenkäynnistyksessä.
+ RWDN_122=Mitään ei tallennettu. Nämä poikkeusrivit eivät ole kelvollisia isäntänimiä:
+ RWDN_123=Uhka-alueet (reitittimen nimipalvelijassa estettävät isäntänimet) ovat eri valvontakohta kuin tämän sivun osoite-esto, joten niillä on oma sivunsa, Dreadwatch, omine luetteloineen, tiloineen ja laskureineen.
++RWDN_124=Jos listan mukana lähetetään API-avain, kirjoita $APIkey listan URL-osoitteeseen avaimen paikalle (esimerkiksi https://example.com/list?key=$APIkey) ja kirjoita avain kenttään, joka ilmestyy kyseiselle riville. Avain pysyy reitittimessä eikä sitä näytetä uudelleen; kun lista nimetään uudelleen tai isäntä vaihtuu, kirjoita avain uudelleen.
+ RFW_360=Epäonnistuneet kirjautumiset
+ RFW_361=%1 epäonnistunutta %2-kirjautumista osoitteesta %3, %4
+ RFW_362=SSH
+diff --git a/release/src/router/www/FR.dict b/release/src/router/www/FR.dict
+index 157a14ba98..db821e51c6 100644
+--- a/release/src/router/www/FR.dict
++++ b/release/src/router/www/FR.dict
+@@ -7724,6 +7724,7 @@ RWDN_120=Pas encore chargé ; la prochaine mise à jour des flux charge la liste
+ RWDN_121=Liste constituée (%1 noms) mais dnsmasq ne l’utilise pas encore ; elle se charge au prochain redémarrage du DNS.
+ RWDN_122=Rien n’a été enregistré. Ces lignes d’exemption ne sont pas des noms d’hôte valides :
+ RWDN_123=Les domaines malveillants (noms d'hôte bloqués au résolveur du routeur) sont un autre point d'application que le blocage d'adresses de cette page ; ils ont donc leur propre page, Dreadwatch, avec leurs listes, leur état et leurs compteurs.
++RWDN_124=Pour envoyer une clé API avec une liste, saisissez $APIkey à l’endroit de son URL où la clé doit figurer (par exemple https://example.com/list?key=$APIkey), puis saisissez la clé dans la zone qui apparaît sur cette ligne. La clé reste sur le routeur et n’est plus jamais affichée ; après un changement de nom ou d’hôte, saisissez-la de nouveau.
+ RFW_360=Connexions échouées
+ RFW_361=%1 connexions %2 échouées depuis %3, %4
+ RFW_362=SSH
+diff --git a/release/src/router/www/HU.dict b/release/src/router/www/HU.dict
+index 2cfe35f699..486594db27 100644
+--- a/release/src/router/www/HU.dict
++++ b/release/src/router/www/HU.dict
+@@ -7724,6 +7724,7 @@ RWDN_120=Még nincs betöltve; a következő hírcsatorna-frissítés betölti a
+ RWDN_121=A lista elkészült (%1 név), de a dnsmasq még nem használja; a következő DNS-újraindításkor töltődik be.
+ RWDN_122=Semmi sem lett mentve. Ezek a kivételsorok nem érvényes gépnevek:
+ RWDN_123=A fenyegető domainek (a router feloldójánál blokkolt gépnevek) más érvényesítési pontot jelentenek, mint az oldal címblokkolása, ezért saját oldaluk van, a Dreadwatch, saját listákkal, állapottal és számlálókkal.
++RWDN_124=Ha egy listához API-kulcsot kell küldeni, írja be a $APIkey jelölőt a lista URL-címében oda, ahová a kulcs tartozik (például https://example.com/list?key=$APIkey), majd írja be a kulcsot az adott sorban megjelenő mezőbe. A kulcs a routeren marad, és többé nem jelenik meg; átnevezés vagy a gazdagép módosítása után írja be újra.
+ RFW_360=Sikertelen bejelentkezések
+ RFW_361=%1 sikertelen %2 bejelentkezés innen: %3, %4
+ RFW_362=SSH
+diff --git a/release/src/router/www/IT.dict b/release/src/router/www/IT.dict
+index 056fe787ad..2d67c3bb99 100644
+--- a/release/src/router/www/IT.dict
++++ b/release/src/router/www/IT.dict
+@@ -7724,6 +7724,7 @@ RWDN_120=Non ancora caricato; il prossimo aggiornamento dei feed carica l’elen
+ RWDN_121=Elenco creato (%1 nomi) ma dnsmasq non lo usa ancora; si carica al prossimo riavvio del DNS.
+ RWDN_122=Nulla è stato salvato. Queste righe di esenzione non sono nomi host validi:
+ RWDN_123=I domini malevoli (nomi host bloccati al resolver del router) sono un punto di applicazione diverso dal blocco degli indirizzi di questa pagina, perciò hanno una pagina propria, Dreadwatch, con elenchi, stato e contatori propri.
++RWDN_124=Per inviare una chiave API con un elenco, scrivi $APIkey nel punto del suo URL in cui va la chiave (ad esempio https://example.com/list?key=$APIkey) e scrivi la chiave nella casella che compare in quella riga. La chiave resta sul router e non viene più mostrata; dopo aver rinominato l’elenco o cambiato host, scrivila di nuovo.
+ RFW_360=Accessi non riusciti
+ RFW_361=%1 accessi %2 non riusciti da %3, %4
+ RFW_362=SSH
+diff --git a/release/src/router/www/JP.dict b/release/src/router/www/JP.dict
+index 6db0571923..a2545405cd 100644
+--- a/release/src/router/www/JP.dict
++++ b/release/src/router/www/JP.dict
+@@ -7724,6 +7724,7 @@ RWDN_120=まだ読み込まれていません。次回のフィード更新で
+ RWDN_121=リストは作成済み（%1 件）ですが dnsmasq はまだ使用していません。次回の DNS 再起動で読み込まれます。
+ RWDN_122=何も保存されませんでした。次の除外行は有効なホスト名ではありません:
+ RWDN_123=脅威ドメイン（ルーターのリゾルバーでブロックするホスト名）は、このページのアドレスブロックとは別の適用点なので、独自のリスト・状態・カウンターを持つ専用ページ Dreadwatch にあります。
++RWDN_124=リストと一緒に API キーを送るには、URL 内のキーが入る位置に $APIkey と入力し（例: https://example.com/list?key=$APIkey）、その行に表示されるボックスにキーを入力してください。キーはルーターに保存され、再表示されません。名前またはホストを変更した後は、キーをもう一度入力してください。
+ RFW_360=ログイン失敗
+ RFW_361=%3 からの %2 ログイン失敗 %1 件、%4
+ RFW_362=SSH
+diff --git a/release/src/router/www/KR.dict b/release/src/router/www/KR.dict
+index 9ed25b08fc..5e1bb2138d 100644
+--- a/release/src/router/www/KR.dict
++++ b/release/src/router/www/KR.dict
+@@ -7724,6 +7724,7 @@ RWDN_120=아직 로드되지 않았습니다. 다음 피드 업데이트에서 
+ RWDN_121=목록은 생성되었지만(%1개) dnsmasq가 아직 사용하지 않습니다. 다음 DNS 재시작 시 로드됩니다.
+ RWDN_122=아무것도 저장되지 않았습니다. 다음 예외 줄은 유효한 호스트 이름이 아닙니다:
+ RWDN_123=위협 도메인(라우터의 리졸버에서 차단하는 호스트 이름)은 이 페이지의 주소 차단과 다른 적용 지점이므로, 자체 목록·상태·카운터를 갖춘 별도 페이지 Dreadwatch에 있습니다.
++RWDN_124=목록과 함께 API 키를 보내려면 URL에서 키가 들어갈 자리에 $APIkey 를 입력하고(예: https://example.com/list?key=$APIkey) 해당 행에 나타나는 상자에 키를 입력하십시오. 키는 라우터에 보관되며 다시 표시되지 않습니다. 이름이나 호스트를 바꾼 뒤에는 키를 다시 입력하십시오.
+ RFW_360=로그인 실패
+ RFW_361=%3에서 %2 로그인 실패 %1회, %4
+ RFW_362=SSH
+diff --git a/release/src/router/www/MS.dict b/release/src/router/www/MS.dict
+index 75f1fe78fa..aa2b9f6d78 100644
+--- a/release/src/router/www/MS.dict
++++ b/release/src/router/www/MS.dict
+@@ -7724,6 +7724,7 @@ RWDN_120=Belum dimuat; kemas kini suapan seterusnya memuatkan senarai (Kemas kin
+ RWDN_121=Senarai dibina (%1 nama) tetapi dnsmasq belum menggunakannya; ia dimuat pada mula semula DNS seterusnya.
+ RWDN_122=Tiada apa yang disimpan. Baris pengecualian ini bukan nama hos yang sah:
+ RWDN_123=Domain ancaman (nama hos yang disekat di penyelesai penghala) ialah titik penguatkuasaan yang berbeza daripada sekatan alamat di halaman ini, jadi ia mempunyai halaman sendiri, Dreadwatch, dengan senarai, status dan pembilang sendiri.
++RWDN_124=Untuk menghantar kunci API bersama senarai, taip $APIkey di tempat kunci itu sepatutnya dalam URL senarai (contohnya https://example.com/list?key=$APIkey) dan taip kunci dalam kotak yang muncul pada baris itu. Kunci kekal pada penghala dan tidak dipaparkan lagi; selepas menukar nama atau hos, taip kunci itu sekali lagi.
+ RFW_360=Log masuk gagal
+ RFW_361=%1 log masuk %2 gagal dari %3, %4
+ RFW_362=SSH
+diff --git a/release/src/router/www/NL.dict b/release/src/router/www/NL.dict
+index aa9f8335a1..64a6832682 100644
+--- a/release/src/router/www/NL.dict
++++ b/release/src/router/www/NL.dict
+@@ -7724,6 +7724,7 @@ RWDN_120=Nog niet geladen; de volgende feedupdate laadt de lijst (Nu bijwerken d
+ RWDN_121=Lijst gemaakt (%1 namen), maar dnsmasq gebruikt die nog niet; ze wordt geladen bij de volgende DNS-herstart.
+ RWDN_122=Er is niets opgeslagen. Deze uitzonderingsregels zijn geen geldige hostnamen:
+ RWDN_123=Dreigingsdomeinen (hostnamen die bij de resolver van de router worden geblokkeerd) zijn een ander handhavingspunt dan de adresblokkering op deze pagina en hebben daarom een eigen pagina, Dreadwatch, met eigen lijsten, status en tellers.
++RWDN_124=Moet er met een lijst een API-sleutel worden meegestuurd, typ dan $APIkey op de plek in de URL waar de sleutel hoort (bijvoorbeeld https://example.com/list?key=$APIkey) en typ de sleutel in het vak dat in die rij verschijnt. De sleutel blijft op de router en wordt nooit meer getoond; typ hem opnieuw na een naamswijziging of een andere host.
+ RFW_360=Mislukte aanmeldingen
+ RFW_361=%1 mislukte %2-aanmeldingen vanaf %3, %4
+ RFW_362=SSH
+diff --git a/release/src/router/www/NO.dict b/release/src/router/www/NO.dict
+index 5ab0c515bb..ce5364c552 100644
+--- a/release/src/router/www/NO.dict
++++ b/release/src/router/www/NO.dict
+@@ -7724,6 +7724,7 @@ RWDN_120=Ikke lastet ennå; neste feed-oppdatering laster listen (Oppdater nå g
+ RWDN_121=Listen er bygget (%1 navn), men dnsmasq bruker den ikke ennå; den lastes ved neste DNS-omstart.
+ RWDN_122=Ingenting ble lagret. Disse unntakslinjene er ikke gyldige vertsnavn:
+ RWDN_123=Trusseldomener (vertsnavn som blokkeres i ruterens resolver) er et annet håndhevingspunkt enn adresseblokkeringen på denne siden, så de har sin egen side, Dreadwatch, med egne lister, status og tellere.
++RWDN_124=Skal det sendes en API-nøkkel med en liste, skriver du $APIkey der nøkkelen hører hjemme i listens URL (for eksempel https://example.com/list?key=$APIkey) og skriver nøkkelen i feltet som vises i raden. Nøkkelen blir på ruteren og vises aldri igjen; etter nytt navn eller ny vert må den skrives inn på nytt.
+ RFW_360=Mislykkede pålogginger
+ RFW_361=%1 mislykkede %2-pålogginger fra %3, %4
+ RFW_362=SSH
+diff --git a/release/src/router/www/PL.dict b/release/src/router/www/PL.dict
+index b5fc9e8260..52a34a9627 100644
+--- a/release/src/router/www/PL.dict
++++ b/release/src/router/www/PL.dict
+@@ -7724,6 +7724,7 @@ RWDN_120=Jeszcze nie załadowano; następna aktualizacja kanałów wczyta listę
+ RWDN_121=Lista zbudowana (%1 nazw), ale dnsmasq jeszcze jej nie używa; wczyta się przy następnym restarcie DNS.
+ RWDN_122=Nic nie zapisano. Te wiersze wyjątków nie są prawidłowymi nazwami hostów:
+ RWDN_123=Domeny zagrożeń (nazwy hostów blokowane w resolwerze routera) to inny punkt egzekwowania niż blokowanie adresów na tej stronie, więc mają własną stronę, Dreadwatch, z własnymi listami, stanem i licznikami.
++RWDN_124=Aby wysyłać klucz API razem z listą, wpisz $APIkey w tym miejscu jej adresu URL, w którym ma się znaleźć klucz (na przykład https://example.com/list?key=$APIkey), i wpisz klucz w polu, które pojawi się w tym wierszu. Klucz pozostaje na routerze i nie jest już nigdy wyświetlany; po zmianie nazwy lub hosta wpisz go ponownie.
+ RFW_360=Nieudane logowania
+ RFW_361=%1 nieudanych logowań %2 z %3, %4
+ RFW_362=SSH
+diff --git a/release/src/router/www/RO.dict b/release/src/router/www/RO.dict
+index ae80f19bf5..16a2c5234f 100644
+--- a/release/src/router/www/RO.dict
++++ b/release/src/router/www/RO.dict
+@@ -7724,6 +7724,7 @@ RWDN_120=Încă neîncărcat; următoarea actualizare a fluxurilor încarcă lis
+ RWDN_121=Lista este construită (%1 nume), dar dnsmasq nu o folosește încă; se încarcă la următoarea repornire a DNS.
+ RWDN_122=Nu s-a salvat nimic. Aceste linii de excepție nu sunt nume de gazdă valide:
+ RWDN_123=Domeniile periculoase (nume de gazdă blocate la rezolvatorul routerului) sunt un alt punct de aplicare decât blocarea adreselor de pe această pagină, de aceea au propria pagină, Dreadwatch, cu propriile liste, stare și contoare.
++RWDN_124=Pentru a trimite o cheie API împreună cu o listă, tastați $APIkey în locul din URL unde trebuie să apară cheia (de exemplu https://example.com/list?key=$APIkey) și tastați cheia în caseta care apare pe rândul respectiv. Cheia rămâne pe router și nu mai este afișată niciodată; după redenumire sau schimbarea gazdei, tastați-o din nou.
+ RFW_360=Autentificări eșuate
+ RFW_361=%1 autentificări %2 eșuate de la %3, %4
+ RFW_362=SSH
+diff --git a/release/src/router/www/RU.dict b/release/src/router/www/RU.dict
+index dc22993dc6..8c4499d61c 100644
+--- a/release/src/router/www/RU.dict
++++ b/release/src/router/www/RU.dict
+@@ -7724,6 +7724,7 @@ RWDN_120=Ещё не загружено; следующее обновление
+ RWDN_121=Список собран (%1 имён), но dnsmasq его ещё не использует; он загрузится при следующем перезапуске DNS.
+ RWDN_122=Ничего не сохранено. Эти строки исключений не являются допустимыми именами узлов:
+ RWDN_123=Опасные домены (имена хостов, блокируемые на DNS-резолвере роутера) - это другая точка применения, чем блокировка адресов на этой странице, поэтому у них своя страница Dreadwatch со своими списками, состоянием и счётчиками.
++RWDN_124=Чтобы отправлять ключ API вместе со списком, введите $APIkey в том месте его URL, где должен стоять ключ (например, https://example.com/list?key=$APIkey), и введите ключ в поле, которое появится в этой строке. Ключ остаётся на роутере и больше не показывается; после переименования или смены хоста введите его снова.
+ RFW_360=Неудачные входы
+ RFW_361=%1 неудачных входов %2 с %3, %4
+ RFW_362=SSH
+diff --git a/release/src/router/www/Reaper_Warden.asp b/release/src/router/www/Reaper_Warden.asp
+index db255c9347..2435bfdb95 100644
+--- a/release/src/router/www/Reaper_Warden.asp
++++ b/release/src/router/www/Reaper_Warden.asp
+@@ -199,6 +199,7 @@ input.cc{width:100%;font-family:ui-monospace,Consolas,monospace}
+   <div id="cfeedrows"></div>
+   <div style="margin-top:10px"><button type="button" class="btn" onclick="rwCfeedAdd()"><#RWDN_79#></button></div>
+   <div class="desc" style="margin-top:10px"><#RWDN_84#></div>
++  <div class="desc" style="margin-top:6px"><#RWDN_124#></div>
+ </div>
+ 
+ <div class="card">
+@@ -307,6 +308,8 @@ var NV = {
+      `nvram set` - would end this string and run whatever followed. Same form
+      Reaper_Firewall.asp uses for its rule lists. */
+   cfeeds: decodeURIComponent('<% rwarden_list("cfeeds"); %>'),
++  /* 2026-11-15: the feeds' API keys are write-only - only the places (1-8) in the list that have one */
++  cfkeys: '<% rwarden_list("cfkeys"); %>',
+   geo:    <% nvram_get_js("rwarden_geo"); %>,
+   dir:    <% nvram_get_js("rwarden_dir"); %>,
+   self:   <% nvram_get_js("rwarden_self"); %>,
+@@ -335,19 +338,41 @@ var CFEED_MAX = 8, CFEED_NAME_MAX = 24, CFEED_URL_MAX = 200;
+ var CFEED_URL_RE = /^https:\/\/[A-Za-z0-9\-._~:\/?&=%+,\[\]]+$/;
+ var CFEED_NAME_RE = /^[A-Za-z0-9 ._-]+$/;
+ 
++/* 2026-11-15 (field request): "$APIkey" marks where a feed's saved API key goes in its address, as on the Wallguard
++   and Dreadwatch pages - the only "$" an address may carry, and never in the host. The key is typed in the row's
++   own box and stays on the router; this page learns only which feeds have one. */
++function rwCfeedUsesKey(u){ return String(u || '').indexOf('$APIkey') >= 0; }
++function rwCfeedHost(u){ var m = /^https:\/\/([^\/?#]*)/.exec(String(u || '')); return m ? m[1].toLowerCase() : ''; }
+ function rwCfeedValidUrl(u){
+-  return u.length >= 9 && u.length <= CFEED_URL_MAX && CFEED_URL_RE.test(u) && u.indexOf('@') < 0;
++  if(/^https:\/\/[^\/?]*\$/.test(u)) return false;
++  return u.length >= 9 && u.length <= CFEED_URL_MAX && CFEED_URL_RE.test(u.replace(/\$APIkey/g, '')) && u.indexOf('@') < 0;
+ }
++function rwCfeedValidKey(k){ return k.length >= 1 && k.length <= 200 && /^[!-~]+$/.test(k) && !/["'`$\\]/.test(k); }
+ function rwCfeedParse(s){
+-  var out = [];
++  var out = [], pos = 0, has = String(NV.cfkeys || '');
+   String(s||'').split('<').forEach(function(rec){
+     if(!rec) return;
++    pos++;			/* the place the router files this feed's key under: every record counts */
+     var f = rec.split('>');
+     if(!f[0] || !f[1]) return;
+-    out.push({name:f[0], url:f[1], url6:f[2]||''});
++    out.push({name:f[0], url:f[1], url6:f[2]||'', haskey: pos <= CFEED_MAX && has.indexOf(String(pos)) >= 0});
+   });
+   return out.slice(0, CFEED_MAX);
+ }
++/* does this row still send its saved key where it was sent before (the router keeps a key by the same rule) */
++function rwCfeedKeeps(r, n, u, u6){
++  var o = r.rwOrig;
++  if(!o || !o.haskey || o.name !== n) return false;
++  var known = [rwCfeedHost(o.url), rwCfeedHost(o.url6)].filter(Boolean);
++  return known.indexOf(rwCfeedHost(u)) >= 0 && (!u6 || known.indexOf(rwCfeedHost(u6)) >= 0);
++}
++function rwCfeedKeyShow(r){
++  var k = r.querySelector('.cf-key'), n = r.querySelector('.cf-name').value.trim();
++  var u = r.querySelector('.cf-url').value.trim(), u6 = r.querySelector('.cf-url6').value.trim();
++  var uses = rwCfeedUsesKey(u) || rwCfeedUsesKey(u6);
++  k.style.display = uses ? '' : 'none';
++  k.placeholder = (uses && rwCfeedKeeps(r, n, u, u6)) ? `<#RSHD_162#>` : `<#RSHD_153#>`;
++}
+ function rwCfeedRow(c){
+   var d = document.createElement('div');
+   d.className = 'feedrow';
+@@ -359,10 +384,14 @@ function rwCfeedRow(c){
+     `<input type="text" class="cf-name" maxlength="${CFEED_NAME_MAX}" placeholder="<#RWDN_80#>" style="flex:0 0 150px">` +
+     `<input type="text" class="cf-url" maxlength="${CFEED_URL_MAX}" placeholder="<#RWDN_81#>" style="flex:1;min-width:220px">` +
+     `<input type="text" class="cf-url6" maxlength="${CFEED_URL_MAX}" placeholder="<#RWDN_82#>" style="flex:1;min-width:220px">` +
++    `<input type="password" class="cf-key" maxlength="200" autocomplete="new-password" style="flex:0 0 170px;display:none">` +
+     `<button type="button" class="btn" onclick="this.parentNode.parentNode.removeChild(this.parentNode)"><#RWDN_83#></button>`;
+   d.querySelector('.cf-name').value = c ? c.name : '';
+   d.querySelector('.cf-url').value  = c ? c.url  : '';
+   d.querySelector('.cf-url6').value = c ? c.url6 : '';
++  d.rwOrig = c || null;
++  ['.cf-name', '.cf-url', '.cf-url6'].forEach(function(q){ d.querySelector(q).addEventListener('input', function(){ rwCfeedKeyShow(d); }); });
++  rwCfeedKeyShow(d);
+   return d;
+ }
+ function rwCfeedAdd(){
+@@ -373,7 +402,9 @@ function rwCfeedAdd(){
+ /* Returns {ok:"serialized", bad:[messages]} - an invalid row aborts the whole
+    save rather than being dropped, so a mistyped feed is never silently lost. */
+ function rwCfeedCollect(){
+-  var host = document.getElementById('cfeedrows'), out = [], bad = [], i;
++  var host = document.getElementById('cfeedrows'), out = [], bad = [], keys = [], seen = {}, i;
++  /* the router keeps a saved key by the feed's name, so two feeds of one name cannot share or inherit one */
++  for(i = 0; i < host.children.length; i++){ var nm = host.children[i].querySelector('.cf-name').value.trim(); if(nm) seen[nm] = (seen[nm] || 0) + 1; }
+   for(i = 0; i < host.children.length; i++){
+     var r = host.children[i];
+     var n = r.querySelector('.cf-name').value.trim();
+@@ -383,9 +414,15 @@ function rwCfeedCollect(){
+     if(!CFEED_NAME_RE.test(n) || n.length > CFEED_NAME_MAX){ bad.push(n || `<#RWDN_90#>`); continue; }
+     if(!rwCfeedValidUrl(u)){ bad.push(n + ': ' + (u || '-')); continue; }
+     if(u6 && !rwCfeedValidUrl(u6)){ bad.push(n + ': ' + u6); continue; }
++    /* a feed that sends a key needs one: typed now, or saved before for the same name and host */
++    var k = r.querySelector('.cf-key').value.trim();
++    if(rwCfeedUsesKey(u) || rwCfeedUsesKey(u6)){
++      if(k ? !rwCfeedValidKey(k) : (seen[n] > 1 || !rwCfeedKeeps(r, n, u, u6))){ bad.push(n + ': ' + `<#RSHD_158#>`); continue; }
++      if(k && out.length < CFEED_MAX) keys.push((out.length + 1) + ' ' + k);	/* its place in the list being saved */
++    }
+     out.push(n + '>' + u + '>' + u6);
+   }
+-  return {ok: out.slice(0, CFEED_MAX).join('<'), bad: bad};
++  return {ok: out.slice(0, CFEED_MAX).join('<'), bad: bad, keys: keys.join('\n')};
+ }
+ /* ISO 3166-1 alpha-2 subset (common + commonly-blocked). Codes only ever leave
+    here as 2 ascii letters; the backend re-validates each as [A-Za-z]{2}. */
+@@ -632,6 +669,7 @@ function rwSave(updateNow){
+   lf.append('ban', ban.ok);
+   lf.append('allow', allow.ok);
+   lf.append('cfeeds', cfeeds.ok);
++  if(cfeeds.keys) lf.append('cfkeys', cfeeds.keys);
+   var lx = new XMLHttpRequest();
+   lx.open('POST','/reaper_warden.cgi',true);
+   lx.setRequestHeader('Content-Type','application/x-www-form-urlencoded');
+diff --git a/release/src/router/www/SL.dict b/release/src/router/www/SL.dict
+index 71d4ec4045..c368a75324 100644
+--- a/release/src/router/www/SL.dict
++++ b/release/src/router/www/SL.dict
+@@ -7724,6 +7724,7 @@ RWDN_120=Še ni naloženo; naslednja posodobitev virov naloži seznam (Posodobi
+ RWDN_121=Seznam je sestavljen (%1 imen), a ga dnsmasq še ne uporablja; naloži se ob naslednjem ponovnem zagonu DNS.
+ RWDN_122=Nič ni bilo shranjeno. Te vrstice izjem niso veljavna imena gostiteljev:
+ RWDN_123=Nevarne domene (imena gostiteljev, blokirana na razreševalniku usmerjevalnika) so druga točka uveljavljanja kot blokiranje naslovov na tej strani, zato imajo svojo stran, Dreadwatch, s svojimi seznami, stanjem in števci.
++RWDN_124=Če želite s seznamom pošiljati ključ API, vnesite $APIkey na mesto v njegovem naslovu URL, kamor sodi ključ (na primer https://example.com/list?key=$APIkey), in ključ vnesite v polje, ki se prikaže v tej vrstici. Ključ ostane v usmerjevalniku in se nikoli več ne prikaže; po preimenovanju ali zamenjavi gostitelja ga vnesite znova.
+ RFW_360=Neuspeli vpisi
+ RFW_361=%1 neuspelih vpisov %2 z %3, %4
+ RFW_362=SSH
+diff --git a/release/src/router/www/SV.dict b/release/src/router/www/SV.dict
+index 9d7da8ae5d..ca1b0e7fc3 100644
+--- a/release/src/router/www/SV.dict
++++ b/release/src/router/www/SV.dict
+@@ -7724,6 +7724,7 @@ RWDN_120=Inte inläst ännu; nästa flödesuppdatering läser in listan (Uppdate
+ RWDN_121=Listan är byggd (%1 namn) men dnsmasq använder den inte ännu; den läses in vid nästa DNS-omstart.
+ RWDN_122=Inget sparades. Dessa undantagsrader är inte giltiga värdnamn:
+ RWDN_123=Hotdomäner (värdnamn som blockeras i routerns resolver) är en annan tillämpningspunkt än adressblockeringen på den här sidan, så de har en egen sida, Dreadwatch, med egna listor, status och räknare.
++RWDN_124=Ska en API-nyckel skickas med en lista skriver du $APIkey där nyckeln hör hemma i listans URL (till exempel https://example.com/list?key=$APIkey) och skriver nyckeln i rutan som visas på raden. Nyckeln stannar i routern och visas aldrig igen; efter ett namnbyte eller en ny värd skriver du den igen.
+ RFW_360=Misslyckade inloggningar
+ RFW_361=%1 misslyckade %2-inloggningar från %3, %4
+ RFW_362=SSH
+diff --git a/release/src/router/www/TH.dict b/release/src/router/www/TH.dict
+index 9fe90713bd..90bdeb5209 100644
+--- a/release/src/router/www/TH.dict
++++ b/release/src/router/www/TH.dict
+@@ -7724,6 +7724,7 @@ RWDN_120=ยังไม่ได้โหลด การอัปเดตฟ
+ RWDN_121=สร้างรายการแล้ว (%1 ชื่อ) แต่ dnsmasq ยังไม่ได้ใช้ จะโหลดเมื่อรีสตาร์ท DNS ครั้งถัดไป
+ RWDN_122=ไม่ได้บันทึกอะไร บรรทัดข้อยกเว้นเหล่านี้ไม่ใช่ชื่อโฮสต์ที่ถูกต้อง:
+ RWDN_123=โดเมนภัยคุกคาม (ชื่อโฮสต์ที่ถูกบล็อกที่ตัวแก้ชื่อของเราเตอร์) เป็นจุดบังคับใช้ที่ต่างจากการบล็อกที่อยู่ในหน้านี้ จึงมีหน้าของตัวเองคือ Dreadwatch พร้อมรายการ สถานะ และตัวนับของตัวเอง
++RWDN_124=หากต้องการส่งคีย์ API ไปพร้อมกับรายการ ให้พิมพ์ $APIkey ตรงตำแหน่งที่คีย์ต้องอยู่ใน URL ของรายการ (เช่น https://example.com/list?key=$APIkey) แล้วพิมพ์คีย์ในช่องที่ปรากฏในแถวนั้น คีย์จะเก็บอยู่ในเราเตอร์และจะไม่แสดงอีก หลังจากเปลี่ยนชื่อหรือเปลี่ยนโฮสต์ ให้พิมพ์คีย์อีกครั้ง
+ RFW_360=การเข้าสู่ระบบล้มเหลว
+ RFW_361=การเข้าสู่ระบบ %2 ล้มเหลว %1 ครั้งจาก %3, %4
+ RFW_362=SSH
+diff --git a/release/src/router/www/TR.dict b/release/src/router/www/TR.dict
+index 184fc93305..98288a601f 100644
+--- a/release/src/router/www/TR.dict
++++ b/release/src/router/www/TR.dict
+@@ -7724,6 +7724,7 @@ RWDN_120=Henüz yüklenmedi; bir sonraki akış güncellemesi listeyi yükler (
+ RWDN_121=Liste oluşturuldu (%1 ad) ancak dnsmasq henüz kullanmıyor; bir sonraki DNS yeniden başlatmasında yüklenir.
+ RWDN_122=Hiçbir şey kaydedilmedi. Bu istisna satırları geçerli ana makine adı değil:
+ RWDN_123=Tehdit alan adları (yönlendiricinin çözücüsünde engellenen ana makine adları) bu sayfadaki adres engellemesinden farklı bir uygulama noktasıdır; bu yüzden kendi listeleri, durumu ve sayaçlarıyla kendi sayfaları vardır: Dreadwatch.
++RWDN_124=Bir listeyle birlikte API anahtarı göndermek için, listenin URL adresinde anahtarın geleceği yere $APIkey yazın (örneğin https://example.com/list?key=$APIkey) ve anahtarı o satırda beliren kutuya yazın. Anahtar yönlendiricide kalır ve bir daha gösterilmez; ad veya ana bilgisayar değiştikten sonra anahtarı yeniden yazın.
+ RFW_360=Başarısız oturum açmalar
+ RFW_361=%3 kaynağından %1 başarısız %2 oturum açma, %4
+ RFW_362=SSH
+diff --git a/release/src/router/www/TW.dict b/release/src/router/www/TW.dict
+index d03b094b53..cf841da939 100644
+--- a/release/src/router/www/TW.dict
++++ b/release/src/router/www/TW.dict
+@@ -7724,6 +7724,7 @@ RWDN_120=尚未載入；下一次訂閱來源更新會載入清單（「立即
+ RWDN_121=清單已建立（%1 個名稱），但 dnsmasq 尚未使用；將在下次 DNS 重新啟動時載入。
+ RWDN_122=未儲存任何內容。以下例外行不是有效的主機名稱：
+ RWDN_123=威脅網域（在路由器解析器處封鎖的主機名稱）與本頁的位址封鎖是不同的執行點，因此有自己的頁面 Dreadwatch，具備獨立的清單、狀態與計數器。
++RWDN_124=若要隨清單傳送 API 金鑰，請在其網址中金鑰應在的位置輸入 $APIkey（例如 https://example.com/list?key=$APIkey），並在該列出現的方塊中輸入金鑰。金鑰保存在路由器上，不會再次顯示；重新命名清單或更換主機後，需重新輸入金鑰。
+ RFW_360=登入失敗
+ RFW_361=來自 %3 的 %2 登入失敗 %1 次，%4
+ RFW_362=SSH
+diff --git a/release/src/router/www/UK.dict b/release/src/router/www/UK.dict
+index 41e008701e..444550bc20 100644
+--- a/release/src/router/www/UK.dict
++++ b/release/src/router/www/UK.dict
+@@ -7724,6 +7724,7 @@ RWDN_120=Ще не завантажено; наступне оновлення 
+ RWDN_121=Список зібрано (%1 імен), але dnsmasq ще не використовує його; він завантажиться під час наступного перезапуску DNS.
+ RWDN_122=Нічого не збережено. Ці рядки винятків не є припустимими іменами вузлів:
+ RWDN_123=Небезпечні домени (імена хостів, що блокуються на DNS-резолвері роутера) - це інша точка застосування, ніж блокування адрес на цій сторінці, тому вони мають власну сторінку Dreadwatch із власними списками, станом і лічильниками.
++RWDN_124=Щоб надсилати ключ API разом зі списком, введіть $APIkey у тому місці його URL, де має стояти ключ (наприклад, https://example.com/list?key=$APIkey), і введіть ключ у поле, що з’явиться в цьому рядку. Ключ залишається на роутері й більше не показується; після перейменування або зміни хоста введіть його знову.
+ RFW_360=Невдалі входи
+ RFW_361=%1 невдалих входів %2 з %3, %4
+ RFW_362=SSH
+-- 
+2.25.1
+

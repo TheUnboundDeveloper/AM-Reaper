@@ -45,12 +45,13 @@ check("the sections are contiguous (the export opens each once)", contiguous, se
 carried = {n for _, n in rows}
 idx = {n: i for i, (_, n) in enumerate(rows)}
 check("sources come before their keys (keys are pruned against the sources just written)",
-      idx.get("rwarden_dnssrc", 99) < idx.get("rwarden_dnskeys", -1) and idx.get("wallguard_lists", 99) < idx.get("wallguard_keys", -1))
+      idx.get("rwarden_dnssrc", 99) < idx.get("rwarden_dnskeys", -1) and idx.get("wallguard_lists", 99) < idx.get("wallguard_keys", -1)
+      and idx.get("rwarden_cfeeds", 99) < idx.get("rwarden_cfkeys", -1))	# 2026-11-15: the custom IP feeds' keys
 # carried in the settings file's list part, not the flag table
 LISTS = {"gk_rl", "reaper_pbr_rulelist", "reaper_fw_obj", "reaper_fw_grp", "reaper_fw_svc", "reaper_fw_zone",
          "reaper_fw_zpol", "reaper_fw_rules", "reaper_fw_edef", "reaper_fw_nat"}
 # not nvram: a /jffs file or the Warden list store, named in the table
-STORE = {"rwarden_ban", "rwarden_allow", "rwarden_dnsallow", "rwarden_dnssrc", "rwarden_dnskeys", "rdev_dhcp6",
+STORE = {"rwarden_ban", "rwarden_allow", "rwarden_dnsallow", "rwarden_dnssrc", "rwarden_dnskeys", "rwarden_cfkeys", "rdev_dhcp6",
          "rwatch_rules", "rlog_filter", "wallguard_lists", "wallguard_block", "wallguard_allow", "wallguard_profiles",
          "wallguard_assign", "wallguard_services", "wallguard_sched", "wallguard_safe", "wallguard_rewrite", "wallguard_keys",
          "wallguard_adv"}	# 2026-11-06: Advanced rules (/jffs/wallguard/adv)
@@ -150,6 +151,7 @@ if CC and region and tbl and all(fns):
 #define REAPER_RW_DIR "./rwarden"
 #define RDW_SRC REAPER_RW_DIR "/dnssrc"
 #define RDW_KEYS REAPER_RW_DIR "/dnskeys"
+#define RW_CFKEYS REAPER_RW_DIR "/cfkeys"
 #define RDW_SRC_MAX 16384
 #define REAPER_DHCP6_FILE "./reaper/dhcp6_static"
 #define RVIEW_RULES "./reaper/review/rules"
@@ -211,6 +213,9 @@ int main(int argc, char **argv) {
             fa("rwarden/dnssrc", "hidden basics\ncustom 1 https://lists.example/hosts.txt name=My%20list\noff 1\n")
             fa("rwarden/dnskeys", "1 DwKEY-9\n")
             fa("rwarden/ban", "203.0.113.0/24\n")
+            # 2026-11-15: a custom IP feed that sends an API key ($APIkey in its address) and its key
+            fa("rwarden/cfeeds", "<Keyed>https://k.example/ips?token=$APIkey><Plain>https://p.example/ips.txt>")
+            fa("rwarden/cfkeys", "1 CfKEY-7\n")
             fa("reaper/logfilter", "dhcp\n")
             NVA = {"wallguard_enable": "1", "wallguard_mode": "nx", "reaper_dot_srv": "1", "reaper_dnshc_target": "10.20.0.98",
                    "reaper_export_url": "https://splunk.example:8088/services/collector?x=1&y=2", "reaper_export_token": "Tok-123/abc=",
@@ -228,6 +233,7 @@ int main(int argc, char **argv) {
             # router B already has its own Wallguard allow file and a stale key: the restore must leave allow alone
             open(os.path.join(B, "wallguard/allow"), "w").write("keep.example\n")
             open(os.path.join(B, "rwarden/dnskeys"), "w").write("5 StaleKEY\n")
+            open(os.path.join(B, "rwarden/cfkeys"), "w").write("2 StaleCfKEY\n")
             r = subprocess.run([exe, "import"], cwd=B, input="".join("%s=%s\n" % (k, v) for k, v in exp.items()), capture_output=True, text=True)
             puts = dict(l.split()[1:3] for l in r.stdout.split("\n") if l.startswith("PUT "))
             nvb = {l[3:].split("=", 1)[0]: bytes.fromhex(l[3:].split("=", 1)[1]).decode() for l in r.stdout.split("\n") if l.startswith("NV ")}
@@ -242,6 +248,10 @@ int main(int argc, char **argv) {
                   [rb("wallguard/lists"), rb("rwarden/dnssrc")])
             check("import: both key files are the backup's (router B's stale key is gone)",
                   rb("wallguard/keys") == "2 WgKEY-1\n" and rb("rwarden/dnskeys") == "1 DwKEY-9\n", [rb("wallguard/keys"), rb("rwarden/dnskeys")])
+            check("export + import: the custom IP feeds travel with their API key; router B's stale feed key is gone",
+                  dec.get("rwarden_cfkeys") == "1 CfKEY-7" and "$APIkey" in dec.get("rwarden_cfeeds", "")
+                  and (rb("rwarden/cfeeds") or "").rstrip("\n") == ra("rwarden/cfeeds") and rb("rwarden/cfkeys") == "1 CfKEY-7\n",
+                  [dec.get("rwarden_cfkeys"), rb("rwarden/cfeeds"), rb("rwarden/cfkeys")])
             check("import: a file the backup did not carry is left as router B had it", rb("wallguard/allow") == "keep.example\n")
             check("import: the switches land in nvram, URL and token included",
                   all(nvb.get(k) == v for k, v in NVA.items()), {k: (nvb.get(k), v) for k, v in NVA.items() if nvb.get(k) != v})

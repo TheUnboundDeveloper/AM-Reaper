@@ -16,6 +16,8 @@ WHAT IT DOES.
   - pins the seven defaults in shared/defaults.c (comments stripped first, so a commented-out entry
     cannot satisfy a check) and that autowan_enable sits under the stock RTCONFIG_AUTO_WANPORT gate;
   - pins wan_ifname_x=eth0 on the model list that names RTBE96U and checks every fleet model is on it;
+  - QoS (field report 2026-11-15): qos_enable defaults to 0, and the HW QoS Classful default gives Q1 Web/VoIP a
+    90% ceiling - no strict-priority class starts at 100%;
   - no rc/httpd code sets or unsets any of the seven keys;
   - the lldpd bind list skips a WAN interface in router mode outside an Auto search (the code path a
     factory-fresh router now lands in; stock bound lldpd to the ISP-facing port there);
@@ -65,6 +67,19 @@ check("wan_ifname_x defaults to eth0 on the model list that names RTBE96U",
       m is not None and m.group(1) == "eth0", m.group(1) if m else "entry not found")
 for model in ("GTBE98", "GTBE98_PRO", "RTBE88U", "RTBE86U", "GTBE19000", "BQ16", "BQ16_PRO"):
     check("that wan_ifname_x entry covers %s" % model, m is not None and ("defined(%s)" % model) in m.group(0))
+
+# ------------------------------------------------------------------ QoS (field report 2026-11-15)
+# A new or factory-reset router has QoS off, and the HW QoS Classful profile it would start from never gives a
+# strict-priority class a 100% ceiling (the page's guide, RQOS_45: "never give Q1 100%"). qos_enable keeps its stock
+# writers (turbo button, GeForce NOW, the stock gaming pages): each needs a user action, so it is not on the
+# no-writer list below.
+check("qos_enable defaults to 0 (QoS off), one entry", defaults_of("qos_enable") == ["0"], defaults_of("qos_enable"))
+orates, sched = defaults_of("qos_orates"), defaults_of("qos_sched")
+pairs = [p.split("-") for p in orates[0].split(",")[:5]] if len(orates) == 1 else []
+check("HW QoS Classful default: Q1 Web/VoIP min 15, ceiling 90", pairs[:1] == [["15", "90"]], orates)
+prio = [i for i, s in enumerate(sched[0].split(",")) if s == "p"] if len(sched) == 1 else []
+check("no strict-priority class (qos_sched 'p') defaults to a 100% ceiling",
+      len(pairs) == 5 and prio and all(int(pairs[i][1]) < 100 for i in prio), (orates, sched))
 
 # ------------------------------------------------------------------ an upgrade keeps the user's value
 writers = []

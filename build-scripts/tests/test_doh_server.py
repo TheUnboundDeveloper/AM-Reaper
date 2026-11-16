@@ -122,8 +122,10 @@ check("httpd and rc agree on what makes the port busy",
 dev = cut(web, "#define RENC_PLAIN_MAX", "static int renc_private_v4(const char *s)")
 check("httpd: the device code is found", "renc_plain_scan" in dev and "renc_devices" in dev)
 ct = os.path.join(tmp, "conntrack"); ld = os.path.join(tmp, "misc"); os.mkdir(ld)
-dev_t = dev.replace('"/proc/net/nf_conntrack"', json.dumps(ct)).replace('"/var/lib/misc/%s"', json.dumps(ld + "/%s")).replace('"/var/lib/misc"', json.dumps(ld))
-check("httpd: the three paths were redirected for the test", ct in dev_t and dev_t.count(ld) == 2 and "/var/lib/misc" not in dev_t and "/proc/net" not in dev_t)
+arp = os.path.join(tmp, "arp")	# 2026-11-15: the neighbour table names a device the router holds no lease for
+dev_t = (dev.replace('"/proc/net/nf_conntrack"', json.dumps(ct)).replace('"/var/lib/misc/%s"', json.dumps(ld + "/%s"))
+            .replace('"/var/lib/misc"', json.dumps(ld)).replace('"/proc/net/arp"', json.dumps(arp)))
+check("httpd: the four paths were redirected for the test", ct in dev_t and arp in dev_t and dev_t.count(ld) == 2 and "/var/lib/misc" not in dev_t and "/proc/net" not in dev_t)
 HT = r'''
 #define _GNU_SOURCE
 #include <stdio.h>
@@ -151,6 +153,14 @@ static long UP; static long uptime(void) { return UP; }
 static size_t t_strlcpy(char *d, const char *s, size_t n) { size_t l = strlen(s); if (n) { size_t c = l >= n ? n - 1 : l; memcpy(d, s, c); d[c] = 0; } return l; }
 #define strlcpy t_strlcpy
 #define websWrite(s, ...) fprintf(s, __VA_ARGS__)
+/* 2026-11-15: the device-label rule (httpd/reaper_devname.c) - here a stand-in: an admin Name for one MAC, else the
+   lease name; test_dhcp_leases_names.py runs the real one */
+#define RDN_NAME_MAX 64
+static void rdn_label(const char *mac, const char *lh, char *out, size_t n) {
+  if (!strcasecmp(mac, "aa:bb:cc:dd:ee:02")) { snprintf(out, n, "Office PC"); return; }
+  if (!strcasecmp(mac, "aa:bb:cc:dd:ee:77")) { snprintf(out, n, "Kids-PC"); return; }
+  snprintf(out, n, "%s", (lh && strcmp(lh, "*")) ? lh : "");
+}
 ''' + dev_t + r'''
 int main(int argc, char **argv) {
   addif("lo", AF_INET, "127.0.0.1", "255.0.0.0");
@@ -186,6 +196,8 @@ rows = [
     row("ipv6", "udp", "fe80:0000:0000:0000:0000:0000:0000:0abc", "fe80:0000:0000:0000:0000:0000:0000:0001", 40012, 53),   # a device's link-local
 ]
 open(ct, "w").write("".join(rows))
+open(arp, "w").write("IP address       HW type     Flags       HW address            Mask     Device" + chr(10) +
+                     "192.168.50.77    0x1         0x2         aa:bb:cc:dd:ee:77     *        br0" + chr(10))
 open(os.path.join(ld, "dnsmasq.leases"), "w").write(
     "1731300000 aa:bb:cc:dd:ee:01 192.168.50.23 Nathans-iPhone 01:aa:bb:cc:dd:ee:01\n"
     "1731300000 aa:bb:cc:dd:ee:02 192.168.50.31 DESKTOP-WIN11 *\n"
@@ -205,11 +217,12 @@ j1, j2, j3 = parse(out[0]), parse(out[1]), parse(out[2])
 check("httpd: the output is valid JSON members", "err" not in j1, j1)
 check("httpd: plain = the LAN device, the IPv6 device in short form, the guest device, the link-local device - each once, nothing else",
       j1.get("plain") == ["192.168.50.23", "fd5a:1b2c:3d4e::42", "10.20.0.9", "fe80::abc"], j1.get("plain"))
-check("httpd: names for a plain device, an encrypted peer and the IPv6 device; none for an unlisted lease",
-      j1.get("names") == {"192.168.50.23": "Nathans-iPhone", "192.168.50.31": "DESKTOP-WIN11", "fd5a:1b2c:3d4e::42": "ipad6"}, j1.get("names"))
+check("httpd: names for a plain device, an encrypted peer (its admin Name, with a space) and the IPv6 device; none for an unlisted lease",
+      j1.get("names") == {"192.168.50.23": "Nathans-iPhone", "192.168.50.31": "Office PC", "fd5a:1b2c:3d4e::42": "ipad6"}, j1.get("names"))
 check("httpd: a lease name with markup characters is dropped, not printed", "<" not in out[0] and "10.20.0.9" not in (j1.get("names") or {}))
 check("httpd: within 10 seconds the connection table is not read again", j2.get("plain") == j1.get("plain"), j2.get("plain"))
 check("httpd: after 10 seconds it is", j3.get("plain") == ["192.168.50.77"], j3.get("plain"))
+check("httpd: a device with no lease line is named from the neighbour table (2026-11-15)", (j3.get("names") or {}).get("192.168.50.77") == "Kids-PC", j3.get("names"))
 h = cut(web, "do_reaper_encdns_cgi(char *url, FILE *stream)", "\n}\n")
 check("httpd: the handler prints the device data after rednsd's own text", 0 < h.find('"{\\"st\\":%s') < h.find("renc_devices(stream, st);"))
 
@@ -425,7 +438,11 @@ a = srv.find('"dhcp-option=lan,6%s%s%s%s%s\\n"'); b = srv.find('rednsd_dnr_optio
 check("dnr: the LAN gets it only in the else of 'custom DNS servers for clients'", 0 < a < b and b - a < 700 and "else" in srv[a:b] and srv[a:b].count(";") == 1, (a, b))
 a = sdn.find('fprintf(fp, "dhcp-option=%s,6,%s\\n", pmtl->nw_t.ifname, pmtl->nw_t.dns[1]);', sdn.find("else if(pmtl->nw_t.dns[1][0] != '\\0')"))
 b = sdn.find("rednsd_dnr_option(fp, pmtl->nw_t.ifname, pmtl->nw_t.addr);")
-check("dnr: a guest network gets it only when it has no DNS server of its own", 0 < a < b and b - a < 300 and "else" in sdn[a:b], (a, b))
+check("dnr: a guest network gets it only when it has no DNS server of its own", 0 < a < b and b - a < 700 and "else" in sdn[a:b], (a, b))
+# 2026-11-15: isolated guest networks and portals reach the router on DHCP / port 53 only (REAPER_GUI) - no DNR offer there
+check("dnr: never offered on an isolated guest network or a portal",
+      "if (!reaper_sdn_hide_lan_names(pmtl) && pmtl->sdn_t.cp_idx <= 0)\n\t\t\t\t\trednsd_dnr_option(fp, pmtl->nw_t.ifname, pmtl->nw_t.addr);" in sdn
+      and 0 < sdn.find("static int reaper_sdn_hide_lan_names(") < b)
 check("dnr: start_dnsmasq records the published state before the refresh", 0 < srv.find("rednsd_dnr_mark();") < srv.find("rednsd_refresh();", srv.find("rednsd_dnr_mark();")))
 check("dnr: the restart uses calls that exist on every platform (restart_dnsmasq() is not linked on this one)", "restart_dnsmasq(0)" not in dnr and "stop_dnsmasq(ALL_SDN);" in dnr and "start_dnsmasq(ALL_SDN);" in dnr)
 check("dnr: both entry points of the server end with the check", "void start_rednsd(void)\n{\n\tred_start();\n\tred_dnr_sync();\n}" in enc and "void rednsd_refresh(void)\n{\n\tred_refresh();\n\tred_dnr_sync();\n}" in enc)

@@ -113,7 +113,7 @@ check("defaults: reaper_doh_srv exists and is OFF", '{ "reaper_doh_srv", "0"' in
 web = rd(os.path.join(SRC, "httpd", "web.c"))
 check("backup: reaper_doh_srv is in the settings table", '{ "encdns", "reaper_doh_srv", 2 }' in " ".join(web.split()))
 rw = rd(os.path.join(SRC, "rc", "rwatch.c"))
-check("watchdog: rednsd is restarted and recorded under either switch", rw.count("$(_nv reaper_doh_srv)") >= 2, rw.count("$(_nv reaper_doh_srv)"))
+check("watchdog: rednsd is restarted and recorded under either switch", rw.count("$(_nvc reaper_doh_srv)") >= 2, rw.count("$(_nvc reaper_doh_srv)"))   # 2026-11-17: settings are read through _nvc
 check("httpd and rc agree on what makes the port busy",
       'nvram_get_int("https_lanport") == 443' in cut(web, "static const char *renc_doh_busy(void)", "\n}\n").replace("RED_DOH_PORT", "443")
       or "https_lanport" in cut(web, "static const char *renc_doh_busy(void)", "\n}\n"))

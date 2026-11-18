@@ -1,0 +1,172 @@
+From 804df0b0519afcc76dbd03f25a7320970d5b853f Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Wed, 18 Nov 2026 17:05:12 -0500
+Subject: [PATCH] Pages: no polling from a hidden browser tab
+
+- The dashboard's timers, System Information, Warden, Dreadwatch, WPS and the Wallguard live view
+  send no request while the tab is hidden and refresh once when it is shown again. Visible refresh
+  rates are unchanged.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ release/src/router/www/Main_ReaperDash.asp   | 14 +++++++-------
+ release/src/router/www/Reaper_Dreadwatch.asp |  2 +-
+ release/src/router/www/Reaper_Sysinfo.asp    |  6 +++---
+ release/src/router/www/Reaper_WPS.asp        |  2 +-
+ release/src/router/www/Reaper_Wallguard.asp  |  2 +-
+ release/src/router/www/Reaper_Warden.asp     |  2 +-
+ 6 files changed, 14 insertions(+), 14 deletions(-)
+
+diff --git a/release/src/router/www/Main_ReaperDash.asp b/release/src/router/www/Main_ReaperDash.asp
+index 3ffa01afe5..a6e84e786c 100644
+--- a/release/src/router/www/Main_ReaperDash.asp
++++ b/release/src/router/www/Main_ReaperDash.asp
+@@ -522,7 +522,7 @@ main{min-width:0}
+     x.onerror=x.ontimeout=x.onabort=function(){busy=false;};
+     x.send();
+   }
+-  poll();setInterval(poll,60000);
++  poll();setInterval(function(){ if(!document.hidden) poll(); }, 60000); document.addEventListener('visibilitychange', function(){ if(!document.hidden) poll(); });
+ })();</script>
+ <div class="app">
+ 
+@@ -564,7 +564,7 @@ main{min-width:0}
+   <!-- MAIN -->
+   <main>
+     <header class="top">
+-      <a class="brand" href="#" title="REAPER"><img src="/images/RT-96U_REAPER_Header.png" alt="REAPER"></a>
++      <a class="brand" href="#" title="REAPER"><img src="/images/RT-96U_REAPER_Header.webp" alt="REAPER"></a>
+       <div class="pills" data-rfit-strip>
+         <div class="pill tipa" id="p_wan_pill" tabindex="0" role="button" aria-describedby="ntip"><span class="dot" id="p_wan_dot"></span><span class="k" data-en="WAN"><#menu5_3#></span><span class="v" id="p_wan" data-en="Disconnected">&mdash;</span></div>
+         <div class="pill"><span class="k" data-en="Mode"><#DSL_Mode#></span><span class="v" id="i_opmode" data-en="Wireless Router">&mdash;</span></div>
+@@ -1517,7 +1517,7 @@ function pollSys(){
+   };
+   x.send();
+ }
+-pollSys(); setInterval(pollSys, 2500);
++pollSys(); setInterval(function(){ if(!document.hidden) pollSys(); }, 2500); document.addEventListener('visibilitychange', function(){ if(!document.hidden) pollSys(); });
+ 
+ /* ---- live CPU temperature via /ajax_coretmp.asp ---- */
+ function setTemp(t){
+@@ -1535,7 +1535,7 @@ function pollTemp(){
+   };
+   x.send();
+ }
+-pollTemp(); setInterval(pollTemp, 5000);
++pollTemp(); setInterval(function(){ if(!document.hidden) pollTemp(); }, 5000); document.addEventListener('visibilitychange', function(){ if(!document.hidden) pollTemp(); });
+ 
+ /* v1.4.7: idle auto-logout - closes an unattended admin session on the dashboard.
+    v3.1.2: it now honours Administration > System > "Logout after ..."
+@@ -1754,7 +1754,7 @@ function pollClientsDev(){
+ }
+ (function(){ var sel=$id('cl_filter'); if(sel){ sel.addEventListener('change',renderClients); renderClients(); } })();
+ var clientTick = ROUTING ? pollClients : pollClientsDev;
+-clientTick(); setInterval(clientTick, ROUTING ? 10000 : 30000);
++clientTick(); setInterval(function(){ if(!document.hidden) clientTick(); }, ROUTING ? 10000 : 30000); document.addEventListener('visibilitychange', function(){ if(!document.hidden) clientTick(); });
+ 
+ /* ---- wireless radio tiles ----
+    On this FW (RTCONFIG_MULTILAN_MWL) the broadcast SSID lives in the SDN MAINFH
+@@ -1878,7 +1878,7 @@ function pollPorts(){
+   };
+   x.send();
+ }
+-pollPorts(); setInterval(pollPorts, 5000);
++pollPorts(); setInterval(function(){ if(!document.hidden) pollPorts(); }, 5000); document.addEventListener('visibilitychange', function(){ if(!document.hidden) pollPorts(); });
+ 
+ /* v3.1.8 P2 discoverability: the firewall walker's verdict, on the dashboard.
+    Every surface the walker fed was one the operator had to be looking at already
+@@ -1915,7 +1915,7 @@ function pollWit(){
+   };
+   x.send();
+ }
+-pollWit(); setInterval(pollWit, 60000);
++pollWit(); setInterval(function(){ if(!document.hidden) pollWit(); }, 60000); document.addEventListener('visibilitychange', function(){ if(!document.hidden) pollWit(); });
+ 
+ /* ---- Security posture: refresh on the clock, not on a page reload ----------
+    THE PROBLEM. Every row in the posture card comes from SSI, which is a
+diff --git a/release/src/router/www/Reaper_Dreadwatch.asp b/release/src/router/www/Reaper_Dreadwatch.asp
+index 32f1adcb6f..ee3291ef5c 100644
+--- a/release/src/router/www/Reaper_Dreadwatch.asp
++++ b/release/src/router/www/Reaper_Dreadwatch.asp
+@@ -658,7 +658,7 @@ function dwSnap(){
+ ReaperPending.watch({at: document.querySelector('button[onclick="dwSave(false)"]'), btnClass: 'btng', snap: dwSnap, label: `<#RADM_77#>`, discard: `<#Discard#>`});
+ ReaperPending.arm();
+ ReaperNames.refresh('<% nvram_char_to_ascii("", "custom_clientlist"); %>', function(){ dwStats(); });
+-setInterval(dwStats, 30000);
++setInterval(function(){ if(!document.hidden) dwStats(); }, 30000); document.addEventListener('visibilitychange', function(){ if(!document.hidden) dwStats(); });
+ </script>
+ </body>
+ </html>
+diff --git a/release/src/router/www/Reaper_Sysinfo.asp b/release/src/router/www/Reaper_Sysinfo.asp
+index 5293c4b4db..b0d6560e8c 100644
+--- a/release/src/router/www/Reaper_Sysinfo.asp
++++ b/release/src/router/www/Reaper_Sysinfo.asp
+@@ -425,7 +425,7 @@ function pollSysinfo(){
+   function fin(ok){
+     if(done) return; done=true;
+     if(ok){ try{ renderSysinfo(x.responseText); }catch(e){} }
+-    setTimeout(pollSysinfo, 3000);
++    setTimeout(function w(){ if(document.hidden) setTimeout(w, 1000); else pollSysinfo(); }, 3000);
+   }
+   x.open('GET','/ajax_sysinfo.asp?_='+Date.now(), true);
+   x.timeout=8000;
+@@ -466,7 +466,7 @@ function pollTemp(){
+         return '<div><div class="v'+cls+'">'+p[1].toFixed(0)+'\u00b0C</div><div class="sub">'+esc(p[0])+'</div></div>';
+       }).join('') : '<span class="sub">-</span>';
+     }catch(e){}
+-    setTimeout(pollTemp, 5000);
++    setTimeout(function w(){ if(document.hidden) setTimeout(w, 1000); else pollTemp(); }, 5000);
+   }
+   x.open('GET','/ajax_coretmp.asp?_='+Date.now(), true);
+   x.timeout=8000;
+@@ -505,7 +505,7 @@ function pollCores(){
+         }
+       }
+     }catch(e){}
+-    setTimeout(pollCores, 2500);
++    setTimeout(function w(){ if(document.hidden) setTimeout(w, 1000); else pollCores(); }, 2500);
+   }
+   x.open('GET','/cpu_ram_status.asp?_='+Date.now(), true);
+   x.timeout=8000;
+diff --git a/release/src/router/www/Reaper_WPS.asp b/release/src/router/www/Reaper_WPS.asp
+index 4af5760474..015ecaa7a3 100644
+--- a/release/src/router/www/Reaper_WPS.asp
++++ b/release/src/router/www/Reaper_WPS.asp
+@@ -193,7 +193,7 @@ q('b_reset').addEventListener('click', function(){
+ });
+ /* stock method default: a stored PIN that is not the PBC value means the PIN method was last used */
+ if (pinOk(NV.wps_sta_pin) && NV.wps_sta_pin !== '00000000'){ document.querySelector('input[name=wps_method][value="1"]').checked = true; q('i_pin').style.display = ''; }
+-paint(); status(); poll = setInterval(status, 3000);
++paint(); status(); poll = setInterval(function(){ if(!document.hidden) status(); }, 3000);
+ })();
+ </script>
+ </body>
+diff --git a/release/src/router/www/Reaper_Wallguard.asp b/release/src/router/www/Reaper_Wallguard.asp
+index 4ca510b35f..dc46142263 100644
+--- a/release/src/router/www/Reaper_Wallguard.asp
++++ b/release/src/router/www/Reaper_Wallguard.asp
+@@ -1072,7 +1072,7 @@ function shLiveStart(){
+   function tick(){ shReq('GET', 'action=live', null, function(j){
+     liveRows = (j && j.rows) || []; shLiveDevs(); shLivePaint();
+   }); if(stat && stat.live > 0) $('liveleft').textContent = `<#RSHD_86#>`.replace('%1', Math.ceil(stat.live / 60)); }
+-  tick(); liveTimer = setInterval(tick, 3000);
++  tick(); liveTimer = setInterval(function(){ if(!document.hidden) tick(); }, 3000);
+ }
+ function shLiveStop(quiet){
+   if(liveTimer) clearInterval(liveTimer); liveTimer = null;
+diff --git a/release/src/router/www/Reaper_Warden.asp b/release/src/router/www/Reaper_Warden.asp
+index 2435bfdb95..b6c18e5c9b 100644
+--- a/release/src/router/www/Reaper_Warden.asp
++++ b/release/src/router/www/Reaper_Warden.asp
+@@ -819,7 +819,7 @@ try{
+ 
+ rwPaint();
+ rwStats();
+-setInterval(rwStats, 30000);   /* refresh live counters */
++setInterval(function(){ if(!document.hidden) rwStats(); }, 30000); document.addEventListener('visibilitychange', function(){ if(!document.hidden) rwStats(); });   /* refresh live counters; not while the tab is hidden */
+ </script>
+ </body>
+ </html>
+-- 
+2.25.1
+

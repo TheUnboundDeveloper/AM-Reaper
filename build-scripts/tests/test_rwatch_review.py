@@ -172,7 +172,7 @@ try:
         base = os.path.join(jffs, "reaper", "review", "baseline")
         # functions, not only PATH stubs: busybox ash in standalone mode runs its own
         # applets (logger, md5sum, awk ...) ahead of PATH, and a function outranks both
-        head = ('_nv() { cat "$NVDIR/$1" 2>/dev/null; }\n' + nvram_fn + 'usleep() { sleep 0.02; }\n'
+        head = ('_nv() { cat "$NVDIR/$1" 2>/dev/null; }\n' + '_nvc() { _nv "$1"; }\n' + nvram_fn + 'usleep() { sleep 0.02; }\n'
                 'logger() { printf "%s\\n" "$*" >> "$LOGF"; }\n'
                 'cru() { [ "$1" = l ] && cat "$CRU_FILE"; return 0; }\n' + NVS)
         tail = ('\nRV_JFFS="%s"\nRV_TMP="%s"\nRV_BASE="%s"\n%s\n_rv_run\n' % (jffs, tmpd, base, extra))
@@ -478,7 +478,7 @@ ok("innerHTML" not in pr and "'rwatch_review'" in dash and "review:'rwatch_revie
 ok("window.RVJ=j; if(typeof paintReview==='function')paintReview();" in dash and "paintReview();" in between(dash, "function paintPosture(){", "\n}\n", "paintPosture"),
    "posture: the row repaints from the bar's poll and on every posture refresh")
 diag = read("others/reaper_diag")
-ok('VER="REAPER-DIAG v1.3.59"' in diag and 'echo "  security review   : rwatch_review=' in diag and 'echo "  threat domains    : rwarden_dns=' in diag,
+ok('VER="REAPER-DIAG v1.3.61"' in diag and 'echo "  security review   : rwatch_review=' in diag and 'echo "  threat domains    : rwarden_dns=' in diag,
    "diag v1.3.45: the review and threat-domain state lines")
 ok("finding WARN \"security review: ${_rvu} unreviewed change(s)" in diag and "finding WARN \"security review: ${_rvn} failed-login burst(s)" in diag
    and "finding WARN \"threat domains are switched on but no list is loaded" in diag, "diag: findings for unreviewed changes, login bursts and an unloaded domain list")
@@ -487,7 +487,7 @@ ok("review.auth" not in between(diag, 'echo "  security review   : rwatch_review
 # 2026-11-07 (owner, option A): a run takes 1 s; the first review after a boot waited for the first tick at or past
 # HEALGRACE (5-10 min by tick alignment). The first tick inside the grace arms one detached run at boot + HEALGRACE.
 # Metal _r4: the tick exits inside the grace ("boot grace" line) long before 3h - the arm must come BEFORE that exit.
-arm = 'if [ \\"$UP\\" -lt \\"$HEALGRACE\\" ] && [ \\"$(_nv rwatch_review)\\" = 1 ] && [ ! -f $RV_TMP/review.boot ]; then\\n'
+arm = 'if [ \\"$UP\\" -lt \\"$HEALGRACE\\" ] && [ \\"$(_nvc rwatch_review)\\" = 1 ] && [ ! -f $RV_TMP/review.boot ]; then\\n'
 ok(arm in rw and '  : > $RV_TMP/review.boot\\n' in rw
    and '( sleep $((HEALGRACE - UP + 2)); [ -f /tmp/reaper_fw/armed ] || sh " RWATCH_SH " review ) </dev/null >/dev/null 2>&1 &\\n' in rw
    and rw.index(arm) < rw.index('[ \\"$UP\\" -lt 300 ] && exit 0\\n') < rw.index("# 3h) security review")

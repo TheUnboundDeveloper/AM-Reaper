@@ -115,7 +115,7 @@ check("rc: nothing writes reaper_dot_block - no carry-over at boot, no setter in
       len(rcs) > 100 and not wr and rcs["encdns.c"].count('"reaper_dot_block"') == 1
       and 'const char *v = nvram_get("reaper_dot_block");' in ec, wr)
 check("rwatch: the activity line is written while either switch or the server is on",
-      r'[ \"$(_nv reaper_doh_block)\" = 1 ] || [ \"$(_nv reaper_dot_block)\" = 1 ]; }; then\n"' in read("rc/rwatch.c"))
+      r'[ \"$(_nvc reaper_doh_block)\" = 1 ] || [ \"$(_nvc reaper_dot_block)\" = 1 ]; }; then\n"' in read("rc/rwatch.c"))
 web = read("httpd/web.c")
 check("CGI: the block's state rides the status, and 'Update list now' runs in rc's background",
       '",\\"blk\\":{\\"on\\":%d' in web and 'notify_rc("start_edns_doh");' in web and 'strcmp(script, "edns_doh") == 0' in sv)

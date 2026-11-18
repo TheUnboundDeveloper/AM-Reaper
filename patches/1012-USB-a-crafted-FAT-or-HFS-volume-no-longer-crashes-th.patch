@@ -1,0 +1,196 @@
+From ef8ffa753b0120bfd3c6124e87528f08b217c54a Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Wed, 18 Nov 2026 17:05:02 -0500
+Subject: [PATCH] USB: a crafted FAT or HFS+ volume no longer crashes the drive
+ probe or the watchdog
+
+- BusyBox volume_id: a FAT volume with 0 sectors per cluster is refused before the division (the
+  boot-sector magic paths skipped the old check); the buffer bounds test cannot wrap for an offset
+  near the top of the range; HFS+ needs a block size that is a power of two of at least 512 and a
+  leaf node of at least 512 bytes, and the label length is capped at the node's end.
+- rc's USB monitor probes a present but unmounted partition in a child process with a 10 s limit.
+  A probe that dies on a signal or does not answer is logged once and the partition is not probed
+  again; the watchdog itself never parses a drive.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ .../router/busybox/util-linux/volume_id/fat.c |  6 ++
+ .../router/busybox/util-linux/volume_id/hfs.c | 13 ++++
+ .../busybox/util-linux/volume_id/util.c       | 12 ++--
+ release/src/router/rc/reaper_usbmon.c         | 64 +++++++++++++++++--
+ 4 files changed, 85 insertions(+), 10 deletions(-)
+
+diff --git a/release/src/router/busybox/util-linux/volume_id/fat.c b/release/src/router/busybox/util-linux/volume_id/fat.c
+index 476d500a68..0552a20072 100644
+--- a/release/src/router/busybox/util-linux/volume_id/fat.c
++++ b/release/src/router/busybox/util-linux/volume_id/fat.c
+@@ -240,6 +240,12 @@ int FAST_FUNC volume_id_probe_vfat(struct volume_id *id /*,uint64_t fat_partitio
+ 			(sector_size_bytes-1)) / sector_size_bytes;
+ 	dbg("dir_size_sct 0x%x", dir_size_sct);
+ 
++	/* reaper 2026-11-18 (review P6-5-C2) REAPER-VOLID-FAT0: a boot sector carrying one of the magic strings above jumps
++	 * past the cluster-size check, so sectors_per_cluster 0 divided by zero here - SIGFPE in the prober: rc's hotplug
++	 * at plug-in, then rc's long-lived watchdog retrying the partition that did not mount. A FAT volume never has 0
++	 * sectors per cluster; the same refusal as the no-magic path. */
++	if (vs->sectors_per_cluster == 0)
++		return -1;
+ 	cluster_count = sect_count - (reserved_sct + fat_size_sct + dir_size_sct);
+ 	cluster_count /= vs->sectors_per_cluster;
+ 	dbg("cluster_count 0x%x", cluster_count);
+diff --git a/release/src/router/busybox/util-linux/volume_id/hfs.c b/release/src/router/busybox/util-linux/volume_id/hfs.c
+index 8d34aaf68d..452198c976 100644
+--- a/release/src/router/busybox/util-linux/volume_id/hfs.c
++++ b/release/src/router/busybox/util-linux/volume_id/hfs.c
+@@ -243,6 +243,11 @@ int FAST_FUNC volume_id_probe_hfs_hfsplus(struct volume_id *id /*,uint64_t off*/
+ 
+ 	blocksize = be32_to_cpu(hfsplus->blocksize);
+ 	dbg("blocksize %u", blocksize);
++	/* reaper 2026-11-18 (review P6-5-C2) REAPER-VOLID-HFS: the drive's own fields, checked before use. An HFS+ block is
++	 * a power of two of 512 bytes or more; 0 divided by zero below (SIGFPE in rc's hotplug / watchdog). The volume
++	 * is still reported as HFS+, only without its label. */
++	if (blocksize < 512 || (blocksize & (blocksize - 1)))
++		goto found;
+ 
+ 	memcpy(extents, hfsplus->cat_file.extents, sizeof(extents));
+ 	cat_block = be32_to_cpu(extents[0].start_block);
+@@ -260,6 +265,11 @@ int FAST_FUNC volume_id_probe_hfs_hfsplus(struct volume_id *id /*,uint64_t off*/
+ 
+ 	leaf_node_size = be16_to_cpu(bnode->node_size);
+ 	dbg("leaf node size 0x%x", leaf_node_size);
++	/* reaper 2026-11-18 (REAPER-VOLID-HFS): the leaf node is read into a buffer of exactly this size, then its
++	 * descriptor, key and label are parsed from it - a size below the smallest HFS+ node (512) made those reads run
++	 * past the buffer */
++	if (leaf_node_size < 512)
++		goto found;
+ 
+ 	leaf_node_count = be32_to_cpu(bnode->leaf_count);
+ 	dbg("leaf node count 0x%x", leaf_node_count);
+@@ -312,6 +322,9 @@ int FAST_FUNC volume_id_probe_hfs_hfsplus(struct volume_id *id /*,uint64_t off*/
+ 		goto found;
+ 
+ 	label_len = be16_to_cpu(key->unicode_len) * 2;
++	/* reaper 2026-11-18 (REAPER-VOLID-HFS): the label's length is the drive's word - never past the node's end */
++	if (label_len > leaf_node_size - (unsigned)((const uint8_t *)key->unicode - buf))
++		label_len = leaf_node_size - (unsigned)((const uint8_t *)key->unicode - buf);
+ 	dbg("label unicode16 len %i", label_len);
+ //	volume_id_set_label_raw(id, key->unicode, label_len);
+ 	volume_id_set_label_unicode16(id, key->unicode, BE, label_len);
+diff --git a/release/src/router/busybox/util-linux/volume_id/util.c b/release/src/router/busybox/util-linux/volume_id/util.c
+index 061545fde7..d5dd3f74d9 100644
+--- a/release/src/router/busybox/util-linux/volume_id/util.c
++++ b/release/src/router/busybox/util-linux/volume_id/util.c
+@@ -185,10 +185,11 @@ void *volume_id_get_buffer(struct volume_id *id, uint64_t off, size_t len)
+ 	dbg("get buffer off 0x%llx(%llu), len 0x%zx",
+ 		(unsigned long long) off, (unsigned long long) off, len);
+ 
+-	/* check if requested area fits in superblock buffer */
+-	if (off + len <= SB_BUFFER_SIZE
+-	 /* && off <= SB_BUFFER_SIZE - want this paranoid overflow check? */
+-	) {
++	/* check if requested area fits in superblock buffer.
++	 * reaper 2026-11-18 (review P6-5-C2) REAPER-VOLID-WRAP: written so it cannot wrap. Every offset comes from the
++	 * drive's own fields; "off + len" with off near 2^64 wrapped to a small number, took this branch, and returned
++	 * id->sbbuf + (unsigned)off - a pointer far outside the buffer, which the probe then read. */
++	if (off <= SB_BUFFER_SIZE && len <= SB_BUFFER_SIZE - off) {
+ 		if (id->sbbuf == NULL) {
+ 			id->sbbuf = xmalloc(SB_BUFFER_SIZE);
+ 		}
+@@ -214,7 +215,8 @@ void *volume_id_get_buffer(struct volume_id *id, uint64_t off, size_t len)
+ 
+ 	/* check if we need to read */
+ 	if ((off >= id->seekbuf_off)
+-	 && ((off + len) <= (id->seekbuf_off + id->seekbuf_len))
++	 && (off - id->seekbuf_off <= id->seekbuf_len)		/* reaper 2026-11-18: no wrap (REAPER-VOLID-WRAP) */
++	 && (len <= id->seekbuf_len - (off - id->seekbuf_off))
+ 	) {
+ 		small_off = off - id->seekbuf_off; /* can't overflow */
+ 		goto ret; /* we already have it */
+diff --git a/release/src/router/rc/reaper_usbmon.c b/release/src/router/rc/reaper_usbmon.c
+index a783967207..399fa6008d 100644
+--- a/release/src/router/rc/reaper_usbmon.c
++++ b/release/src/router/rc/reaper_usbmon.c
+@@ -39,6 +39,7 @@
+ #include <dirent.h>
+ #include <fcntl.h>
+ #include <limits.h>
++#include <sys/wait.h>	/* 2026-11-18 (P6-5-C2): waitpid for the probe child - r9 built with it implicitly declared */
+ 
+ /* ---- libc only, from here to the rc side (host-compiled by the test) ---- */
+ 
+@@ -269,15 +270,68 @@ static int usbmon_retry_count(const char *part, int bump)
+ }
+ 
+ /* 1 when the partition carries something mount_partition() would mount: not swap,
+- * not an EFI/unknown blob, not the partition table itself */
++ * not an EFI/unknown blob, not the partition table itself.
++ * reaper 2026-11-18 (review P6-5-C2) REAPER-USBMON-PROBECHILD: probe_fs() parses the drive's own boot sector and
++ * superblock. It ran here, inside rc's long-lived watchdog, for exactly the partitions whose first mount had failed
++ * - which is what a damaged or crafted filesystem does: the plug-in's hotplug crashed on it, the partition stayed
++ * unmounted, and this retry then crashed the watchdog itself (a FAT boot sector with 0 sectors per cluster divided by
++ * zero). The probe now runs in a child, the watchdog waits for it at most USBMON_PROBE_SECS, and a child that dies
++ * on a signal or does not answer in time retires the partition from the retry (the retry count is set to its
++ * maximum) with one log line. SIGCHLD is held while waiting, as _eval() does, so the watchdog's own reaper cannot
++ * take the child's status first. */
++#define USBMON_PROBE_SECS	10
+ static int usbmon_mountable(const char *part)
+ {
+-	char dev[64], label[128], uuid[40], *type = NULL;
++	sigset_t hold, old;
++	pid_t pid, w = 0;
++	int st = 0, t;
++	char buf[16];
+ 
+-	snprintf(dev, sizeof(dev), "/dev/%s", part);
+-	if (probe_fs(dev, &type, label, uuid) < 0 || type == NULL)
++	sigemptyset(&hold);
++	sigaddset(&hold, SIGCHLD);
++	sigprocmask(SIG_BLOCK, &hold, &old);
++	pid = fork();
++	if (pid == 0) {
++		char dev[64], label[128], uuid[40], *type = NULL;
++		int sig;
++
++		for (sig = 1; sig < _NSIG; sig++)
++			signal(sig, SIG_DFL);
++		sigemptyset(&hold);
++		sigprocmask(SIG_SETMASK, &hold, NULL);
++		snprintf(dev, sizeof(dev), "/dev/%s", part);
++		if (probe_fs(dev, &type, label, uuid) < 0 || type == NULL)
++			_exit(1);
++		_exit((strcmp(type, "swap") && strcmp(type, "unknown") && strcmp(type, "mbr") && strcmp(type, "apple_efi")) ? 0 : 1);
++	}
++	if (pid < 0) {
++		sigprocmask(SIG_SETMASK, &old, NULL);
+ 		return 0;
+-	return strcmp(type, "swap") && strcmp(type, "unknown") && strcmp(type, "mbr") && strcmp(type, "apple_efi");
++	}
++	for (t = 0; t < USBMON_PROBE_SECS * 10; t++) {
++		if ((w = waitpid(pid, &st, WNOHANG)) != 0)
++			break;
++		usleep(100000);
++	}
++	if (w == 0) {
++		kill(pid, SIGKILL);
++		waitpid(pid, &st, WNOHANG);	/* a child stuck in the disk driver is reaped later, by the watchdog */
++	}
++	sigprocmask(SIG_SETMASK, &old, NULL);
++	if (w == pid && WIFEXITED(st))
++		return WEXITSTATUS(st) == 0;
++	if (w == pid && WIFSIGNALED(st))
++		logmessage("reaper", "USB %s: reading its filesystem crashed the probe (signal %d) - the filesystem is damaged or not what it claims; it is left unmounted and not tried again", part, WTERMSIG(st));
++	else
++		logmessage("reaper", "USB %s: its filesystem did not answer within %d s - it is left unmounted and not tried again", part, USBMON_PROBE_SECS);
++	snprintf(buf, sizeof(buf), "%d\n", REAPER_USB_RETRY_MAX);
++	{
++		char p[128];
++
++		snprintf(p, sizeof(p), REAPER_USB_RETRY_MARK "%s", part);
++		f_write_string(p, buf, 0, 0);
++	}
++	return 0;
+ }
+ 
+ /* The event hotplug2 delivered the first time, re-sent to the same handler
+-- 
+2.25.1
+

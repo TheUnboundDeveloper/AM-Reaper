@@ -1,0 +1,124 @@
+From 30014f1bb95c60f48f2d2013ae4a644da47a1858 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Wed, 18 Nov 2026 17:05:14 -0500
+Subject: [PATCH] Wallguard: safe search addresses are retried until every
+ group has one
+
+- A safe-search file with a group lacking its address is logged by engine name and retried at WAN
+  up, then with a back-off from 10 minutes doubling to 6 hours, only while a profile uses safe
+  search; an update refreshes an incomplete file. Temporary names carry the process id.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ release/src/router/wallguard/wallguard.sh | 66 ++++++++++++++++++++---
+ 1 file changed, 59 insertions(+), 7 deletions(-)
+
+diff --git a/release/src/router/wallguard/wallguard.sh b/release/src/router/wallguard/wallguard.sh
+index 4012259152..cb1235c5fd 100644
+--- a/release/src/router/wallguard/wallguard.sh
++++ b/release/src/router/wallguard/wallguard.sh
+@@ -263,6 +263,28 @@ pending_set() {
+   echo "$_m"
+ }
+ pending_clear() { rm -f "$D/pending" "$D/tries"; }
++# reaper 2026-11-18 (review P6-4-W1) REAPER-WG-SSOWED: the safe-search groups with no enforcement address in
++# $D/safesearch, space separated (empty = every group has one; no file = all of them). The engine never answers a
++# group without an address, so safe search is OFF for it - and after a reboot the first run comes before the WAN,
++# when no lookup can succeed. Such a file is owed like a list: logged, and tried again on the pending mark.
++ss_missing() {
++  for _g in g b d y Y; do grep -q "^addr $_g " "$D/safesearch" 2>/dev/null || printf '%s ' "$_g"; done
++}
++# a profile asks for safe search: a non-zero flags field on a default / mac / net line of $D/policy (rc writes
++# "default <mask> <flags>", "mac <mac> <mask> <flags>", "net <cidr> <mask> <flags>", hex). Only then is a missing
++# address owed and worth a log line - the full update refreshes the file for everyone, used or not.
++ss_wanted() {
++  awk '($1 == "default" && NF >= 3 && $3 != "0") || (($1 == "mac" || $1 == "net") && NF >= 4 && $4 != "0") { f = 1 }
++       END { exit !f }' "$D/policy" 2>/dev/null
++}
++# arm the next try for missing safe-search addresses; prints when it will be. A later epoch already set (a list
++# backoff in this same run) is kept; with the WAN down the mark is 0 = at WAN up (rc), as for the lists.
++ss_arm() {
++  if ! wan_up; then echo 0 > "$D/pending"; echo "when the internet is up"; return 0; fi
++  _p=$(tr -dc 0-9 < "$D/pending" 2>/dev/null)
++  if [ -n "$_p" ] && [ "$_p" -gt "$(date +%s)" ]; then echo "with the next list retry"; return 0; fi
++  echo "in $(pending_set 1) min"
++}
+ 
+ # review 2026-11-03 (D-1): an HTTP 200 answer is not yet a list. The download is parsed alone, by the same
+ # parser the table uses, and refused (the previous copy stays) when it holds no names, or when most of its
+@@ -560,8 +582,9 @@ update() {
+   else
+     pending_clear
+   fi
+-  # the safe-search file: on a full update, or when a reboot took it
+-  { [ -z "${ONLY+x}" ] || [ ! -f "$D/safesearch" ]; } && safesearch
++  # the safe-search file: on a full update, or when a reboot took it - or (2026-11-18, P6-4-W1) when a group still has
++  # no address: a list's Update button and the WAN-up retry run with ONLY set and used to skip it while the file existed
++  { [ -z "${ONLY+x}" ] || [ ! -f "$D/safesearch" ] || { ss_wanted && [ -n "$(ss_missing)" ]; }; } && safesearch
+   # lists no longer subscribed leave the RAM disk and the USB volume (rstore prune: removed inside
+   # the folder by name, never through a link)
+   for f in "$L"/*; do
+@@ -602,6 +625,14 @@ retry() {
+   S=$(st_lists)
+   ow=$(owed)
+   if [ -z "$ow" ]; then
++    # 2026-11-18 (P6-4-W1): no list owed, but a safe-search group may be - fetch it; the mark (and its backoff)
++    # stays until every group has an address
++    if [ -f "$D/safesearch" ] && ss_wanted && [ -n "$(ss_missing)" ]; then
++      safesearch
++      [ -n "$(ss_missing)" ] || pending_clear
++      grep -q ' missing ' "$D/state" 2>/dev/null && build
++      return 0
++    fi
+     pending_clear
+     # metal _r1: the copies became usable after the table was built (the USB store mounted later) - build from them
+     grep -q ' missing ' "$D/state" 2>/dev/null && build
+@@ -616,12 +647,14 @@ retry() {
+ # the previous one, so a bad moment upstream never switches safe search off. Groups:
+ # g Google, b Bing, d DuckDuckGo, y / Y YouTube Restricted Mode moderate / strict.
+ safesearch() {
+-  out=$D/safesearch.new
+-  if $CURLC -o "$D/gdomains.new" https://www.google.com/supported_domains 2>/dev/null \
+-     && grep -q '^\.google\.' "$D/gdomains.new"; then
+-    mv "$D/gdomains.new" "$D/gdomains"
++  # 2026-11-18 (P6-4-W5): the temp names carry the pid - the page, rc and a retry can run this at the same time
++  out=$D/safesearch.new.$$
++  ss_was=$(ss_missing)
++  if $CURLC -o "$D/gdomains.new.$$" https://www.google.com/supported_domains 2>/dev/null \
++     && grep -q '^\.google\.' "$D/gdomains.new.$$"; then
++    mv "$D/gdomains.new.$$" "$D/gdomains"
+   else
+-    rm -f "$D/gdomains.new"
++    rm -f "$D/gdomains.new.$$"
+   fi
+   {
+     { [ -f "$D/gdomains" ] && cat "$D/gdomains"; echo .google.com; } | tr 'A-Z' 'a-z' \
+@@ -638,6 +671,25 @@ safesearch() {
+     done
+   } > "$out"
+   mv "$out" "$D/safesearch"
++  # 2026-11-18 (P6-4-W1): say so when a group is left without an address, and try again; say so when it recovers
++  ss_now=$(ss_missing)
++  ss_wanted || return 0
++  if [ -n "$ss_now" ]; then
++    ss_names=''
++    for _g in $ss_now; do
++      case $_g in
++        g) ss_names="$ss_names Google" ;;
++        b) ss_names="$ss_names Bing" ;;
++        d) ss_names="$ss_names DuckDuckGo" ;;
++        y) ss_names="$ss_names YouTube-moderate" ;;
++        Y) ss_names="$ss_names YouTube-strict" ;;
++      esac
++    done
++    ss_when=$(ss_arm)
++    log "safe search: no enforcement address could be looked up for${ss_names} - searches there are NOT restricted until one is (trying again $ss_when)"
++  elif [ -n "$ss_was" ] && [ -f "$D/safesearch" ]; then
++    log "safe search: the enforcement addresses of every search engine are in place"
++  fi
+ }
+ 
+ # names are host names or nothing: a record that is not one is dropped, never shown
+-- 
+2.25.1
+

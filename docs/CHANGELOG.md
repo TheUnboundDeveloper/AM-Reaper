@@ -1,6 +1,6 @@
 # RT-BE Series "Reaper" — Changelog
 
-> **Doc status:** current as of **v3.8.1** · 2026-11-16 <!--@stamp-->
+> **Doc status:** current as of **v3.8.2** · 2026-11-18 <!--@stamp-->
 
 High-level history of the Reaper build. One entry per version, big changes only —
 the exhaustive security detail is in [`REAPER-FIXES.md`](REAPER-FIXES.md) and the
@@ -48,6 +48,69 @@ node, not only on the primary router.
 > design; compare `--exported` instead.
 
 ---
+
+## v3.8.2 — Security review fixes (kernel, Guest Portal, USB, web server); faster firewall loads; QoS queue fix; a smaller image; ASUS's nvram line-break guard
+
+Everything in v3.8.1 is included. Both lines carry the same changes: RT-BE96U, RT-BE86U, RT-BE88U and GT-BE98 Pro on
+3006.102.10; GT-BE98, GT-BE19000, BQ16 and BQ16 Pro on 3006.102.8. Most of this rung comes from a full code review of
+v3.8.1 and from ASUS's releases of 2026-11-17.
+
+- **Kernel.** A board-driver message handler freed each message it received, and the kernel freed it again. It no
+  longer does, and only a privileged process may send to it. The skb-free tunables under `/proc` are root-only.
+- **Guest Portal.** The portal's DNS answers before sign-in check every length against the packet and the buffer.
+  After sign-in the phone goes on to the page it first asked for. A portal whose process has died is started again
+  by the watchdog (after two missed checks a minute apart, at most three times per boot).
+- **USB drives.** A damaged or crafted FAT or HFS+ drive could crash the drive check, and the watchdog with it, by
+  dividing by zero or reading past a buffer. Such a volume is refused; a partition whose check crashes or hangs is
+  logged once and not checked again.
+- **Firewall rules engine, Policy Routing and guest isolation** load their rules in one step per table instead of
+  one command per rule: restarts are faster and no chain is ever half filled. Guest connections are cut only when the
+  guest rules really changed. If a batch is refused, the old rule-by-rule path runs and names the rule it refused.
+- **Domain lists.** Addresses saved to `/jffs` were replayed at every firewall restart and each got a fresh hour; they
+  are now replayed only into an empty list. The resolver's comparison copy lives in RAM, so `/jffs` is written only
+  when a list changes.
+- **Classful hardware QoS.** After QoS settings were applied, traffic could stay in the default queue until the
+  connections were made again. The flow cache is now cleared after the class rules and queues are in place, and the
+  first packet of a connection goes to its class (this also applies to Traditional QoS).
+- **Firewall Auto refresh** (Status and Rule Status) is now a router setting: it survives a reboot, a firmware update
+  and another browser. Clicking the words beside the switch works too.
+- **Devices page.** A device given a new static address shows the address it answers on now, not its old lease.
+- **Wallguard safe search.** When the search engines' enforcement addresses could not all be looked up (for example
+  before the WAN was up at boot), Wallguard now logs which engine is missing and retries until every one is in place.
+  Nothing changes on a router where no profile uses safe search.
+- **SNMP.** The agent's configuration file is readable by root only. System name, location and contact can be set
+  over SNMP; a value set that way lasts until the agent next starts, when the page's values apply again.
+- **AI Advisor.** Name lookups are limited to 20 per session. A result that was cut short says so. Client lists and
+  log excerpts are fenced with a marker that changes at each start, so text in a log or a device name cannot pass
+  itself off as an instruction.
+- **Diagnostics v1.3.61.** The admin login name is never printed (the process listings showed it). Passwords on
+  command lines, user names and passwords in URLs, bearer tokens, WAN domains, the remote log server, VPN client
+  endpoints and a typed NTP server are masked. Crash dumps stay readable (the zero halves of registers were masked).
+  New lines: the radio software of each radio, AP isolation per network, and the Wallguard state.
+- **Web server.** The cross-site check covers every signed-in download, not only addresses ending in `.cgi`; two
+  unused addresses that renewed the IKEv2 certificate when opened are gone. The iperf3 request checks its port and
+  lengths, and the login state and the self-block guards no longer start a shell.
+- **Settings with line breaks.** From ASUS GPL 102_39448: a setting that holds a line break is read as empty and
+  logged, apart from the multi-line settings ASUS allows (VPN custom configurations, SSH keys); a stored line break
+  can then no longer add lines to a generated configuration file. The device-discovery service bounds the fields of
+  its reply (ASUS GPL 102_39442).
+- **Services.** Two restarts that the router asked for from inside its own service handler were silently dropped:
+  the UPnP reload after a firewall rebuild (mappings the rebuild removed were not put back) and the DNS restart after
+  a guest network was added or removed (reverse lookups for the new network were missing). Both now run. A DHCP
+  reservation with a malformed MAC address is skipped whole; a per-device DNS setting now also applies when the MAC
+  was typed in lower case. The UPnP deny list covers every WireGuard server.
+- **Lighter on the router.** The DNS name mapper listens on the LAN bridges only. The traffic daemon rewrites its
+  live file ten times a second only while a page shows it. The dashboard and other live pages stop polling while
+  their browser tab is hidden. System Information reads the connection table without copying it.
+- **More free space in the image** (about 7 MB on the RT-BE96U): stock pages and libraries nothing uses are removed,
+  the logo, header and pictures are WebP, and the portal background photos are rescaled to 1280 by 720 where that
+  makes the file smaller. Old addresses of the stock Captive Portal pages open the Network page.
+- **Radio firmware.** The BCM6717 radio firmware is no longer installed on the GT-BE98, GT-BE98 Pro, GT-BE19000, BQ16
+  and BQ16 Pro: every board file of these models names BCM6726 radios only. The RT-BE96U keeps both files (its early
+  units carry BCM6717 radios), and its BCM6717 file is ASUS's from firmware 3006.102.39435.
+- **3006.102.8 line.** The web server takes the 3006.102.10 hardening it lacked (format strings, the certificate file
+  name check, the iperf3 service list, bounds in four diagnostic handlers), the DHCP range is copied with bounds, and
+  the Wi-Fi start scripts of all four models match the 3006.102.10 line.
 
 ## v3.8.1 — Device names reach every page; names keep their spaces; Wi-Fi restarts no longer stall the 5 and 6 GHz radios; guest network links, SNMP and VPN fixes
 

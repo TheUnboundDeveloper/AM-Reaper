@@ -490,12 +490,12 @@ int main(int argc, char **argv)
           e.get("198.51.100.60", ("",))[0] == "lo.example", e)
     for want in ("v->lan = 2;", 'strcmp(name, "lo") == 0', "lanv = rdm_lan_if(from.sll_ifindex, now);",
                  "if (lanv == 2 && !rdm_lo_keep(from.sll_pkttype == PACKET_OUTGOING, buf, n))",
-                 "if (lanv == 1 || (lanv == 2 && rdm_lo_keep(from.sll_pkttype == PACKET_OUTGOING, rb, n)))"):
+                 "!rdm_sock_read(i, map, time(NULL), 0)"):       # 2026-11-17: the backfill drain uses the same routine
         check("rdnsmapd.c loopback leg: %s" % want, want in src)
 
     # audit 2026-10-06 (V2): the unbound packet socket hears the WAN port too, ahead of netfilter;
     # the daemon must parse only frames whose ingress device is a LAN bridge
-    for want in ("rdm_lan_if(from.sll_ifindex", "recvfrom(sk, buf", "name[0] == 'b' && name[1] == 'r'"):
+    for want in ("rdm_lan_if(from.sll_ifindex", "recvfrom(rdm_sk[i].fd, buf", "name[0] == 'b' && name[1] == 'r'"):
         check("rdnsmapd.c parses LAN-bridge ingress only: %s" % want, want in src)
     # v2 layout: a file of the old layout is reset on start (magic, slot count and entry size all checked)
     for want in ("h->magic != RDM_MAGIC || h->slots != RDM_SLOTS || h->esize != sizeof(struct rdm_ent)",

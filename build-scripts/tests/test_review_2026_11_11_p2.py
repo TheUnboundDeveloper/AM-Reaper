@@ -245,7 +245,7 @@ int main(void) {
     dg = rd("others", "reaper_diag")
     i = dg.find('sec "12d. RADIO CALL STALLS'); j = dg.find('sec "13. ADDONS / JFFS"')
     sec = dg[i:j]
-    check("diag: v1.3.59 on the page and in the script", 'VER="REAPER-DIAG v1.3.59"' in dg and "REAPER-DIAG v1.3.59</span>" in rd("www", "Reaper_Diag.asp"))
+    check("diag: v1.3.59 on the page and in the script", 'VER="REAPER-DIAG v1.3.61"' in dg and "REAPER-DIAG v1.3.61</span>" in rd("www", "Reaper_Diag.asp"))
     check("diag: section 12d reads the switches, the per-radio timeout (not while a task is blocked) and the driver's lines",
           0 < i < j and "nvram get reaper_dhd_ioto" in sec and "nvram get disable_exap" in sec and "nvram get reaper_bgdfs_stock" in sec
           and 'dhd -i "$_w" ioctl_timeout' in sec and sec.find('if [ "${DST:-0}" -gt 0 ]; then') < sec.find('dhd -i "$_w" ioctl_timeout')

@@ -321,8 +321,9 @@ int main(int argc, char **argv)
         fwh = rf[rf.index('\tfprintf(f,\n\t  "RFW_FAIL=0\\n"'):rf.index('fi; }\\n\\n");') + len('fi; }\\n\\n");')]
         fl_dir = os.path.join(td, "fwlog")
         with open(fmt_c, "w") as fh:
-            fh.write('#define RFL_DIR "%s"\n#include "reaper_fwlog.h"\nint main(void) { FILE *f = stdout;\n%s\n'
-                     'rfl_sh_rule(f, "iptables -A RW_DROP", RFL_G_WARDEN, "REAPER-WARDEN ", NULL);\nreturn 0; }\n' % (fl_dir, fwh))
+            # RFW_DIR: the preamble names the rule queue's folder since 2026-11-18 (never written with RFW_NOBATCH=1)
+            fh.write('#define RFL_DIR "%s"\n#define RFW_DIR "%s"\n#include "reaper_fwlog.h"\nint main(void) { FILE *f = stdout;\n%s\n'
+                     'rfl_sh_rule(f, "iptables -A RW_DROP", RFL_G_WARDEN, "REAPER-WARDEN ", NULL);\nreturn 0; }\n' % (fl_dir, td, fwh))
         gen = os.path.join(td, "gen")
         r2 = subprocess.run([gcc, "-std=gnu99", "-Wall", "-Werror", "-Wno-unused-function", "-o", gen, fmt_c, "-I", td],
                             capture_output=True, text=True)
@@ -340,7 +341,10 @@ int main(int argc, char **argv)
                 outf = os.path.join(td, "out.txt"); open(outf, "w").close()
                 script = pre + ("RFLR 43 'REAPER-FW:5 ' '-m limit --limit 6/min --limit-burst 12 ' iptables -A REAPER_FWF -s 192.0.2.4\n"
                                 "RFLR 43 'REAPER-ICPT ' '" + "-m limit --limit 10/s --limit-burst 50 " + "' iptables -t nat -A REAPER_FWN -p udp --dport 123\n")
-                env = dict(os.environ, PATH=stub + os.pathsep + os.environ.get("PATH", ""), OUT=outf)
+                # 2026-11-18 (review C-E2): RFWR queues -A / -I for one iptables-restore; RFW_NOBATCH=1 is the
+                # rule-by-rule path, where each argument reaches the tool as it was written (what is checked here).
+                # The queued form of the same lines is checked by test_review_2026_11_18_batch.py.
+                env = dict(os.environ, PATH=stub + os.pathsep + os.environ.get("PATH", ""), OUT=outf, RFW_NOBATCH="1")
                 subprocess.run([sh, "-c", script], env=env, capture_output=True, text=True)
                 return open(outf).read()
             o = runsh("nflog")

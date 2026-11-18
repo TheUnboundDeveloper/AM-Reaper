@@ -1,0 +1,380 @@
+From 901f0e335e77b9ff3cb85fe34ccfebc9c0874ab3 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Wed, 18 Nov 2026 17:05:08 -0500
+Subject: [PATCH] Bounded command runner for the device-identity, health and
+ Gatekeeper daemons
+
+- libshared: reaper_popen_bounded() runs a command in its own process group and collects its
+  output for at most a given time and 256 KB into an unlinked temporary file, returned as a
+  stream; the group is killed at the limit and a child that cannot be reaped at once is reaped
+  later.
+- rpunctd, rchqd and gkd read every command through it (6 to 30 s limits); none of them calls
+  popen any more.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ release/src/router/gkd/gkd.c               |  12 +-
+ release/src/router/rchqd/rchqd.c           |   8 +-
+ release/src/router/rpunctd/rpunctd.c       |  31 +++--
+ release/src/router/shared/reaper_tmpsafe.c | 127 +++++++++++++++++++++
+ release/src/router/shared/reaper_tmpsafe.h |   8 ++
+ 5 files changed, 164 insertions(+), 22 deletions(-)
+
+diff --git a/release/src/router/gkd/gkd.c b/release/src/router/gkd/gkd.c
+index a90478795a..f503e719b2 100644
+--- a/release/src/router/gkd/gkd.c
++++ b/release/src/router/gkd/gkd.c
+@@ -206,7 +206,7 @@ static void scan_arp(long now)
+ static void scan_ndp(long now)
+ {
+ 	/* IPv6-only devices never show in ARP; merge the v6 neighbour table. */
+-	FILE *p = popen("ip -6 neigh show 2>/dev/null", "r");
++	FILE *p = reaper_popen_bounded("ip -6 neigh show 2>/dev/null", 6, NULL);	/* review 2026-11-17 (D-3): time-limited */
+ 	char line[256], ex[256];
+ 	if (!p) return;
+ 	gk_exempt_load(ex, sizeof(ex));
+@@ -228,7 +228,7 @@ static void scan_ndp(long now)
+ 			if (d && !d->ip[0]) snprintf(d->ip, sizeof(d->ip), "%s", ip6);
+ 		}
+ 	}
+-	pclose(p);
++	fclose(p);
+ }
+ 
+ static void scan_lease_file(const char *path)
+@@ -315,7 +315,7 @@ static void scan_wl(void)
+ 		if (e->d_name[strspn(e->d_name, "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789._-")] != '\0')
+ 			continue;
+ 		snprintf(cmd, sizeof(cmd), "wl -i %s assoclist 2>/dev/null", e->d_name);
+-		p = popen(cmd, "r");
++		p = reaper_popen_bounded(cmd, 8, NULL);	/* review 2026-11-17 (D-3): 8 s, then the command is killed */
+ 		if (!p) continue;
+ 		while (fgets(line, sizeof(line), p)) {
+ 			char mac[64];
+@@ -330,7 +330,7 @@ static void scan_wl(void)
+ 				}
+ 			}
+ 		}
+-		pclose(p);
++		fclose(p);
+ 	}
+ 	closedir(dh);
+ 
+@@ -580,7 +580,7 @@ static void heal_networks(void)
+ 	          "iptables -nL SDN_FI 2>/dev/null | grep -q 'ctstate DNAT' && echo SDNFI=ok || echo SDNFI=missing; else echo SDNFI=n/a; fi; "
+ 	          "CUR=\"$(for B in $IFS_; do ip -6 addr show dev $B scope global 2>/dev/null | awk '/inet6/{print $2}'; done | sort -u | tr '\\n' ' ')\"; "
+ 	          "[ \"$CUR\" = \"$(cat " GK_DIR "/v6pfx 2>/dev/null)\" ] && echo V6=same || echo V6=changed");
+-	p = popen(cmd, "r");
++	p = reaper_popen_bounded(cmd, 8, NULL);	/* review 2026-11-17 (D-3): 8 s, then the command is killed */
+ 	if (!p) return;
+ 	while (fgets(out, sizeof(out), p)) {
+ 		char *nl = strchr(out, '\n'); if (nl) *nl = 0;
+@@ -619,7 +619,7 @@ static void heal_networks(void)
+ 			if (reaper_script_ok(APPLY_SH)) run_locked("sh " APPLY_SH, 0);
+ 		}
+ 	}
+-	pclose(p);
++	fclose(p);
+ }
+ 
+ /* 2026-09-17: rules that did not load. apply.sh now retries every add once and
+diff --git a/release/src/router/rchqd/rchqd.c b/release/src/router/rchqd/rchqd.c
+index 8dc0fa3056..d8dec6b339 100644
+--- a/release/src/router/rchqd/rchqd.c
++++ b/release/src/router/rchqd/rchqd.c
+@@ -118,11 +118,11 @@ static void rchq_chanspec(const char *ifname, char *out, size_t olen)
+ 
+ 	out[0] = 0;
+ 	snprintf(cmd, sizeof(cmd), "/usr/sbin/wl -i %s chanspec 2>/dev/null", ifname);
+-	if ((p = popen(cmd, "r")) == NULL)
++	if ((p = reaper_popen_bounded(cmd, 8, NULL)) == NULL)	/* review 2026-11-17 (D-3): 8 s, then the command is killed */
+ 		return;
+ 	if (fgets(line, sizeof(line), p) && sscanf(line, "%63s", tok) == 1)
+ 		snprintf(out, olen, "%s", tok);
+-	pclose(p);
++	fclose(p);
+ }
+ 
+ /* one on-channel chanim sample; returns 1 on success (no retune, no disruption).
+@@ -137,7 +137,7 @@ static int rchq_sample(const char *ifname, int *nopkt, int *txop, int *glitch,
+ 	int got = 0;
+ 
+ 	snprintf(cmd, sizeof(cmd), "/usr/sbin/wl -i %s chanim_stats 2>/dev/null", ifname);
+-	if ((p = popen(cmd, "r")) == NULL)
++	if ((p = reaper_popen_bounded(cmd, 8, NULL)) == NULL)	/* review 2026-11-17 (D-3): 8 s, then the command is killed */
+ 		return 0;
+ 	while (fgets(line, sizeof(line), p)) {
+ 		if (sscanf(line, "%31s %d %d %d %d %d %d %d %d %d %d %d %d %d %d",
+@@ -148,7 +148,7 @@ static int rchq_sample(const char *ifname, int *nopkt, int *txop, int *glitch,
+ 			break;
+ 		}
+ 	}
+-	pclose(p);
++	fclose(p);
+ 	return got;
+ }
+ 
+diff --git a/release/src/router/rpunctd/rpunctd.c b/release/src/router/rpunctd/rpunctd.c
+index 4f9975f768..89aceb9260 100644
+--- a/release/src/router/rpunctd/rpunctd.c
++++ b/release/src/router/rpunctd/rpunctd.c
+@@ -178,15 +178,21 @@ static int ifname_ok(const char *s)
+ 	       strspn(s, "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-") == n;
+ }
+ 
++/* reaper 2026-11-17 (review D-3): every command this daemon reads goes through reaper_popen_bounded()
++ * (libshared): at most RP_CMD_SECS seconds, then the command is killed and the reader sees what arrived.
++ * popen() had no limit, so one radio call the driver never answered stopped rpunctd for good. */
++#define RP_CMD_SECS	8
++static int rp_scan_st;		/* exit status of the last neighbour scan command */
++
+ /* first line of a command, "" on failure */
+ static int cmd_line(const char *cmd, char *buf, size_t len)
+ {
+-	FILE *p = popen(cmd, "r");
++	FILE *p = reaper_popen_bounded(cmd, RP_CMD_SECS, NULL);
+ 	int ok;
+ 	buf[0] = 0;
+ 	if (!p) return 0;
+ 	ok = fgets(buf, len, p) != NULL;
+-	pclose(p);
++	fclose(p);
+ 	if (ok) buf[strcspn(buf, "\r\n")] = 0;
+ 	return ok;
+ }
+@@ -372,11 +378,11 @@ static int read_phy(struct radio *r)
+ 	FILE *p;
+ 
+ 	snprintf(cmd, sizeof(cmd), "/usr/sbin/wl -i %s chanim_stats 2>/dev/null", r->ifn);
+-	if ((p = popen(cmd, "r")) == NULL) return 0;
++	if ((p = reaper_popen_bounded(cmd, RP_CMD_SECS, NULL)) == NULL) return 0;
+ 	while (fgets(line, sizeof(line), p))
+ 		if (sscanf(line, "%31s %d %d %d %d %d %d %d %d %d %d %d %d %d %d", cs, &tx, &inbss, &obss, &nocat,
+ 			&nopkt, &doze, &txop, &goodtx, &badtx, &gl, &bp, &kn, &idle, &busy) == 15) { ok = 1; break; }
+-	pclose(p);
++	fclose(p);
+ 	if (ok && (gl < 0 || bp < 0 || gl > 1000000 || bp > 1000000)) ok = 0;
+ 	if (!ok) {
+ 		if (!r->phy_warned)
+@@ -473,9 +479,9 @@ static int sta_read_if(const char *ifn, struct stasnap *sn, char *hdr, size_t hl
+ 	int rc;
+ 
+ 	snprintf(cmd, sizeof(cmd), "/usr/sbin/wl -i %s bs_data -noreset -raw -comma -noidle -nooverall 2>/dev/null", ifn);
+-	if ((p = popen(cmd, "r")) == NULL) return 0;
++	if ((p = reaper_popen_bounded(cmd, RP_CMD_SECS, NULL)) == NULL) return 0;
+ 	rc = sta_parse(p, sn, hdr, hlen);
+-	pclose(p);
++	fclose(p);
+ 	return rc;
+ }
+ 
+@@ -673,10 +679,10 @@ static int csa_flag(struct radio *r)
+ 	FILE *p;
+ 	int csa = 0;
+ 	snprintf(cmd, sizeof(cmd), "/usr/sbin/wl -i %s eht dissubchan 2>/dev/null", r->ifn);
+-	if ((p = popen(cmd, "r")) == NULL) return 0;
++	if ((p = reaper_popen_bounded(cmd, RP_CMD_SECS, NULL)) == NULL) return 0;
+ 	while (fgets(line, sizeof(line), p))
+ 		if (strstr(line, "CSA") && strstr(line, "TRUE")) csa = 1;
+-	pclose(p);
++	fclose(p);
+ 	return csa;
+ }
+ 
+@@ -917,7 +923,7 @@ static void execute_scan(struct radio *r, unsigned mask, long now)
+ 	/* the scan prints the networks it heard; channel and signal are all that is kept
+ 	 * (no names, no addresses: a neighbour's identity is not ours to log) */
+ 	snprintf(cmd, sizeof(cmd), "/usr/sbin/wl -i %s escanresults -t passive -c %s 2>/dev/null", r->ifn, list);
+-	if ((p = popen(cmd, "r")) != NULL) {
++	if ((p = reaper_popen_bounded(cmd, 30, &rp_scan_st)) != NULL) {	/* a passive scan of the block takes seconds */
+ 		while (fgets(line, sizeof(line), p)) {
+ 			char *q;
+ 			if (!strncmp(line, "SSID:", 5)) { have_rssi = 0; continue; }
+@@ -943,11 +949,12 @@ static void execute_scan(struct radio *r, unsigned mask, long now)
+ 					}
+ 			}
+ 		}
+-		if (pclose(p) != 0)
++		fclose(p);
++		if (rp_scan_st != 0)
+ 			syslog(LOG_INFO, "rpunctd: %s scan command returned an error; reading whatever the driver holds", r->ifn);
+ 	}
+ 	snprintf(cmd, sizeof(cmd), "/usr/sbin/wl -i %s chanim_stats all 2>/dev/null", r->ifn);
+-	if ((p = popen(cmd, "r")) != NULL) {
++	if ((p = reaper_popen_bounded(cmd, RP_CMD_SECS, NULL)) != NULL) {
+ 		while (fgets(line, sizeof(line), p)) {
+ 			char cs[24]; int tx, inbss, obss, nocat, nopkt, doze, txop, goodtx, badtx, glitch, badplcp, knoise, idle, b, ch, idx;
+ 			if (sscanf(line, "%23s %d %d %d %d %d %d %d %d %d %d %d %d %d %d", cs, &tx, &inbss, &obss, &nocat, &nopkt,
+@@ -959,7 +966,7 @@ static void execute_scan(struct radio *r, unsigned mask, long now)
+ 			busy[idx] = b * 10; gl[idx] = glitch; bp[idx] = badplcp; kn[idx] = knoise;
+ 			if (knoise < 0 && knoise < floor_dbm) floor_dbm = knoise;
+ 		}
+-		pclose(p);
++		fclose(p);
+ 	}
+ 	for (i = 0; i < r->pc.n20; i++)
+ 		if (busy[i] >= 0) impair[i] = impair_of(gl[i], bp[i], kn[i], floor_dbm);
+diff --git a/release/src/router/shared/reaper_tmpsafe.c b/release/src/router/shared/reaper_tmpsafe.c
+index 9994cb0550..82bbc9d76a 100644
+--- a/release/src/router/shared/reaper_tmpsafe.c
++++ b/release/src/router/shared/reaper_tmpsafe.c
+@@ -13,6 +13,10 @@
+ #include <syslog.h>
+ #include <sys/stat.h>
+ #include <sys/types.h>
++#include <sys/wait.h>
++#include <poll.h>
++#include <signal.h>
++#include <time.h>
+ #include "reaper_tmpsafe.h"
+ 
+ static int tmpsafe_dir_ok(const char *path, const struct stat *st)
+@@ -178,3 +182,126 @@ int reaper_script_ok(const char *path)
+ 	       (int)st.st_uid, (unsigned)(st.st_mode & 07777));
+ 	return 0;
+ }
++
++/* ---- reaper 2026-11-17 (review D-3 / D-24) REAPER-POPEN-BOUNDED: see reaper_tmpsafe.h ---- */
++#define REAPER_POPEN_MAX	(256 * 1024)
++#define REAPER_POPEN_LATE	8
++
++static long reaper_mono_ms(void)
++{
++	struct timespec ts;
++
++	clock_gettime(CLOCK_MONOTONIC, &ts);
++	return ts.tv_sec * 1000L + ts.tv_nsec / 1000000L;
++}
++
++FILE *reaper_popen_bounded(const char *cmd, int secs, int *status)
++{
++	static pid_t late[REAPER_POPEN_LATE];	/* killed, but not yet gone when their call returned */
++	int pfd[2], st = 0, timedout = 0, reaped = 0, i;
++	size_t total = 0;
++	long deadline, now;
++	pid_t pid;
++	FILE *out;
++
++	if (status)
++		*status = -1;
++	for (i = 0; i < REAPER_POPEN_LATE; i++)
++		if (late[i] > 0 && waitpid(late[i], NULL, WNOHANG) != 0)
++			late[i] = 0;
++	if (!cmd || secs < 1 || (out = tmpfile()) == NULL)
++		return NULL;
++	if (pipe(pfd) != 0) {
++		fclose(out);
++		return NULL;
++	}
++	if ((pid = fork()) < 0) {
++		close(pfd[0]);
++		close(pfd[1]);
++		fclose(out);
++		return NULL;
++	}
++	if (pid == 0) {
++		int fd;
++
++		setpgid(0, 0);
++		close(pfd[0]);
++		dup2(pfd[1], 1);
++		if (pfd[1] != 1)
++			close(pfd[1]);
++		if ((fd = open("/dev/null", O_RDWR)) >= 0) {
++			dup2(fd, 0);
++			if (fd > 2)
++				close(fd);
++		}
++		execl("/bin/sh", "sh", "-c", cmd, (char *)NULL);
++		_exit(127);
++	}
++	close(pfd[1]);
++	deadline = reaper_mono_ms() + (long)secs * 1000L;
++	for (;;) {
++		struct pollfd pd;
++		char buf[1024];
++		ssize_t n;
++		int r;
++
++		if ((now = reaper_mono_ms()) >= deadline) {
++			timedout = 1;
++			break;
++		}
++		pd.fd = pfd[0];
++		pd.events = POLLIN;
++		pd.revents = 0;
++		r = poll(&pd, 1, (int)(deadline - now));
++		if (r < 0) {
++			if (errno == EINTR)
++				continue;
++			break;
++		}
++		if (r == 0) {
++			timedout = 1;
++			break;
++		}
++		if ((n = read(pfd[0], buf, sizeof(buf))) <= 0)
++			break;		/* the command closed its output: it is done (or the read failed) */
++		if (total < REAPER_POPEN_MAX) {
++			fwrite(buf, 1, (size_t)n, out);
++			total += (size_t)n;
++		}
++	}
++	close(pfd[0]);
++	if (timedout) {
++		kill(-pid, SIGKILL);	/* the shell and what it started */
++		kill(pid, SIGKILL);	/* in case the child had not made its own group yet */
++	}
++	/* the command is exiting (or was just killed): wait for it, but never without end */
++	deadline = reaper_mono_ms() + (timedout ? 2000L : 3000L);
++	for (;;) {
++		pid_t w = waitpid(pid, &st, WNOHANG);
++
++		if (w == pid) {
++			reaped = 1;
++			break;
++		}
++		if (w < 0 && errno != EINTR)
++			break;
++		if (reaper_mono_ms() >= deadline)
++			break;
++		usleep(10000);
++	}
++	if (!reaped) {
++		if (!timedout) {
++			kill(-pid, SIGKILL);
++			kill(pid, SIGKILL);
++		}
++		for (i = 0; i < REAPER_POPEN_LATE; i++)
++			if (late[i] <= 0) {
++				late[i] = pid;
++				break;
++			}
++	} else if (!timedout && status && WIFEXITED(st))
++		*status = WEXITSTATUS(st);
++	fflush(out);
++	rewind(out);
++	return out;
++}
+diff --git a/release/src/router/shared/reaper_tmpsafe.h b/release/src/router/shared/reaper_tmpsafe.h
+index fe4f8edc89..89edf55cda 100644
+--- a/release/src/router/shared/reaper_tmpsafe.h
++++ b/release/src/router/shared/reaper_tmpsafe.h
+@@ -80,6 +80,14 @@ int reaper_write_changed(const char *path, const void *data, size_t len, mode_t
+  * NULL when something won the race to the name. */
+ FILE *reaper_fopen_new(const char *path, mode_t mode);
+ 
++/* reaper 2026-11-17 (review D-3 / D-24): popen(cmd, "r") with a time limit. Runs `sh -c cmd` in its own process
++ * group, collects its standard output for at most `secs` seconds (and at most 256 KB), then returns that output
++ * as a rewound stream - read it with fgets() as before and fclose() it (never pclose()). When the time is up the
++ * whole process group is killed. *status (may be NULL): the command's exit code, or -1 when it was killed, did
++ * not exit normally or could not be reaped in time. NULL = could not start. A daemon that asks the radio driver
++ * something through `wl` uses this: a call the driver never answers used to stop the daemon for good. */
++FILE *reaper_popen_bounded(const char *cmd, int secs, int *status);
++
+ /* 1 when `path` is a regular file (lstat: not a symlink), owned by this
+  * process's user and not writable by group or other - the precondition for
+  * running it with sh as root. 0 otherwise, with one syslog line. */
+-- 
+2.25.1
+

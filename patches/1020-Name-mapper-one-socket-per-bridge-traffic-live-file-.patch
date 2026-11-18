@@ -1,0 +1,395 @@
+From ab21d26f2a9d0324b4fb76b23eb4c01b7f123fa0 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Wed, 18 Nov 2026 17:05:11 -0500
+Subject: [PATCH] Name mapper: one socket per bridge; traffic live file fast
+ only while watched
+
+- rdnsmapd opens one packet socket per LAN bridge and one for lo, each bound to its interface,
+  rechecked every 30 s, instead of one socket on every interface.
+- rtrafd rewrites its live file ten times a second only while the Traffic page or the dashboard
+  has asked for it in the last 15 s, else once a second.
+- System Information reads the connection table directly instead of copying it to a fixed /tmp
+  file.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ release/src/router/httpd/sysinfo.c     |   8 +-
+ release/src/router/rdnsmapd/rdnsmapd.c | 215 ++++++++++++++++++-------
+ release/src/router/rtrafd/rtrafd.c     |  25 ++-
+ 3 files changed, 184 insertions(+), 64 deletions(-)
+
+diff --git a/release/src/router/httpd/sysinfo.c b/release/src/router/httpd/sysinfo.c
+index 7e55218a31..76d97fe3eb 100644
+--- a/release/src/router/httpd/sysinfo.c
++++ b/release/src/router/httpd/sysinfo.c
+@@ -434,9 +434,10 @@ int ej_show_sysinfo(int eid, webs_t wp, int argc, char_t ** argv)
+ 			FILE* fp;
+ 			unsigned int established = 0;
+ 
+-			eval("cp", "/proc/net/nf_conntrack", "/tmp/conntrack.tmp");
+-
+-			fp = fopen("/tmp/conntrack.tmp", "r");
++			/* reaper 2026-11-17 (review B-41): read where it is. This ran `cp` into /tmp/conntrack.tmp on every
++			 * poll of the System Information page - a process, a copy of the whole table in RAM-backed /tmp at a
++			 * fixed path, and a second read of it. */
++			fp = fopen("/proc/net/nf_conntrack", "r");
+ 			if (fp) {
+ 				while (fgets(buf, sizeof(buf), fp) != NULL) {
+ 					strlcpy(proto, buf, sizeof(proto));
+@@ -446,7 +447,6 @@ int ej_show_sysinfo(int eid, webs_t wp, int argc, char_t ** argv)
+ 				}
+ 				fclose(fp);
+ 			}
+-			unlink("/tmp/conntrack.tmp");
+ 			sprintf(result,"%u",established);
+ 
+ 		} else if(strcmp(type,"conn.max") == 0) {
+diff --git a/release/src/router/rdnsmapd/rdnsmapd.c b/release/src/router/rdnsmapd/rdnsmapd.c
+index 35ab582418..239e865cb4 100644
+--- a/release/src/router/rdnsmapd/rdnsmapd.c
++++ b/release/src/router/rdnsmapd/rdnsmapd.c
+@@ -12,14 +12,15 @@
+  * a client receives names exactly the address it is about to connect to.
+  *
+  * Mechanism, sized for zero idle cost:
+- *   - one AF_PACKET socket, unbound (every interface, both directions), with a
++ *   - one AF_PACKET socket per LAN bridge (br*) and one for lo, each BOUND to its interface (2026-11-17:
++ *     an unbound one taps every device and costs a clone per transmitted frame), with a
+  *     classic BPF filter attached BEFORE bind so the kernel rejects everything
+  *     that is not a UDP datagram from port 53 before a byte is copied; a frame
+  *     whose ingress device is not a LAN bridge (br*) is dropped before parsing
+  *     (audit 2026-10-06 V2: AF_PACKET sits ahead of netfilter, so the WAN INPUT
+  *     policy never applied and an Internet host sending UDP from port 53 at the
+  *     WAN address reached the parser as root);
+- *   - a blocking recv: no tick, no timer, no sweep - asleep while the LAN is quiet;
++ *   - a poll over those sockets: asleep while the LAN is quiet, one wake every 30 s to follow the interfaces;
+  *   - per reply: parse the ANSWER section and map every A and AAAA record to the
+  *     QNAME the client asked for (every address record there belongs to the
+  *     question's CNAME chain, so this IS the chain walked back, with no CNAME
+@@ -835,43 +836,151 @@ static void rdm_src_report(time_t now)
+ 	at = now;
+ }
+ 
+-/* drain both sockets for ms milliseconds: forward replies keep being learned
++/* reaper 2026-11-17 (review D-19) REAPER-RDM-PERIF. The daemon used ONE packet socket bound to every protocol on
++ * every interface. That puts it on the kernel's global tap list: every frame the CPU transmits on any device - the
++ * WAN port, each radio, each tunnel, each bridge port - was cloned and run through the filter, and user space
++ * then dropped whatever did not come from a LAN bridge or loopback. One socket per LAN bridge and one for lo, each
++ * bound to its interface, puts the tap on those devices only. The set follows the interfaces: refreshed every 30 s
++ * (a guest bridge made later is heard within that time), and a socket whose interface is gone is closed. */
++#define RDM_MAXSK 24
++static struct { int fd, idx; } rdm_sk[RDM_MAXSK];
++static int rdm_nsk;
++
++static int rdm_sock_open(int idx)
++{
++	struct sock_fprog prog = { sizeof(rdm_bpf) / sizeof(rdm_bpf[0]), rdm_bpf };
++	struct sockaddr_ll sll;
++	int sk, rcv = 262144;
++
++	/* protocol 0 delivers nothing until bind(): the filter is in place first */
++	if ((sk = socket(AF_PACKET, SOCK_RAW | SOCK_CLOEXEC, 0)) < 0)
++		return -1;
++	if (setsockopt(sk, SOL_SOCKET, SO_ATTACH_FILTER, &prog, sizeof(prog)) != 0) {
++		close(sk);
++		return -1;
++	}
++	setsockopt(sk, SOL_SOCKET, SO_RCVBUF, &rcv, sizeof(rcv));
++	memset(&sll, 0, sizeof(sll));
++	sll.sll_family = AF_PACKET;
++	sll.sll_protocol = htons(ETH_P_ALL);
++	sll.sll_ifindex = idx;			/* never 0: 0 would be the every-interface tap again */
++	if (idx <= 0 || bind(sk, (struct sockaddr *)&sll, sizeof(sll)) != 0) {
++		close(sk);
++		return -1;
++	}
++	return sk;
++}
++
++static void rdm_sock_drop(int i)
++{
++	close(rdm_sk[i].fd);
++	rdm_sk[i] = rdm_sk[--rdm_nsk];
++}
++
++/* open a socket for each LAN bridge and for lo that has none, close the ones whose interface is gone */
++static void rdm_socks_sync(void)
++{
++	struct if_nameindex *ni = if_nameindex(), *p;
++	int seen[RDM_MAXSK], nseen = 0, i, j;
++
++	if (ni == NULL)
++		return;				/* keep what is open: a failed listing is not "no interfaces" */
++	for (p = ni; p->if_index != 0 && p->if_name != NULL; p++) {
++		if (!((p->if_name[0] == 'b' && p->if_name[1] == 'r') || strcmp(p->if_name, "lo") == 0))
++			continue;
++		for (i = 0; i < rdm_nsk; i++)
++			if (rdm_sk[i].idx == (int)p->if_index)
++				break;
++		if (i == rdm_nsk) {
++			int fd;
++
++			if (rdm_nsk >= RDM_MAXSK || (fd = rdm_sock_open((int)p->if_index)) < 0)
++				continue;
++			rdm_sk[rdm_nsk].fd = fd;
++			rdm_sk[rdm_nsk].idx = (int)p->if_index;
++			rdm_nsk++;
++		}
++		if (nseen < RDM_MAXSK)
++			seen[nseen++] = (int)p->if_index;
++	}
++	if_freenameindex(ni);
++	for (i = 0; i < rdm_nsk; ) {
++		for (j = 0; j < nseen; j++)
++			if (seen[j] == rdm_sk[i].idx)
++				break;
++		if (j < nseen)
++			i++;
++		else
++			rdm_sock_drop(i);
++	}
++}
++
++/* one frame from packet socket i: the same tests as ever, then the parser. 0 = the socket is dead */
++static int rdm_sock_read(int i, void *map, time_t now, int learn_src)
++{
++	static uint8_t buf[4096];			/* EDNS replies fit; longer ones are truncated by the sender */
++	struct sockaddr_ll from;
++	socklen_t fl = sizeof(from);
++	int n, lanv;
++
++	n = (int)recvfrom(rdm_sk[i].fd, buf, sizeof(buf), MSG_DONTWAIT, (struct sockaddr *)&from, &fl);
++	if (n < 0)
++		return errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK;
++	if (n == 0)
++		return 1;
++	lanv = rdm_lan_if(from.sll_ifindex, now);
++	if (!lanv)
++		return 1;			/* not a LAN bridge or lo (cannot happen on a bound socket; kept as the V2 belt) */
++	if (lanv == 2 && !rdm_lo_keep(from.sll_pkttype == PACKET_OUTGOING, buf, n))
++		return 1;			/* loopback: the outgoing copy, or stubby's upstream answer */
++	if (learn_src)
++		rdm_src_load(now);		/* F-2: refreshed every 30 s, on traffic only */
++	rdm_parse(buf, n, map, (uint32_t)now);
++	if (learn_src)
++		rdm_src_report(now);
++	return 1;
++}
++
++/* drain the packet sockets and the PTR socket for ms milliseconds: forward replies keep being learned
+  * while the backfill runs, PTR answers land as reverse names */
+-static void rdm_bf_drain(struct pollfd *pf, void *map, const uint8_t (*tg)[16], int ntg, int ms)
++static void rdm_bf_drain(int us, void *map, const uint8_t (*tg)[16], int ntg, int ms)
+ {
+ 	static uint8_t rb[4096];
++	struct pollfd pf[RDM_MAXSK + 1];
+ 	struct timespec t0, t1;
+-	int n, left;
++	int n, left, i, npk;
+ 
+ 	clock_gettime(CLOCK_MONOTONIC, &t0);
+ 	for (;;) {
+ 		clock_gettime(CLOCK_MONOTONIC, &t1);
+ 		left = ms - (int)((t1.tv_sec - t0.tv_sec) * 1000 + (t1.tv_nsec - t0.tv_nsec) / 1000000);
+-		if (left <= 0 || poll(pf, 2, left) <= 0)
++		if (left <= 0)
+ 			return;
+-		if (pf[0].revents & POLLIN) {
+-			struct sockaddr_ll from;
+-			socklen_t fl = sizeof(from);
+-
+-			n = (int)recvfrom(pf[0].fd, rb, sizeof(rb), 0, (struct sockaddr *)&from, &fl);
+-			if (n > 0) {
+-				int lanv = rdm_lan_if(from.sll_ifindex, time(NULL));
+-
+-				if (lanv == 1 || (lanv == 2 && rdm_lo_keep(from.sll_pkttype == PACKET_OUTGOING, rb, n)))
+-					rdm_parse(rb, n, map, (uint32_t)time(NULL));
+-			}
++		npk = rdm_nsk;
++		for (i = 0; i < npk; i++) {
++			pf[i].fd = rdm_sk[i].fd;
++			pf[i].events = POLLIN;
++			pf[i].revents = 0;
+ 		}
+-		if ((pf[1].revents & POLLIN) && (n = (int)recv(pf[1].fd, rb, sizeof(rb), 0)) > 0)
++		pf[npk].fd = us;
++		pf[npk].events = POLLIN;
++		pf[npk].revents = 0;
++		if (poll(pf, npk + 1, left) <= 0)
++			return;
++		if ((pf[npk].revents & POLLIN) && (n = (int)recv(us, rb, sizeof(rb), 0)) > 0)
+ 			rdm_parse_ptr(rb, n, map, (uint32_t)time(NULL), tg, ntg);
++		for (i = npk - 1; i >= 0; i--)	/* downwards: a dropped socket is replaced by the last one, already handled */
++			if ((pf[i].revents & (POLLERR | POLLHUP | POLLNVAL)) ||
++			    ((pf[i].revents & POLLIN) && !rdm_sock_read(i, map, time(NULL), 0)))
++				rdm_sock_drop(i);
+ 	}
+ }
+ 
+-static void rdm_backfill(void *map, int pk)
++static void rdm_backfill(void *map)
+ {
+ 	static uint8_t tg[RDM_BF_MAX][16];
+ 	uint8_t qb[128];
+ 	struct sockaddr_in rs;
+-	struct pollfd pf[2];
+ 	int ntg, us, i, n;
+ 
+ 	ntg = rdm_targets(tg, RDM_BF_MAX, rdm_table(map), (uint32_t)time(NULL));
+@@ -890,30 +999,24 @@ static void rdm_backfill(void *map, int pk)
+ 		close(us);
+ 		return;
+ 	}
+-	pf[0].fd = pk;
+-	pf[0].events = POLLIN;
+-	pf[1].fd = us;
+-	pf[1].events = POLLIN;
+ 	for (i = 0; i < ntg; i++) {
+ 		n = rdm_ptr_query(qb, sizeof(qb), (uint16_t)i, tg[i]);
+ 		if (n > 0)
+ 			send(us, qb, n, 0);
+-		rdm_bf_drain(pf, map, tg, ntg, RDM_BF_PACE);
++		rdm_bf_drain(us, map, tg, ntg, RDM_BF_PACE);
+ 	}
+ 	for (i = 0; i < RDM_BF_WAIT; i += 100)
+-		rdm_bf_drain(pf, map, tg, ntg, 100);
++		rdm_bf_drain(us, map, tg, ntg, 100);
+ 	close(us);
+ }
+ 
+ int main(void)
+ {
+-	struct sock_fprog prog = { sizeof(rdm_bpf) / sizeof(rdm_bpf[0]), rdm_bpf };
+-	struct sockaddr_ll sll;
+ 	struct rdm_hdr *h;
+ 	struct stat st;
+-	static uint8_t buf[4096];			/* EDNS replies fit; longer ones are truncated by the sender */
++	time_t synced;
+ 	void *map;
+-	int fd, sk, n, rcv = 262144;
++	int fd;
+ 
+ 	signal(SIGTERM, on_term);
+ 	signal(SIGINT, on_term);
+@@ -949,45 +1052,39 @@ int main(void)
+ 	}
+ 	h->gen++;					/* entries survive a restart; the counter says it happened */
+ 
+-	/* protocol 0 delivers nothing until bind(): the filter is in place first */
+-	if ((sk = socket(AF_PACKET, SOCK_RAW, 0)) < 0)
+-		return 1;
+-	if (setsockopt(sk, SOL_SOCKET, SO_ATTACH_FILTER, &prog, sizeof(prog)) != 0)
+-		return 1;
+-	setsockopt(sk, SOL_SOCKET, SO_RCVBUF, &rcv, sizeof(rcv));
+-	memset(&sll, 0, sizeof(sll));
+-	sll.sll_family = AF_PACKET;
+-	sll.sll_protocol = htons(ETH_P_ALL);
+-	if (bind(sk, (struct sockaddr *)&sll, sizeof(sll)) != 0)
+-		return 1;
++	rdm_socks_sync();			/* review D-19: one socket per LAN bridge and lo, never the every-interface tap */
++	synced = time(NULL);
+ 
+ 	/* the flag exists only when the owner just switched Names back on */
+ 	if (unlink(RDM_BACKFILL) == 0)
+-		rdm_backfill(map, sk);
++		rdm_backfill(map);
+ 
+ 	while (running) {
+-		struct sockaddr_ll from;
+-		socklen_t fl = sizeof(from);
++		struct pollfd pf[RDM_MAXSK];
+ 		time_t now;
+-		int lanv;
++		int i, r, npk = rdm_nsk;
+ 
+-		n = (int)recvfrom(sk, buf, sizeof(buf), 0, (struct sockaddr *)&from, &fl);
+-		if (n < 0) {
+-			if (errno == EINTR)
+-				continue;
+-			break;
++		for (i = 0; i < npk; i++) {
++			pf[i].fd = rdm_sk[i].fd;
++			pf[i].events = POLLIN;
++			pf[i].revents = 0;
+ 		}
++		/* asleep while the LAN is quiet; one wake every 30 s to follow the interfaces */
++		r = poll(pf, npk, 30000);
++		if (r < 0 && errno != EINTR)
++			break;
+ 		now = time(NULL);
+-		lanv = rdm_lan_if(from.sll_ifindex, now);
+-		if (!lanv)
+-			continue;			/* the WAN port or a physical LAN port: not ours (V2) */
+-		if (lanv == 2 && !rdm_lo_keep(from.sll_pkttype == PACKET_OUTGOING, buf, n))
+-			continue;			/* loopback: the outgoing copy, or stubby's upstream answer */
+-		rdm_src_load(now);			/* F-2: refreshed every 30 s, on traffic only */
+-		rdm_parse(buf, n, map, (uint32_t)now);
+-		rdm_src_report(now);
++		for (i = npk - 1; r > 0 && i >= 0; i--)	/* downwards: see rdm_bf_drain */
++			if ((pf[i].revents & (POLLERR | POLLHUP | POLLNVAL)) ||
++			    ((pf[i].revents & POLLIN) && !rdm_sock_read(i, map, now, 1)))
++				rdm_sock_drop(i);
++		if (now - synced >= 30 || now < synced || rdm_nsk == 0) {
++			rdm_socks_sync();
++			synced = now;
++		}
+ 	}
+-	close(sk);
++	while (rdm_nsk > 0)
++		rdm_sock_drop(0);
+ 	munmap(map, RDM_SIZE);
+ 	close(fd);
+ 	return 0;
+diff --git a/release/src/router/rtrafd/rtrafd.c b/release/src/router/rtrafd/rtrafd.c
+index 13c67fe0be..4eb4d1c9ae 100644
+--- a/release/src/router/rtrafd/rtrafd.c
++++ b/release/src/router/rtrafd/rtrafd.c
+@@ -466,6 +466,27 @@ static int cfg_hprobe = 0;		/* rtraf_hprobe: run the per-device health probe */
+ static int cfg_hint = 60;		/* rtraf_hint: seconds between health cycles (v2.2.4: default 30->60, lighter duty) */
+ static int cfg_export_mode = EXP_OFF;	/* reaper_export_mode (gates local health retention) */
+ 
++/* reaper 2026-11-17 (review D-20) REAPER-RTRAF-VIEWER. live.json was rewritten on every base tick - ten file
++ * replacements a second for the life of the box - whether or not a page was open. Its only reader is httpd's
++ * reaper_traffic.cgi, which now stamps RTRAF_VIEWER when it serves the live window. While the stamp is younger
++ * than RTRAF_VIEWER_SECS the file is written on every tick, as before; otherwise once a second, so the first
++ * request after a pause still reads a figure at most a second old (and its stamp brings the full rate back
++ * within a second). Anything unexpected reads as "somebody is watching": a stamp that cannot be read, or one
++ * dated in the future (the clock was set back). The tick itself does not change - the class, flow-cache and
++ * probe cadences and the stale-flow times are counted in ticks. */
++#define RTRAF_VIEWER		"/tmp/rtraf/.viewer"
++#define RTRAF_VIEWER_SECS	15
++static int live_viewer = 1;		/* until the first look says otherwise */
++
++static int viewer_active(const char *path, time_t now)
++{
++	struct stat st;
++
++	if (stat(path, &st) != 0)
++		return errno != ENOENT;	/* never stamped = nobody has looked; any other failure = assume a viewer */
++	return st.st_mtime > now || now - st.st_mtime <= RTRAF_VIEWER_SECS;
++}
++
+ static void refresh_cfg(void)
+ {
+ 	const char *m;
+@@ -3237,6 +3258,7 @@ int main(int argc, char **argv)
+ 			}
+ 		}
+ 		if (tick % TPS == 0) {
++			live_viewer = viewer_active(RTRAF_VIEWER, time(NULL));	/* review 2026-11-17 (D-20) */
+ 			refresh_cfg();	/* reload cached nvram config at 1 Hz, not per tick */
+ 			cli_dedup_ipkeys();	/* v2.3.0: drop IP-keyed phantoms of MAC-keyed devices */
+ 			/* v2.2.5 review: if the health probe is turned OFF mid-cycle, the
+@@ -3276,7 +3298,8 @@ int main(int argc, char **argv)
+ 			}
+ 		}
+ 
+-		write_live(store);
++		if (live_viewer || tick % TPS == 0)	/* review 2026-11-17 (D-20): every tick only while a page is reading it */
++			write_live(store);
+ 
+ 		if (now - last_save >= (strcmp(store, "usb") == 0 ? SAVE_EVERY_USB : SAVE_EVERY)) {
+ 			store = resolve_store(dbpath, sizeof(dbpath));
+-- 
+2.25.1
+

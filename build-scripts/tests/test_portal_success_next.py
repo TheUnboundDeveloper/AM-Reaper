@@ -14,6 +14,9 @@ answers, and only then goes on.
 being sent on to it showed a second, bare success page. For such an address the portal's success page is loaded
 once more instead (marked reaper_done=1) - a phone's sign-in sheet tests the connection again after a page load -
 and the test page itself is never shown. A site somebody typed into a computer's browser is still gone on to.
+2026-11-17 (field report on v3.8.1, the owner's decision): that reload did not finish an iPhone's sign-in sheet - the
+sheet closes only once it has itself loaded the system's test page. The page goes on to the first address in every
+case again, a connection-test address included; the reload and its reaper_done mark are gone.
 
 WHAT IT DOES. Runs the real uam.js under node against a stub page (window / document / jQuery / sessionStorage /
 fetch on a virtual clock) and checks: the first address is kept while the sign-in page is shown (plain and
@@ -43,7 +46,10 @@ uam = open(UAM, encoding="latin-1").read()
 check("uam.js keeps the first address while the sign-in page is shown",
       'if (res == "notyet") {\n\t\treaperKeepNext();' in uam.replace("\r\n", "\n"))
 check("uam.js goes on from the success page after a pause",
-      'if (reaperQuery("auth_status") == "pass" && reaperQuery("reaper_done") != "1")' in uam and "setTimeout(reaperGoNext, REAPER_NEXT_MS);" in uam)
+      'if (reaperQuery("auth_status") == "pass")\n' in uam.replace("\r\n", "\n") and "setTimeout(reaperGoNext, REAPER_NEXT_MS);" in uam)
+check("2026-11-17: the page always goes on to the first address (no reload of itself, no test-address list)",
+      "function reaperFinish(u) {\n\twindow.location.replace(u);\n}\n" in uam.replace("\r\n", "\n")
+      and "reaperIsProbe" not in uam and "REAPER_PROBE_" not in uam and "reaper_done" not in uam)
 check("only http(s) addresses are kept or followed",
       '(p.protocol == "http:" || p.protocol == "https:") ? p.href : ""' in uam)
 check("the stored address is read through the same test before it is followed",
@@ -152,9 +158,9 @@ else:
         check("the harness ran", bool(o), (r.stdout + r.stderr)[-400:])
         if o:
             APPLE = "http://captive.apple.com/hotspot-detect.html"
-            # 2026-11-14: a connection-test address is not shown - the success page itself is loaded once more
-            DONE = "http://192.168.52.1:8083/FreeUam?auth_status=pass&reaper_done=1"
-            DONES = "https://192.168.52.1:8083/FreeUam?auth_status=pass&reaper_done=1"
+            # 2026-11-17: a connection-test address is navigated to like any other first address (the sheet must load it)
+            DONE = APPLE
+            DONES = APPLE
             SITE = "http://example.com/a?b=1"
             K = "reaper_uam_next"
             check("no case threw", not any(o[k]["threw"] for k in o), {k: o[k]["threw"] for k in o if o[k]["threw"]})
@@ -169,7 +175,7 @@ else:
             g = o["go"]
             check("success page: 3 s pause, then the first address is asked for without a page load",
                   g["waits"][:1] == [3000] and g["asked"] == 1 and g["modes"] == ["no-cors"], g)
-            check("success page (phone): it answers - this page is loaded once more, the test page is not shown",
+            check("success page (phone): it answers - the sheet is sent on to the system's test page",
                   g["replaced"] == DONE and g["replacedAt"] == 3050 and g["replaces"] == 1, g)
             check("success page: the kept address is forgotten once used", K not in g["store"], g)
             s = o["stale"]
@@ -204,16 +210,19 @@ else:
             # ---- 2026-11-14: no second success page
             check("computer browser: a site somebody typed is still gone on to once it answers",
                   o["site"]["replaced"] == SITE and o["site"]["replacedAt"] == 3050 and o["site"]["replaces"] == 1, o["site"])
-            for k, what in (("android", "Android's generate_204"), ("windows", "Windows' connecttest.txt"),
-                            ("pathonly", "a test path on an unlisted host"), ("hostonly", "a test host with another path")):
-                check("phone / laptop sheet: %s is not shown - the success page is loaded once more" % what,
-                      o[k]["replaced"] == DONE and o[k]["replaces"] == 1 and o[k]["asked"] == 1, o[k])
-            check("no test page is ever loaded in the page itself (go, stale, refused, late, never, no fetch, https)",
-                  all("reaper_done=1" in (o[k]["replaced"] or "") for k in ("go", "stale", "refused", "late", "never", "nofetch", "mixed")),
+            for k, what, addr in (("android", "Android's generate_204", "http://connectivitycheck.gstatic.com/generate_204"),
+                                  ("windows", "Windows' connecttest.txt", "http://www.msftconnecttest.com/connecttest.txt"),
+                                  ("pathonly", "a test path on another host", "http://some.cdn.example/generate_204"),
+                                  ("hostonly", "a test host with another path", "http://captive.apple.com/")):
+                check("phone / laptop sheet: %s is gone on to, once" % what,
+                      o[k]["replaced"] == addr and o[k]["replaces"] == 1 and o[k]["asked"] == 1, o[k])
+            check("2026-11-17: the page never loads itself again (go, stale, refused, late, never, no fetch, https)",
+                  all("reaper_done" not in (o[k]["replaced"] or "") and "FreeUam" not in (o[k]["replaced"] or "x")
+                      for k in ("go", "stale", "refused", "late", "never", "nofetch", "mixed")),
                   {k: o[k]["replaced"] for k in ("go", "stale", "refused", "late", "never", "nofetch", "mixed")})
             d = o["doneagain"]
-            check("the page loaded again does nothing more: no pause, nothing asked for, no further load (no loop)",
-                  d["waits"] == [] and d["asked"] == 0 and d["replaced"] is None, d)
+            check("an address left over from v3.8.1 (reaper_done=1) behaves like any success page: one move on, no loop",
+                  d["waits"][:1] == [3000] and d["asked"] == 1 and d["replaced"] == APPLE and d["replaces"] == 1, d)
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 

@@ -186,6 +186,15 @@ int main(int argc, char **argv) {
         'esac; exit 0\n')
     fake("iptables", XT.replace("TBL", "iptables").replace("FAM", "4"))
     fake("ip6tables", XT.replace("TBL", "ip6tables").replace("FAM", "6"))
+    # 2026-11-18 (review C-E2): the chain's rules arrive as one `iptables-restore --noflush` payload per
+    # family. The fake writes each payload line to the trace in the form the single calls had, so every check
+    # below reads the same rules in the same order; FAKE_RESTORE_FAIL makes it refuse (the rule-by-rule path).
+    RST = ('[ -n "$FAKE_RESTORE_FAIL" ] && { cat > /dev/null; echo "refused" >&2; exit 1; }\n'
+           'echo "TBL-restore $*" >> "$FAKE_TRACE"; t=""\n'
+           'while IFS= read -r l; do case "$l" in "*"*) t="${l#\\*}";; COMMIT|"") ;; *) echo "TBL -t $t $l" >> "$FAKE_TRACE";; esac; done\n'
+           'exit 0\n')
+    fake("iptables-restore", RST.replace("TBL", "iptables"))
+    fake("ip6tables-restore", RST.replace("TBL", "ip6tables"))
     fake("ipset", 'echo "ipset $*" >> "$FAKE_TRACE"; exit 0\n')
     fake("fc", 'echo "fc $*" >> "$FAKE_TRACE"; exit 0\n')
     fake("logger", 'echo "logger $*" >> "$FAKE_LOG"; exit 0\n')
@@ -385,6 +394,37 @@ int main(int argc, char **argv) {
           F["skipnets"] is not None and "192.0.2.10/32 pending" in F["skipnets"] and "192.168.50.0/24 new" in F["skipnets"], repr(F["skipnets"]))
     check("wg down: says the bypass is installed when the client starts", "skip-bypass not installed yet (installed when the client starts)" in FL, FL)
     check("wg down: the mark and routing rules still go in", "lookup wgc1 pref 9006" in T and "-s 192.0.2.10 -j MARK" in T, "")
+
+    # 2026-11-18 (review C-E2): one iptables-restore per family carries the chain; a refusal runs the script
+    # again rule by rule. The first three runs above went through the fake restore:
+    rc, T, FL, F = run(script, wg_up=True)
+    check("batched: one restore per family, --noflush, and no single -A call reaches the tool",
+          T.count("iptables-restore --noflush") == 1 and T.count("ip6tables-restore --noflush") == 1
+          and T.index("iptables-restore --noflush") < T.index("iptables -t mangle -A REAPER_PBR_N"), T[:600])
+    _p4 = [l for l in T.splitlines() if l.startswith("iptables -t mangle -A REAPER_PBR_N ")]
+    _p6 = [l for l in T.splitlines() if l.startswith("ip6tables -t mangle -A REAPER_PBR_N ")]
+    # IPv4: reply RETURN, node RETURN, 3 restores, marked RETURN, 4 selector rules, save-mark
+    check("batched: the chain's own lines and the counted rules are all in the payload, save-mark last",
+          len(_p4) == 11 and "--ctdir REPLY" in _p4[0] and "--save-mark" in _p4[-1]
+          and len(_p6) >= 8 and "--ctdir REPLY" in _p6[0] and "--save-mark" in _p6[-1], "\n".join(_p4 + _p6))
+    check("batched: the queue files are gone afterwards", not [n for n in os.listdir(PDIR) if n.startswith("batch.")], repr(os.listdir(PDIR)))
+    # refused: started by its path (as rc starts it), the script re-runs itself with PBR_NOBATCH=1
+    for n in ("trace", "flog"):
+        with open(os.path.join(td, n), "w"): pass
+    env["FAKE_RESTORE_FAIL"] = "1"
+    p = subprocess.run(["sh", script], capture_output=True, text=True, env=env, cwd=td)
+    del env["FAKE_RESTORE_FAIL"]
+    with open(os.path.join(td, "trace")) as f: T = f.read()
+    with open(os.path.join(td, "flog")) as f: FL = f.read()
+    check("restore refused: it is logged with the tool's own words and the script loads rule by rule",
+          "batched rule load refused (refused) - loading rule by rule" in FL
+          and "iptables -t mangle -A REAPER_PBR_N -m mark --mark 0x0/0x000F0000 -s 192.0.2.10 -j MARK --set-xmark 0x60000/0x000F0000" in T
+          and "ip6tables -t mangle -A REAPER_PBR_N -m mark --mark 0x0/0x000F0000 -m set --match-set rwfw6_myobj dst -j MARK --set-xmark 0xB0000/0x000F0000" in T
+          and "tables-restore" not in T, FL + T[:800])
+    check("restore refused: the rule-by-rule run still counts what was meant to load (6 mark rules)",
+          (open(os.path.join(PDIR, "expect")).read().strip() if os.path.exists(os.path.join(PDIR, "expect")) else "") == "6", "")
+    check("restore refused: the object sets are not rebuilt a second time and no queue file is left",
+          "export PBR_NOBATCH=1 PBR_SETS_DONE=1" in S and not [n for n in os.listdir(PDIR) if n.startswith("batch.")], "")
 
     # 2026-11-16 (review): an OpenVPN client's Killswitch counts only while its tunnel carries the default route -
     # Redirect "all" (1) or "VPN Director" (2) on a TUN client. With Redirect "No" (0) or TAP the client's table holds

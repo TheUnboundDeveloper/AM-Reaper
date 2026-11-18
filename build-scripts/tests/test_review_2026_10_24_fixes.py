@@ -106,7 +106,7 @@ check("S-B-5 the Network Tools argv store takes a 253-byte host name whole", "ch
 
 # ---- the correctness items
 check("Q-B-1 reaper_diag reads the /jffs copy's time with date -r (no stat applet), v1.3.47",
-      "_tdu=$(date -r /jffs/rwarden/dns.k.gz +%s 2>/dev/null)" in diag and "stat -c" not in diag and 'VER="REAPER-DIAG v1.3.59"' in diag)
+      "_tdu=$(date -r /jffs/rwarden/dns.k.gz +%s 2>/dev/null)" in diag and "stat -c" not in diag and 'VER="REAPER-DIAG v1.3.61"' in diag)
 shp = read("www/Reaper_Wallguard.asp")
 # 2026-11-15 (Wallguard tabs, concept B): the Assign target menu is gone - each Devices row has its own profile menu,
 # drawn from cfg.asg (the saved model, not a pick that a rebuild could drop), and the poll never rebuilds it while open

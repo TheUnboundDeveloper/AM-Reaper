@@ -1,0 +1,91 @@
+From 12e87d4ef7aef200e0024082c4edad48393f4fd3 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Wed, 18 Nov 2026 17:04:59 -0500
+Subject: [PATCH] Kernel: board monitor handler no longer frees its message;
+ skb-free tunables root-only
+
+- The board driver's netlink monitor handler freed the message itself, and the netlink core frees
+  it again once the handler returns. The handler no longer frees it, and a sender to that netlink
+  family now needs CAP_SYS_ADMIN.
+- The four tunables of the skb-free thread under /proc were writable by every user. They are
+  writable by root only.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ .../opensource/char/board/bcm963xx/impl1/board_util.c     | 4 +++-
+ .../kernel/bcmkernel/net/core/bcm_skb_free.c              | 8 ++++----
+ .../kernel/linux-4.19/net/netlink/af_netlink.c            | 6 +++++-
+ 3 files changed, 12 insertions(+), 6 deletions(-)
+
+diff --git a/release/src-rt-5.04behnd.4916/bcmdrivers/opensource/char/board/bcm963xx/impl1/board_util.c b/release/src-rt-5.04behnd.4916/bcmdrivers/opensource/char/board/bcm963xx/impl1/board_util.c
+index 0a2c945251..6503a890a1 100644
+--- a/release/src-rt-5.04behnd.4916/bcmdrivers/opensource/char/board/bcm963xx/impl1/board_util.c
++++ b/release/src-rt-5.04behnd.4916/bcmdrivers/opensource/char/board/bcm963xx/impl1/board_util.c
+@@ -618,7 +618,9 @@ void kerSysRecvFrmMonitorTask(struct sk_buff *skb)
+ 
+    /*process the message here*/
+    printk(KERN_WARNING "unexpected skb received at %s \n",__FUNCTION__);
+-   kfree_skb(skb);
++   /* reaper 2026-11-17 (review A-1): no free here. netlink_unicast_kernel() drops its own reference with
++    * consume_skb() after this handler returns; freeing it here as well was a double free that any local
++    * sender could trigger. */
+    return;
+ }
+ 
+diff --git a/release/src-rt-5.04behnd.4916/kernel/bcmkernel/net/core/bcm_skb_free.c b/release/src-rt-5.04behnd.4916/kernel/bcmkernel/net/core/bcm_skb_free.c
+index a1898bca43..1fa6230460 100644
+--- a/release/src-rt-5.04behnd.4916/kernel/bcmkernel/net/core/bcm_skb_free.c
++++ b/release/src-rt-5.04behnd.4916/kernel/bcmkernel/net/core/bcm_skb_free.c
+@@ -504,25 +504,25 @@ static int __init skb_free_thread_proc_init(void)
+ 		goto proc_init_fail;
+ 
+ 	coalescing_budget_proc_file = proc_create(SKB_FREE_THREAD_COALESCING_BUDGET_NAME,
+-						  S_IRUGO | S_IWUGO, proc_dir,
++						  S_IRUGO | S_IWUSR /* reaper 2026-11-17 (review A-2): was world-writable */, proc_dir,
+ 						  &coalescing_budget_fops);
+ 	if (!coalescing_budget_proc_file)
+ 		goto proc_init_fail;
+ 
+ 	free_budget_proc_file = proc_create(SKB_FREE_THREAD_FREE_BUDGET_NAME,
+-					    S_IRUGO | S_IWUGO, proc_dir,
++					    S_IRUGO | S_IWUSR /* reaper 2026-11-17 (review A-2): was world-writable */, proc_dir,
+ 					    &free_budget_fops);
+ 	if (!free_budget_proc_file)
+ 		goto proc_init_fail;
+ 
+ 	period_proc_file = proc_create(SKB_FREE_THREAD_COALESCING_PERIOD_NAME,
+-				       S_IRUGO | S_IWUGO, proc_dir,
++				       S_IRUGO | S_IWUSR /* reaper 2026-11-17 (review A-2): was world-writable */, proc_dir,
+ 				       &period_fops);
+ 	if (!period_proc_file)
+ 		goto proc_init_fail;
+ 
+ 	enable_proc_file = proc_create(SKB_FREE_THREAD_ENABLE_NAME,
+-				       S_IRUGO | S_IWUGO, proc_dir,
++				       S_IRUGO | S_IWUSR /* reaper 2026-11-17 (review A-2): was world-writable */, proc_dir,
+ 				       &enable_fops);
+ 	if (!enable_proc_file)
+ 		goto proc_init_fail;
+diff --git a/release/src-rt-5.04behnd.4916/kernel/linux-4.19/net/netlink/af_netlink.c b/release/src-rt-5.04behnd.4916/kernel/linux-4.19/net/netlink/af_netlink.c
+index cb788386b7..1b9a1b0286 100644
+--- a/release/src-rt-5.04behnd.4916/kernel/linux-4.19/net/netlink/af_netlink.c
++++ b/release/src-rt-5.04behnd.4916/kernel/linux-4.19/net/netlink/af_netlink.c
+@@ -1816,10 +1816,14 @@ static void netlink_cmsg_listen_all_nsid(struct sock *sk, struct msghdr *msg,
+ #define REAPER_NL_BRCM_A	22
+ #define REAPER_NL_BRCM_B	23
+ #define REAPER_NL_BRCM_C	29
++/* reaper 2026-11-17 (review A-1): 25 is the board driver's "monitor" family. Its kernel-side handler expects
++ * no message from user space at all (it only logs one); nothing unprivileged has a reason to send there. */
++#define REAPER_NL_BRCM_MON	25
+ 
+ static inline bool reaper_nl_closed_family(int proto)
+ {
+-	return proto == REAPER_NL_BRCM_A || proto == REAPER_NL_BRCM_B || proto == REAPER_NL_BRCM_C;
++	return proto == REAPER_NL_BRCM_A || proto == REAPER_NL_BRCM_B || proto == REAPER_NL_BRCM_C ||
++	       proto == REAPER_NL_BRCM_MON;
+ }
+ 
+ static int reaper_nl_closed_verdict(int proto, bool admin)
+-- 
+2.25.1
+

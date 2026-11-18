@@ -75,8 +75,10 @@ int main(int argc, char **argv)
 '''
     hp = os.path.join(work, "h.c"); open(hp, "w").write(harness)
     exe = os.path.join(work, "h")
+    # 2026-11-17: built as the supported models are (the Network page present) - three rows of the page table exist
+    # only then, and the comparison below reads every row of the source
     b = subprocess.run([CC, "-std=gnu99", "-Wall", "-Wextra", "-Werror", "-Wno-unused-function", "-Wno-unused-parameter",
-                        "-I", inc, "-o", exe, hp, INJ], capture_output=True, text=True)
+                        "-DRTCONFIG_MULTILAN_CFG", "-I", inc, "-o", exe, hp, INJ], capture_output=True, text=True)
     check("reaper_inject.c compiles on the host (-Wall -Wextra -Werror) against stub headers", b.returncode == 0, b.stderr[-800:])
     if b.returncode:
         raise SystemExit
@@ -120,7 +122,7 @@ int main(int argc, char **argv)
     g = gone[0]
     st = serve(g[0].replace("advanced", "Advanced"), PAGE)
     check("an unshipped page answers with the bounce stub to its target", "/reaper_shell.asp#%s" % g[1] in st and "B</body>" not in st, st[:200])
-    k = kept[0]
+    k = kept[0] if kept else g      # 2026-11-17: the last three shipped rows went (review B-25); the table may hold none
     ks = serve(k[0] + ".missing.asp", PAGE)
     check("a name not in the table is not a gone page", "reaper_shell.asp#" not in ks.split("<script>")[0])
     check("a shipped row is never answered with the stub, even when the file is absent",

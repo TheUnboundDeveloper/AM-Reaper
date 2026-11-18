@@ -464,7 +464,7 @@ check("page: the switch row (global key), GNV entry and status renderer", 'key:"
 check("page: the floor status shows when puncturing implies it", "RWFP_136" in PG)
 check("page: a nolanding hold shows the DFS-only note, not the join note", 'f[5]==="nolanding"' in PG)
 DG = rd("others/reaper_diag")
-check("diag: v1.3.48 reports the node fit", 'VER="REAPER-DIAG v1.3.59"' in DG and "node fit:" in DG and "REAPER-DIAG v1.3.59</span>" in rd("www/Reaper_Diag.asp"))
+check("diag: v1.3.48 reports the node fit", 'VER="REAPER-DIAG v1.3.61"' in DG and "node fit:" in DG and "REAPER-DIAG v1.3.61</span>" in rd("www/Reaper_Diag.asp"))
 packs = [f for f in os.listdir(os.path.join(SRC, "www")) if f.endswith(".dict") and f != "temp.dict"]
 missing = []
 for p in sorted(packs):

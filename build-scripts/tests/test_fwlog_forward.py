@@ -183,7 +183,7 @@ else:
 DG = os.path.join(SRC, "others", "reaper_diag")
 dg = rd(DG)
 check("diag: v1.3.57 or later in the script and on its page (the collector lines came with v1.3.57)",
-      re.search(r'VER="REAPER-DIAG v1\.3\.(5[7-9]|[6-9][0-9])"', dg) is not None and "REAPER-DIAG v1.3.5" in rd(os.path.join(SRC, "www", "Reaper_Diag.asp")))
+      re.search(r'VER="REAPER-DIAG v1\.3\.(5[7-9]|[6-9][0-9])"', dg) is not None and re.search(r"REAPER-DIAG v1[.]3[.](5[7-9]|[6-9][0-9])<", rd(os.path.join(SRC, "www", "Reaper_Diag.asp"))) is not None)
 snip = cut(dg, "# v1.3.57: the firewall log collector (rflogd)", '\nsec "14b.')
 check("diag: the collector lines sit in section 14, before 14b", bool(snip) and dg.find('sec "14. FIREWALL') < dg.find(snip[:40]) < dg.find('sec "14b.'))
 check("diag: the server's address is never printed (only whether it is set)", snip.count("log_ipaddr") == 1 and '[ -n "$(nvram get log_ipaddr' in snip)

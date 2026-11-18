@@ -83,6 +83,17 @@ _rb_variant() {   # $1 = MCP|noMCP
     bash "$_sc" --fix "$R" || true
   fi
 
+  # STALE-OBJECT GUARD (2026-11-17). Packages without compiler dependency tracking recompile a source file only
+  # when that file changed. On a warm tree a header change left 32 of avahi's 34 library objects on the old struct
+  # layout - no multicast join, a crash on a service reload, an abort at every stop - in every local image for
+  # three days. --fix sets every object that is older than a header it includes aside (moved, not deleted) so this
+  # build compiles it again; the check after make names any that was not. A clean tree (CI) is a no-op.
+  local _so="$(dirname "${BASH_SOURCE[0]}")/reaper_stale_userobj.py"
+  if [ -f "$_so" ]; then
+    echo "=== [$label] stale-object guard ==="
+    python3 -I "$_so" "$R" --fix || true
+  fi
+
   # RADIO FIRMWARE IDENTITY (2026-09-12), before anything is compiled. Every
   # rtecdc.bin the build will install from sysdeps/$PREFIX/ must name $PREFIX.
   # Broadcom stamps the model into each blob; another model's - a sibling's,
@@ -252,6 +263,7 @@ _rb_variant() {   # $1 = MCP|noMCP
     echo "[$label] MAKE_EXIT=$_p2rc"
     [ "$_p2rc" -eq 0 ] || _rb_crypto_postmortem "$label"
   fi
+  [ -f "$_so" ] && { python3 -I "$_so" "$R" --verify || true; }
   echo "[$label] pass2_skipped=$_skip"
   cd "$R" || return 1
   return "$_p2rc"

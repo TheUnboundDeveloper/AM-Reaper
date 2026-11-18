@@ -87,6 +87,18 @@ if os.path.isfile(hj):
     check("the AiMesh node wizard's cross-device navigation is still the GET the exemption is cut for",
           '"http://<#Web_DOMAIN_NAME#>/cfg_onboarding.cgi?flag=AMesh&id=" +' in open(hj, encoding="utf-8", errors="replace").read())
 
+# review 2026-11-17 (P6-2-1): the gate is told about the row, and the two renewing download rows are gone
+so = hr.find("reaper_xsite_own_out = handler->output && handler->output != do_ej && handler->output != do_file;")
+check("P6-2-1: handle_request tells the guard when the row has an output function of its own, before the guard runs",
+      0 <= so < g and hc.count("static int reaper_xsite_own_out;") == 1)
+check("P6-2-1: the guard then looks at the request unless the name is a page (.asp / .htm)",
+      "if (!hit && reaper_xsite_own_out) {" in helpers and '!strncasecmp(ext, ".asp", 4) || !strncasecmp(ext, ".htm", 4)' in helpers)
+wc = open(os.path.join(SRC, "httpd", "web.c"), encoding="utf-8", errors="surrogateescape").read()
+check("P6-2-1: the unused download rows that renewed the IKEv2 certificate on a GET are gone; the page's own paths stay",
+      '"renew_ikev2_cert_mobile.pem"' not in wc and '"renew_ikev2_cert_windows.der"' not in wc
+      and "do_renew_ikev2_cert_pem" not in wc and "do_renew_ikev2_cert_der" not in wc
+      and '"renew_ikev2_cert_key.cgi*"' in wc and '"ikev2_cert_mobile.pem"' in wc and '"ikev2_cert_windows.der"' in wc)
+
 harness = r'''
 #include <stdio.h>
 #include <stdlib.h>
@@ -139,6 +151,17 @@ int main(void)
 	C("xsite_no_ref",         "set_iperf3_cli.cgi", "set_iperf3_cli.cgi?x=1", "get", "cross-site", L, "");
 	CX("curl_no_headers",     "netool.cgi", "netool.cgi", "post", "", L, "", "curl/8.4.0", 0);
 	C("typed_url_none",       "netool.cgi", "netool.cgi", "get", "none", L, "");
+	/* review 2026-11-17 (P6-2-1): a row with an output function of its own is looked at whatever its name is */
+	reaper_xsite_own_out = 1;
+	C("ownout_cert_xsite",    "ikev2_cert_mobile.pem", "ikev2_cert_mobile.pem", "get", "cross-site", L, "https://evil.example/\r\n");
+	CX("ownout_http_nav",     "Settings_RT-BE96U.CFG", "Settings_RT-BE96U.CFG", "get", "", L, "", MOZ, 0);
+	C("ownout_same_click",    "Settings_RT-BE96U.CFG", "Settings_RT-BE96U.CFG", "get", "same-origin", L, "https://192.168.50.1/Reaper_Admin.asp\r\n");
+	CX("ownout_http_click",   "syslog.txt", "syslog.txt", "get", "", L, "http://192.168.50.1/Reaper_Logs.asp\r\n", MOZ, 0);
+	C("ownout_typed",         "syslog.txt", "syslog.txt", "get", "none", L, "");
+	CX("ownout_script",       "client1.ovpn", "client1.ovpn", "get", "", L, "", "curl/8.4.0", 1);
+	C("ownout_page_stays",    "AiProtection_WebProtector.asp", "AiProtection_WebProtector.asp", "get", "cross-site", L, "https://evil.example/\r\n");
+	reaper_xsite_own_out = 0;
+	C("plainfile_xsite",      "ikev2_cert_mobile.pem", "ikev2_cert_mobile.pem", "get", "cross-site", L, "https://evil.example/\r\n");
 	/* review 2026-10-24 S-B-1: the plain-HTTP listener */
 	CX("http_browser_no_headers",      "netool.cgi", "netool.cgi?x=1", "get", "", L, "", MOZ, 0);
 	CX("http_browser_no_headers_post", "wl_apply.cgi", "wl_apply.cgi", "post", "", L, "", MOZ, 0);
@@ -238,6 +261,9 @@ EXPECT = {
     "http_browser_no_headers": 1, "http_browser_no_headers_post": 1, "https_browser_no_headers": 1,
     "http_browser_same_ref": 0, "http_browser_self_ref": 0, "http_browser_sfs_same_origin": 0,
     "http_no_ua_no_headers": 0, "http_script_no_headers": 0, "http_browser_page_not_cgi": 0,
+    # review 2026-11-17 (P6-2-1): rows with an output function of their own, whatever the name; pages stay out
+    "ownout_cert_xsite": 1, "ownout_http_nav": 1, "ownout_same_click": 0, "ownout_http_click": 0, "ownout_typed": 0,
+    "ownout_script": 0, "ownout_page_stays": 0, "plainfile_xsite": 0,
     # review 2026-10-24 S-B-2: the exemption sees what init_cgi() sees
     "aimesh_lock_encoded_key": 1, "aimesh_lock_encoded_underscore": 1, "aimesh_lock_encoded_all": 1,
     "aimesh_other_case_not_lock": 0, "aimesh_conncap_http_browser": 0, "aimesh_long_query_refused": 1,

@@ -269,7 +269,7 @@ else:
 
 # ------------------------------------------------------------------ the diag
 dg = rd(os.path.join(SRC, "others", "reaper_diag"))
-check("diag: v1.3.58", 'VER="REAPER-DIAG v1.3.59"' in dg and "REAPER-DIAG v1.3.59</span>" in rd(os.path.join(SRC, "www", "Reaper_Diag.asp")))
+check("diag: v1.3.58", 'VER="REAPER-DIAG v1.3.61"' in dg and "REAPER-DIAG v1.3.61</span>" in rd(os.path.join(SRC, "www", "Reaper_Diag.asp")))
 snip = cut(dg, "# v1.3.58: under DNS-over-TLS the check asks", "# v1.3.34 (2026-10-10)")
 check("diag: the lines are found", "HCM=" in snip and "elif [" in snip)
 def diag(state, order):

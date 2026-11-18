@@ -140,8 +140,9 @@ check("busybox: the `command` builtin is on (owner, 2026-11-07; acme.sh uses it 
       "\nCONFIG_ASH_CMDCMD=y\n" in read("busybox/config_base") and "CONFIG_ASH_CMDCMD is not set" not in read("busybox/config_base"))
 check("wallguard.sh: the D-1 gate counts a list's allows as names it carries",
       s.count('num(part[j], "names") + num(part[j], "allows")') == 2)
-check("wallguard.sh: the safe-search refresh stays with the full update (or a reboot that took the file)",
-      '{ [ -z "${ONLY+x}" ] || [ ! -f "$D/safesearch" ]; } && safesearch' in s)
+check("wallguard.sh: the safe-search refresh stays with the full update (or a reboot that took the file; since 2026-11-18 "
+      "also a file a profile needs that still lacks an address - test_review_2026_11_18_p6.py)",
+      '{ [ -z "${ONLY+x}" ] || [ ! -f "$D/safesearch" ] || { ss_wanted && [ -n "$(ss_missing)" ]; }; } && safesearch' in s)
 
 print("%d failure(s)" % len(fails))
 sys.exit(1 if fails else 0)

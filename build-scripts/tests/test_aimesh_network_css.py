@@ -50,7 +50,7 @@ for n in ("reaper_content_aimesh.css", "reaper_content_network.css"):
     check("%s: its header says the page links it and httpd injects none" % n,
           "reaper_own_theme[]" in files[n] and "last stylesheet in its <head>" in files[n])
 aim, net = files["reaper_content_aimesh.css"], files["reaper_content_network.css"]
-check("AiMesh: the node-card backdrop (RLogo) and its height knob", ".primary_info_bg::before" in aim and "RLogo.png" in aim and "234px" in aim)
+check("AiMesh: the node-card backdrop (RLogo) and its height knob", ".primary_info_bg::before" in aim and "RLogo.webp" in aim and "234px" in aim)
 check("AiMesh: top tabs keep the maroon underline, not the red fill", ".aimesh_tab > span.clicked" in aim)
 check("AiMesh: the stock chrome strip (banner/menu/footer hidden)", "#TopBanner,#mainMenu,#subMenu,#footer" in aim)
 check("Network: the SPA palette override and the main-network section labels", "rwd_component" in net and ".sdn_section_title" in net)

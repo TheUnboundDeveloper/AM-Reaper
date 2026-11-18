@@ -56,22 +56,24 @@ fi
 # script runs; here we only sanity-check that the identity actually landed.
 BANNER_DIR=/home/reaper/asuswrt-be96u/release/src/router/www/images
 case "$MODEL" in
-  RT-BE96U)    WANT_BANNER=RT-96U_REAPER_Header.png;;
-  RT-BE86U)    WANT_BANNER=RT-BE86U_REAPER_Header.png;;
-  RT-BE88U)    WANT_BANNER=RT-BE88U_REAPER_Header.png;;
-  GT-BE98)     WANT_BANNER=GT-BE98_REAPER_Header.png;;
-  GT-BE98_PRO) WANT_BANNER=GT-BE98P_REAPER_Header.png;;
-  GT-BE19000)  WANT_BANNER=GT-BE19000_REAPER_Header.png;;
-  BQ16)        WANT_BANNER=BE25000_REAPER_Header.png;;   # the BQ16's banner is named by its class, BE25000
-  BQ16_PRO)    WANT_BANNER=BE30000_REAPER_Header.png;;   # the Pro's class; PLACEHOLDER art (the BQ16's) until the owner's lands
-  RT-BE92U)    WANT_BANNER=RT-BE92U_REAPER_Header.png;;
+  RT-BE96U)    WANT_BANNER=RT-96U_REAPER_Header.webp;;
+  RT-BE86U)    WANT_BANNER=RT-BE86U_REAPER_Header.webp;;
+  RT-BE88U)    WANT_BANNER=RT-BE88U_REAPER_Header.webp;;
+  GT-BE98)     WANT_BANNER=GT-BE98_REAPER_Header.webp;;
+  GT-BE98_PRO) WANT_BANNER=GT-BE98P_REAPER_Header.webp;;
+  GT-BE19000)  WANT_BANNER=GT-BE19000_REAPER_Header.webp;;
+  BQ16)        WANT_BANNER=BE25000_REAPER_Header.webp;;   # the BQ16's banner is named by its class, BE25000
+  BQ16_PRO)    WANT_BANNER=BE30000_REAPER_Header.webp;;   # the Pro's class; PLACEHOLDER art (the BQ16's) until the owner's lands
+  RT-BE92U)    WANT_BANNER=RT-BE92U_REAPER_Header.webp;;
 esac
 if [ ! -f "$BANNER_DIR/$WANT_BANNER" ]; then
   echo "FATAL: $MODEL identity overlay did not land -- $WANT_BANNER is not staged."
   echo "       Expected overlays/$MODEL.patch to have been applied."
   exit 3
 fi
-foreign=$(ls "$BANNER_DIR"/*_REAPER_Header.png 2>/dev/null | grep -v "/$WANT_BANNER\$" || true)
+# 2026-11-17: the headers are WebP. A header of EITHER format under another name is a foreign banner - and so is
+# this model's own old .png, which would ship beside the new file.
+foreign=$(ls "$BANNER_DIR"/*_REAPER_Header.png "$BANNER_DIR"/*_REAPER_Header.webp 2>/dev/null | grep -v "/$WANT_BANNER\$" || true)
 if [ -n "$foreign" ]; then
   echo "FATAL: a foreign model banner is present alongside $MODEL's:"
   echo "$foreign" | sed 's|.*/|       |'

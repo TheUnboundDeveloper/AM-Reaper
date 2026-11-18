@@ -1,9 +1,10 @@
 # RT-BE Series "Reaper" — Backlog
 
-> **Doc status:** current as of **v3.8.1** · 2026-11-16 <!--@stamp-->
+> **Doc status:** current as of **v3.8.2** · 2026-11-18 <!--@stamp-->
 
 What is left to do, one line per item, grouped by area. Status where known: **[owed]** (must be done), **[blocked]** (external cause), **[shelved]** / **[deferred]** (deliberately set aside),
-**[watch]** (not a defect today; a guard to keep), **[needs data]** (waiting on a capture or report).
+**[watch]** (not a defect today; a guard to keep), **[needs data]** (waiting on a capture or report),
+**[Pending Cut]** (fixed in the source; ships with the next version).
 
 **Priority** by impact on user-facing function: **[P1]** core function broken or at risk ·
 **[P2]** degraded function, meaningful annoyance, or privacy exposure · **[P3]** cosmetic, polish,
@@ -35,23 +36,21 @@ internal quality, or deferred by decision.
 
 *Not fixed yet — work still to start or finish.*
 
-- **[P1] Guest Portal: passcode refused on a phone though it matches the router (v3.7.9)** **[one cause fixed; data asked]** ↳ notes: `guest-portal-passcode-refused-v379.md`
 - **[P2] GT-BE98: a 5 GHz Wi-Fi bridge (WDS) station drops for ~30 s** **[data asked of the reporter]** ↳ notes: `gt-be98-wds-drop-log-noise.md`
 - **[P2] USB 3 writes run at half of reads on BCM4912 / BCM4916 models** **[A/B run owed]** ↳ notes: `usb3-write-ceiling.md`
 - **[P2] AI Advisor: arming code and lockout move to reset-proof `/data/reaper/advisor/`** **[not scheduled]** ↳ notes: `advisor-arming-code-admin-reset.md`
 - **[P2] MLO on: a soft restart can leave Wi-Fi accepting no devices until a power cycle** **[owner call]** ↳ notes: `mlo-restart-radio-link.md`
 - **[P2] Guest networks bound to a WireGuard client: routing after WAN events** **[not started]** ↳ notes: `guest-vpn-binding-robustness.md`
 - **[P2] Guest Portal on AiMesh nodes: sign-in and network separation for guests joining through a node** **[not verified]** ↳ notes: `guest-portal-aimesh-nodes.md`
-- **[P2] Devices: named devices shown as "unnamed" (v3.7.9)** **[no cause in code; re-test on the next release]** ↳ notes: `devices-named-shown-unnamed-v379.md`
-- **[P3] Devices: a device wired to an AiMesh node is shown as a Wi-Fi client** **[two causes fixed; router data asked]** ↳ notes: `aimesh-node-wired-client-shown-wifi.md`
 - **[P3] Update-manifest signature stays inert (R09)** **[accepted]** ↳ notes: `manifest-signature-inert-r09.md`
 - **[P3] DDNS: intermittent updates (v3.7.9)** **[reporter still checking]** ↳ notes: `ddns-flaky-v379.md`
 - **[P2] BQ16: the Devices page reportedly does not show MLO devices properly** **[details needed]** ↳ notes: `bq16-devices-mlo-display.md`
 - **[P3] IPv6: the factory prefix request (/64) leaves guest networks without public IPv6 where the provider honours it** **[found in review; not started]** ↳ notes: `ipv6-pd-hint-guest-networks.md`
 - **[P3] RADIUS: the Network page and the RADIUS tab keep the main network's server in two places** **[fix designed; not built]** ↳ notes: `radius-two-stores.md`, `bug-review-2026-11-16.md`
-- **[P3] mDNS: avahi-daemon aborted once during back-to-back Wi-Fi restarts (restarted by the next one)** **[not investigated]** ↳ notes: `avahi-abort-wifi-restarts.md`
-- **[P2] GT-BE98 on the alpha line: conn_diag (AiMesh diagnostics) crashes repeatedly on v3.8.0** **[likely fixed by the 102.40585 set; re-test on v3.8.1 alpha]** ↳ notes: `gt-be98-gpl-40585.md`
-- **[P2] Wallguard: SafeSearch on the Default profile is not enforced (v3.8.0; Google country domain, Edge)** **[reported; not investigated]** ↳ notes: `wallguard-safesearch-not-enforced.md`
+- **[P2] Guest Portal: the iPhone sign-in sheet stays open after the success page (v3.8.1)** **[likely cause found; fix designed]** ↳ notes: `guest-portal-ios-sheet-not-closing.md`
+- **[P3] AiMesh tab: MLO devices are shown by band, not as MLO (the Devices page shows MLO)** **[cause found; fix designed]** ↳ notes: `aimesh-tab-mlo-flag-router-clients.md`
+- **[P3] Boot log: "failed to set WLC_E_CAC_STATE_CHANGE bit" from the Wi-Fi driver** **[closed driver; router check owed]** ↳ notes: `cfg80211-cac-event-bit-boot-noise.md`
+- **[P2] Aqara G410 doorbell: control works but no video in the Aqara app or Apple Home (Bastion off)** **[reported; data asked]** ↳ notes: `aqara-g410-doorbell-no-video.md`
 
 ---
 
@@ -79,6 +78,12 @@ private review report and the finding ID in it; review reports are never publish
 - **[P3] Channel picker control port: a local firewall rule by process owner** **[owner call]** ↳ report: `review-2026-11-11` D-C1 · notes: `review-2026-11-11-remediation.md`
 - **[P3] Two kernel checks from the 2026-11-11 fixes: a test program on a router** **[owner call]** ↳ report: `review-2026-11-11` A-1, A-C2 · notes: `review-2026-11-11-remediation.md`
 - **[P3] Maintainer tooling proposals (2026-11-11)** **[approved 2026-11-11; in progress]** ↳ notes: `tooling-proposals-2026-11-11.md`
+- **[P3] Review 2026-11-17, phase 4: one copy of each helper (lease and neighbour readers, JSON writer, page helpers)** **[the rest left open in the notes]** ↳ report: `review-2026-11-17` · notes: `review-2026-11-17-remediation.md`
+- **[P3] Rules engine, guest isolation and Policy Routing: one batched rule load and one shared apply-and-confirm (review C-E2, C-6, C-D2)** **[batched loads in v3.8.2; confirm fold open]** ↳ report: `review-2026-11-17` · notes: `review-2026-11-17-remediation.md`
+- **[P3] Guest Portal web server: remove the unused file-sharing client library it links** **[reviewed: a guest cannot reach it; removal queued]** ↳ report: `review-2026-11-17` · notes: `portal-server-smb-client-library.md`
+- **[P2] Unused request handlers, page hooks and a VPN control socket that still ship: security review, then removal** **[cross-site fix in v3.8.2; removal queued]** ↳ report: `review-2026-11-17` · notes: `unused-request-surfaces.md`
+- **[P1] Every supported model and hardware revision ships the drivers and radio firmware it needs: full per-model review** **[Wi-Fi part in v3.8.2; rest open]** ↳ notes: `model-driver-completeness-review.md`
+- **[P2] ASUS releases of 2026-11-17 (firmware 394xx, GPL 39441-39448): what Reaper should take** **[in v3.8.2; BQ16 waits for its GPL]** ↳ report: `drop-intake-2026-11-18` · notes: `asus-drop-intake-2026-11-18.md`
 
 ---
 
@@ -92,11 +97,10 @@ private review report and the finding ID in it; review reports are never publish
 ## Potential Features to add
 
 - **[P1] Reaper-native UI: convert every stock page, then remove the stock pages** **[left: the cutover]** ↳ notes: `reaper-native-ui.md`, `native-page-migration.md`
-- **[P1] Image size: the RT-BE96U root filesystem is within ~2.2 MB of its flash slot** **[v3.8.1: 2,244,608 B spare]** ↳ notes: `image-size-hunt.md`
+- **[P1] Image size: the RT-BE96U root filesystem is within ~2.2 MB of its flash slot** **[v3.8.2: 9,330,688 B spare]** ↳ notes: `image-size-hunt.md`
 - **[P2] Code signing: manifest + images, with a pre-upload verdict** **[scheduled]** ↳ notes: `manifest-signing-shelved.md`
 - **[P2] Security review: harden the baseline against tampering** **[owner call]** ↳ notes: `security-review.md`
 - **[P2] Two-tier admin credential for root-equivalent actions** **[designed 2026-10-19; owner call]** ↳ notes: `two-tier-admin-credential.md`
-- **[P2] GT-BE98: move onto GPL 102.40585 (gnuton's prebuilts) via the line unification** **[on the alpha line from v3.8.1; tester needed]** ↳ notes: `gt-be98-gpl-40585.md`
 - **[P2] Policy Routing by ASN (e.g. AS2906)** **[assessed; on hold (owner 2026-11-15)]** ↳ notes: `pbr-asn-objects.md`
 - **[P2] Encrypted DNS stage 2: fall back to plain upstream when DNS-over-TLS stops answering** **[planned]** ↳ notes: `encrypted-dns.md`
 - **[P3] Security review: watch more settings** **[part done 2026-10-24; the rest not started]** ↳ notes: `security-review-coverage.md`
@@ -110,6 +114,7 @@ private review report and the finding ID in it; review reports are never publish
 - **[P3] mDNS across networks: reflect only chosen service types (avahi `reflect-filters`)** **[idea; not started]** ↳ notes: `mdns-reflect-filters.md`
 - **[P3] Wallguard: "pause and record" - list what would have been blocked while a device was paused** **[idea; not started]** ↳ notes: `wallguard-pause-and-record.md`
 - **[P3] Wallguard: show per device when its DNS bypasses the router** **[idea; not started]** ↳ notes: `wallguard-device-bypass-hint.md`
+- **[P2] Wallguard: a tab to view and edit the allow / block lists, incl. Allowed for 24 hours (remove, extend, make permanent)** **[not started]** ↳ notes: `wallguard-allow-lists-tab.md`
 - **[P4] Advanced tier: TLS interception for URL-level inspection** **[threat model first]** ↳ notes: `encrypted-dns.md`, `security-leftovers-plan-2026-11-10.md`
 
 ---
@@ -186,3 +191,4 @@ private review report and the finding ID in it; review reports are never publish
 - **"Every flash rewrites the bootloader": it does not** ↳ notes: `uboot-in-bootfs-not-loader.md`
 - **Minimum width on Auto in an AiMesh: phones stay on the router** ↳ notes: `bwfloor-aimesh-roaming.md`
 - **Guest Network Pro: no name resolution on a VPN-bound network while its VPN client is down** **[owner 2026-11-10]** ↳ notes: `guest-portal-wg-report-2026-11-10.md`
+- **Boot log: "vlanIoctl: Failed to delete VLAN device wds..." (closed AiMesh guest-network code, harmless)** **[closed code]** ↳ notes: `vlanioctl-wds-delete-boot-noise.md`

@@ -75,7 +75,7 @@ IDENTITY_TEXT = {
 # Non-source blobs and build byproducts committed on the sibling branches. Not
 # ideal that they are in the tree at all, but they are model-specific and inert.
 IDENTITY_BLOB_RE = [
-    re.compile(r"^release/src/router/www/images/[A-Za-z0-9_-]*_REAPER_Header(_anim)?\.png$"),
+    re.compile(r"^release/src/router/www/images/[A-Za-z0-9_-]*_REAPER_Header(_anim)?\.(png|webp)$"),
     re.compile(r"^release/src-rt-5\.04behnd\.4916/bcmdrivers/.*\.(o|so[0-9.]*)$"),
     re.compile(r"^release/src-rt-5\.04behnd\.4916/bcmdrivers/.*/airiq/prebuilt/.*$"),
     re.compile(r"^release/src-rt-5\.04behnd\.4916/bootloaders/.*$"),
@@ -86,7 +86,7 @@ IDENTITY_BLOB_RE = [
     re.compile(r"^release/src-rt-5\.04behnd\.4916/rdp/projects/.*/bdmf/framework/bdmf_\w+\.h$"),
 ]
 
-BANNER_RE = re.compile(r"[A-Za-z0-9_-]*_REAPER_Header(_anim)?\.png")
+BANNER_RE = re.compile(r"[A-Za-z0-9_-]*_REAPER_Header(_anim)?\.(png|webp)")
 
 
 def is_identity_blob(path):

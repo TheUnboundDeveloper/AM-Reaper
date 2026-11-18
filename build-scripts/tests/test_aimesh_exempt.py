@@ -93,7 +93,8 @@ check("Service Intercept: a node leaves the nat chain first (v4 and v6)",
       '"RFWR iptables -t nat -A " RFW_CHAIN_NAT " ' + SET in fw and '"RFWR ip6tables -t nat -A " RFW_CHAIN_NAT " ' + SET in fw
       and fw.index('"RFWR iptables -t nat -A " RFW_CHAIN_NAT " ' + SET) < fw.index("for (d = RFW_D_IN; d <= RFW_D_OUT; d++) {"))
 check("Policy Routing: a node RETURNs right after replies, before any mark is restored or set",
-      SYNC in pbr and '"  $T -t mangle -A $C -m conntrack --ctdir REPLY -j RETURN\\n"\n\t  "  $T -t mangle -A $C ' + SET in pbr)
+      # 2026-11-18 (review C-E2): the chain's own lines go through pbr_add (queued for one iptables-restore)
+      SYNC in pbr and '"  pbr_add $T -t mangle -A $C -m conntrack --ctdir REPLY -j RETURN\\n"\n\t  "  pbr_add $T -t mangle -A $C ' + SET in pbr)
 check("rwatch refreshes the set every tick (gkd only runs with Gatekeeper on)",
       rw.index(SYNC) > rw.index('"STATE=" RWATCH_STATE "\\n"') if SYNC in rw else False)
 check("the applet is declared, registered and has its /sbin link; the set name is one constant",

@@ -164,15 +164,15 @@ fi
 # Post-v1.8.6: each model has its own banner filename (clobber-proof). Verify
 # the right file, right content, and NO stale REAPER1.png / foreign banner.
 case "$MODEL" in
-  RT-BE96U)    want_ban=f2607d4fd490041bebde08fd526d28704083332eef97417e2d67cafd7bd68c7d; ban_file=RT-96U_REAPER_Header.png;;
-  RT-BE86U)    want_ban=643036d89ca249311eec964035d973a6eeaaec38d5c9ec1ecd47f33298c28ece; ban_file=RT-BE86U_REAPER_Header.png;;
-  RT-BE88U)    want_ban=a46320ea1abf53eb4212eb02b1682ed80a91a129f0c7d1ced6a836d832817f27; ban_file=RT-BE88U_REAPER_Header.png;;
-  GT-BE98)     want_ban=0df4d8c19c9f044a1c2eb8334d2b23d085ff8f090348177251d1518b49572108; ban_file=GT-BE98_REAPER_Header.png;;
-  GT-BE98_PRO) want_ban=277f468046f99abda5d15181700ee150cd56ab0d258e7495090b8128d08fc08b; ban_file=GT-BE98P_REAPER_Header.png;;
-  RT-BE92U)    want_ban=032fc64c249e10391c12041cde1dd6f1d9d9bf8349495f79a09ba36e77d6db72; ban_file=RT-BE92U_REAPER_Header.png;;
-  GT-BE19000)  want_ban=f6acf9cbae479656ae6fa4fd37d401f1df583b275ca7d036bec761152b78f9f0; ban_file=GT-BE19000_REAPER_Header.png;;
-  BQ16)        want_ban=4ab6570ef27ae641c356fd078087af0fec4bc6e587d6f1564045f3812c5cd0f1; ban_file=BE25000_REAPER_Header.png;;   # the ZenWiFi BQ16's art is named by its class, BE25000 (owner, 2026-10-01)
-  BQ16_PRO)    want_ban=4ab6570ef27ae641c356fd078087af0fec4bc6e587d6f1564045f3812c5cd0f1; ban_file=BE30000_REAPER_Header.png;;   # PLACEHOLDER = the BQ16's art under the Pro's stem (2026-10-04); re-checksum when the owner's Pro art lands
+  RT-BE96U)    want_ban=15323d929359dea616802a5fa078f916f0f917e04ee0599a1dd214592edaf19b; ban_file=RT-96U_REAPER_Header.webp;;
+  RT-BE86U)    want_ban=d9759e7076710ebe4a73f5c49c4252763767283faad563020a3b5850de186612; ban_file=RT-BE86U_REAPER_Header.webp;;
+  RT-BE88U)    want_ban=fe25ef15f13a380144c30ece332433f98f898faecfe304cfd7478d22c2ed96de; ban_file=RT-BE88U_REAPER_Header.webp;;
+  GT-BE98)     want_ban=7686cf255d5afb5e0555a5b1a3138cd9c7a2c9435569f005ded86f3b543f5442; ban_file=GT-BE98_REAPER_Header.webp;;
+  GT-BE98_PRO) want_ban=2dc8e92d1e784d9245a22f9b9a6acc95f48dcba8168cc6747127385dfd9ac3c4; ban_file=GT-BE98P_REAPER_Header.webp;;
+  RT-BE92U)    want_ban=d93c4c446a211813496423703a2e1ee0c4c793f00c529a64ee408d4b626028c7; ban_file=RT-BE92U_REAPER_Header.webp;;
+  GT-BE19000)  want_ban=958786b2aa6c69dd7e6dc152a7febadd4ba95d10b1f1eb549565b70c72888e24; ban_file=GT-BE19000_REAPER_Header.webp;;
+  BQ16)        want_ban=787c16dd53be58891bd0cd5685a7214f79094b1c1dcb8d0151ba5d391bb3c9e6; ban_file=BE25000_REAPER_Header.webp;;   # the ZenWiFi BQ16's art is named by its class, BE25000 (owner, 2026-10-01)
+  BQ16_PRO)    want_ban=787c16dd53be58891bd0cd5685a7214f79094b1c1dcb8d0151ba5d391bb3c9e6; ban_file=BE30000_REAPER_Header.webp;;   # PLACEHOLDER = the BQ16's art under the Pro's stem (2026-10-04); re-checksum when the owner's Pro art lands
   *)           want_ban=""; ban_file="";;
 esac
 BAN="$FS/www/images/$ban_file"
@@ -184,7 +184,9 @@ elif [ -n "$ban_file" ]; then fail "header-banner" "model banner $ban_file NOT s
 else warn "header-banner" "no expected banner registered for $MODEL"; fi
 # guard: no legacy shared-name file, no foreign model banner
 if [ -f "$FS/www/images/REAPER1.png" ]; then fail "banner-stale" "legacy REAPER1.png still staged (rename regression)"; fi
-foreign=$(ls "$FS"/www/images/*_REAPER_Header.png 2>/dev/null | grep -v "/${ban_file}\$")
+# 2026-11-17: the headers are WebP; a header of either format under another name is foreign, and so is this
+# model's own old .png (it would ship beside the new file)
+foreign=$(ls "$FS"/www/images/*_REAPER_Header.png "$FS"/www/images/*_REAPER_Header.webp 2>/dev/null | grep -v "/${ban_file}\$")
 if [ -n "$foreign" ]; then fail "banner-foreign" "foreign banner staged: $(echo "$foreign" | xargs -n1 basename 2>/dev/null | tr '\n' ' ')"
 else pass "banner-solo" "only $MODEL banner present (no foreign/legacy)"; fi
 
@@ -200,7 +202,7 @@ else pass "banner-solo" "only $MODEL banner present (no foreign/legacy)"; fi
 # while onboarding the GT-BE19000. This check needs no list: it reads the
 # references out of the staged pages themselves, so a new page cannot be
 # missed the way the seventh one was.
-_brefs=$(grep -rhoE '[A-Za-z0-9-]+_REAPER_Header(_anim)?\.png' "$FS"/www/*.asp "$FS"/www/*.js 2>/dev/null | sort -u)
+_brefs=$(grep -rhoE '[A-Za-z0-9-]+_REAPER_Header(_anim)?\.(png|webp)' "$FS"/www/*.asp "$FS"/www/*.js 2>/dev/null | sort -u)
 _bmiss=""
 for _b in $_brefs; do [ -f "$FS/www/images/$_b" ] || _bmiss="$_bmiss $_b"; done
 if [ -z "$_brefs" ]; then warn "banner-refs" "no staged page references a banner file - unexpected, check the www staging"
@@ -218,22 +220,38 @@ else pass "banner-refs" "$(printf '%s\n' "$_brefs" | wc -l) referenced banner fi
 # drop) ships none. The expected chip set is per model, read from the pinned
 # base's own sysdeps/ layout; a model not listed here gets a WARN, not a pass.
 #
-# GT-BE19000: 6717a0 + 6726b0 - and the RETRACTION behind that line matters.
-# On 2026-09-12 this was briefly changed to "6726b0" only, on the strength of
-# decomposing the vendor GT-BE19000**AI** image (102_40717), whose rootfs has a
-# single chip dir. Hours later the vendor **non-AI** image (102_39393) - the
-# SKU this build actually targets - was decomposed and carries BOTH
-# rom/etc/wlan/dhd/6717a0/ and 6726b0/. The two SKUs differ in radio hardware,
-# not only in storage. The "6726b0 only" line would have PASSED an image with
-# no 6717a0 firmware, i.e. a dead radio - the exact failure this check exists
-# to catch. Rule, stated twice because it was violated twice in one day: read
-# the chip set off the vendor image FOR THE EXACT SKU, never off a sibling and
-# never off the other SKU of the same model.
+# Where the chip set comes from (2026-11-18, review 2026-11-17 phase 7): the
+# BOARD FILES, not the folders a vendor image happens to carry. The router loads
+# /rom/etc/wlan/nvram/<boardid>.nvm, and that file lists every radio with its
+# device id (N:devid=); bcmdevs.h maps 0x6025-27 to BCM6717 (dongle 6717a0) and
+# 0x602c-e to BCM6726 (6726b0). Read that way:
+#   RT-BE96U   RT-BE96U.nvm = 3 x BCM6717 (early units), RT-BE96U_B0.nvm =
+#              3 x BCM6726 (B0 units) -> BOTH folders, always.
+#   GT-BE98 / GT-BE98_PRO / BQ16 / BQ16_PRO (4 radios each) and GT-BE19000
+#              (3 radios): every radio of every board file is a BCM6726 ->
+#              6726b0 only. src-rt/Makefile (REAPER-NO-6717A0) no longer
+#              installs their 6717a0; an image that still carries it FAILS here.
+#   RT-BE86U   BCM6726 5 GHz + BCM6711 2.4 GHz (run by wl.ko, no firmware file)
+#   RT-BE88U   2 x BCM6726 -> 6726b0.
+# History: ASUS ships 6717a0 in most vendor images, so reading folders said
+# "both" for five models that have no BCM6717. On 2026-09-12 the GT-BE19000
+# non-AI image's two folders against the AI image's one were read as two radio
+# designs; the board files of both SKUs name the same three BCM6726 radios. The
+# rule that holds: read the chip set off the EXACT SKU's board files, and never
+# take a folder away from a model whose board files name its chip.
 case "$MODEL" in
-  RT-BE96U|GT-BE98|GT-BE98_PRO|GT-BE19000|BQ16|BQ16_PRO)  want_dhd="6717a0 6726b0";;   # BQ16 / BQ16_PRO: read off each one's own stock 102_39256 image
-  RT-BE86U|RT-BE88U)                        want_dhd="6726b0";;
-  *)                                        want_dhd="";;
+  RT-BE96U)                                       want_dhd="6717a0 6726b0"; nowant_dhd="";;
+  GT-BE98|GT-BE98_PRO|GT-BE19000|BQ16|BQ16_PRO)   want_dhd="6726b0"; nowant_dhd="6717a0";;
+  RT-BE86U|RT-BE88U)                              want_dhd="6726b0"; nowant_dhd="";;
+  *)                                              want_dhd=""; nowant_dhd="";;
 esac
+for _c in $nowant_dhd; do
+  if [ -e "$FS/rom/etc/wlan/dhd/$_c" ]; then
+    fail "dongle-fw-unused" "rom/etc/wlan/dhd/$_c is staged for $MODEL, whose board files name no radio of that chip (REAPER-NO-6717A0 in src-rt/Makefile not applied, or a stale dongle/bin/$_c)"
+  else
+    pass "dongle-fw-unused" "no $_c firmware staged for $MODEL (its board files name no radio of that chip)"
+  fi
+done
 if [ -n "$want_dhd" ]; then
   _dmiss=""
   for _c in $want_dhd; do

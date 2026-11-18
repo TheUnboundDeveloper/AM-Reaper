@@ -66,6 +66,23 @@ for cs in "$R"/*/config.status; do
       if [ "$v" -gt "${chg:-0}" ]; then chg=$v; subj="$pkg/${pc##*/} changed"; fi
     done
   done
+  # 2026-11-16: and any change inside the package's configure RECIPE block in router/Makefile, whatever the changed
+  # line says. The v3.8.1 SNMP change removed `ucd-snmp/dlmod,` from net-snmp's --with-mib-modules list; that line
+  # does not name net-snmp, so the name search above never saw it, and the local alpha image built from a tree
+  # configured on 2026-11-04 still carried the agent's module loader (CI, configuring fresh, did not). The block runs
+  # from the package's `<pkg>/stamp-h1:`, `<pkg>/Makefile:` or `<pkg>/config.status:` target to the next blank
+  # line or target. Only commits made after the package was configured are searched (--since), so this stays quick.
+  _blk=$(awk -v p="$pkg" '
+    !s && index($0, p "/") == 1 && $0 ~ "^[^ \t]*/(stamp-h1|Makefile|config[.]status)([ \t][^:]*)?[ \t]*:" { s = NR; next }
+    s && !e && ($0 ~ /^[ \t]*$/ || $0 ~ /^[^ \t#][^=]*:([^=]|$)/) { e = NR - 1 }
+    END { if (s) { if (!e) e = NR; if (e >= s) print s "," e } }' "$R/Makefile" 2>/dev/null)
+  if [ -n "$_blk" ]; then
+    _bl=$(git log -1 --format='%ct %h %s' --since="@$cs_epoch" -L "$_blk:release/src/router/Makefile" 2>/dev/null | head -1)
+    _bv=${_bl%% *}
+    case "$_bv" in ''|*[!0-9]*) ;; *)
+      if [ "$_bv" -gt "${chg:-0}" ]; then chg=$_bv; subj="$(echo "${_bl#* }" | cut -c1-88) (its configure recipe)"; fi ;;
+    esac
+  fi
   [ -n "$chg" ] || continue
   [ "$chg" -gt "$cs_epoch" ] || continue
 

@@ -131,8 +131,11 @@ console.log(JSON.stringify(out));
 # Owner report 2026-11-15: "Auto refresh toggle on the Firewall Status and RuleStatus menu do not stay applied." Both
 # switches stored nothing, so every page load showed them off and no timer ran. Now each is kept per browser
 # (localStorage, like the last tab), read back before the first tab is shown, and written by its click handler.
-A_GET = "function autoGet(k){try{return localStorage.getItem(k)==='1';}catch(e){return false;}}\n"
-A_SET = "function autoSet(k,on){try{localStorage.setItem(k,on?'1':'0');}catch(e){}}\n"
+# 2026-11-17 (owner: lost at a reflash / reboot): the router keeps the two switches (nvram through action=opts); the
+# browser's copy is read only while the router has none. Browser storage belongs to one address.
+A_GET = "function autoGet(k){var v=RFW_AUTO_NV[k];if(v==='1'||v==='0')return v==='1';try{return localStorage.getItem(k)==='1';}catch(e){return false;}}\n"
+A_SET = ("function autoSet(k,on){RFW_AUTO_NV[k]=on?'1':'0';try{localStorage.setItem(k,on?'1':'0');}catch(e){}\n"
+         "  fwcgi('action=opts&'+(k==='reaper_fw_st_auto'?'st_auto':'wt_auto')+'='+(on?'1':'0'));}\n")
 H_ST = "  $('st_auto').onclick=function(){this.classList.toggle('on');autoSet('reaper_fw_st_auto',this.classList.contains('on'));stopAuto();startAuto();};\n"
 H_WT = "  $('wt_auto').onclick=function(){this.classList.toggle('on');autoSet('reaper_fw_wt_auto',this.classList.contains('on'));stopWitAuto();startWitAuto();};\n"
 R_ST = "  $('st_auto').classList.toggle('on',autoGet('reaper_fw_st_auto'));\n"
@@ -143,9 +146,9 @@ check("auto refresh: each click handler stores its own key after the toggle (Sta
       fw.count(H_ST) == 1 and fw.count(H_WT) == 1 and fw.count(".onclick=function(){this.classList.toggle('on');stop") == 0)
 check("auto refresh: the stored choices are restored immediately before initTab(), the last step of boot()",
       (R_ST + R_WT + "  initTab();\n}\nif(document.readyState!=='loading')boot();\n") in fw and fw.count("  initTab();\n") == 1
-      and fw.count("reaper_fw_st_auto") == 2 and fw.count("reaper_fw_wt_auto") == 2)
-check("auto refresh: per browser only - no nvram key, nothing posted; the timers and the tab switch are as they were",
-      not re.search(r"(nvram|apply\.cgi|start_apply)[^\n]*reaper_fw_(st|wt)_auto", fw)
+      and fw.count("reaper_fw_st_auto") == 5 and fw.count("reaper_fw_wt_auto") == 4)   # + the router's values and the request
+check("auto refresh: kept on the router through the page's own request; the timers and the tab switch are as they were",
+      'var RFW_AUTO_NV={reaper_fw_st_auto:<% nvram_get_js("reaper_fw_st_auto"); %>,reaper_fw_wt_auto:<% nvram_get_js("reaper_fw_wt_auto"); %>};' in fw
       and "function startWitAuto(){stopWitAuto();if($('wt_auto').classList.contains('on'))wtTimer=setInterval(function(){loadWit(false);},15000);}" in fw
       and "function startAuto(){if($('st_auto').classList.contains('on')&&!stTimer)stTimer=setInterval(loadStatus,10000);if($('st_auto').classList.contains('on')&&!rvTimer)rvTimer=setInterval(rvLoad,30000);}" in fw
       and "if(t==='status'){loadStatus();rvLoad();rvLoadRules();rvLoadLog();startAuto();}else{stopAuto();}" in fw
@@ -160,7 +163,9 @@ var localStorage = {getItem: function(k){ if (THROW) throw new Error('denied'); 
 function mk(){ var c = {}; return {onclick: null, classList: {toggle: function(n, f){ if (f === undefined) f = !c[n]; if (f) c[n] = 1; else delete c[n]; return !!f; },
                                                            contains: function(n){ return !!c[n]; }}}; }
 var EL = {}; function $(id){ return EL[id] || (EL[id] = mk()); }
-var CALLS = [];
+var CALLS = [], POSTS = [];
+var RFW_AUTO_NV = {reaper_fw_st_auto: '', reaper_fw_wt_auto: ''};      /* what the router sent with the page */
+function fwcgi(q){ POSTS.push(q); }
 function stopAuto(){ CALLS.push('stop'); } function startAuto(){ CALLS.push('start:' + $('st_auto').classList.contains('on')); }
 function stopWitAuto(){ CALLS.push('wstop'); } function startWitAuto(){ CALLS.push('wstart:' + $('wt_auto').classList.contains('on')); }
 """ + A_GET + A_SET + "function load(){ EL = {}; CALLS = [];\n" + R_ST + R_WT + H_ST + H_WT + r"""  return [$('st_auto').classList.contains('on'), $('wt_auto').classList.contains('on')]; }
@@ -170,6 +175,10 @@ o.fresh = load();
 click('st_auto'); o.st_on = [JSON.stringify(store), CALLS.slice()]; o.reload1 = load();
 click('wt_auto'); o.wt_on = [JSON.stringify(store), CALLS.slice()]; o.reload2 = load();
 click('st_auto'); o.st_off = JSON.stringify(store); o.reload3 = load();
+o.posts = POSTS.slice();
+RFW_AUTO_NV = {reaper_fw_st_auto: '1', reaper_fw_wt_auto: '0'}; store = {reaper_fw_st_auto: '0', reaper_fw_wt_auto: '1'}; o.router_wins = load();
+RFW_AUTO_NV = {reaper_fw_st_auto: '1', reaper_fw_wt_auto: ''}; store = {}; o.other_address = load();
+RFW_AUTO_NV = {reaper_fw_st_auto: '', reaper_fw_wt_auto: ''};
 store = {reaper_fw_st_auto: 'yes', reaper_fw_wt_auto: 'on'}; o.junk = load();
 store = {}; THROW = true; o.denied = load(); click('st_auto'); o.denied_click = [$('st_auto').classList.contains('on'), CALLS.slice()];
 console.log(JSON.stringify(o));
@@ -190,6 +199,10 @@ console.log(JSON.stringify(o));
         check("node: switched off again is stored as '0' and stays off after a reload",
               o.get("st_off") == '{"reaper_fw_st_auto":"0","reaper_fw_wt_auto":"1"}' and o.get("reload3") == [False, True], (o.get("st_off"), o.get("reload3")))
         check("node: only '1' means on (any other stored text = off)", o.get("junk") == [False, False], o.get("junk"))
+        check("node: each change is sent to the router (st_auto / wt_auto, 1 / 0)",
+              o.get("posts") == ["action=opts&st_auto=1", "action=opts&wt_auto=1", "action=opts&st_auto=0"], o.get("posts"))
+        check("node: the router's value wins over the browser's copy, and is enough by itself (another address, empty storage)",
+              o.get("router_wins") == [True, False] and o.get("other_address") == [True, False], (o.get("router_wins"), o.get("other_address")))
         check("node: storage refused (private mode) = off at load, and the switch still works for this page view",
               o.get("denied") == [False, False] and o.get("denied_click") == [True, ["stop", "start:true"]], (o.get("denied"), o.get("denied_click")))
     finally:

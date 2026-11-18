@@ -1,0 +1,161 @@
+From 8893159e71bce779b3fb24963448b506f56c1478 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Wed, 18 Nov 2026 17:05:41 -0500
+Subject: [PATCH] Wi-Fi scripts as on the 3006.102.10 line; Broadcom licence
+ 1296 (102.8 line)
+
+- wifi.sh, bcm-wlan-drivers.sh and wlinc.sh take the 3006.102.10 versions (quoting, an affinity
+  setting that BusyBox accepts).
+- Broadcom licence file 1296 is added, as ASUS's stock images carry it.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ .../wlan/scripts/bcm-wlan-drivers.sh            |   6 +++---
+ .../router-sysdep.rt-be96u/wlan/scripts/wifi.sh |  16 ++++++++--------
+ .../wlan/scripts/wlinc.sh                       |   9 ++++++++-
+ ...dcom-PAK_License-1296.Asus_BQ16_BQ16_PRO.bin | Bin 0 -> 1076 bytes
+ 4 files changed, 19 insertions(+), 12 deletions(-)
+ create mode 100644 release/src-rt-5.04behnd.4916/targets/pakl/Broadcom-PAK_License-1296.Asus_BQ16_BQ16_PRO.bin
+
+diff --git a/release/src-rt-5.04behnd.4916/router-sysdep.rt-be96u/wlan/scripts/bcm-wlan-drivers.sh b/release/src-rt-5.04behnd.4916/router-sysdep.rt-be96u/wlan/scripts/bcm-wlan-drivers.sh
+index aea0a58b3b..9298ee5e01 100755
+--- a/release/src-rt-5.04behnd.4916/router-sysdep.rt-be96u/wlan/scripts/bcm-wlan-drivers.sh
++++ b/release/src-rt-5.04behnd.4916/router-sysdep.rt-be96u/wlan/scripts/bcm-wlan-drivers.sh
+@@ -34,8 +34,8 @@ fi
+ 
+ # Allow wifi.sh script to correct dpd settings first
+ /rom/etc/init.d/wifi.sh dpdmode 1
+-DPDMODE=`sh /rom/etc/init.d/wifi.sh dpdmode |  cut -d '|' -f1`
+-if [ -z $DPDMODE ]; then
++DPDMODE=`/bin/sh /rom/etc/init.d/wifi.sh dpdmode |  cut -d '|' -f1`
++if [ -z "$DPDMODE" ]; then
+   DPDMODE=0
+ fi
+ echo "DPDMODE:$DPDMODE"
+@@ -413,7 +413,7 @@ fi
+ # Parse the first argument
+ case "$1" in
+     start)
+-        if [ $ALLOW_LOAD_DRIVER_IN_BACKGROUND == "y" ]; then
++        if [ "$ALLOW_LOAD_DRIVER_IN_BACKGROUND" = "y" ]; then
+             start_main &
+         else
+             start_main
+diff --git a/release/src-rt-5.04behnd.4916/router-sysdep.rt-be96u/wlan/scripts/wifi.sh b/release/src-rt-5.04behnd.4916/router-sysdep.rt-be96u/wlan/scripts/wifi.sh
+index 9423e5a519..7088523daa 100644
+--- a/release/src-rt-5.04behnd.4916/router-sysdep.rt-be96u/wlan/scripts/wifi.sh
++++ b/release/src-rt-5.04behnd.4916/router-sysdep.rt-be96u/wlan/scripts/wifi.sh
+@@ -123,7 +123,7 @@ wl_suspend()
+ # - restart wlan configuration manager
+ wl_resume()
+ {
+-  grep -e${mod// /.ko -e}.ko /rom/etc/init.d/bcm-base-drivers.sh | sh
++  grep -e${mod// /.ko -e}.ko /rom/etc/init.d/bcm-base-drivers.sh | /bin/sh
+   /rom/etc/init.d/bcm-wlan-drivers.sh start
+   nvram restart
+ }
+@@ -142,7 +142,7 @@ wl_mlo_unit()
+   wlunit=$(echo $ifname | cut -d 'l' -f2)
+   mlounit=$(echo $wl_mlo_config |  awk -v N=$((wlunit+1)) '{print $N}')
+ 
+-  if [ -z $mlounit ]; then
++  if [ -z "$mlounit" ]; then
+     mlounit=-1
+   fi
+ 
+@@ -234,12 +234,12 @@ wledpdctl_mlo_up()
+           # Wait for MLC state to be MLC_SYNC or MLC_ACTIVE
+           for i in $(seq 1 3); do
+             mlc_state=$(wl -i $wlif mlc_state | cut -d ' ' -f1)
+-            if [ $mlc_state = $MLC_SYNC ] || [ $mlc_state = $MLC_ACTIVE ]; then
++            if [ "$mlc_state" = "$MLC_SYNC" ] || [ "$mlc_state" = "$MLC_ACTIVE" ]; then
+               break
+             fi
+             sleep 1
+           done
+-          if [ $mlc_state != $MLC_SYNC ] && [ $mlc_state != $MLC_ACTIVE ]; then
++          if [ "$mlc_state" != "$MLC_SYNC" ] && [ "$mlc_state" != "$MLC_ACTIVE" ]; then
+             echo "WIFI.SH : WARN: $wlif is not in MLC_SYNC/ACTIVE state"
+           fi
+         fi
+@@ -254,17 +254,17 @@ wledpdctl_mlo_up()
+       # Wait for MLC state to be MLC_ACTIVE
+       for i in $(seq 1 30); do
+         mlc_state=$(wl -i $ifname mlc_state | cut -d ' ' -f1)
+-        if [ $mlc_state = $MLC_ACTIVE ]; then
++        if [ "$mlc_state" = "$MLC_ACTIVE" ]; then
+           break
+         fi
+         sleep 1
+       done
+-      if [ $mlc_state != $MLC_ACTIVE ]; then
++      if [ "$mlc_state" != "$MLC_ACTIVE" ]; then
+          echo "WIFI.SH : ERROR: wl$wluint is not in MLC_ACTIVE state"
+       fi
+     fi
+     mlc_state=$(wl -i wl$wl_mlo_mapunit mlc_state | cut -d ' ' -f1)
+-    if [ $mlc_state = $MLC_ACTIVE ]; then
++    if [ "$mlc_state" = "$MLC_ACTIVE" ]; then
+       echo "WIFI.SH : $ifname mlo up Success"
+     fi
+     touch /tmp/edpd_${ifname}_mloready
+@@ -1158,7 +1158,7 @@ wldpdctl_mode()
+     echo "    Restarting PCIe with correct settings     "
+     echo "=============================================="
+     rmmod -w bcm_pcie_hcd
+-    grep -e bcm_pcie_hcd /rom/etc/init.d/bcm-base-drivers.sh | sh
++    grep -e bcm_pcie_hcd /rom/etc/init.d/bcm-base-drivers.sh | /bin/sh
+   fi
+ 
+   if [ $mode = $DPD_MODE_EDPD ] && [ $wl_mlo_mapunit != -1 ]; then
+diff --git a/release/src-rt-5.04behnd.4916/router-sysdep.rt-be96u/wlan/scripts/wlinc.sh b/release/src-rt-5.04behnd.4916/router-sysdep.rt-be96u/wlan/scripts/wlinc.sh
+index be903abb38..679ba638dc 100755
+--- a/release/src-rt-5.04behnd.4916/router-sysdep.rt-be96u/wlan/scripts/wlinc.sh
++++ b/release/src-rt-5.04behnd.4916/router-sysdep.rt-be96u/wlan/scripts/wlinc.sh
+@@ -382,7 +382,14 @@ setProcAffinity() {
+     local proc_name=$2
+     local pid=$3
+     local affinity=$4
+-    [[ $4 =~ ^[0-9]+$ ]] && affinity=`printf \%x $4`
++    # taskset expects a hex CPU mask; convert a decimal argument to hex.
++    # Use a POSIX all-digits test via case: /bin/bash is a busybox symlink on
++    # target firmware, and busybox ash's [[ ]] lacks the =~ regex operator
++    # (it errors with "[[: =~: unknown operand" and skips the conversion).
++    case "$4" in
++        ''|*[!0-9]*) ;;
++        *) affinity=`printf %x $4` ;;
++    esac
+     echo "set $proc_name $pid to aff:$affinity"
+     echo ""
+     if [ ! -f "/bin/rtpolicy" ]; then
+diff --git a/release/src-rt-5.04behnd.4916/targets/pakl/Broadcom-PAK_License-1296.Asus_BQ16_BQ16_PRO.bin b/release/src-rt-5.04behnd.4916/targets/pakl/Broadcom-PAK_License-1296.Asus_BQ16_BQ16_PRO.bin
+new file mode 100644
+index 0000000000000000000000000000000000000000..60a68053996026a2ae92f050b64282b07deedba4
+GIT binary patch
+literal 1076
+zcmZQ%U|?i`f&fQv7!yu2F){)bFfN-LUHsGQ<BJGuhLE=|GD^B|1q_~IAT~b(6IiGL
+zOkxt5zmmQI@h{g~3|t)hcQ6RlBr+tNZ(&$qwuj+FeF(!Dja3XU=BP3(SUaD=;OI<-
+zJ^S@A4WY8g!i3QL&8~?N{g<pS-TR*WG&$6CS->ipgRO5u<3FtOwla5#s+`W%TwN1z
+zDOYb=^slHXtA)H1SKbdRQL#PQz9-!5YwqmMeci8HG!MS3``VtetI%iN1iMOWWue~q
+z{`dQ$4_lmys!V-x?Cc}WtA)E>)Vp7sV3^ltzj;Qu!{rva^PP{5&b-oBw)9@&-q=R*
+z%z1Z&#VxjGd@1E;Zg@X)AKPdDsjqitlz5if)tW^*o2fI_E?m4WI@LDKbzkCaSr*x2
+zj@EO(?DYAi`R4VvBa1I=PRw~3vu$6c)~~tAx01eRZrr-_?P86pOCh0ktv9M=woQ~Q
+zce#7WWj}L&ebn3SjZX9K$%dzVm(Ptk)ah=MG5v|HfOJG~QpCoFT@m*L4lX{KU6*<;
+z{h9I#Z<a~rDu$K<))Dqw^U{i(#2+b%U2u62WDvFY>>7>ioP)}@;}Qf;@!b>GTGnU2
+zdgoT5fPE3~9`>qR?P#kt_-sDOIM=&n_nbZ9S4CPj9MR9%$*NiR^mwDx*{&z`FKiCf
+z9e<O&e*=Sme|dBwf8^UYNt>e-WtRCJ?)ZJEY}Pb&&EJw&tKTf#>+#{W(B2iQPnRD&
+zx6mW<#GQN(?{(_w&wE4Ky&qqiwYhH9*M(+&MVv7&-?*G|y?Z{1(=GqnSHa`;Q>^-4
+zWwKt{9qM%8e1F@j%GxmNH5={E?B&<DaFt|a1|=v~0rX^bMC<a6baoBDY!4Boy=GVM
+z@qEs0zSa7E%gc|Koj2#p-ZSadOVE(Iv!}I${g3ItVxHG>L27Fj=&hS%J85Oc;wV<n
+z|GJH{N*?{(ozNqkGHLt#IkUGMlWf_vW5e5bolM8>M&1A5+v8r#_<HTxO=VY9zdxux
+zH{Z8q<(pkv5o^t(%+@8pk6Sc#?<0<``x3uf1t&FTCh_a;>YH<p>5@%AY;e$#Z+;rj
+z_vOf@+sLyVT2X6IwD{2jZ&jX$Tz7cSwUzkX{TtdU`t^XfcmBe9)6GXjUgyj<vB(W&
+zz1Qq?z+~r|3#-;@B=Ov{yAiAJD?aN@*0kiZx2v}1FaKte$-O6J`a}(#*$X2jdfnV!
+gSiXOeq;1?Md}Q{4D7#Bmhqc}{XT+q{w@FC?0I^%Lu>b%7
+
+literal 0
+HcmV?d00001
+
+-- 
+2.25.1
+

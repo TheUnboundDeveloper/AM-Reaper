@@ -1,0 +1,43 @@
+From dac24a8acb35bd38ed474bdad68bd3bda36e5529 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Sun, 15 Nov 2026 13:22:24 -0500
+Subject: [PATCH] unify: GT-BE98 and GT-BE19000 send plain Realtek switch
+ command numbers
+
+The 3006.102.10 source sends every /dev/rtkswitch command in an encoded
+form that the rtl8372 driver of that drop decodes. GT-BE98 and GT-BE19000
+are built here with the rtl8372 driver object of their own older GPL drop,
+which takes the plain command number, as the 3006.102.8 line's source
+passes it. With the encoded form no switch command got through on those two
+models: the 2.5G WAN port's VLAN was not programmed, and port link, speed,
+counters and the port address table read nothing.
+
+shared.h: with RTCONFIG_REAPER_LEGACY_BLOBS (set for the four older-object
+models only) RTKSWITCH_IOCTL(n) is the plain number, as the header already
+has it for other models with an older driver. No other model is affected;
+BQ16 and BQ16 Pro have no such switch.
+
+Co-Authored-By: Claude Fable 5.2 <noreply@anthropic.com>
+---
+ release/src/router/shared/shared.h | 5 +++++
+ 1 file changed, 5 insertions(+)
+
+diff --git a/release/src/router/shared/shared.h b/release/src/router/shared/shared.h
+index c2e285a31f..1704f01c7a 100644
+--- a/release/src/router/shared/shared.h
++++ b/release/src/router/shared/shared.h
+@@ -3344,6 +3344,11 @@ extern int get_fa_dump(void);
+ #include <sys/ioctl.h>
+ #if defined(WIFI7_SDK_20241007) && (defined(RTBE58U_V2) || defined(TUFBE3600_V2) || defined(RTBE55))
+ #define RTKSWITCH_IOCTL(n)	n
++#elif defined(RTCONFIG_REAPER_LEGACY_BLOBS)
++/* reaper 2026-11-15: a model built with the rtl8372 driver object of its older GPL drop (GT-BE98, GT-BE19000) -
++ * that driver takes the plain command number, as the 3006.102.8 source passes it (ioctl(fd, val, p)); the encoded
++ * form below is refused by it, so no switch command would get through (2.5G WAN VLAN, port status, counters). */
++#define RTKSWITCH_IOCTL(n)	n
+ #else
+ #define RTKSWITCH_IOC_MAGIC	'R'
+ /* The NR field of _IO() is only 8 bits; n > 255 overflows into the TYPE field
+-- 
+2.25.1
+

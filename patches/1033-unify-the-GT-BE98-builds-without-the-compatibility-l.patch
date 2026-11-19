@@ -1,0 +1,124 @@
+From 531086187230234f66a24d3bf43ccdd1ae0b082f Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Mon, 16 Nov 2026 14:39:15 -0500
+Subject: [PATCH] unify: the GT-BE98 builds without the compatibility layer
+
+The GT-BE98's closed objects are re-imported at the ASUS GPL 102_40585 level, the level of this tree, so its
+target.mak block no longer sets REAPER_LEGACY_BLOBS. GT-BE19000, BQ16 and BQ16 Pro keep the token.
+
+For the GT-BE98 this leaves rc/reaper_legacy_blobs_shim.c and httpd/reaper_legacy_blobs_httpd.c out of the
+build, sends the Realtek switch commands in the encoded form the 102_40585 source uses, and builds the httpd and
+usb code every other 3006.102.10 model builds.
+
+Its bootloader objects stay at 102_39274.
+
+Co-Authored-By: Claude Fable 5.2 <noreply@anthropic.com>
+---
+ release/src-rt/target.mak                            | 9 ++++++---
+ release/src/router/httpd/Makefile                    | 2 +-
+ release/src/router/httpd/reaper_legacy_blobs_httpd.c | 4 ++--
+ release/src/router/rc/Makefile                       | 4 ++--
+ release/src/router/rc/reaper_legacy_blobs_shim.c     | 4 ++--
+ release/src/router/shared/shared.h                   | 2 +-
+ 6 files changed, 14 insertions(+), 11 deletions(-)
+
+diff --git a/release/src-rt/target.mak b/release/src-rt/target.mak
+index 3225deea99..a80373fc50 100644
+--- a/release/src-rt/target.mak
++++ b/release/src-rt/target.mak
+@@ -430,8 +430,9 @@ export RT-BE92U += BUILD_NAME="RT-BE92U" EXT_PHY="BCM84880" NVSIZE="192" DHDAP=n
+ 		GTBOOSTER=y IPTV_IPVLAN=2 \
+ 		NFS=n SNMPD=y TOR=y UPNPIGD2=y NANO=y NTPD=y IPSET=y VPN_FUSION_MERLIN=y
+ 
+-# reaper: the four models whose closed objects come from an older ASUS GPL drop than this tree
+-# (GT-BE98 and GT-BE19000: 102_39274; BQ16 and BQ16 Pro: 102_39256). Their blocks are carried here
++# reaper: the models whose closed objects come from an older ASUS GPL drop than this tree
++# (GT-BE19000: 102_39274; BQ16 and BQ16 Pro: 102_39256), and the GT-BE98, which had the same history
++# until its closed objects were re-imported at 102_40585. Their blocks are carried here
+ # verbatim from the 3006.102.8 line; REAPER_LEGACY_BLOBS=y turns on the compatibility layer
+ # (RTCONFIG_REAPER_LEGACY_BLOBS). Drop the token for a model once ASUS publishes a GPL for it at
+ # this tree's level and its closed objects are re-imported.
+@@ -578,7 +579,9 @@ export GT-BE98 += BUILD_NAME="GT-BE98" EXT_PHY="BCM84880" NVSIZE="192" DHDAP=y D
+ 		NFS=n SNMPD=y TOR=y UPNPIGD2=y NANO=y NTPD=y DNSPRIVACY=y IPSET=y VPN_FUSION_MERLIN=y
+ 
+ export GT-BE98 += SAMBA4=y SAMBA3=
+-export GT-BE98 += REAPER_LEGACY_BLOBS=y
++# reaper 2026-11-16: no REAPER_LEGACY_BLOBS here - the GT-BE98's closed objects were re-imported at the
++# ASUS GPL 102_40585 level (its bootloader objects stay at 102_39274), so it builds without the
++# compatibility layer.
+ 
+ export HND-96764_BASE := HND_ROUTER=y HND_ROUTER_BE_4916=y PROFILE="96764GW_WL23D2D1GA_WLMLO" SW_HW_AUTH=y AMAS=y UTF8_SSID=y ETHOBD=y DWB=y CONNDIAG=y SAMBA3="3.6.x" WL_SCHED_V3=y UBI=y UBIFS=y PSISTLOG=y CABLEDIAG=y
+ 
+diff --git a/release/src/router/httpd/Makefile b/release/src/router/httpd/Makefile
+index 5eba381084..48f5572522 100644
+--- a/release/src/router/httpd/Makefile
++++ b/release/src/router/httpd/Makefile
+@@ -206,7 +206,7 @@ endif
+ OBJS += $(if $(wildcard web_hook.c), web_hook.o, prebuild/web_hook.o)
+ 
+ # reaper: compatibility layer for the models whose closed httpd objects come from an older ASUS GPL
+-# drop (GT-BE98, GT-BE19000, BQ16, BQ16 Pro; RTCONFIG_REAPER_LEGACY_BLOBS).
++# drop (GT-BE19000, BQ16, BQ16 Pro; RTCONFIG_REAPER_LEGACY_BLOBS).
+ ifeq ($(RTCONFIG_REAPER_LEGACY_BLOBS),y)
+ OBJS += reaper_legacy_blobs_httpd.o
+ endif
+diff --git a/release/src/router/httpd/reaper_legacy_blobs_httpd.c b/release/src/router/httpd/reaper_legacy_blobs_httpd.c
+index 0658e3531f..2c7520871d 100644
+--- a/release/src/router/httpd/reaper_legacy_blobs_httpd.c
++++ b/release/src/router/httpd/reaper_legacy_blobs_httpd.c
+@@ -1,7 +1,7 @@
+ /* SPDX-License-Identifier: GPL-2.0-only
+  *
+- * Reaper compatibility layer, httpd side. Built only with RTCONFIG_REAPER_LEGACY_BLOBS (GT-BE98,
+- * GT-BE19000, BQ16, BQ16 Pro), whose closed httpd objects come from an older ASUS GPL drop than the
++ * Reaper compatibility layer, httpd side. Built only with RTCONFIG_REAPER_LEGACY_BLOBS (GT-BE19000,
++ * BQ16, BQ16 Pro), whose closed httpd objects come from an older ASUS GPL drop than the
+  * open source in this tree. Weak, so a later drop that brings the real functions wins at link time.
+  */
+ 
+diff --git a/release/src/router/rc/Makefile b/release/src/router/rc/Makefile
+index 65ea617dbc..e49872959a 100644
+--- a/release/src/router/rc/Makefile
++++ b/release/src/router/rc/Makefile
+@@ -518,8 +518,8 @@ endif
+ ifeq ($(CONFIG_BCMWL5),y)
+ OBJS += init-broadcom.o wps-broadcom.o broadcom.o ate-broadcom.o
+ # reaper: compatibility layer for the models whose closed rc objects come from an older ASUS GPL
+-# drop (GT-BE98, GT-BE19000, BQ16, BQ16 Pro; RTCONFIG_REAPER_LEGACY_BLOBS from their target.mak
+-# blocks). It replaces the per-tree reaper_chanlist_shim.c those four used to carry.
++# drop (GT-BE19000, BQ16, BQ16 Pro; RTCONFIG_REAPER_LEGACY_BLOBS from their target.mak
++# blocks). It replaces the per-tree reaper_chanlist_shim.c those models used to carry.
+ ifeq ($(RTCONFIG_REAPER_LEGACY_BLOBS),y)
+ OBJS += reaper_legacy_blobs_shim.o
+ endif
+diff --git a/release/src/router/rc/reaper_legacy_blobs_shim.c b/release/src/router/rc/reaper_legacy_blobs_shim.c
+index d13025c692..2686c600b6 100644
+--- a/release/src/router/rc/reaper_legacy_blobs_shim.c
++++ b/release/src/router/rc/reaper_legacy_blobs_shim.c
+@@ -1,8 +1,8 @@
+ /* SPDX-License-Identifier: GPL-2.0-only
+  *
+  * Reaper compatibility layer, rc side. Built only with RTCONFIG_REAPER_LEGACY_BLOBS, which the
+- * target.mak blocks of GT-BE98, GT-BE19000, BQ16 and BQ16 Pro set: their closed rc and shared objects
+- * come from an older ASUS GPL drop (102_39274 for the two GT models, 102_39256 for the two BQ16s)
++ * target.mak blocks of GT-BE19000, BQ16 and BQ16 Pro set: their closed rc and shared objects
++ * come from an older ASUS GPL drop (102_39274 for the GT-BE19000, 102_39256 for the two BQ16s)
+  * than the open source in this tree. The open source calls a handful of functions that only the
+  * newer closed objects carry; each one is provided here with the behaviour these models' own
+  * firmware had, where the call did not exist yet.
+diff --git a/release/src/router/shared/shared.h b/release/src/router/shared/shared.h
+index 1704f01c7a..1099b2c005 100644
+--- a/release/src/router/shared/shared.h
++++ b/release/src/router/shared/shared.h
+@@ -3345,7 +3345,7 @@ extern int get_fa_dump(void);
+ #if defined(WIFI7_SDK_20241007) && (defined(RTBE58U_V2) || defined(TUFBE3600_V2) || defined(RTBE55))
+ #define RTKSWITCH_IOCTL(n)	n
+ #elif defined(RTCONFIG_REAPER_LEGACY_BLOBS)
+-/* reaper 2026-11-15: a model built with the rtl8372 driver object of its older GPL drop (GT-BE98, GT-BE19000) -
++/* reaper 2026-11-15: a model built with the rtl8372 driver object of its older GPL drop (GT-BE19000) -
+  * that driver takes the plain command number, as the 3006.102.8 source passes it (ioctl(fd, val, p)); the encoded
+  * form below is refused by it, so no switch command would get through (2.5G WAN VLAN, port status, counters). */
+ #define RTKSWITCH_IOCTL(n)	n
+-- 
+2.25.1
+

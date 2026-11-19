@@ -497,7 +497,8 @@ Which closed object follows which drop:
   by `ci/container_build.sh` (phase `common-blobs`) after the platform archive is unpacked. One
   exception per drop, found by the closure test below: the BQ16s keep their own
   `libamas-utils.so` / `amas-utils-cli`, which export functions their closed AiMesh objects use
-  and the newer library does not.
+  and the newer library does not. The GT-BE98 alpha keeps 19 objects of its own (see the
+  2026-11-18 note at the end of this section).
 - **The Wi-Fi driver and dataplane set stays with the drop as a unit**: `hnd_extra/prebuilt/*.o`
   (including the objects that happen to be shared), `wl.o`, `dhd.o`, the radio firmware,
   `wlconf`, `eapd`, `bp3` and the bootloader objects. The shared, non-dataplane parts of
@@ -553,6 +554,11 @@ release 3006.102.9_1-gnuton1), 56 files, each
 checked against that tree's hash - and its `target.mak` block no longer sets the token. Its boot
 loader objects and build-host tools stay at 102_39274. GT-BE19000, BQ16 and BQ16 Pro are unchanged.
 Thanks to gnuton for publishing the set.
+
+2026-11-18 (alpha line only): the GT-BE98 takes 20 router objects from ASUS GPL 102_39448 for
+their `nvram_safe_get` newline guard; each has the same global interface as the 40585 copy it
+replaces. 19 of them are on `overlays/common-blobs.list`, so they carry a `-GT-BE98` exception
+there.
 
 
 ---

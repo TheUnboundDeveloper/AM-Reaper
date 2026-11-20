@@ -74,6 +74,11 @@ FULL_ONLY = {   # in the full .rbk (all nvram + /jffs) only, on purpose
     # review 2026-11-11 (B-C4): it must travel WITH the stock portal secret it describes (cp_uamsecret, in the router
     # settings of both files); carried alone it could say "your own" next to a random secret
     "reaper_cp_secret_own": "Guest Portal: travels with the stock portal secret",
+    # 2026-11-19: a guest network's chosen main-network devices and discovery types (apgN_rg_devs / apgN_rg_mdns) belong
+    # to that network's stock settings object and its index; carried alone they would name a different network
+    "apg_rg_devs": "travels with the stock network lists", "apg_rg_mdns": "travels with the stock network lists",
+    # 2026-11-19: a network's AP Isolation choice (apgN_ap_isolate_lan: Wi-Fi only / Wi-Fi and LAN ports) - same reason
+    "apg_ap_isolate_lan": "travels with the stock network lists",
 }
 STOCK = {   # stock keys whose default Reaper changed: the router settings carry them like any stock setting
     "ASUS_EULA", "ASUS_NEW_EULA", "computer_name", "dns_norebind", "enable_samba", "enable_samba_tuxera",
@@ -96,6 +101,18 @@ placed = carried | LISTS | set(FULL_ONLY) | STOCK
 check("every Reaper option is placed: carried by the settings file, full-backup-only with a reason, or stock",
       not (reaper_keys - placed), sorted(reaper_keys - placed))
 check("nothing is both carried and full-backup-only", not (carried & set(FULL_ONLY)), sorted(carried & set(FULL_ONLY)))
+# 2026-11-19 (Image 2): the Firewall page's zone switch is a setting of this router's rules engine - in the settings
+# file; the two per-network keys are templates of the stock network lists (full backup only, above)
+check("reaper_fw_zpol_guest (Zone policies may open one-way paths into guest networks) is carried by the settings file",
+      "reaper_fw_zpol_guest" in carried and "reaper_fw_zpol_guest" in all_keys)
+check("apg_rg_devs / apg_rg_mdns are template rows in defaults.c and full-backup-only",
+      {"apg_rg_devs", "apg_rg_mdns"} <= all_keys and {"apg_rg_devs", "apg_rg_mdns"} <= set(FULL_ONLY) and not ({"apg_rg_devs", "apg_rg_mdns"} & carried))
+# 2026-11-19: AP Isolation per network - the main network's choice is a setting of this router (settings file); the
+# per-network template row travels with the stock network lists (full backup only, above)
+check("reaper_ap_isolate_lan (main network: Wi-Fi only / Wi-Fi and LAN ports) is carried by the settings file",
+      "reaper_ap_isolate_lan" in carried and "reaper_ap_isolate_lan" in all_keys)
+check("apg_ap_isolate_lan is a template row in defaults.c and full-backup-only",
+      "apg_ap_isolate_lan" in all_keys and "apg_ap_isolate_lan" in FULL_ONLY and "apg_ap_isolate_lan" not in carried)
 check("every carried nvram key exists in defaults.c (a typo would carry nothing)",
       not (carried - STORE - all_keys), sorted(carried - STORE - all_keys))
 fields = re.findall(r'\{ "([a-z]+)", SH_JFFS "/\1", sh_chk_[a-z]+ \}', web)

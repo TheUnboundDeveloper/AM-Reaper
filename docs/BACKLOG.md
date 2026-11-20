@@ -1,6 +1,6 @@
 # RT-BE Series "Reaper" — Backlog
 
-> **Doc status:** current as of **v3.8.2** · 2026-11-18 <!--@stamp-->
+> **Doc status:** current as of **v3.8.3** · 2026-11-19 <!--@stamp-->
 
 What is left to do, one line per item, grouped by area. Status where known: **[owed]** (must be done), **[blocked]** (external cause), **[shelved]** / **[deferred]** (deliberately set aside),
 **[watch]** (not a defect today; a guard to keep), **[needs data]** (waiting on a capture or report),
@@ -40,15 +40,11 @@ internal quality, or deferred by decision.
 - **[P2] USB 3 writes run at half of reads on BCM4912 / BCM4916 models** **[A/B run owed]** ↳ notes: `usb3-write-ceiling.md`
 - **[P2] AI Advisor: arming code and lockout move to reset-proof `/data/reaper/advisor/`** **[not scheduled]** ↳ notes: `advisor-arming-code-admin-reset.md`
 - **[P2] MLO on: a soft restart can leave Wi-Fi accepting no devices until a power cycle** **[owner call]** ↳ notes: `mlo-restart-radio-link.md`
-- **[P2] Guest networks bound to a WireGuard client: routing after WAN events** **[not started]** ↳ notes: `guest-vpn-binding-robustness.md`
 - **[P2] Guest Portal on AiMesh nodes: sign-in and network separation for guests joining through a node** **[not verified]** ↳ notes: `guest-portal-aimesh-nodes.md`
 - **[P3] Update-manifest signature stays inert (R09)** **[accepted]** ↳ notes: `manifest-signature-inert-r09.md`
 - **[P3] DDNS: intermittent updates (v3.7.9)** **[reporter still checking]** ↳ notes: `ddns-flaky-v379.md`
 - **[P2] BQ16: the Devices page reportedly does not show MLO devices properly** **[details needed]** ↳ notes: `bq16-devices-mlo-display.md`
-- **[P3] IPv6: the factory prefix request (/64) leaves guest networks without public IPv6 where the provider honours it** **[found in review; not started]** ↳ notes: `ipv6-pd-hint-guest-networks.md`
 - **[P3] RADIUS: the Network page and the RADIUS tab keep the main network's server in two places** **[fix designed; not built]** ↳ notes: `radius-two-stores.md`, `bug-review-2026-11-16.md`
-- **[P2] Guest Portal: the iPhone sign-in sheet stays open after the success page (v3.8.1)** **[likely cause found; fix designed]** ↳ notes: `guest-portal-ios-sheet-not-closing.md`
-- **[P3] AiMesh tab: MLO devices are shown by band, not as MLO (the Devices page shows MLO)** **[cause found; fix designed]** ↳ notes: `aimesh-tab-mlo-flag-router-clients.md`
 - **[P3] Boot log: "failed to set WLC_E_CAC_STATE_CHANGE bit" from the Wi-Fi driver** **[closed driver; router check owed]** ↳ notes: `cfg80211-cac-event-bit-boot-noise.md`
 - **[P2] Aqara G410 doorbell: control works but no video in the Aqara app or Apple Home (Bastion off)** **[reported; data asked]** ↳ notes: `aqara-g410-doorbell-no-video.md`
 
@@ -80,7 +76,6 @@ private review report and the finding ID in it; review reports are never publish
 - **[P3] Maintainer tooling proposals (2026-11-11)** **[approved 2026-11-11; in progress]** ↳ notes: `tooling-proposals-2026-11-11.md`
 - **[P3] Review 2026-11-17, phase 4: one copy of each helper (lease and neighbour readers, JSON writer, page helpers)** **[the rest left open in the notes]** ↳ report: `review-2026-11-17` · notes: `review-2026-11-17-remediation.md`
 - **[P3] Rules engine, guest isolation and Policy Routing: one batched rule load and one shared apply-and-confirm (review C-E2, C-6, C-D2)** **[batched loads in v3.8.2; confirm fold open]** ↳ report: `review-2026-11-17` · notes: `review-2026-11-17-remediation.md`
-- **[P3] Guest Portal web server: remove the unused file-sharing client library it links** **[reviewed: a guest cannot reach it; removal queued]** ↳ report: `review-2026-11-17` · notes: `portal-server-smb-client-library.md`
 - **[P2] Unused request handlers, page hooks and a VPN control socket that still ship: security review, then removal** **[cross-site fix in v3.8.2; removal queued]** ↳ report: `review-2026-11-17` · notes: `unused-request-surfaces.md`
 - **[P1] Every supported model and hardware revision ships the drivers and radio firmware it needs: full per-model review** **[Wi-Fi part in v3.8.2; rest open]** ↳ notes: `model-driver-completeness-review.md`
 - **[P2] ASUS releases of 2026-11-17 (firmware 394xx, GPL 39441-39448): what Reaper should take** **[in v3.8.2; BQ16 waits for its GPL]** ↳ report: `drop-intake-2026-11-18` · notes: `asus-drop-intake-2026-11-18.md`
@@ -90,7 +85,6 @@ private review report and the finding ID in it; review reports are never publish
 ## UI / UX polish
 
 - **[P3] Reaper pages: the polishing redesign and formatting pass** **[not started]** ↳ notes: `loading-overlay-redesign.md`
-- **[P3] Rule Status: a zone ACCEPT held back by guest isolation should say so, not read as a failed policy** **[not started]** ↳ notes: `zone-policy-into-isolated-networks.md`
 
 ---
 
@@ -107,13 +101,13 @@ private review report and the finding ID in it; review reports are never publish
 - **[P3] Dreadwatch lists on USB: a higher name limit while a USB store is attached** **[proposed; the limit to revisit]** ↳ notes: `dreadwatch-limit.md`
 - **[P3] Language packs on demand: English-only image, the admin installs their language** **[idea, measured]** ↳ notes: `language-packs-on-demand.md`
 - **[P2] Network page: several changes with one Wi-Fi restart (a "changes waiting" bar, Delete selected, no restart where none is needed)** **[planned; design approved 2026-11-16]** ↳ notes: `network-page-deferred-restart.md`
-- **[P2] Firewall: zone policies may open one-way paths into an isolated guest network (opt-in switch, off by default)** **[assessed; not started]** ↳ notes: `zone-policy-into-isolated-networks.md`
 - **[P3] Staged ("batch") changes: one save, minimal restarts** **[project]** ↳ notes: `staged-batch-changes.md`
 - **[P3] Policy Routing on Warden's country sets** **[owner call]** ↳ notes: `pbr-warden-country-sets.md`
 - **[P3] Tweaks: the login-page redirect goes to an address the admin types (name, port), not only www.asusrouter.com** **[not started]** ↳ notes: `login-redirect-custom-domain.md`
 - **[P3] mDNS across networks: reflect only chosen service types (avahi `reflect-filters`)** **[idea; not started]** ↳ notes: `mdns-reflect-filters.md`
 - **[P3] Wallguard: "pause and record" - list what would have been blocked while a device was paused** **[idea; not started]** ↳ notes: `wallguard-pause-and-record.md`
 - **[P3] Wallguard: show per device when its DNS bypasses the router** **[idea; not started]** ↳ notes: `wallguard-device-bypass-hint.md`
+- **[P3] System Log: named presets for the Find / Exclude boxes** **[contributed proposal; not reviewed]** ↳ notes: `syslog-find-exclude-presets.md`
 - **[P2] Wallguard: a tab to view and edit the allow / block lists, incl. Allowed for 24 hours (remove, extend, make permanent)** **[not started]** ↳ notes: `wallguard-allow-lists-tab.md`
 - **[P4] Advanced tier: TLS interception for URL-level inspection** **[threat model first]** ↳ notes: `encrypted-dns.md`, `security-leftovers-plan-2026-11-10.md`
 

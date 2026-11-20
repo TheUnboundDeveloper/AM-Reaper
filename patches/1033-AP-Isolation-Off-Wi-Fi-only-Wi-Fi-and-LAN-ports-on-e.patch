@@ -1,0 +1,1331 @@
+From edb6f490b1781449c25ee2f219dab33a594cfaf0 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Thu, 19 Nov 2026 20:37:00 -0500
+Subject: [PATCH] AP Isolation: Off / Wi-Fi only / Wi-Fi and LAN ports on every
+ network
+
+- Since GPL 102.40585 the firmware isolated the main network's wired ports as well when AP Isolation was
+  on, so wired devices could no longer reach each other (a TV could not find a NAS). AP Isolation is now
+  a choice per network: Wi-Fi only (default: Wi-Fi devices cannot reach each other, wired devices stay
+  reachable) or Wi-Fi and LAN ports (the router's LAN ports are kept apart too). Both lines behave the
+  same.
+- Never isolated: the WAN ports, VLAN trunk ports and a port with an AiMesh node behind it. A guest
+  network's trunk to AiMesh nodes keeps the firmware's isolation with either choice. A network whose VLAN
+  profile sets port isolation, a Guest Portal and the AiMesh backhaul network are left as they are. On an
+  AiMesh node the firmware's own behaviour applies.
+- The watchdog re-checks the ports while a network uses Wi-Fi and LAN ports. nvram is never changed.
+- Network page: the choice under the AP Isolation switch; the VLAN tab clears a reused network's guest
+  path and isolation settings. sdn.js also carries the previous commit's guest-path rows.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ release/src/router/rc/Makefile                |   4 +
+ release/src/router/rc/lan.c                   | 498 ++++++++++++++++
+ release/src/router/rc/rc.c                    |  14 +-
+ release/src/router/rc/rc.h                    |   8 +-
+ release/src/router/rc/rwatch.c                |   4 +
+ release/src/router/www/Reaper_VLAN.asp        |   4 +
+ .../router/www/sysdep/FUNCTION/SDN/SDN/sdn.js | 540 +++++++++++++++++-
+ 7 files changed, 1064 insertions(+), 8 deletions(-)
+
+diff --git a/release/src/router/rc/Makefile b/release/src/router/rc/Makefile
+index 340afacc5b..81d60dd028 100644
+--- a/release/src/router/rc/Makefile
++++ b/release/src/router/rc/Makefile
+@@ -1855,6 +1855,10 @@ endif
+ 	@cd $(INSTALLDIR)/sbin && ln -sf rc reaper_leases	# 2026-11-15: lease files survive a restart
+ # 2026-11-12: httpd starts /sbin/reaper_sdn_settle (applets dispatch by basename only - see reaper_lockrun)
+ 	@cd $(INSTALLDIR)/sbin && ln -sf rc reaper_sdn_settle
++ifeq ($(RTCONFIG_MULTILAN_CFG),y)
++# 2026-11-19: rwatch runs /sbin/reaper_brport each tick (rc/lan.c reaper_brport_tick_main; the applet exists only here)
++	@cd $(INSTALLDIR)/sbin && ln -sf rc reaper_brport
++endif
+ 	@cd $(INSTALLDIR)/sbin && ln -sf rc rdnshc
+ 	@cd $(INSTALLDIR)/sbin && ln -sf rc rv6names
+ 	@cd $(INSTALLDIR)/sbin && ln -sf rc reaper_ledns
+diff --git a/release/src/router/rc/lan.c b/release/src/router/rc/lan.c
+index dd6349c850..e2143a3377 100644
+--- a/release/src/router/rc/lan.c
++++ b/release/src/router/rc/lan.c
+@@ -1388,6 +1388,502 @@ static void set_ai_vlan_itf(void) {
+ }
+ #endif
+ 
++#ifdef RTCONFIG_MULTILAN_CFG
++/* REAPER-BRPORT-WIRED-BEGIN */
++/*
++ * 2026-11-19 (owner): AP Isolation is a choice per network - Off / Wi-Fi only (default) / Wi-Fi and LAN ports.
++ * The switch is the stock one (wlN_ap_isolate, apmN_ap_isolate for the main network, apgN_ap_isolate for the others);
++ * the LAN choice is reaper_ap_isolate_lan (main network) / apgN_ap_isolate_lan (the others): "1" = Wi-Fi and LAN
++ * ports, anything else = Wi-Fi only. Wired = a bridge member that is not Wi-Fi (Wi-Fi = name wl* / wds*, or the
++ * netdev has sysfs wireless/ or phy80211). Isolated bridge ports never forward to each other.
++ * Since GPL 102.40585 the firmware isolates wired members too: after apg_start() / apg_create_vlan_for_lan() with
++ * a main Wi-Fi interface's ap_isolate on, the wired LAN ports of the main bridge read brport/isolated = 1 in sysfs,
++ * and a guest bridge's wired trunk VLAN members are isolated while that network's switch is on. The GPL 102_39274
++ * objects of the 3006.102.8 line never isolate a wired member. After each of those calls this helper makes
++ * both lines follow the choice, per bridge:
++ *  - isolation on, Wi-Fi only, MAIN bridge: every wired member open (0) - the owner's case (a wired TV and a wired
++ *    NAS). That includes a wired AiMesh backhaul port, so Wi-Fi clients of different nodes can reach each other on
++ *    the main network: the accepted trade-off;
++ *  - isolation on, Wi-Fi only, another bridge: every wired ACCESS member open (0); a VLAN trunk member (a name with a
++ *    dot - the trunk to an AiMesh node or a switch) is left exactly as the firmware set it, which keeps Wi-Fi guests of
++ *    different nodes apart on 102.10 (isolated there while the switch is on) and is untouched on 102.8;
++ *  - isolation on, Wi-Fi and LAN ports: every wired member isolated (1), except the WAN ports (wan_ifnames,
++ *    wan0..3_ifname, autowan_detected_ifname; outside router mode also the uplink: eth_ifnames, sta_*), a VLAN trunk
++ *    member (a name with a dot: it may lead to an AiMesh node) and a port an AiMesh node is learned on (the bridge
++ *    forwarding table against the cfg_relist MACs): those are left as they are, unless this helper isolated them;
++ *  - isolation off: wired members are left as they are, except the ones this helper isolated (opened again);
++ *  - never touched: a bridge of a Guest Portal, of a network with VLAN port isolation (vlan_rl port_isolation=1, the
++ *    admin's own wired isolation) or of MAINBH (AiMesh backhaul), and a bridge of no enabled network. The main bridge
++ *    is always planned (owner). Wi-Fi members are never written. nvram is never changed.
++ * On an AiMesh node (re_mode) it does nothing at all: the choice keys do not sync to nodes, so a node keeps the
++ * firmware's own behaviour. Isolation the firmware programs inside an external switch chip is not changed here:
++ * only the bridge flags are.
++ * REAPER_BRPORT_STATE lists the ports this helper isolated ("<bridge> <port>" lines); it lives in RAM, like the flags.
++ * After apg_stop() / apg_destory_vlan_for_lan() the flags read cleared, and apg_hotplug_net() only touches wds
++ * interfaces, so they need no call. The rwatch tick runs it again through the reaper_brport applet, only while a
++ * network has its switch on with Wi-Fi and LAN ports (an AiMesh node is in the forwarding table only once it talks;
++ * at boot its port may not be known yet). Runs serialize on file_lock("reaper_brport"), a leaf lock: nothing is
++ * called under it that takes another lock.
++ */
++#ifndef REAPER_BRPORT_SYSFS
++#define REAPER_BRPORT_SYSFS	"/sys/class/net"
++#endif
++#ifndef REAPER_BRPORT_STATE_DIR
++#define REAPER_BRPORT_STATE_DIR	REAPER_TMPDIR
++#endif
++#ifndef REAPER_BRPORT_STATE
++#define REAPER_BRPORT_STATE	REAPER_TMPDIR "/brport_iso"
++#endif
++#ifndef REAPER_BRPORT_NETS
++#define REAPER_BRPORT_NETS	MTLAN_MAXINUM
++#endif
++#define REAPER_BRPORT_MAX	64
++#define REAPER_BRPORT_NODES	64
++
++/* REAPER-BRPORT-PURE-BEGIN */
++enum { RBP_KEEP = 0, RBP_OPEN, RBP_CLOSE, RBP_OFF, RBP_OPENG };	/* OPENG: Wi-Fi only on a bridge other than the main */
++
++struct reaper_brport {
++	char name[16];
++	int wireless;	/* 1 = Wi-Fi member (name or sysfs test) */
++	int isolated;	/* brport isolated flag: 1, 0, or -1 = unreadable */
++	int excluded;	/* uplink / WAN, VLAN trunk or AiMesh node port: never isolated by this helper */
++	int ours;	/* this helper isolated it (REAPER_BRPORT_STATE) */
++	int port;	/* brport port_no, -1 = unknown */
++	int trunk;	/* a VLAN trunk member (a name with a dot) */
++};
++
++struct reaper_brnet {
++	char br[16];	/* the network's bridge (its own, or the main bridge it rides) */
++	int enable;	/* 1 = enabled */
++	int portal;	/* a Guest Portal network */
++	int port_iso;	/* vlan_rl port_isolation (VLAN profile wired isolation) */
++	int mainbh;	/* the AiMesh backhaul network */
++	int ap_iso;	/* its AP Isolation switch is on */
++	int lan_iso;	/* its choice is Wi-Fi and LAN ports */
++};
++
++struct reaper_brplan {
++	char br[16];
++	int act;	/* RBP_OPEN / RBP_OPENG / RBP_CLOSE / RBP_OFF */
++};
++
++/* Wi-Fi by name: wl0, wl0.1, wl1.2 ... and wds0.0.1 ... (wireless backhaul) */
++static int reaper_brport_wl_name(const char *name)
++{
++	return strncmp(name, "wl", 2) == 0 || strncmp(name, "wds", 3) == 0;
++}
++
++/* name is a word of the space-separated list */
++static int reaper_brport_listed(const char *list, const char *name)
++{
++	size_t l = strlen(name);
++	const char *p = list;
++
++	if (!l)
++		return 0;
++	while (p && *p) {
++		while (*p == ' ')
++			p++;
++		if (!strncmp(p, name, l) && (p[l] == ' ' || p[l] == '\0'))
++			return 1;
++		p = strchr(p, ' ');
++	}
++	return 0;
++}
++
++/* one member under the bridge's plan: 0 = leave, 1 = write 0 (open), 2 = write 1 (isolate) */
++static int reaper_brport_member(int act, const struct reaper_brport *m)
++{
++	if (!m->name[0] || m->wireless || reaper_brport_wl_name(m->name) || m->isolated < 0)
++		return 0;
++	if (act == RBP_OPEN)
++		return m->isolated == 1 ? 1 : 0;
++	if (act == RBP_OPENG)	/* a trunk stays as the firmware set it (Wi-Fi isolation across AiMesh nodes) */
++		return (m->isolated == 1 && !m->trunk) ? 1 : 0;
++	if (act == RBP_CLOSE) {
++		if (m->excluded)
++			return (m->ours && m->isolated == 1) ? 1 : 0;
++		return m->isolated == 0 ? 2 : 0;
++	}
++	if (act == RBP_OFF)
++		return (m->ours && m->isolated == 1) ? 1 : 0;
++	return 0;
++}
++
++/* The bridges and what to do on each: the main bridge first, always (its switch: main_on or a network riding it with
++ * its switch on; its choice: main_lan); then each other bridge of an enabled network, once, unless any enabled network
++ * on it is a portal, sets VLAN port isolation or is MAINBH. Wi-Fi and LAN ports when a network on the bridge with its
++ * switch on chose it. */
++static int reaper_brport_plan(const char *lan, int main_on, int main_lan, const struct reaper_brnet *nw, int n,
++			      struct reaper_brplan *out, int max)
++{
++	int i, j, k, cnt = 0, keep, on, lanm;
++
++	if (!lan[0] || max < 1)
++		return 0;
++	on = main_on;
++	for (j = 0; j < n; j++)
++		if (nw[j].enable == 1 && !strcmp(nw[j].br, lan) && nw[j].ap_iso && !nw[j].mainbh)	/* never MAINBH */
++			on = 1;
++	snprintf(out[cnt].br, sizeof(out[cnt].br), "%s", lan);
++	out[cnt++].act = on ? (main_lan ? RBP_CLOSE : RBP_OPEN) : RBP_OFF;
++	for (i = 0; i < n && cnt < max; i++) {
++		if (nw[i].enable != 1 || !nw[i].br[0] || !strcmp(nw[i].br, lan))
++			continue;
++		for (k = 0; k < cnt && strcmp(out[k].br, nw[i].br); k++)
++			;
++		if (k < cnt)
++			continue;
++		keep = on = lanm = 0;
++		for (j = 0; j < n; j++) {
++			if (nw[j].enable != 1 || strcmp(nw[j].br, nw[i].br))
++				continue;
++			if (nw[j].portal || nw[j].port_iso == 1 || nw[j].mainbh)
++				keep = 1;
++			if (nw[j].ap_iso) {
++				on = 1;
++				if (nw[j].lan_iso)
++					lanm = 1;
++			}
++		}
++		if (keep)
++			continue;
++		snprintf(out[cnt].br, sizeof(out[cnt].br), "%s", nw[i].br);
++		out[cnt++].act = on ? (lanm ? RBP_CLOSE : RBP_OPENG) : RBP_OFF;
++	}
++	return cnt;
++}
++
++/* the bridge ports an AiMesh node is learned on: buf = struct __fdb_entry records (16 bytes: mac[6], port_no,
++ * is_local, ageing[4], port_hi, pad, unused[2]); nodes = 6-byte MACs */
++static int reaper_brport_fdb_ports(const unsigned char *buf, size_t len, const unsigned char (*nodes)[6], int nn,
++				   int *ports, int max)
++{
++	size_t o;
++	int i, k, c = 0, p;
++
++	for (o = 0; o + 16 <= len; o += 16) {
++		const unsigned char *e = buf + o;
++
++		if (e[7])
++			continue;	/* the bridge's own address */
++		for (i = 0; i < nn && memcmp(e, nodes[i], 6); i++)
++			;
++		if (i == nn)
++			continue;
++		p = (e[12] << 8) | e[6];
++		for (k = 0; k < c && ports[k] != p; k++)
++			;
++		if (k == c && c < max)
++			ports[c++] = p;
++	}
++	return c;
++}
++/* REAPER-BRPORT-PURE-END */
++
++struct reaper_brctx {
++	const char *uplink;	/* the uplink / WAN interface names */
++	const char *state;	/* "\n<bridge> <port>\n..." - what this helper isolated */
++	const unsigned char (*nodes)[6];
++	int nn;
++	char nstate[2048];
++	size_t nsl;
++	char names[128];
++	size_t nl;
++	int more, opened, closed;
++};
++
++static int reaper_brport_has(const char *ifname, const char *leaf)
++{
++	char p[128];
++
++	snprintf(p, sizeof(p), REAPER_BRPORT_SYSFS "/%s/%s", ifname, leaf);
++	return access(p, F_OK) == 0;
++}
++
++static void reaper_brport_name(struct reaper_brctx *x, const char *br, int *first, char sign, const char *name)
++{
++	if (x->nl + strlen(br) + strlen(name) + 4 < sizeof(x->names) - 4) {
++		x->nl += snprintf(x->names + x->nl, sizeof(x->names) - x->nl, "%s%s%s%c%s",
++			x->nl ? (*first ? " " : ",") : "", *first ? br : "", *first ? ":" : "", sign, name);
++		*first = 0;
++	} else
++		x->more = 1;
++}
++
++/* one bridge under its plan */
++static void reaper_brport_bridge(const char *br, int act, struct reaper_brctx *x)
++{
++	struct reaper_brport m[REAPER_BRPORT_MAX];
++	int nports[REAPER_BRPORT_MAX];
++	unsigned char fdb[16 * 128];
++	char p[160], v[16], key[48];
++	struct dirent *de;
++	DIR *d;
++	FILE *fp;
++	ssize_t r;
++	int n = 0, i, k, fd, np = 0, first = 1, todo, chunks = 0;
++
++	if (!br[0] || strlen(br) >= sizeof(m[0].name) || strchr(br, '/') || br[0] == '.')
++		return;
++	snprintf(p, sizeof(p), REAPER_BRPORT_SYSFS "/%s/brif", br);
++	if ((d = opendir(p)) == NULL)
++		return;	/* no such bridge, or no sysfs */
++	while (n < REAPER_BRPORT_MAX && (de = readdir(d)) != NULL) {
++		if (de->d_name[0] == '.' || strlen(de->d_name) >= sizeof(m[n].name))
++			continue;
++		memset(&m[n], 0, sizeof(m[n]));
++		snprintf(m[n].name, sizeof(m[n].name), "%s", de->d_name);
++		m[n].wireless = reaper_brport_wl_name(m[n].name)
++			|| reaper_brport_has(m[n].name, "wireless") || reaper_brport_has(m[n].name, "phy80211");
++		m[n].isolated = -1;
++		m[n].port = -1;
++		m[n].trunk = strchr(m[n].name, '.') != NULL;
++		/* brif/<port> is the port's brport directory: the flag is read and written on THIS bridge only */
++		snprintf(p, sizeof(p), REAPER_BRPORT_SYSFS "/%s/brif/%s/isolated", br, m[n].name);
++		if ((fp = fopen(p, "r")) != NULL) {
++			if (fgets(v, sizeof(v), fp) != NULL)
++				m[n].isolated = (v[0] == '1') ? 1 : ((v[0] == '0') ? 0 : -1);
++			fclose(fp);
++		}
++		snprintf(key, sizeof(key), "\n%s %s\n", br, m[n].name);
++		m[n].ours = strstr(x->state, key) != NULL;
++		n++;
++	}
++	closedir(d);
++	if (act == RBP_CLOSE) {
++		if (x->nn > 0) {
++			snprintf(p, sizeof(p), REAPER_BRPORT_SYSFS "/%s/brforward", br);
++			if ((fd = open(p, O_RDONLY)) >= 0) {
++				while (chunks++ < 32 && (r = read(fd, fdb, sizeof(fdb))) > 0)
++					np += reaper_brport_fdb_ports(fdb, (size_t)r, x->nodes, x->nn, nports + np,
++								      REAPER_BRPORT_MAX - np);
++				close(fd);
++			}
++		}
++		for (i = 0; i < n; i++) {
++			snprintf(p, sizeof(p), REAPER_BRPORT_SYSFS "/%s/brif/%s/port_no", br, m[i].name);
++			if ((fp = fopen(p, "r")) != NULL) {
++				if (fgets(v, sizeof(v), fp) != NULL)
++					m[i].port = (int)strtol(v, NULL, 0);
++				fclose(fp);
++			}
++			m[i].excluded = reaper_brport_listed(x->uplink, m[i].name) || m[i].trunk;
++			for (k = 0; k < np && !m[i].excluded; k++)
++				if (m[i].port >= 0 && nports[k] == m[i].port)
++					m[i].excluded = 1;
++		}
++	}
++	for (i = 0; i < n; i++) {
++		todo = reaper_brport_member(act, &m[i]);
++		if (todo) {
++			snprintf(p, sizeof(p), REAPER_BRPORT_SYSFS "/%s/brif/%s/isolated", br, m[i].name);
++			if ((fd = open(p, O_WRONLY)) >= 0) {
++				if (write(fd, todo == 2 ? "1" : "0", 1) == 1) {
++					m[i].isolated = (todo == 2) ? 1 : 0;
++					if (todo == 2)
++						x->closed++;
++					else
++						x->opened++;
++					reaper_brport_name(x, br, &first, todo == 2 ? '+' : '-', m[i].name);
++				}
++				close(fd);
++			}
++		}
++		/* remembered: what stays isolated under Wi-Fi and LAN ports, apart from the excluded ports */
++		if (act == RBP_CLOSE && !m[i].excluded && !m[i].wireless && !reaper_brport_wl_name(m[i].name) &&
++		    m[i].isolated == 1 && x->nsl + strlen(br) + strlen(m[i].name) + 3 < sizeof(x->nstate))
++			x->nsl += snprintf(x->nstate + x->nsl, sizeof(x->nstate) - x->nsl, "%s %s\n", br, m[i].name);
++	}
++}
++
++static int reaper_brport_nv1(const char *key)
++{
++	return strcmp(nvram_safe_get(key), "1") == 0;	/* "1" only; anything else = off / Wi-Fi only */
++}
++
++/* REAPER-BRPORT-NETS-BEGIN */
++/* the networks and their bridges (get_mtlan); a portal = a Captive Portal profile (cp_type 1, 2 or 4; an
++ * unreadable profile counts as a portal - left alone) */
++static int reaper_brport_nets(const char *lan, struct reaper_brnet *nw, int max)
++{
++	MTLAN_T *pmtl;
++	CP_TYPE_RL cpt;
++	char key[48];
++	size_t sz = 0, i;
++	int n = 0;
++
++	if ((pmtl = (MTLAN_T *)INIT_MTLAN(sizeof(MTLAN_T))) == NULL)
++		return 0;
++	if (get_mtlan(pmtl, &sz)) {
++		for (i = 0; i < sz && n < max; i++) {
++			const MTLAN_T *m = &pmtl[i];
++
++			memset(&nw[n], 0, sizeof(nw[n]));
++			snprintf(nw[n].br, sizeof(nw[n].br), "%s", m->nw_t.br_ifname[0] ? m->nw_t.br_ifname : lan);
++			nw[n].enable = (m->enable == 1) ? 1 : 0;
++			nw[n].port_iso = m->port_isolation;
++			nw[n].mainbh = !strcmp(m->name, "MAINBH");
++			if (m->sdn_t.apg_idx > 0) {
++				/* MAINFH and MAINBH are apm networks (sdn.js); their apg index means nothing. The LAN choice
++				 * of MAINFH is the main network's (reaper_ap_isolate_lan); MAINBH is never planned. */
++				int apm = !strcmp(m->name, "MAINFH") || nw[n].mainbh;
++
++				snprintf(key, sizeof(key), "%s%d_ap_isolate", apm ? "apm" : "apg", m->sdn_t.apg_idx);
++				nw[n].ap_iso = reaper_brport_nv1(key);
++				if (!apm) {
++					snprintf(key, sizeof(key), "apg%d_ap_isolate_lan", m->sdn_t.apg_idx);
++					nw[n].lan_iso = reaper_brport_nv1(key);
++				}
++			}
++			if (m->sdn_t.cp_idx > 0) {
++				memset(&cpt, 0, sizeof(cpt));
++				nw[n].portal = 1;
++				if (get_cp_type_byidx(m->sdn_t.cp_idx, &cpt) &&
++				    !(cpt.cp_type == 1 || cpt.cp_type == 2 || cpt.cp_type == 4))
++					nw[n].portal = 0;
++			}
++			n++;
++		}
++	}
++	FREE_MTLAN((void *)pmtl);
++	return n;
++}
++
++/* the AiMesh nodes' MACs (cfg_relist, rc/reaper_aimesh.c) as bytes */
++static int reaper_brport_nodes(unsigned char (*nodes)[6], int max)
++{
++	char macs[REAPER_BRPORT_NODES][18];
++	unsigned int b[6];
++	int n, i, c = 0, k;
++
++	n = reaper_aimesh_macs(macs, REAPER_BRPORT_NODES, NULL);
++	for (i = 0; i < n && c < max; i++) {
++		if (sscanf(macs[i], "%2x:%2x:%2x:%2x:%2x:%2x", &b[0], &b[1], &b[2], &b[3], &b[4], &b[5]) != 6)
++			continue;
++		for (k = 0; k < 6; k++)
++			nodes[c][k] = (unsigned char)b[k];
++		c++;
++	}
++	return c;
++}
++/* REAPER-BRPORT-NETS-END */
++
++void reaper_brport_wired_open(void)
++{
++	/* never isolated: the WAN names; outside router mode also the uplink (eth_ifnames / sta_*). In router mode
++	 * eth_ifnames lists AiMesh Ethernet-backhaul CANDIDATES that are real LAN ports (RT-BE96U "eth0 eth5" with the
++	 * 10G LAN on eth5): there the AiMesh check is the forwarding table, not that list. */
++	static const char *upl[] = { "wan_ifnames", "wan0_ifname", "wan1_ifname", "wan2_ifname", "wan3_ifname",
++				     "autowan_detected_ifname", NULL };
++	static const char *upl_nr[] = { "eth_ifnames", "sta_ifnames", "sta_phy_ifnames", NULL };
++	struct reaper_brnet nw[REAPER_BRPORT_NETS];
++	struct reaper_brplan plan[REAPER_BRPORT_NETS + 1];
++	unsigned char nodes[REAPER_BRPORT_NODES][6];
++	static struct reaper_brctx x;
++	char lan[16], key[32], uplink[512], state[2048 + 2];
++	const char *l = nvram_safe_get("lan_ifname");
++	size_t ul = 0;
++	ssize_t r;
++	int n, np, b, u, fd, lock, main_on = 0, close_any = 0;
++
++	/* An AiMesh node (RE): neither choice key syncs to nodes (wlX_ap_isolate does), so the node keeps the firmware's
++	 * own behaviour - never less isolation than stock. Nothing is touched or logged there. */
++	if (re_mode())
++		return;
++	if (!*l)
++		l = "br0";
++	if (strlen(l) >= sizeof(lan))
++		return;
++	snprintf(lan, sizeof(lan), "%s", l);
++	lock = file_lock("reaper_brport");	/* the apply paths and the rwatch tick: one run at a time (a leaf lock) */
++	for (u = 0; u < MAX_NR_WL_IF; u++) {
++		snprintf(key, sizeof(key), "wl%d_ap_isolate", u);
++		if (reaper_brport_nv1(key))
++			main_on = 1;
++	}
++	n = reaper_brport_nets(lan, nw, REAPER_BRPORT_NETS);
++	np = reaper_brport_plan(lan, main_on, reaper_brport_nv1("reaper_ap_isolate_lan"), nw, n, plan,
++				REAPER_BRPORT_NETS + 1);
++	memset(&x, 0, sizeof(x));
++	uplink[0] = '\0';
++	for (u = 0; upl[u]; u++)
++		if (ul < sizeof(uplink) - 1)
++			ul += snprintf(uplink + ul, sizeof(uplink) - ul, " %s", nvram_safe_get(upl[u]));
++	for (u = 0; sw_mode() != SW_MODE_ROUTER && upl_nr[u]; u++)
++		if (ul < sizeof(uplink) - 1)
++			ul += snprintf(uplink + ul, sizeof(uplink) - ul, " %s", nvram_safe_get(upl_nr[u]));
++	x.uplink = uplink;
++	/* what this helper isolated before: "\n" + the file, so every line is "\n<bridge> <port>\n" */
++	state[0] = '\n';
++	state[1] = '\0';
++	if ((fd = open(REAPER_BRPORT_STATE, O_RDONLY | O_NOFOLLOW)) >= 0) {
++		if ((r = read(fd, state + 1, sizeof(state) - 2)) > 0)
++			state[1 + r] = '\0';
++		close(fd);
++	}
++	x.state = state;
++	for (b = 0; b < np; b++)
++		if (plan[b].act == RBP_CLOSE)
++			close_any = 1;
++	x.nodes = (const unsigned char (*)[6])nodes;
++	x.nn = close_any ? reaper_brport_nodes(nodes, REAPER_BRPORT_NODES) : 0;
++	for (b = 0; b < np; b++)
++		reaper_brport_bridge(plan[b].br, plan[b].act, &x);
++	if (strcmp(state + 1, x.nstate) && reaper_secure_dir(REAPER_BRPORT_STATE_DIR, 0700) == 0)
++		(void)reaper_write_atomic(REAPER_BRPORT_STATE, x.nstate, x.nsl, 0600);
++	file_unlock(lock);
++	if (x.opened || x.closed)
++		logmessage("reaper", "AP Isolation: wired ports opened / isolated: %d / %d (%s%s)",
++			x.opened, x.closed, x.names, x.more ? " ..." : "");
++}
++
++/* the rwatch tick's gate, nvram only: some network may have its switch on with Wi-Fi and LAN ports - the main network
++ * (reaper_ap_isolate_lan and a radio's or a network's switch on: a network riding the main bridge counts there) or a
++ * network with its own choice. A superset of the helper's own plan; never touches sysfs. */
++static int reaper_brport_lan_wanted(void)
++{
++	char key[48];
++	int u, on = 0;
++
++	if (reaper_brport_nv1("reaper_ap_isolate_lan")) {
++		for (u = 0; u < MAX_NR_WL_IF && !on; u++) {
++			snprintf(key, sizeof(key), "wl%d_ap_isolate", u);
++			on = reaper_brport_nv1(key);
++		}
++		for (u = 1; u < REAPER_BRPORT_NETS && !on; u++) {
++			snprintf(key, sizeof(key), "apg%d_ap_isolate", u);
++			on = reaper_brport_nv1(key);
++			snprintf(key, sizeof(key), "apm%d_ap_isolate", u);
++			on = on || reaper_brport_nv1(key);
++		}
++		if (on)
++			return 1;
++	}
++	for (u = 1; u < REAPER_BRPORT_NETS; u++) {
++		snprintf(key, sizeof(key), "apg%d_ap_isolate", u);
++		if (!reaper_brport_nv1(key))
++			continue;
++		snprintf(key, sizeof(key), "apg%d_ap_isolate_lan", u);
++		if (reaper_brport_nv1(key))
++			return 1;
++	}
++	return 0;
++}
++
++/* /sbin/reaper_brport (applets dispatch by basename only - see reaper_lockrun): the rwatch tick */
++int reaper_brport_tick_main(int argc, char *argv[])
++{
++	(void)argc;
++	(void)argv;
++	if (reaper_brport_lan_wanted())
++		reaper_brport_wired_open();
++	return 0;
++}
++/* REAPER-BRPORT-WIRED-END */
++#endif
++
+ void start_lan(void)
+ {
+ 	char *lan_ifname;
+@@ -2807,6 +3303,7 @@ _dprintf("nat_rule: stop_nat_rules 1.\n");
+ 
+ #ifdef RTCONFIG_MULTILAN_CFG
+     apg_start();
++	reaper_brport_wired_open();
+ 	update_amas_lldpd_ifnames();
+ #ifdef RTCONFIG_IPV6
+ 	add_ip6_lanaddr();
+@@ -6058,6 +6555,7 @@ gmac3_no_swbr:
+ 
+ #ifdef RTCONFIG_MULTILAN_CFG
+     apg_start();
++	reaper_brport_wired_open();
+ 	update_amas_lldpd_ifnames();
+ #ifdef RTCONFIG_IPV6
+ 	add_ip6_lanaddr();
+diff --git a/release/src/router/rc/rc.c b/release/src/router/rc/rc.c
+index 3f24304392..1775010c0f 100644
+--- a/release/src/router/rc/rc.c
++++ b/release/src/router/rc/rc.c
+@@ -530,6 +530,7 @@ static int rctest_main(int argc, char *argv[])
+ #if defined(RTCONFIG_MULTILAN_CFG)
+ 	else if (strcmp(argv[1], "apg_start")==0) {
+ 		apg_start();
++		reaper_brport_wired_open();
+ 	}
+ 	else if (strcmp(argv[1], "apg_stop")==0) {
+ 		apg_stop();
+@@ -3000,6 +3001,8 @@ static const applets_t applets[] = {
+ #ifdef RTCONFIG_MULTILAN_CFG
+ 	/* 2026-11-12: apply a guest-network request that never reached rc (rc/sdn.c, started by httpd) */
+ 	{ "reaper_sdn_settle",		reaper_sdn_settle_main			},
++	/* 2026-11-19: the rwatch tick re-applies the AP Isolation choice Wi-Fi and LAN ports (rc/lan.c) */
++	{ "reaper_brport",		reaper_brport_tick_main			},
+ #endif
+ 	/* v3.0.8: park the AiMesh backhaul carriers while no node is paired (rc/amaspark.c) */
+ 	{ "amaspark",			amaspark_main				},
+@@ -4993,13 +4996,18 @@ int main(int argc, char **argv)
+ 		 * callers do - see the note in wan_up(). Without this re-assert the
+ 		 * whole PBR pref band stays gone until the next UI Apply, which is a
+ 		 * FAIL-OPEN: marks keep being set with no rule left to select on.
+-		 * (The amvpn_set_kilswitch_rules_all() below sits after the returns
+-		 * this replaces and is unreachable upstream dead code; left as-is.) */
++		 * reaper 2026-11-19 (B2, REAPER-SDNVPN-APPLET): the guest VPN-binding
++		 * rules and the kill switch come back here too, as at every other
++		 * add_multi_routes() site. The kill-switch call used to sit after the
++		 * return (unreachable upstream code), so the applet left it flushed. */
+ 		reaper_pbr_reassert();
+-		return amr_rc;
++#ifdef RTCONFIG_MULTILAN_CFG
++		reaper_sdn_vpn_rules();
++#endif
+ #if defined(RTCONFIG_WIREGUARD) || defined(RTCONFIG_OPENVPN)
+ 		amvpn_set_kilswitch_rules_all();
+ #endif
++		return amr_rc;
+ 	}
+ 	else if (!strcmp(base, "led_ctrl")) {
+ 		if (argc != 3)
+diff --git a/release/src/router/rc/rc.h b/release/src/router/rc/rc.h
+index 109901053f..12465abc63 100644
+--- a/release/src/router/rc/rc.h
++++ b/release/src/router/rc/rc.h
+@@ -3166,6 +3166,7 @@ extern int reaper_aimesh_macs(char macs[][18], int max, int *dropped);	/* the cf
+ #define REAPER_AIMESH_MAX 256	/* 2026-11-08 (owner: next release): was 64, about 16 tri-band nodes; a node is 3-5 registry MACs */
+ #ifdef RTCONFIG_MULTILAN_CFG
+ extern void reaper_sdn_applied_stamp(void);
++extern void reaper_sdn_vpn_rules(void);	/* 2026-11-19: guest VPN-binding ip rules back after add_multi_routes() (rc/sdn.c) */
+ extern int reaper_sdn_list_has_svc(const char *list);
+ extern int reaper_rc_rest_has(const char *rest, const char *svc);	/* 2026-11-12: one portal start per request */
+ extern const char *reaper_wl_rest;
+@@ -3173,7 +3174,10 @@ extern void reaper_guest_gen(void);	/* 2026-11-12: guest isolation (rc/reaper_gu
+ extern void reaper_guest_nat_reassert(void);	/* 2026-11-14: guest DNS redirect back after a nat restore (rc/reaper_guest.c) */
+ extern void reaper_guest_apply(int have_lock);	/* 2026-11-12: guest-network requests always applied (rc/sdn.c) */
+ extern int reaper_guest_intranet(int sdn_idx);	/* 2026-11-13: Access Intranet on for this network (rc/reaper_guest.c) */
+-extern void reaper_mdns_ifaces(char *deny, size_t dn, char *refl, size_t rn, char *why, size_t wn);	/* 2026-11-14: mDNS across networks (rc/reaper_guest.c) */
++extern void reaper_guest_resv_follow(void);	/* 2026-11-19: chosen devices follow a reservation edit (rc/reaper_guest.c) */
++extern int reaper_guest_resv_changed(void);	/* 2026-11-19: reservations / LAN / AiMesh nodes changed since the build */
++extern void reaper_guest_zpol_follow(void);	/* 2026-11-19: zone paths follow a rules-engine apply / Keep / revert */
++extern void reaper_mdns_ifaces(char *deny, size_t dn, char *refl, size_t rn, char *why, size_t wn, char *guest, size_t gn);	/* 2026-11-14: mDNS across networks (rc/reaper_guest.c); 2026-11-19: + discovery guests */
+ extern void reaper_mdns_follow(void);	/* 2026-11-14: rc/services.c, restart avahi when its networks changed */
+ extern void reaper_guest_dot_watch(void);	/* 2026-11-13: Guest Portal encrypted DNS forwarders (rc/sdn.c) */
+ extern int reaper_sdn_settle_main(int argc, char *argv[]);
+@@ -3773,6 +3777,8 @@ extern int	 	apg_destory_eth_vlan(char *vlan_ifnames);
+ extern void 	init_apg_subunit(void);
+ extern void apg_create_vlan_for_lan(void);
+ extern void apg_destory_vlan_for_lan(void);
++extern void reaper_brport_wired_open(void);	/* lan.c REAPER-BRPORT-WIRED */
++extern int reaper_brport_tick_main(int argc, char *argv[]);	/* lan.c: the rwatch tick, /sbin/reaper_brport */
+ #ifdef RTCONFIG_MULTILAN_MWL
+ #define INIT_APG_CHK_SDN_MLO        0x0001
+ #define INIT_APG_CHK_MWL_CONV       0x0002
+diff --git a/release/src/router/rc/rwatch.c b/release/src/router/rc/rwatch.c
+index 19ecec95cb..9845a15526 100644
+--- a/release/src/router/rc/rwatch.c
++++ b/release/src/router/rc/rwatch.c
+@@ -111,6 +111,10 @@ static void rwatch_gen(void)
+ 	  /* 2026-11-15 (owner): the DHCP lease files survive a restart - saved when the set of leases changed, else
+ 	   * hourly (shared/reaper_leases.c); a power cut loses at most that much */
+ 	  "[ -x /sbin/reaper_leases ] && /sbin/reaper_leases save >/dev/null 2>&1\n"
++	  /* 2026-11-19: AP Isolation, Wi-Fi and LAN ports - an AiMesh node is in the bridge forwarding table only once it
++	   * talks, so its port may be unknown at the apply; the applet does nothing unless a network has its switch on
++	   * with that choice (rc/lan.c reaper_brport_tick_main), and writes / logs only on a change */
++	  "[ -x /sbin/reaper_brport ] && /sbin/reaper_brport >/dev/null 2>&1\n"
+ 	  "\n"
+ 	  "# reaper v1.9.1 (Rung B): durable-store resolver - MIRRORS rdev_store_base()\n"
+ 	  "# in httpd/web.c (keep the two in lockstep). Re-resolved every tick so a USB\n"
+diff --git a/release/src/router/www/Reaper_VLAN.asp b/release/src/router/www/Reaper_VLAN.asp
+index efd5eaf9b8..189125b300 100644
+--- a/release/src/router/www/Reaper_VLAN.asp
++++ b/release/src/router/www/Reaper_VLAN.asp
+@@ -403,6 +403,8 @@ q('b_add').addEventListener('click', function(){
+   o[p + 'enable'] = '1'; o[p + 'ssid'] = 'VLAN_' + vid; o[p + 'hide_ssid'] = '0'; o[p + 'security'] = ''; o[p + 'bw_limit'] = '<0>>';
+   o[p + 'timesched'] = '0'; o[p + 'sched'] = ''; o[p + 'expiretime'] = ''; o[p + 'ap_isolate'] = '0'; o[p + 'macmode'] = '0'; o[p + 'mlo'] = '';
+   o[p + 'maclist'] = ''; o[p + 'iot_max_cmpt'] = ''; o[p + '11be'] = '0';
++  o[p + 'ap_isolate_lan'] = '0';   /* REAPER-APISO-LAN-VLAN (2026-11-19): the index may be a deleted network's; its AP Isolation choice does not carry over */
++  o[p + 'rg_devs'] = ''; o[p + 'rg_mdns'] = '';   /* REAPER-RG-VLAN (2026-11-19): nor its chosen main-network devices and device discovery */
+   o[p + 'dut_list'] = NODES.map(function(n){ return '<' + n.mac + '>0>'; }).join('');   /* stock get_dut_list("0"): no Wi-Fi on any node */
+   nvSet(o); restarting('pf');
+ });
+@@ -421,6 +423,8 @@ function del(vidx){
+   o.sdn_rl = sr.list; o.vlan_rl = vr.list; o.subnet_rl = nr.list; o.radius_list = rr.list; o.sdn_access_rl = ar.list;
+   o.sdn_rl_x = sr.x; o.vlan_rl_x = vr.x; o.subnet_rl_x = nr.x; o.radius_list_x = rr.x;
+   if (s) o['apg' + s.f[5] + '_enable'] = '0';
++  if (s && +s.f[5] > 0) o['apg' + s.f[5] + '_ap_isolate_lan'] = '';   /* REAPER-APISO-LAN-VLAN-DEL (2026-11-19) */
++  if (s && +s.f[5] > 0){ o['apg' + s.f[5] + '_rg_devs'] = ''; o['apg' + s.f[5] + '_rg_mdns'] = ''; }   /* REAPER-RG-VLAN-DEL (2026-11-19) */
+   if (NV.vlan_trunklist !== '' && +v.f[1] > 1)
+     o.vlan_trunklist = vr.list === '' ? '' : trunkMap(NV.vlan_trunklist, function(a){ return a.filter(function(x){ return x !== v.f[1]; }); });
+   if (NV.qos_enable === '1') o.rc_service += 'restart_qos;restart_firewall;';
+diff --git a/release/src/router/www/sysdep/FUNCTION/SDN/SDN/sdn.js b/release/src/router/www/sysdep/FUNCTION/SDN/SDN/sdn.js
+index 1aa9c6e02f..39376b7985 100644
+--- a/release/src/router/www/sysdep/FUNCTION/SDN/SDN/sdn.js
++++ b/release/src/router/www/sysdep/FUNCTION/SDN/SDN/sdn.js
+@@ -7280,6 +7280,41 @@ function Get_Component_Full_Setting(view_mode){
+ 			})
+ 		);
+ 		$("<div>").attr({"data-slide_target": "access_intranet_cntr", "data-container": "access_intranet_cntr"}).hide().appendTo($net_mode_container);
++		/* REAPER-GUEST-CROSS-ROWS (2026-11-19): two opt-in paths across guest isolation (rc/reaper_guest.c), below
++		   Access Intranet. Each row has its own wrapper: outside the wifi_settings group (a wired-only network keeps
++		   them) and outside every portal-type block (choosing a portal type shows each .profile_setting_item in its
++		   block). reaper_guest_cross_fill() fills them, reaper_guest_cross_gate() shows or hides them. */
++		const $rg_devs_wrap = $("<div>").attr({"id":"rg_devs_wrap"}).hide().appendTo($net_mode_container);
++		const rg_devs_parm = {"title":`<#RSDN_20#>`, "id":"rg_devs", "slide_target":"rg_devs_cntr", "title_css":"setting_item"};
++		Get_Component_Slide_Title(rg_devs_parm).appendTo($rg_devs_wrap);
++		$("<div>").attr({"data-slide_target":"rg_devs_cntr", "data-container":"rg_devs_cntr"}).hide().appendTo($rg_devs_wrap);
++		const $rg_mdns_wrap = $("<div>").attr({"id":"rg_mdns_wrap"}).hide().appendTo($net_mode_container);
++		const rg_mdns_parm = {"title":`<#RSDN_23#>`, "type":"switch", "id":"rg_mdns_enabled", "set_value":"off"};
++		Get_Component_Switch(rg_mdns_parm).appendTo($rg_mdns_wrap).find("#" + rg_mdns_parm.id).click(function(e){
++			e = e || event;
++			e.stopPropagation();
++			if($(this).attr("temp_disable") == "disabled")
++				return;
++			reaper_guest_cross_mdns_switched($(this).closest(".profile_setting"), $(this).hasClass("on"));
++		});
++		$("<div>").attr({"id":"rg_mdns_iso_note"}).css({"font-size":"12px","opacity":"0.75","margin":"6px 0 8px","line-height":"1.4"})
++			.html(`<#RSDN_25#>`).hide().appendTo($rg_mdns_wrap);
++		const $rg_mdns_cntr = $("<div>").attr({"id":"rg_mdns_cntr"}).hide().appendTo($rg_mdns_wrap);
++		$.each(reaper_gc_svc_ui(), function(index, svc){
++			const $svc_item = $("<div>").addClass("cb_item_container").attr({"data-rg-svc":svc.k}).appendTo($rg_mdns_cntr);
++			const $svc_content = $("<div>").addClass("cb_item_content_container").unbind("click").click(function(e){
++				e = e || event;
++				e.stopPropagation();
++				$(this).children(".icon_checkbox").toggleClass("clicked");
++			}).appendTo($svc_item);
++			$("<div>").addClass("icon_checkbox").appendTo($svc_content);
++			$("<div>").addClass("cb_item_text").html(htmlEnDeCode.htmlEncode(svc.t)).appendTo($svc_content);
++		});
++		const rg_mdns_extra_parm = {"title":`<#RSDN_27#>`, "type":"text", "id":"rg_mdns_extra", "maxlength":200};
++		Get_Component_Input(rg_mdns_extra_parm).appendTo($rg_mdns_cntr).find("#" + rg_mdns_extra_parm.id).attr({"placeholder":"_example._tcp"});
++		$("<div>").attr({"id":"rg_mdns_note"}).css({"font-size":"12px","opacity":"0.75","margin":"6px 0 8px","line-height":"1.4"})
++			.html(`<#RSDN_24#>`).appendTo($rg_mdns_cntr);
++		/* REAPER-GUEST-CROSS-ROWS-END */
+ 
+ 		if(support_gaming){
+ 			const priority_options = [
+@@ -7555,6 +7590,17 @@ function Get_Component_Full_Setting(view_mode){
+ 
+ 			var ap_iso_parm = {"title":"<#WLANConfig11b_x_IsolateAP_itemname#>", "type":"switch", "id":"ap_isolate", "openHint":"3_5"};
+ 			Get_Component_Switch(ap_iso_parm).attr({"data-group":"wifi_settings"}).appendTo($net_mode_container);
++			/* REAPER-APISO-LAN-ROW (2026-11-19, owner): what AP Isolation keeps apart, under its switch. The outer
++			   wrapper is in the wifi_settings group (hidden with the switch on a wired-only network); the inner one follows
++			   the switch alone, so showing the group never shows the choice of a switch that is off. Not a
++			   .profile_setting_item block of a portal type. reaper_apiso_lan_fill() fills it or removes it. */
++			const $ap_iso_lan_wrap = $("<div>").attr({"id":"ap_iso_lan_wrap", "data-group":"wifi_settings"}).appendTo($net_mode_container);
++			const $ap_iso_lan_inner = $("<div>").attr({"id":"ap_iso_lan_inner"}).hide().appendTo($ap_iso_lan_wrap);
++			const ap_iso_lan_parm = {"title":`<#RSDN_31#>`, "id":"ap_isolate_lan", "options":[{"text":`<#RSDN_32#>`, "value":"0"}, {"text":`<#RSDN_33#>`, "value":"1"}], "set_value":"0"};
++			Get_Component_Custom_Select(ap_iso_lan_parm).appendTo($ap_iso_lan_inner);
++			$("<div>").attr({"id":"ap_iso_lan_note"}).css({"font-size":"12px","opacity":"0.75","margin":"6px 0 8px","line-height":"1.4"})
++				.html(`<#RSDN_34#>`).appendTo($ap_iso_lan_inner);
++			/* REAPER-APISO-LAN-ROW-END */
+ 
+ 			if(isSupport("ipv6")){
+ 				/* reaper 2026-10-08: the IPv6 controls are network settings, not Wi-Fi ones. Stock tagged
+@@ -8285,10 +8331,12 @@ function Update_Setting_Profile(_obj, _profile_data){
+ 	else{
+ 		$(_obj).find("#access_intranet, [data-container='access_intranet_cntr']").remove();
+ 	}
++	reaper_guest_cross_fill(_obj, _profile_data);//REAPER-GUEST-CROSS-FILL (2026-11-19): after Access Intranet, whose Main Network tick it reads
+ 
+ 	$(_obj).find("#ap_isolate").removeClass("off on").addClass((function(){
+ 		return ((_profile_data.apg_rl.ap_isolate == "1") ? "on" : "off");
+ 	})());
++	reaper_apiso_lan_fill(_obj, _profile_data);//REAPER-APISO-LAN-FILL (2026-11-19): after the switch, whose state it follows
+ 
+ 	if(_profile_data.sdn_rl.sdn_name == "MLO"){
+ 		$(_obj).find("#wifi7_11be").closest(".profile_setting_item").remove();
+@@ -8814,6 +8862,13 @@ function Update_Setting_Profile(_obj, _profile_data){
+ 
+ 				nvramSet_obj[ap_prefix + del_sdn_rl[0].apg_rl.apg_idx + "_enable"] = "0";
+ 				nvramSet_obj[ap_prefix + del_sdn_rl[0].apg_rl.apg_idx + "_disabled"] = "0";
++				/* REAPER-GUEST-CROSS-DEL (2026-11-19): the index is reused by the next network created (lowest first); its
++				   guest paths and discovery must not carry over to it */
++				if(ap_prefix == "apg"){
++					nvramSet_obj["apg" + del_sdn_rl[0].apg_rl.apg_idx + "_rg_devs"] = "";
++					nvramSet_obj["apg" + del_sdn_rl[0].apg_rl.apg_idx + "_rg_mdns"] = "";
++					nvramSet_obj["apg" + del_sdn_rl[0].apg_rl.apg_idx + "_ap_isolate_lan"] = "";//REAPER-APISO-LAN-DEL (2026-11-19): nor its AP Isolation choice
++				}
+ 				if(httpApi.nvramGet(["qos_enable"]).qos_enable == "1"){
+ 					nvramSet_obj.rc_service += "restart_qos;restart_firewall;";
+ 				}
+@@ -9311,7 +9366,7 @@ function set_apply_btn_status(_obj){
+ 			}
+ 
+ 			function apply_profile(){
+-				if(validate_format_Wizard_Item($(_obj), "ALL")){
++				if(validate_format_Wizard_Item($(_obj), "ALL") && reaper_guest_cross_valid($(_obj))){//REAPER-GUEST-CROSS-VALID: the discovery picker
+ 					var specific_data = sdn_all_rl_json.filter(function(item, index, array){
+ 						return (item.sdn_rl.idx == sdn_idx);
+ 					})[0];
+@@ -9498,6 +9553,7 @@ function set_apply_btn_status(_obj){
+ 							sdn_profile.apg_rl.bw_limit = "<0>>";
+ 						}
+ 						sdn_profile.apg_rl.ap_isolate = $(_obj).find("#ap_isolate").hasClass("on") ? "1" : "0";
++						reaper_apiso_lan_collect($(_obj), sdn_profile, nvramSet_obj);//REAPER-APISO-LAN-COLLECT (2026-11-19): the AP Isolation choice
+ 						if(sdn_profile.sdn_rl.subnet_idx == "0"
+ 							&& sdn_profile.sdn_rl.sdn_name != "MAINBH"){
+ 							synced_ap_isolate_profiles = sdn_all_rl_json.filter(function(item){
+@@ -9579,6 +9635,7 @@ function set_apply_btn_status(_obj){
+ 						});
+ 					}
+ 
++					reaper_guest_cross_collect($(_obj), sdn_profile);//REAPER-GUEST-CROSS-COLLECT (2026-11-19): the two guest-path keys into apg_rl
+ 					sdn_profile.sdn_rl.vpnc_idx = "0";
+ 					sdn_profile.sdn_rl.vpns_idx = "0";
+ 					sdn_profile.sdn_rl.kill_switch = "0";
+@@ -9828,6 +9885,11 @@ function set_apply_btn_status(_obj){
+ 						var cpX_rl = parse_cp_rl_to_cpX_rl(sdn_profile.cp_rl);
+ 						$.extend(nvramSet_obj, cpX_rl);
+ 					}
++					/* REAPER-GUEST-CROSS-SAVE (2026-11-19): when the two guest-path keys are the only values this save changes,
++					   the light restart_reaper_guest (guest layer + mDNS) replaces the radio / network restart */
++					if(reaper_guest_cross_save(nvramSet_obj, sdn_profile.apg_rl.apg_idx)){
++						showLoading_status = get_showLoading_status(nvramSet_obj.rc_service);
++					}
+ 					if(!httpApi.app_dataHandler){
+ 						if(sdn_profile.sdn_rl.sdn_name == "Gaming"){
+ 							showLoading_gaming();
+@@ -10880,6 +10942,467 @@ function reaper_vpnc_on_demand(_nvramSet_obj, _vpnc_idx){
+ 	}
+ 	return true;
+ }
++/* REAPER-GUEST-CROSS-BEGIN (2026-11-19, owner-approved plan: guest network tickets + opt-in switches).
++   Two opt-in paths across guest isolation (rc/reaper_guest.c) for one network, on its settings object:
++     apgN_rg_devs = "<MAC<MAC..." - main-network devices with a DHCP reservation that guests may open connections to
++                    (never the router; the devices cannot open connections to guests); at most 16
++     apgN_rg_mdns = "" (off) or a comma list of presets (print, airplay, cast, homekit, audio) and service types
++                    (_name._tcp / _name._udp): device discovery with the main network, at most 16 types expanded
++   Router mode, a network with its own subnet, not LEGACY / MAINFH / MAINBH, not a portal, and not while Access
++   Intranet pairs it with the main network (then it is not isolated at all). rc validates every value again. A save
++   that changes only these two keys sends the light rc service restart_reaper_guest, not the radio / network
++   restart. The reaper_gc_* helpers take no page state: test_sdn_guest_cross.py runs them under node. */
++function reaper_gc_svc_types(){
++	return [
++		["print", ["_ipp._tcp", "_ipps._tcp", "_printer._tcp", "_pdl-datastream._tcp", "_uscan._tcp"]],
++		["airplay", ["_airplay._tcp", "_raop._tcp"]],
++		["cast", ["_googlecast._tcp"]],
++		["homekit", ["_hap._tcp", "_hap._udp", "_matter._tcp", "_matterc._udp"]],
++		["audio", ["_spotify-connect._tcp", "_sonos._tcp"]]
++	];
++}
++function reaper_gc_svc_ui(){
++	return [
++		{"k":"print", "t":`<#RSDN_26#>`},
++		{"k":"airplay", "t":`AirPlay`},
++		{"k":"cast", "t":`Google Cast`},
++		{"k":"homekit", "t":`HomeKit / Matter`},
++		{"k":"audio", "t":`Spotify / Sonos`}
++	];
++}
++/* stored value -> picker state: presets and well-formed service types (anything else is dropped) */
++function reaper_gc_mdns_parse(_value){
++	const presets = reaper_gc_svc_types().map(function(p){ return p[0]; });
++	const re = /^_[a-z0-9-]{1,32}\._(tcp|udp)$/;
++	let out = {"presets":[], "extra":[]};
++	String(_value == undefined ? "" : _value).toLowerCase().split(",").forEach(function(t){
++		t = t.trim();
++		if(t == "")
++			return;
++		if(presets.indexOf(t) != -1){
++			if(out.presets.indexOf(t) == -1)
++				out.presets.push(t);
++		}
++		else if(re.test(t) && out.extra.indexOf(t) == -1)
++			out.extra.push(t);
++	});
++	return out;
++}
++/* picker state -> stored value. Presets in a fixed order, then free entries (lower case, commas or spaces between
++   them); an entry a chosen preset already covers is dropped. Refused: a malformed entry, nothing chosen, more than 16
++   service types after expansion, more than 255 characters. */
++function reaper_gc_mdns_serialise(_presets, _extra_text){
++	const re = /^_[a-z0-9-]{1,32}\._(tcp|udp)$/;
++	const chosen = (_presets || []).map(function(p){ return String(p).toLowerCase(); });
++	let types = [], tokens = [];
++	reaper_gc_svc_types().forEach(function(p){
++		if(chosen.indexOf(p[0]) == -1)
++			return;
++		tokens.push(p[0]);
++		p[1].forEach(function(t){ if(types.indexOf(t) == -1) types.push(t); });
++	});
++	const extra = String(_extra_text == undefined ? "" : _extra_text).toLowerCase().split(/[\s,]+/).filter(function(t){ return t != ""; });
++	for(let i = 0; i < extra.length; i++){
++		if(!re.test(extra[i]))
++			return {"ok":false, "bad":extra[i]};
++		if(types.indexOf(extra[i]) == -1){
++			types.push(extra[i]);
++			tokens.push(extra[i]);
++		}
++	}
++	const value = tokens.join(",");
++	if(tokens.length == 0 || types.length > 16 || value.length > 255)
++		return {"ok":false, "bad":""};
++	return {"ok":true, "value":value, "types":types.length};
++}
++/* stored device list -> upper-case MACs (at most 16); "<" or ">" or commas between them */
++function reaper_gc_devs_parse(_value){
++	let out = [];
++	String(_value == undefined ? "" : _value).split(/[<>,\s]+/).forEach(function(m){
++		m = m.toUpperCase();
++		if(/^([0-9A-F]{2}:){5}[0-9A-F]{2}$/.test(m) && out.indexOf(m) == -1 && out.length < 16)
++			out.push(m);
++	});
++	return out;
++}
++function reaper_gc_devs_serialise(_macs){
++	return reaper_gc_devs_parse((_macs || []).join(",")).map(function(m){ return "<" + m; }).join("");
++}
++/* one label per device (owner rule 2026-11-15): the Devices-page Name, else the Hostname the router knows (what the
++   device announces, else the maker, else Private-Address), else the reservation name, else the MAC.
++   _names = the reaper_devnames hook: {"<MAC>":{"n":Name,"h":Hostname,"ip":...}} */
++function reaper_gc_label(_mac, _dns_name, _names){
++	const mac = String(_mac == undefined ? "" : _mac).toUpperCase();
++	let nm = {};
++	if(_names && typeof _names == "object"){
++		Object.keys(_names).forEach(function(k){
++			if(String(k).toUpperCase() == mac && _names[k] && typeof _names[k] == "object")
++				nm = _names[k];
++		});
++	}
++	return String(nm.n || nm.h || _dns_name || mac);
++}
++/* the reservations guests can be given: dhcp_staticlist "<MAC>IP>DNS>name..." while dhcp_static_x is 1; never the
++   router address, never an AiMesh node (its UI and SSH would be reachable), one entry per MAC */
++function reaper_gc_reserved(_staticlist, _static_x, _node_macs, _names, _lan_ip){
++	let out = [];
++	if(String(_static_x) != "1")
++		return out;
++	const nodes = (_node_macs || []).map(function(m){ return String(m).toUpperCase(); });
++	String(_staticlist == undefined ? "" : _staticlist).split("<").forEach(function(ent){
++		const f = ent.split(">");
++		const mac = String(f[0] || "").trim().toUpperCase(), ip = String(f[1] || "").trim();
++		if(!/^([0-9A-F]{2}:){5}[0-9A-F]{2}$/.test(mac) || !/^(\d{1,3}\.){3}\d{1,3}$/.test(ip))
++			return;
++		if(ip == _lan_ip || nodes.indexOf(mac) != -1 || out.some(function(d){ return d.mac == mac; }))
++			return;
++		const dns_name = String(f[3] || "").trim();
++		out.push({"mac":mac, "ip":ip, "dns":dns_name, "label":reaper_gc_label(mac, dns_name, _names)});
++	});
++	return out;
++}
++/* every MAC an AiMesh node entry carries (base, wired and per-band MACs), upper case */
++function reaper_gc_node_macs(_nodes){
++	const re = /^([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}$/;
++	let out = [];
++	const add = function(v){
++		if(typeof v == "string" && re.test(v) && out.indexOf(v.toUpperCase()) == -1)
++			out.push(v.toUpperCase());
++	};
++	(Array.isArray(_nodes) ? _nodes : []).forEach(function(node){
++		if(!node || typeof node != "object")
++			return;
++		Object.keys(node).forEach(function(k){
++			if(Array.isArray(node[k]))
++				node[k].forEach(add);
++			else
++				add(node[k]);
++		});
++	});
++	return out;
++}
++/* true only when the save changes one or both guest-path keys of network N and nothing else (_cur = the values in
++   nvram now); the light rc service is then enough */
++function reaper_gc_only_cross(_set, _cur, _apg_idx){
++	if(!/^\d+$/.test(String(_apg_idx)))
++		return false;
++	const skip = ["action_mode", "action_script", "action_wait", "rc_service", "current_page", "next_page"];
++	const cross = ["apg" + _apg_idx + "_rg_devs", "apg" + _apg_idx + "_rg_mdns"];
++	const keys = Object.keys(_set || {});
++	let cross_changed = false;
++	for(let i = 0; i < keys.length; i++){
++		const k = keys[i];
++		if(skip.indexOf(k) != -1)
++			continue;
++		const want = (_set[k] == undefined) ? "" : String(_set[k]);
++		const now = (_cur == undefined || _cur[k] == undefined) ? "" : String(_cur[k]);
++		if(want === now)
++			continue;
++		if(cross.indexOf(k) == -1)
++			return false;
++		cross_changed = true;
++	}
++	return cross_changed;
++}
++/* the two rows are shown unless Access Intranet pairs the network with Main or the Portal tab's type is a portal
++   (the stored cp_idx "0", or no Portal tab at all, = not a portal) */
++function reaper_gc_rows_shown(_paired, _portal_type){
++	return !_paired && String((_portal_type == undefined || _portal_type === "") ? "0" : _portal_type) == "0";
++}
++/* ---- page side ---- */
++function reaper_guest_cross_fill(_obj, _profile_data){
++	const $ps = $(_obj);
++	const $devs_wrap = $ps.find("#rg_devs_wrap"), $mdns_wrap = $ps.find("#rg_mdns_wrap");
++	if($devs_wrap.length == 0 && $mdns_wrap.length == 0)
++		return;
++	const sdn_rl = _profile_data.sdn_rl || {}, apg_rl = _profile_data.apg_rl || {};
++	const supported = (isSwMode("RT") || isSwMode("WISP"))
++		&& !$.isEmptyObject(_profile_data.subnet_rl)
++		&& ["LEGACY", "MAINFH", "MAINBH"].indexOf(sdn_rl.sdn_name) == -1
++		&& String((sdn_rl.cp_idx == undefined || sdn_rl.cp_idx === "") ? "0" : sdn_rl.cp_idx) == "0"
++		&& /^\d+$/.test(String(apg_rl.apg_idx));
++	if(!supported){
++		$devs_wrap.remove();
++		$mdns_wrap.remove();
++		return;
++	}
++	/* the device checklist: main-network reservations (LAN > DHCP Server); a ticked device whose reservation is gone
++	   stays listed and ticked until it is unticked (rc skips it meanwhile) */
++	let rsv = [], failed = false;
++	try{
++		const a = httpApi.nvramCharToAscii(["dhcp_staticlist"], true);
++		const n = httpApi.nvramGet(["dhcp_static_x", "lan_ipaddr"], true);
++		if(a.isError || n.isError)
++			failed = true;
++		rsv = reaper_gc_reserved(decodeURIComponent(a.dhcp_staticlist || ""), n.dhcp_static_x,
++			reaper_gc_node_macs((typeof cfg_clientlist == "object") ? cfg_clientlist : []), {}, n.lan_ipaddr);
++	}
++	catch(e){
++		failed = true;
++	}
++	const chosen = reaper_gc_devs_parse(apg_rl.rg_devs);
++	chosen.forEach(function(mac){
++		if(!rsv.some(function(d){ return d.mac == mac; }))
++			rsv.push({"mac":mac, "ip":"", "dns":"", "label":mac});
++	});
++	$devs_wrap.attr({"data-rg-failed": failed ? "1" : "0"});
++	const $cntr = $devs_wrap.find("[data-container='rg_devs_cntr']").empty();
++	const item_text = function(_label, _ip){
++		return htmlEnDeCode.htmlEncode(_label) + " (" + ((_ip != "") ? htmlEnDeCode.htmlEncode(_ip) : `<#RSDN_30#>`) + ")";
++	};
++	$.each(rsv, function(index, d){
++		const $item = $("<div>").addClass("cb_item_container").attr({"data-rg-mac":d.mac, "data-rg-dns":d.dns, "title":d.mac}).appendTo($cntr);
++		const $content = $("<div>").addClass("cb_item_content_container").unbind("click").click(function(e){
++			e = e || event;
++			e.stopPropagation();
++			const $icon = $(this).children(".icon_checkbox");
++			if(!$icon.hasClass("clicked") && $(this).closest("[data-container='rg_devs_cntr']").find(".icon_checkbox.clicked").length >= 16){
++				show_customize_alert(`<#RSDN_29#>`);
++				return;
++			}
++			$icon.toggleClass("clicked");
++		}).appendTo($item);
++		$("<div>").addClass("icon_checkbox").toggleClass("clicked", chosen.indexOf(d.mac) != -1).appendTo($content);
++		$("<div>").addClass("cb_item_text").attr({"data-rg-ip":d.ip}).html(item_text(d.label, d.ip)).appendTo($content);
++	});
++	if(rsv.length == 0)
++		$("<div>").attr({"id":"rg_devs_empty"}).css({"font-size":"12px","opacity":"0.75","margin":"6px 0 8px","line-height":"1.4"})
++			.html(`<#RSDN_22#>`).appendTo($cntr);
++	else{
++		$("<div>").attr({"id":"rg_devs_note"}).css({"font-size":"12px","opacity":"0.75","margin":"6px 0 8px","line-height":"1.4"})
++			.html(`<#RSDN_21#>`).appendTo($cntr);
++		/* the Name / Hostname arrive after the list is drawn (the hook reads the lease and name stores) */
++		httpApi.hookGetAsync({"data":"reaper_devnames", "error":function(){}, "success":function(names){
++			if(!names || typeof names != "object")
++				return;
++			$cntr.find(".cb_item_container[data-rg-mac]").each(function(){
++				const $text = $(this).find(".cb_item_text");
++				$text.html(item_text(reaper_gc_label($(this).attr("data-rg-mac"), $(this).attr("data-rg-dns"), names), $text.attr("data-rg-ip") || ""));
++			});
++		}});
++	}
++	/* discovery */
++	const mdns = reaper_gc_mdns_parse(apg_rl.rg_mdns);
++	const mdns_on = (String(apg_rl.rg_mdns == undefined ? "" : apg_rl.rg_mdns) != "");
++	$mdns_wrap.find("#rg_mdns_enabled").removeClass("off on").addClass(mdns_on ? "on" : "off");
++	$mdns_wrap.find("[data-rg-svc]").each(function(){
++		$(this).find(".icon_checkbox").toggleClass("clicked", mdns.presets.indexOf($(this).attr("data-rg-svc")) != -1);
++	});
++	$mdns_wrap.find("#rg_mdns_extra").val(mdns.extra.join(", "));
++	/* re-evaluated when Set AP Isolated, the Main Network tick of Access Intranet or the Portal tab's type changes
++	   (bound after the components' own handlers on the same elements, so the new state is read) */
++	$ps.find("#ap_isolate").unbind("click.rgc").bind("click.rgc", function(){ reaper_guest_cross_gate($ps); });
++	$ps.find("[data-container='access_intranet_cntr'] [sdn_idx='0'] > .cb_item_content_container").unbind("click.rgc").bind("click.rgc", function(){ reaper_guest_cross_gate($ps); });
++	$ps.find("#select_portal_type").children("div").unbind("click.rgc").bind("click.rgc", function(){ reaper_guest_cross_gate($ps); });
++	reaper_guest_cross_gate($ps);
++}
++function reaper_guest_cross_gate($ps){
++	const $devs_wrap = $ps.find("#rg_devs_wrap"), $mdns_wrap = $ps.find("#rg_mdns_wrap");
++	if($devs_wrap.length == 0 && $mdns_wrap.length == 0)
++		return;
++	/* paired with the main network by Access Intranet = out of isolation: nothing to open; a network the Portal tab
++	   turns into a portal gets neither (rc never applies them to a portal) */
++	const paired = $ps.find("[data-container='access_intranet_cntr'] [sdn_idx='0'] .icon_checkbox").hasClass("clicked");
++	const shown = reaper_gc_rows_shown(paired, $ps.find("#select_portal_type").children(".selected").attr("value"));
++	$devs_wrap.toggle(shown);
++	$mdns_wrap.toggle(shown);
++	/* Set AP Isolated keeps every client of the network apart: no discovery while it is on (rc agrees) */
++	const iso = $ps.find("#ap_isolate").hasClass("on");
++	const $sw = $mdns_wrap.find("#rg_mdns_enabled");
++	if(iso)
++		$sw.attr({"temp_disable":"disabled"}).css({"opacity":"0.5"});
++	else
++		$sw.removeAttr("temp_disable").css({"opacity":""});
++	$mdns_wrap.find("#rg_mdns_iso_note").toggle(iso);
++	$mdns_wrap.find("#rg_mdns_cntr").toggle(!iso && $sw.hasClass("on"));
++	if(typeof resize_iframe_height == "function")
++		resize_iframe_height();
++}
++function reaper_guest_cross_mdns_switched($ps, _on){
++	const $cntr = $ps.find("#rg_mdns_cntr");
++	if(_on){
++		/* switching on starts with Printing, AirPlay and Google Cast */
++		if($cntr.find("[data-rg-svc] .icon_checkbox.clicked").length == 0 && $.trim($cntr.find("#rg_mdns_extra").val()) == ""){
++			$.each(["print", "airplay", "cast"], function(index, k){
++				$cntr.find("[data-rg-svc='" + k + "'] .icon_checkbox").addClass("clicked");
++			});
++		}
++		$cntr.show();
++	}
++	else
++		$cntr.hide().find(".validate_hint").remove();
++	if(typeof resize_iframe_height == "function")
++		resize_iframe_height();
++	if(typeof set_apply_btn_status == "function")
++		set_apply_btn_status($ps);
++}
++/* the discovery switch counts only while its row is shown and Set AP Isolated does not hold it */
++function reaper_guest_cross_mdns_live($ps){
++	const $mdns_wrap = $ps.find("#rg_mdns_wrap");
++	return ($mdns_wrap.length > 0 && $mdns_wrap.css("display") != "none" && $mdns_wrap.find("#rg_mdns_enabled").attr("temp_disable") != "disabled");
++}
++function reaper_guest_cross_mdns_value($ps){
++	const $cntr = $ps.find("#rg_mdns_cntr");
++	let presets = [];
++	$cntr.find("[data-rg-svc]").each(function(){
++		if($(this).find(".icon_checkbox").hasClass("clicked"))
++			presets.push($(this).attr("data-rg-svc"));
++	});
++	return reaper_gc_mdns_serialise(presets, $cntr.find("#rg_mdns_extra").val());
++}
++function reaper_guest_cross_valid($ps){
++	if(!reaper_guest_cross_mdns_live($ps) || !$ps.find("#rg_mdns_enabled").hasClass("on"))
++		return true;
++	if(reaper_guest_cross_mdns_value($ps).ok)
++		return true;
++	$ps.find("#rg_mdns_extra").show_validate_hint(`<#RSDN_28#>`);
++	show_customize_alert(`<#RSDN_28#>`);
++	return false;
++}
++/* page -> apg_rl (parse_apg_rl_to_apgX_rl writes apgN_rg_devs / apgN_rg_mdns); a hidden row keeps the stored value */
++function reaper_guest_cross_collect($ps, _sdn_profile){
++	if(_sdn_profile == undefined || _sdn_profile.apg_rl == undefined)
++		return;
++	/* saved as a portal: the stored values stay as they are (the rows are hidden; rc ignores them for a portal) */
++	if(!reaper_gc_rows_shown(false, $ps.find("#select_portal_type").children(".selected").attr("value")))
++		return;
++	const $devs_wrap = $ps.find("#rg_devs_wrap");
++	if($devs_wrap.length > 0 && $devs_wrap.css("display") != "none" && $devs_wrap.attr("data-rg-failed") != "1"){
++		let macs = [];
++		$devs_wrap.find(".cb_item_container[data-rg-mac]").each(function(){
++			if($(this).find(".icon_checkbox").hasClass("clicked"))
++				macs.push($(this).attr("data-rg-mac"));
++		});
++		_sdn_profile.apg_rl.rg_devs = reaper_gc_devs_serialise(macs);
++	}
++	if(reaper_guest_cross_mdns_live($ps)){
++		if($ps.find("#rg_mdns_enabled").hasClass("on")){
++			const r = reaper_guest_cross_mdns_value($ps);
++			if(r.ok)
++				_sdn_profile.apg_rl.rg_mdns = r.value;
++		}
++		else
++			_sdn_profile.apg_rl.rg_mdns = "";
++	}
++}
++/* nvramSet_obj complete: when only the guest-path keys of network N differ from nvram, send restart_reaper_guest
++   (rc: reaper_guest_apply + reaper_mdns_follow) instead of the radio / network restart; on any doubt keep stock's */
++function reaper_guest_cross_save(_nvramSet_obj, _apg_idx){
++	if(_nvramSet_obj == undefined || !/^\d+$/.test(String(_apg_idx)))
++		return false;
++	if(!(("apg" + _apg_idx + "_rg_devs") in _nvramSet_obj) && !(("apg" + _apg_idx + "_rg_mdns") in _nvramSet_obj))
++		return false;
++	const skip = ["action_mode", "action_script", "action_wait", "rc_service", "current_page", "next_page"];
++	const keys = Object.keys(_nvramSet_obj).filter(function(k){ return skip.indexOf(k) == -1; });
++	const cross = ["apg" + _apg_idx + "_rg_devs", "apg" + _apg_idx + "_rg_mdns"].filter(function(k){ return k in _nvramSet_obj; });
++	let cur = {};
++	try{
++		/* a small read first: most saves leave the two keys alone, and then nothing more is read */
++		const now = httpApi.nvramCharToAscii(cross, true);
++		if(now == undefined || now.isError || cross.every(function(k){ return decodeURIComponent(now[k] || "") === String(_nvramSet_obj[k]); }))
++			return false;
++		const got = httpApi.nvramCharToAscii(keys, true);
++		if(got == undefined || got.isError)
++			return false;
++		keys.forEach(function(k){ cur[k] = (got[k] == undefined) ? "" : decodeURIComponent(got[k]); });
++	}
++	catch(e){
++		return false;
++	}
++	if(!reaper_gc_only_cross(_nvramSet_obj, cur, _apg_idx))
++		return false;
++	_nvramSet_obj.rc_service = "restart_reaper_guest;";
++	return true;
++}
++/* REAPER-GUEST-CROSS-END */
++/* REAPER-APISO-LAN-BEGIN (2026-11-19, owner decision): AP Isolation is a choice on every network that has the
++   switch - Off / Wi-Fi only (default) / Wi-Fi and LAN ports. The switch stays the stock key (apmN_ap_isolate for the
++   main network, apgN_ap_isolate for the others); the choice row under it, shown while the switch is on, stores
++     reaper_ap_isolate_lan  the main network and every network riding its subnet (they share its bridge, and stock
++                            already keeps their switches in step)
++     apgN_ap_isolate_lan    a network with its own subnet (through apg_rl, like apgN_rg_devs)
++   "1" = Wi-Fi and LAN ports: the LAN ports of that network are also kept apart, from each other and from Wi-Fi
++   (devices behind one external switch still reach each other; AiMesh backhaul ports never are); anything else = Wi-Fi
++   only (rc/lan.c REAPER-BRPORT-WIRED). Switched off, the stored choice stays for the next time it is switched on. A
++   save that changes the choice keeps the stock restart (restart_wireless;restart_sdn N;): the light
++   restart_reaper_guest does not re-plan bridge ports. The reaper_apiso_lan_global / _shown / _next helpers take no
++   page state: test_ap_isolation_choice_ui.py runs them under node. */
++function reaper_apiso_lan_global(_sdn_rl){
++	if(_sdn_rl == undefined || _sdn_rl == null || _sdn_rl.sdn_name == "MAINBH")
++		return false;
++	return (_sdn_rl.sdn_name == "MAINFH" || String(_sdn_rl.subnet_idx) == "0");
++}
++/* the stored value -> the choice shown */
++function reaper_apiso_lan_shown(_cur){
++	return (String(_cur) == "1") ? "1" : "0";
++}
++/* the stored value + the choice made -> the value to store. Wi-Fi only keeps an unset value unset (both mean Wi-Fi
++   only), so an untouched choice is never a change */
++function reaper_apiso_lan_next(_cur, _sel){
++	if(String(_sel) == "1")
++		return "1";
++	return (_cur == undefined || _cur == null || String(_cur) === "") ? "" : "0";
++}
++/* ---- page side ---- */
++function reaper_apiso_lan_set($wrap, _value){
++	const $opts = $wrap.find("#select_ap_isolate_lan");
++	const $opt = $opts.children("[value='" + reaper_apiso_lan_shown(_value) + "']");
++	$opts.children().removeClass("selected");
++	$opt.addClass("selected");
++	$wrap.find("#ap_isolate_lan").html(htmlEnDeCode.htmlEncode($opt.text()));
++}
++function reaper_apiso_lan_fill(_obj, _profile_data){
++	const $ps = $(_obj);
++	const $wrap = $ps.find("#ap_iso_lan_wrap");
++	if($wrap.length == 0)
++		return;
++	const sdn_rl = _profile_data.sdn_rl || {}, apg_rl = _profile_data.apg_rl || {};
++	if($ps.find("#ap_isolate").length == 0 || $.isEmptyObject(_profile_data.apg_rl) || sdn_rl.sdn_name == "MAINBH"){
++		$wrap.remove();
++		return;
++	}
++	let cur = "";
++	if(reaper_apiso_lan_global(sdn_rl)){
++		try{
++			const n = httpApi.nvramGet(["reaper_ap_isolate_lan"], true);
++			if(n != undefined && !n.isError && n.reaper_ap_isolate_lan != undefined)
++				cur = String(n.reaper_ap_isolate_lan);
++		}
++		catch(e){
++			cur = "";
++		}
++	}
++	else
++		cur = (apg_rl.ap_isolate_lan == undefined) ? "" : String(apg_rl.ap_isolate_lan);
++	$wrap.attr({"data-apiso-cur":cur});
++	reaper_apiso_lan_set($wrap, cur);
++	/* bound after the switch's own handler on the same element, so the new state is read */
++	$ps.find("#ap_isolate").unbind("click.apiso").bind("click.apiso", function(){ reaper_apiso_lan_gate($ps); });
++	reaper_apiso_lan_gate($ps);
++}
++function reaper_apiso_lan_gate($ps){
++	$ps.find("#ap_iso_lan_inner").toggle($ps.find("#ap_isolate").hasClass("on"));
++	if(typeof resize_iframe_height == "function")
++		resize_iframe_height();
++}
++/* page -> apg_rl (parse_apg_rl_to_apgX_rl writes apgN_ap_isolate_lan) or nvramSet_obj (reaper_ap_isolate_lan, only
++   when it changes); the switch off keeps the stored choice */
++function reaper_apiso_lan_collect($ps, _sdn_profile, _nvramSet_obj){
++	const $wrap = $ps.find("#ap_iso_lan_wrap");
++	if($wrap.length == 0 || _sdn_profile == undefined || _sdn_profile.apg_rl == undefined || _nvramSet_obj == undefined)
++		return;
++	if(!$ps.find("#ap_isolate").hasClass("on"))
++		return;
++	const cur = $wrap.attr("data-apiso-cur") || "";
++	const next = reaper_apiso_lan_next(cur, $wrap.find("#select_ap_isolate_lan").children(".selected").attr("value"));
++	if(reaper_apiso_lan_global(_sdn_profile.sdn_rl)){
++		if(next !== cur)
++			_nvramSet_obj.reaper_ap_isolate_lan = next;
++	}
++	else
++		_sdn_profile.apg_rl.ap_isolate_lan = next;
++}
++/* REAPER-APISO-LAN-END */
+ function Get_VPNC_Profile(){
+         var vpnc_profile_attr = function(){
+                 this.desc = "";
+@@ -11105,6 +11628,9 @@ var apg_rl_attr = function(){
+ 	this.apg_11be = "0";
+ 	this.dut_list = "";
+ 	this.disabled = "0";//for fw update, the wifi band is full
++	this.rg_devs = "";//Reaper 2026-11-19: guests may open connections to these reserved main-network devices (apgN_rg_devs)
++	this.rg_mdns = "";//Reaper 2026-11-19: device discovery with the main network, "" = off (apgN_rg_mdns)
++	this.ap_isolate_lan = "";//Reaper 2026-11-19: AP Isolation choice, "1" Wi-Fi and LAN ports, else Wi-Fi only (apgN_ap_isolate_lan)
+ };
+ var radius_rl_attr = function(){
+ 	this.radius_idx = "";
+@@ -11526,9 +12052,9 @@ function init_sdn_all_list(){
+ 		if(parseInt(_idx) > 0){
+ 			let apg_profile = new apg_rl_attr();
+ 			let apg_info = httpApi.nvramCharToAscii([prefix + _idx + "_enable", prefix + _idx + "_ssid", prefix + _idx + "_hide_ssid", prefix + _idx + "_security",
+-				prefix + _idx + "_bw_limit", prefix + _idx + "_timesched", prefix + _idx + "_sched", prefix + _idx + "_expiretime",prefix + _idx + "_ap_isolate",
++				prefix + _idx + "_bw_limit", prefix + _idx + "_timesched", prefix + _idx + "_sched", prefix + _idx + "_expiretime",prefix + _idx + "_ap_isolate", prefix + _idx + "_ap_isolate_lan",
+ 				prefix + _idx + "_macmode", prefix + _idx + "_mlo", prefix + _idx + "_maclist", prefix + _idx + "_iot_max_cmpt", prefix + _idx + "_dut_list",
+-				prefix + _idx + "_11be", prefix + _idx + "_disabled"], true);
++				prefix + _idx + "_11be", prefix + _idx + "_disabled", prefix + _idx + "_rg_devs", prefix + _idx + "_rg_mdns"], true);
+ 			apg_profile.apg_idx = _idx.toString();
+ 			apg_profile.enable = apg_info[prefix + _idx + "_enable"];
+ 			apg_profile.ssid = decodeURIComponent(apg_info[prefix + _idx + "_ssid"]);
+@@ -11546,6 +12072,9 @@ function init_sdn_all_list(){
+ 			apg_profile.dut_list = decodeURIComponent(apg_info[prefix + _idx + "_dut_list"]);
+ 			apg_profile.apg_11be = decodeURIComponent(apg_info[prefix + _idx + "_11be"]);
+ 			apg_profile.disabled = decodeURIComponent(apg_info[prefix + _idx + "_disabled"]);
++			apg_profile.rg_devs = decodeURIComponent(apg_info[prefix + _idx + "_rg_devs"] || "");//Reaper 2026-11-19
++			apg_profile.rg_mdns = decodeURIComponent(apg_info[prefix + _idx + "_rg_mdns"] || "");//Reaper 2026-11-19
++			apg_profile.ap_isolate_lan = decodeURIComponent(apg_info[prefix + _idx + "_ap_isolate_lan"] || "");//Reaper 2026-11-19: AP Isolation choice
+ 			apg_rl_list.push(JSON.parse(JSON.stringify(apg_profile)));
+ 		}
+ 		return apg_rl_list;
+@@ -11775,6 +12304,9 @@ function get_new_sdn_profile(_parm){
+ 		apg_profile.iot_max_cmpt = "";
+ 		apg_profile.dut_list = "";
+ 		apg_profile.disabled = "0";
++		apg_profile.rg_devs = "";//Reaper 2026-11-19: a new network starts with no guest paths
++		apg_profile.rg_mdns = "";
++		apg_profile.ap_isolate_lan = "0";//Reaper 2026-11-19: AP Isolation choice starts at Wi-Fi only
+ 		return (JSON.parse(JSON.stringify(apg_profile)));
+ 	}
+ 	function get_rl_new_idx(start_idx, category){
+@@ -12724,7 +13256,7 @@ function parse_apg_rl_to_apgX_rl(_apg_rl, _prefix){
+ 		Object.keys(_apg_rl).forEach(function(key){
+ 			let nvram_key = key;
+ 			if(key == "apg_11be") nvram_key = "11be";
+-			if(nvram_key != "apg_idx" && nvram_key != "disabled"){
++			if(nvram_key != "apg_idx" && nvram_key != "disabled" && !(prefix == "apm" && (nvram_key == "rg_devs" || nvram_key == "rg_mdns")) && !(prefix == "apm" && nvram_key == "ap_isolate_lan")){//Reaper 2026-11-19: guest-path keys and the AP Isolation choice are apgN only (the main network's choice is reaper_ap_isolate_lan)
+ 				result[prefix + apg_idx + "_" + nvram_key] = _apg_rl[key];
+ 			}
+ 		});
+-- 
+2.25.1
+

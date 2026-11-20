@@ -1,8 +1,8 @@
 # Reaper — the owner's guide
 
-> **Doc status:** current as of **v3.8.2** · 2026-11-18 <!--@stamp-->
+> **Doc status:** current as of **v3.8.3** · 2026-11-19 <!--@stamp-->
 
-**Applies to:** Reaper firmware for the ASUS RT-BE96U (primary model) and the sibling RT-BE86U, RT-BE88U, GT-BE98, GT-BE98 Pro, GT-BE19000, ZenWiFi BQ16 and ZenWiFi BQ16 Pro, in two lines with the same Reaper version: `3006.102.10_Reaper_v<X>` (RT-BE96U, RT-BE86U, RT-BE88U, GT-BE98 Pro) and `3006.102.8_Reaper_v<X>` (GT-BE98, GT-BE19000, BQ16, BQ16 Pro; see 2.1). This guide describes the feature set as of the v3.8.2 <!--@treever--> source tree. The newest *published* release may be behind that; where a feature is newer than the image you are running, the page simply will not be there yet. See [`CHANGELOG.md`](CHANGELOG.md) for what each version added and [`BACKLOG.md`](BACKLOG.md) for what is still pending confirmation.
+**Applies to:** Reaper firmware for the ASUS RT-BE96U (primary model) and the sibling RT-BE86U, RT-BE88U, GT-BE98, GT-BE98 Pro, GT-BE19000, ZenWiFi BQ16 and ZenWiFi BQ16 Pro, in two lines with the same Reaper version: `3006.102.10_Reaper_v<X>` (RT-BE96U, RT-BE86U, RT-BE88U, GT-BE98 Pro) and `3006.102.8_Reaper_v<X>` (GT-BE98, GT-BE19000, BQ16, BQ16 Pro; see 2.1). This guide describes the feature set as of the v3.8.3 <!--@treever--> source tree. The newest *published* release may be behind that; where a feature is newer than the image you are running, the page simply will not be there yet. See [`CHANGELOG.md`](CHANGELOG.md) for what each version added and [`BACKLOG.md`](BACKLOG.md) for what is still pending confirmation.
 
 Reaper is based on **Asuswrt-Merlin by Eric "Merlin" Sauvageau**. Every line of Reaper is a patch on top of that work; the base firmware, most of its features, and most of what is good about the result are his. Reaper is an independent fork. Neither ASUS nor the Asuswrt-Merlin project has reviewed, approved or endorsed it, and neither should be contacted about it (see [Where to report issues](#214-where-to-report-issues)).
 
@@ -632,7 +632,7 @@ Finally there is one row that is always **Not applicable** on purpose, named *Ou
 
 **It knows an intended exposure from an accident.** A DMZ host turns the "unsolicited WAN traffic never reaches a LAN host" rows into notes and adds a row that witnesses the DMZ itself (handed to the host, and passes). Networks you have deliberately linked in SDN access turn the guest-isolation row into a note, because isolation is then a per-pair question. With dual WAN the rows aim at whichever unit is primary. Two rows watch what no configuration asks for: an unforwarded high port on the router's own address must not be translated anywhere (a leftover catch-all forward would show here), and invalid-state packets from the WAN must be dropped both toward the LAN and toward the router — the latter is an explicit stock rule an early accept can shadow. Your own port forward of WAN port 80 to a LAN server turns the "WAN port 80 is closed" row into a note naming the server: the router's own port 80 stays closed, and the forward is witnessed in its own rows.
 
-**Reading a row.** *OK*: the promise holds and the rule column names what delivered it. *Unsuccessful*: the live tables do not deliver it, and the rule column names what caught the packet instead — that is the thing to fix. *Inconclusive*: a match the walker does not model (string, u32, time, policy) sits on the path, so the row is not judged rather than guessed — note this does **not** mean the row is degraded or half-working; nothing is known to be wrong with it, the walker simply declined to assert. *Not applicable*: the router has no such network yet (no IPv6, no WAN address). The pill colours still carry the same reading at a glance — jade for OK, amber for Inconclusive, red for Unsuccessful, grey for Not applicable — but the word is what the row means, so the tab stays readable to anyone who does not separate those colours. A banner above the table says when the filter table is still the boot-time skeleton, which means the full ruleset never loaded and nothing else on the tab matters until it does.
+**Reading a row.** *OK*: the promise holds and the rule column names what delivered it. *Unsuccessful*: the live tables do not deliver it, and the rule column names what caught the packet instead — that is the thing to fix. *Held*: a zone policy that allows a path into or out of an isolated guest network. The policy is saved correctly, but guest isolation (4.21) runs before the rules engine and keeps the path closed, by design. The note under the rule names the guest network (the bridge in the isolation rule that held it); to open the path, link the two networks with Access Intranet on the Network page. A held row is never counted as Unsuccessful: the tab's summary, the Status note, the confirm window and the dashboard count it on its own, and neither the watchdog nor the diagnostics bundle treats it as a fault (14g lists held rows with their note). Each guest network also shows the paths you opened for it (4.21): **reaches chosen device** rows, one per main-network device you picked that the router actually opens (it has a DHCP reservation inside the main LAN and is not an AiMesh node) - a guest opening a connection to it must be accepted, and if your own Firewall rule decides first, the rule column names that rule and the note says it is yours; and a **discovery (mDNS)** row, open while the network has service types picked and **AP Isolation** is off, closed otherwise. The *isolated from the main LAN* row is still checked against a main-network host you did not pick. With *Zone policies may open one-way paths from the main network into isolated guest networks* on, a zone policy from the main network into a guest network is checked like any other policy, and a second row (*reverse stays closed*) checks that the guest network still cannot open a connection back; with the switch off, such a policy is *Held* and its note names the switch. A policy into a Guest Portal network is always held; a policy whose source is a guest network stays held with the Access Intranet hint. *Inconclusive*: a match the walker does not model (string, u32, time, policy) sits on the path, so the row is not judged rather than guessed — note this does **not** mean the row is degraded or half-working; nothing is known to be wrong with it, the walker simply declined to assert. *Not applicable*: the router has no such network yet (no IPv6, no WAN address). The pill colours still carry the same reading at a glance — jade for OK, amber for Inconclusive, outlined amber for Held, red for Unsuccessful, grey for Not applicable — but the word is what the row means, so the tab stays readable to anyone who does not separate those colours. A banner above the table says when the filter table is still the boot-time skeleton, which means the full ruleset never loaded and nothing else on the tab matters until it does.
 
 **How to use it.** Look at it after every Apply and after a reboot, the same way as Status; the difference is that this tab tells you *which* promise broke and *where*. Two rows are worth knowing by name: a Gatekeeper-blocked device that reaches the WAN, and a port forward that is translated but then dropped — both have been real field incidents, and both are exactly what a red row here would have shown on day one. Nothing on the tab changes the firewall; the walker only reads the tables and writes a report, and nothing acts on that report. The same report appears in the diagnostics bundle (section 14g, as information), is logged by the watchdog as one advisory line when the set of red rows changes, and is shown in the Rules tab's confirm window before you press Keep.
 
@@ -709,6 +709,8 @@ Because an explicit rule beats an Egress default, which beats a Zone policy, you
 **Example.** Define a zone `guest` with interface `br1`, and a zone `lan` with `br0`. Add a zone policy: source `guest`, destination `lan`, action `Drop`. Guests can now reach the internet but nothing on your home network — and you have not written a single address anywhere.
 
 **Worth knowing.** A zone policy is the weakest statement in the engine; both explicit Rules and Egress defaults override it. That is what makes "deny everything, then allow what I need" workable. A zone holds at most 8 interfaces (a `+` wildcard counts as one), and at most 64 zone policies can be saved; the page refuses more.
+
+**Guest networks.** Guest isolation (4.21.3) runs before the rules engine, so a zone policy cannot open a path into an isolated guest network; Rule Status shows such rows as *Held*. The Zones tab switch **Zone policies may open one-way paths from the main network into isolated guest networks** (`reaper_fw_zpol_guest`, off by default; needs the rules engine on) changes one case: an Accept policy whose source is the main network, or a network paired with it through Access Intranet, and whose destination is an isolated guest network (not a Guest Portal) opens that path. Replies come back, but the guests still cannot start connections toward the main network. The first policy that matches a pair decides. A guest network as source, guest to guest, WAN, VPN and wildcard zones never open anything. Apply restarts the firewall.
 
 #### 4.1.6 Egress
 
@@ -2277,7 +2279,7 @@ instance) is not shown.
 - **Auto Scan** — sweeps a radio's channels *at the width it will actually run* (6 GHz in 320 MHz blocks, 5 GHz in 80 MHz blocks, 2.4 GHz as 20 MHz channels), ranks them by cleanliness, and **restores the original channel when it finishes**; only **Pin best** commits the winner (an owner decision from v2.5.4 — the page text still describes the earlier auto-pin behaviour in one place). Each candidate restarts the radio, so run it from a wired client or another band; DFS channels are deliberately not swept (each needs a 60-second listening period). Pinning takes that radio off automatic selection until you set it back to Auto. The report can be printed to PDF or downloaded as HTML with a spectrum plot.
 - **Passive Channel Monitor** (`rchqd`, opt-in) watches only the current channel and flags *degrading — consider Auto Scan*; it never changes a channel. Degraded/recovered transitions are logged, edge-triggered and rate-limited; the threshold is tunable (`rchq_degraded`).
 
-**Wireless › Settings** (v3.2.2) is the one tab that configures every radio setting a user can change; it replaces the stock General and Professional tabs, which redirect to it. It lays every radio side by side (it builds itself from the router's real radio list, so a four-radio GT-BE98 gets four columns) and applies once: only changed fields are written and all radios restart together (~10 s). Network name, security, Wi-Fi 6 and Wi-Fi 7 mode and Smart Connect are set on the Network menu, because on this hardware the main network is an SDN profile. Channel and bandwidth offer what the driver reports for each band; the wireless scheduler opens a 7×24 grid. A greyed control is locked by another setting: Legacy mode parks what stock parks (beamforming, modulation scheme, AMPDU RTS and RTS Threshold), WMM is a choice in Legacy only, Fragmentation Threshold is editable in Legacy only, MU-MIMO follows the OFDMA choice, the scheduler is held off while MLO is enabled, *Disable 802.11b* is the master for the 2.4 GHz preamble control, and a fixed channel parks the auto-channel options. From v3.2.3 a greyed control names its reason when you hover it. *Set AP Isolated* is not on this tab: on this build AP isolation is a per-network setting on the Network menu. Roaming assistant: -90 to -40 dBm, 0 = off. **Wireless Mode** (v3.2.1) is per radio with stock's option sets (2.4 GHz Auto / N only / Legacy; 5 GHz Auto / AX only / N-AC-AX mixed / Legacy; 6 GHz Auto / AX only; the firmware has no Wi-Fi 7-only mode). Every mode except Auto, N/AC/AX mixed and AX only switches Wi-Fi 6 and Wi-Fi 7 off on that band, and Apply asks first; applying an Auto or AX-capable mode restores them, which the firmware alone never did. The radio toggle refuses to switch a radio off while MLO is enabled, and switching a radio off asks for confirmation on an AiMesh router because the setting reaches the nodes. A value a rule forces is written at apply as a derived heal when the stored value disagrees.
+**Wireless › Settings** (v3.2.2) is the one tab that configures every radio setting a user can change; it replaces the stock General and Professional tabs, which redirect to it. It lays every radio side by side (it builds itself from the router's real radio list, so a four-radio GT-BE98 gets four columns) and applies once: only changed fields are written and all radios restart together (~10 s). Network name, security, Wi-Fi 6 and Wi-Fi 7 mode and Smart Connect are set on the Network menu, because on this hardware the main network is an SDN profile. Channel and bandwidth offer what the driver reports for each band; the wireless scheduler opens a 7×24 grid. A greyed control is locked by another setting: Legacy mode parks what stock parks (beamforming, modulation scheme, AMPDU RTS and RTS Threshold), WMM is a choice in Legacy only, Fragmentation Threshold is editable in Legacy only, MU-MIMO follows the OFDMA choice, the scheduler is held off while MLO is enabled, *Disable 802.11b* is the master for the 2.4 GHz preamble control, and a fixed channel parks the auto-channel options. From v3.2.3 a greyed control names its reason when you hover it. **AP Isolation** is not on this tab: on this build it is a per-network setting on the Network menu, with a choice of what it keeps apart: **Wi-Fi only** (the default: Wi-Fi clients cannot reach each other, wired devices stay reachable) or **Wi-Fi and LAN ports** (the LAN ports are kept apart too) (4.21.2, 4.21.3). Roaming assistant: -90 to -40 dBm, 0 = off. **Wireless Mode** (v3.2.1) is per radio with stock's option sets (2.4 GHz Auto / N only / Legacy; 5 GHz Auto / AX only / N-AC-AX mixed / Legacy; 6 GHz Auto / AX only; the firmware has no Wi-Fi 7-only mode). Every mode except Auto, N/AC/AX mixed and AX only switches Wi-Fi 6 and Wi-Fi 7 off on that band, and Apply asks first; applying an Auto or AX-capable mode restores them, which the firmware alone never did. The radio toggle refuses to switch a radio off while MLO is enabled, and switching a radio off asks for confirmation on an AiMesh router because the setting reaches the nodes. A value a rule forces is written at apply as a derived heal when the stored value disagrees.
 
 **Gotchas.** Smart Connect excludes 6 GHz by default on some configurations (visible in the Smart Connect Rules table as "- -" columns, which is normal).
 
@@ -3376,13 +3378,13 @@ points to **Set up this router** (2.3); the main network is created at the first
 
 | Type | Made for | What the wizard sets by default |
 |---|---|---|
-| **Guest Network** | Visitors | Own subnet; **Set AP Isolated on**; **WiFi Scheduling on**, with *Scheduled* or *One Time Access*; no intranet access |
+| **Guest Network** | Visitors | Own subnet; **AP Isolation on** (Wi-Fi only); **WiFi Scheduling on**, with *Scheduled* or *One Time Access*; no intranet access |
 | **Kid's Network** | Children's devices | Own subnet; WiFi Scheduling on; no intranet access; a *Kid's Network LED* switch on models with that LED; where the model offers it, **Portal Type** preselected to **Message Board** (choose None for no page) |
 | **IoT Network** | Cameras, speakers, plugs | **Use same subnet as main network: on**; 2.4 GHz only; optional *Sync to all AiMesh node(s)* (the Default IoT Network, 4.21.5) |
 | **VPN Network** | Devices that must leave by a VPN | Own subnet; **Access Intranet to the Main Network on**; a VPN client with its Kill Switch on |
 | **Multi-Link Operation (MLO)** | Wi-Fi 7 devices | An MLO network over at least two bands; see 2.8 |
 | **Customized Network** | Anything else | Own subnet; every switch off |
-| **Guest Portal** | Walk-in guests | Own subnet; Set AP Isolated on; a sign-in page (4.21.7). Not on BQ16 / BQ16 Pro |
+| **Guest Portal** | Walk-in guests | Own subnet; **AP Isolation** on (Wi-Fi only); a sign-in page (4.21.7). Not on BQ16 / BQ16 Pro |
 | **Gaming Network** | Game consoles | Only on models with ASUS's gaming network feature |
 | **Employee**, **Scheduled Network** | Offices | Only on ASUS business models |
 
@@ -3421,9 +3423,13 @@ three sections: **General**, **Advanced Settings** and **AiMesh**.
 | **Print the WiFi quick connect sheet** | A printable page with the SSID, password and a QR code. From v3.7.8 the sheet stays open until printed | - |
 | **Bandwidth Limiter** | Download and upload caps in Mb/s for the whole network. Turning it on **turns hardware acceleration off** (the page asks first). Not offered on IoT, Default IoT, main or portal networks | Off |
 | **Access Intranet** | Which other networks this one may reach: **Main Network** and each network that has its own subnet (`SSID (VLAN n)`). See 4.21.3 | Unticked, except VPN Network (Main Network ticked) |
+| **Reach these main-network devices** | Router mode; a network with its own subnet that is not a Guest Portal and does not have Main Network ticked in Access Intranet. Lists the main-network devices with a reserved address (LAN > DHCP Server, Manual Assignment on) by Name, else Hostname, with their address. AiMesh nodes and the router are never listed. Guests may open connections to the ticked devices only; those devices cannot open connections to the guests. At most 16. A ticked device whose reservation was removed shows *no reserved address* and is skipped until unticked. See 4.21.3 | None |
+| **Device discovery with the main network** | Same conditions. On: pick **Printing**, **AirPlay**, **Google Cast**, **HomeKit / Matter**, **Spotify / Sonos** and/or **Other service types** (`_name._tcp` / `_name._udp`, separated by commas; at most 16 service types in all). Switching on starts with Printing, AirPlay and Google Cast. Devices of those kinds show up between this network and the main network in both directions; never between two guest networks; the router's own names are not announced here. Not available while **AP Isolation** is on. Discovery only shows devices: to use one, tick it in the list above. See 4.21.8 | Off |
 | **WiFi Scheduling** | When the SSID is on. **Scheduled**: weekly time slots. **One Time Access** (Guest Network): the SSID runs for a set time (2 hours preselected, quick choices or Custom) and the card counts down | Guest and Kid's: on; others off |
 | **LED** | The network's LED effect, on models with it | Kid's / VPN / Gaming: on |
 | **Enable MAC Filter** | **Disable**, **Accept** (only listed devices may join) or **Reject** (listed devices may not), with a MAC list | Disable |
+
+The setup wizards do not offer **Reach these main-network devices** or **Device discovery**; set them after the network is created. A save that changes only these two applies them without restarting Wi-Fi.
 
 The stock **AdGuard** switch is not shipped (Reaper removed the ASUS cloud DNS service); use Wallguard (4.3.3)
 instead.
@@ -3440,7 +3446,7 @@ instead.
 | **VLAN ID** | The 802.1Q tag of the network, 3 to 4093. **Assign** opens the VLAN profiles (4.22.4) | Picked by the router |
 | **Hide SSID** | The SSID is not broadcast; devices must enter it by hand | Off |
 | **DNS Server** | **Default** (the router's resolver for this network) or **Assign**: a provider from the list or two addresses. See 4.21.6 | Copied from the main LAN's *Handed to clients* servers (4.22.2) when the network is created; empty = Default |
-| **Set AP Isolated** | Wi-Fi devices on this SSID cannot reach each other. Also keeps the network out of the mDNS reflector (4.21.8) | Guest and Guest Portal: on |
+| **AP Isolation** | Wi-Fi devices on this SSID cannot reach each other. While it is on, **Isolate** picks what else it keeps apart: **Wi-Fi only** - wired devices on the network stay reachable unless its VLAN profile sets **Port Isolation** (4.22.4); **Wi-Fi and LAN ports** - the network's LAN ports are kept apart too, from each other and from Wi-Fi (devices behind one external switch still reach each other; the uplink port, VLAN trunk ports and a port with an AiMesh node behind it are never isolated). On a guest network the trunk to AiMesh nodes keeps the firmware's own isolation with either choice, so Wi-Fi guests on different nodes stay apart. On a Reaper AiMesh node the choice does not apply: the node keeps the firmware's own behaviour (on 3006.102.10 that isolates its wired LAN ports too while AP Isolation is on), never less isolation than stock. On models whose LAN ports partly sit behind an external switch chip (the GT-BE98 Pro, and the GT-BE98 on the test line), isolation between the ports behind that chip is left as the firmware sets it: with **Wi-Fi only**, devices on those ports may not reach each other while AP Isolation is on (they still reach the router, the internet, Wi-Fi and the other LAN ports). The main network's choice covers every network on the main subnet; a network with its own subnet keeps its own. Switched off, the choice is kept for the next time. Also keeps the network out of the mDNS reflector (4.21.8) | Guest and Guest Portal: on; **Isolate**: Wi-Fi only |
 | **IPv6** | IPv6 for this network: **Auto Configuration Setting** *Auto* (SLAAC) or *Stateful* (DHCPv6), the pool's first and last host part (up to 4 hex digits), up to three IPv6 DNS servers. Reaper keeps these on screen for a wired-only network (WiFi Band None), where stock hid them | Off |
 | **Smart Connect Rule** | Opens the Smart Connect page, on models with band steering | - |
 
@@ -3479,14 +3485,19 @@ deny-only, so the stock rules, Gatekeeper and the firewall still decide what the
 
 | Direction | Allowed | Dropped |
 |---|---|---|
-| To the router | DHCP (UDP 67 / 547), DNS (port 53) to the network's own gateway address, IPv6 neighbour discovery, replies to connections the router started, the redirects the router itself made (Gatekeeper's waiting room, DNS Director), AiMesh nodes; a portal also its sign-in ports | Everything else on every router address: the web interface, SSH, ping, NTP, mDNS, the encrypted DNS server |
-| Out through the router | The WAN; the network's bound VPN client; a VPN client that VPN Director, an OpenVPN *redirect all* client or a Policy Routing rule sends it to (4.21.4); DNS queries DNS Director redirected (port 53 only) | The main LAN, every other guest network, the router's VPN clients it is not routed to |
-| Into the network | Replies; port forwards from the WAN; connections from clients of the router's **own** WireGuard / OpenVPN server (the server's own access setting still decides) | Everything from the main LAN and from other networks |
+| To the router | DHCP (UDP 67 / 547), DNS (port 53) to the network's own gateway address, IPv6 neighbour discovery, replies to connections the router started, the redirects the router itself made (Gatekeeper's waiting room, DNS Director), AiMesh nodes; a portal also its sign-in ports; mDNS (UDP 5353, IPv4) while **Device discovery** is on | Everything else on every router address: the web interface, SSH, ping, NTP, mDNS (unless Device discovery is on), the encrypted DNS server |
+| Out through the router | The WAN; the network's bound VPN client; a VPN client that VPN Director, an OpenVPN *redirect all* client or a Policy Routing rule sends it to (4.21.4); DNS queries DNS Director redirected (port 53 only); the main-network devices ticked in **Reach these main-network devices** (new connections from the guest only) | The main LAN, every other guest network, the router's VPN clients it is not routed to |
+| Into the network | Replies; port forwards from the WAN; connections from clients of the router's **own** WireGuard / OpenVPN server (the server's own access setting still decides); with the Firewall switch **Zone policies may open one-way paths from the main network into isolated guest networks** on, connections an Accept zone policy from the main network allows (4.1.5) | Everything from the main LAN and from other networks |
 
 Consequences an owner meets:
 
-- **A printer, NAS or Chromecast on the main LAN is unreachable** from an isolated network. Tick **Main Network** in
-  Access Intranet (and accept that the network is then not isolated), or put the devices on the same network.
+- **A printer, NAS or Chromecast on the main LAN** is unreachable from an isolated network until you open it: tick
+  the device in **Reach these main-network devices** (it needs a DHCP reservation), and turn on **Device discovery**
+  for that kind of device so the guest network sees it (4.21.8). Or tick Main Network in Access Intranet, and the
+  network is then not isolated.
+- **No switch opens** the router's pages, SSH or services, another guest network, or the WAN while the network's VPN
+  is down. Caveat: a ticked device that itself routes or proxies traffic gives the guests a way around the network's
+  VPN Kill Switch - pick devices, not gateways.
 - **A DNS server on the main LAN cannot be set as the network's DNS Server** (4.21.6): the guests cannot reach it.
   Use DNS Director's row for the network instead (4.22.2); a redirected query on port 53 passes.
 - **Linking two guest networks (from the image after v3.8.0).** Ticking another network (not Main Network) in
@@ -3499,8 +3510,12 @@ Consequences an owner meets:
   the router, and nothing on the main LAN can open a connection into the portal. A portal ticked together with
   any other network gets nothing from that tick (from the image after v3.8.0; before, it opened the main LAN to
   the portal's guests).
-- **Set AP Isolated** is a different control: it stops Wi-Fi devices on the same SSID reaching each other. Isolation
-  between networks works without it.
+- **AP Isolation** is a different control: it stops Wi-Fi devices on the same SSID reaching each other. With
+  **Wi-Fi only** (the default) wired devices stay reachable: on the main network (from the image after v3.8.2), and
+  on a guest network unless its VLAN profile sets Port Isolation (4.22.4). With **Wi-Fi and LAN ports** (from the
+  image after v3.8.2) the network's LAN ports are kept apart too, from each other and from Wi-Fi; devices behind one
+  external switch still reach each other, and AiMesh backhaul ports are never isolated. Isolation between networks
+  works without it.
 - Saving any network, a firewall restart and every VPN Director change rebuild the rules; existing connections from
   the network are dropped so that they meet the new rules. A rule the kernel refuses is logged as
   `guest isolation: N rule(s) refused`. The generated script is `/tmp/rguest/apply.sh`.
@@ -3551,6 +3566,10 @@ Changing VPN Director's rules re-applies isolation at once. IPv4 only, as VPN Di
 4. **Apply**. The client starts if it was off.
 5. Check from a device on the network that its public address is the VPN's.
 
+A network bound to a VPN client keeps its routing through a WAN reconnect: from the image after v3.8.2 the
+router puts the network's VPN routing rules back as soon as the WAN routes are rebuilt (before, the network
+left by the WAN until the VPN client restarted, unless its Kill Switch held it).
+
 **Example: one guest VLAN through OpenVPN by VPN Director.** Guest network `198.51.100.0/24`, OpenVPN client 1 in
 VPN Director mode, rule *enabled, source `198.51.100.0/24`, target OVPN1*. The guest network leaves by `tun11`; the
 main LAN stays closed to it. With the network's own Kill Switch on, only a binding counts and the rule is ignored by
@@ -3571,8 +3590,8 @@ this page keeps its per-node LAN-port rows**; earlier an edit reset them to *All
 
 1. **Add a Network > IoT Network**. Name it, set a password.
 2. Switch **Use same subnet as main network** off. Leave the band at 2.4 GHz unless the devices support 5 GHz.
-3. **Apply**. Open the card: leave **Access Intranet** unticked. Optionally switch **Set AP Isolated** on so the
-   devices cannot reach each other either.
+3. **Apply**. Open the card: leave **Access Intranet** unticked. Optionally switch **AP Isolation** on
+   so the Wi-Fi devices cannot reach each other either.
 4. Join the devices. They reach the internet and nothing on the main LAN; the phone app controls them through the
    vendor's cloud. For a device the phone must reach directly (casting, a local hub), use the main network instead.
 5. Optionally give the network a Wallguard profile (4.3.3.5).
@@ -3674,13 +3693,25 @@ networks** on (Administration > Tweaks, `reaper_mdns_reflect` `1`, the default; 
 - every network with **Main Network** ticked in Access Intranet (its devices are main-network devices on another
   SSID),
 
-leaving out any network with **Set AP Isolated** on (the main network too, if a radio has it on), every isolated
-network and every Guest Portal. On isolated networks and portals the router no longer answers mDNS at all. A
-relayed announcement never goes back to the network it came from. The system log lists the left-out bridges with
+leaving out any network with **AP Isolation** on (the main network too, if a radio has it on), every
+isolated network and every Guest Portal. On isolated networks and portals the router no longer answers mDNS at all.
+A relayed announcement never goes back to the network it came from. The system log lists the left-out bridges with
 the reason (for example `br54 AP isolated, br55 no intranet access`).
 
-To cast from a guest network to a TV on the main LAN, the guest network needs Access Intranet to the Main Network
-and AP isolation off, which means it is no longer isolated: decide which matters more.
+**Device discovery with the main network** (from the image after v3.8.2; per network, off by default) relays only
+chosen service types between the main network and one isolated guest network, without Access Intranet. Phones and
+computers on that network find the main network's devices of the types you pick (Printing, AirPlay, Google Cast,
+HomeKit / Matter, Spotify / Sonos, or your own entries), and main-network devices find the same kinds of device on
+that network. It is a star: the main network and that network only, never one guest network to another. Only the
+picked types cross, in both directions; a device's name and address cross only for a service of a picked type. The
+router's own name and services are not announced on that network, and a device there cannot take over the name of
+a main-network device that has announced itself recently. Discovery is not access: a guest device can open a
+connection to a main device only if that device is ticked in **Reach these main-network devices** (4.21.2). IPv4
+only; not available while **AP Isolation** is on; **mDNS across networks** off turns it off too.
+
+To cast from a guest network to a TV on the main LAN while keeping the network isolated: turn on Device discovery
+with **Google Cast** or **AirPlay** and tick the TV under Reach these main-network devices. Ticking Main Network in
+Access Intranet also works, but the network is then no longer isolated.
 
 #### 4.21.9 How the other features treat guest networks
 
@@ -3701,7 +3732,7 @@ and AP isolation off, which means it is no longer isolated: decide which matters
 1. **Add a Network > Guest Network**. Name `Home-Guest`, Security **Password**, a password you can read out.
 2. **WiFi Scheduling**: on, **One Time Access**, 4 hours, for an evening; or **Scheduled** for regular hours.
 3. **Apply**. **Print the WiFi quick connect sheet** gives visitors the QR code.
-4. Leave Access Intranet unticked and Set AP Isolated on: visitors reach the internet and nothing else.
+4. Leave Access Intranet unticked and **AP Isolation** on: visitors reach the internet and nothing else.
 
 **A kids' network with a schedule.**
 
@@ -4406,8 +4437,15 @@ locked: the WAN type owns the IPv6 setup.
 4. Set **WAN Prefix Length** to `56`. With DHCP-PD this is the prefix size the router asks the provider for: 48 to
    64, or empty / `0` to let the provider choose. From the image after v3.8.0 the page refuses another value (before,
    it was saved and silently ignored), and the system log says `Requested: none (provider default)` when no size
-   is asked. Guest and VLAN networks get public IPv6 addresses only from a /56 or larger prefix, so `64` (the
-   factory value) leaves them without IPv6 Internet where the provider follows the request.
+   is asked. Each guest and VLAN network gets its own public /64 cut from the delegated prefix. A /56 or
+   larger has room for every network; from the image after v3.8.2 a /57 to /63 works too, with room for networks
+   numbered up to 2^(64 - length) - 1 (a /60: up to 15, a /62: up to 3; the main LAN is 0 and keeps the first
+   /64). A network beyond that, and every network under a /64, gets a private (ULA) address (even with `ipv6_prefix_div`), and the system log
+   says so once per boot ("... uses a private (ULA) prefix"). From the image after v3.8.2 a new or reset router
+   asks for a /56 (`ipv6_prefix_len_wan` `56`, 8.1); an upgraded router keeps its value, often 64. With Static
+   IPv6 the same field is the WAN address length: when Static is picked on a router that still holds that 56,
+   the page fills in 64. With a /57 to /63 the main LAN keeps its own address and range; a guest network whose
+   /64 would equal the main LAN's gets a private (ULA) address instead.
 5. **Auto Configuration Setting**: Stateless (SLAAC) suits nearly every network. Leave **Enable Router
    Advertisement** and **Connect to DNS Server automatically** on.
 6. Apply. Within about 30 seconds **LAN IPv6 Prefix** and **LAN Prefix Length** show what the provider delegated
@@ -4969,7 +5007,8 @@ hidden, as on stock.
 **What it is.** Reaper's replacement for the stock System page (`Advanced_System_Content.asp`, which no longer
 ships). Every setting the stock page posted is here, under the same nvram keys, in five tabs: **Login and access**,
 **SSH**, **Time and NTP**, **Hardware** and **Maintenance**. A tab whose panels do not apply to the model or the
-operation mode is hidden.
+operation mode is hidden. On a phone (from the image after v3.8.2) the menu's tab bar keeps its size: a page wider than the screen
+pans sideways instead of shrinking the tabs, and long values such as the remote-access address wrap inside the screen.
 
 - **Apply** (top right) saves every tab at once. It posts only the settings that differ from what the router holds,
   and restarts only the services those settings need: the time service for the time zone, NTP and the reboot
@@ -5284,7 +5323,7 @@ almost every network; Apply restarts connection tracking.
 | Redirect the login page to the router domain name | Opening the router by its IP address switches the browser to `www.asusrouter.com` (`http_dut_redir`). | Off |
 | Drop IPv6 neighbour solicitation floods on the WAN | Drops multicast neighbour solicitations arriving on the WAN, for providers that flood them (`ipv6_ns_drop`). Restarts the firewall. | Off |
 | Answer WPAD requests with an empty entry | The DHCP server answers the WPAD option with an empty value, so Windows stops searching for a proxy file (`dhcpd_send_wpad`). Restarts DNS and DHCP. | On |
-| mDNS across networks | Devices on the main network and on every network with **Main Network** ticked in Access Intranet find each other (casting, printers, AirPlay); avahi relays mDNS between those networks (`reaper_mdns_reflect`). Networks with **Set AP Isolated**, networks without intranet access and Guest Portals are left out, and the router does not answer mDNS on the last two. Routing modes. | On |
+| mDNS across networks | Devices on the main network and on every network with **Main Network** ticked in Access Intranet find each other (casting, printers, AirPlay); avahi relays mDNS between those networks (`reaper_mdns_reflect`). Networks with **AP Isolation**, networks without intranet access and Guest Portals are left out, and the router does not answer mDNS on the last two. Routing modes. | On |
 
 **Wireless stability** (see also 8.2). For a router that freezes or drops every device at once. Switch on one at a
 time and give each a few days.
@@ -5675,6 +5714,13 @@ current mode. AiMesh is kept because nothing open replaces it, and its sync and 
 binaries (1.1). Related: adding a new Reaper node (2.2), node firmware updates (4.14), backhaul parking (4.10.13), the
 roaming block list (4.25) and **Keep devices that a node claims** (4.27.9).
 
+From the image after v3.8.2 a device connected with MLO shows the MLO icon on the AiMesh tab, and *MLO* as its band
+in the client list, whenever Reaper's own device scan knows it is MLO: on the main router and in Access Point mode,
+for devices on the router and on a node (the stock list the page reads left out devices that join with a private
+address per band). The mark only adds MLO, never removes it, and follows the MLO switch (4.25.7). In a node's MLO
+backhaul details each band's signal row is named 2.4 GHz, 5 GHz (5 GHz-1 / 5 GHz-2) or 6 GHz, as in the rest of the
+interface.
+
 #### 4.31.2 Traffic Manager > Internet Speed
 
 **Internet Speed** (`AdaptiveQoS_InternetSpeed.asp`) is the stock Ookla speed test, shown on models built with it
@@ -5864,7 +5910,7 @@ To read the live value of any key over SSH: `nvram get <key>`.
 
 ### 8.1 Stock settings whose default Reaper changes
 
-Eighteen ASUS/Merlin defaults ship with a different value under Reaper. Each is a deliberate choice,
+Nineteen ASUS/Merlin defaults ship with a different value under Reaper. Each is a deliberate choice,
 and each is reversible from the GUI.
 
 | Setting | Stock | Reaper | Why |
@@ -5884,12 +5930,13 @@ and each is reversible from the GUI.
 | `smbd_simpler_naming` | `0` | **`1`** | USB shares are named after the volume rather than a generated string. |
 | `v3_auth_type` | *(empty)* | **`SHA`** | SNMPv3 authentication defaults to SHA rather than nothing chosen. |
 | `v3_priv_type` | *(empty)* | **`AES`** | SNMPv3 privacy defaults to AES. Both matter only if you enable SNMP at all. |
+| `ipv6_prefix_len_wan` | `64` | **`56`** (image after v3.8.2) | With Native IPv6 and prefix delegation this is the prefix size asked of the provider; a /56 gives every guest and VLAN network its own public /64 (4.24). The same key is the Static IPv6 WAN address length; the IPv6 page shows 64 when Static is picked on an untouched router. |
 
 Earlier editions of this guide also listed `psc6g` (6 GHz preferred scanning channel) as changed from
 `0` to `1`. On every model in the fleet the stock factory value was already `1`; the stock table's
 second, conflicting entry applies only to two unrelated ASUS models.
 
-Reaper also **adds 121** entries of its own (8.2) and **removes 18** that belong to features it strips
+Reaper also **adds 126** entries of its own (8.2) and **removes 18** that belong to features it strips
 out: AiCloud and WebDAV (`enable_webdav`, `st_webdav_mode`, `webdav_proxy`, `webdav_aidisk`,
 `webdav_http_port`, `webdav_https_port`, `acc_webdavproxy`, `enable_webdav_captcha`,
 `enable_webdav_lock`, `webdav_acc_lock`, `webdav_lock_interval`, `webdav_lock_times`,
@@ -5908,7 +5955,7 @@ node can use and changes nothing while no node is paired. Keys marked *per radio
 for every radio as `wl0_…`, `wl1_…` and so on.
 
 **Firewall engine** (4.1) — `reaper_fw_enable` `0`, `reaper_fw_active` `0`, `reaper_fw_armed` `0`,
-`reaper_fw_confirm` `60`, `reaper_fw_st_auto` `0`, `reaper_fw_wt_auto` `0`. `reaper_fw_confirm` is the
+`reaper_fw_confirm` `60`, `reaper_fw_st_auto` `0`, `reaper_fw_wt_auto` `0`, `reaper_fw_zpol_guest` `0` (zone policies may open one-way paths from the main network into isolated guest networks, 4.1.5). `reaper_fw_confirm` is the
 auto-revert timer in seconds (15–3600): after you apply a ruleset, the firewall reverts unless you press
 Keep in time (2.7). `reaper_fw_st_auto` and `reaper_fw_wt_auto` are the **Auto refresh** switches of the
 Status and Rule Status tabs. The list keys
@@ -5977,8 +6024,12 @@ when the switch goes off).
 
 **mDNS across networks** (Administration › Tweaks) — `reaper_mdns_reflect` `1`: devices on the main network and
 on every network with Main Network ticked in Access Intranet can find each other (casting, printers, AirPlay); avahi relays mDNS between
-those networks only. A network with Set AP Isolated on, a network without intranet access and a Guest Portal are left
-out, and on the last two the router no longer answers mDNS at all. Off (`0`): each network sees only its own devices.
+those networks only. A network with **AP Isolation** on, a network without intranet access and a Guest
+Portal are left out, and on the last two the router no longer answers mDNS at all. Off (`0`): each network sees only its own devices. Per guest network (stored with the network's own Wi-Fi settings; their three template rows are in this count): `apgN_rg_devs` (the devices ticked in Reach these main-network devices) and `apgN_rg_mdns` (the Device discovery service types), both empty at factory and cleared when the network is deleted (4.21.2), and `apgN_ap_isolate_lan` `0` (the network's **AP Isolation** choice: `0` Wi-Fi only, `1` Wi-Fi and LAN ports; set to `0` for a new network and cleared when the network is deleted).
+
+**AP Isolation choice of the main network** (Network menu, the main network's card, 4.21.2) — `reaper_ap_isolate_lan` `0`: while the main network's **AP Isolation** is on, it keeps Wi-Fi clients apart and the
+wired devices stay reachable (Wi-Fi only). `1` (Wi-Fi and LAN ports): the router's LAN ports are kept apart too, from each other and from Wi-Fi; devices behind one external switch still reach each other and AiMesh backhaul
+ports are never isolated. It covers every network on the main subnet.
 
 **Guest Portal secret** — the portal's sign-in secret is a random one the router makes for itself the first time a
 portal starts and keeps (the stock value was the same on every router). The secret is never shown. The Tweaks control

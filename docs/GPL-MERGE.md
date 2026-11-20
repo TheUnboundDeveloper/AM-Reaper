@@ -1,6 +1,6 @@
 # Merging a new ASUS/Merlin GPL drop into the Reaper fork
 
-> **Doc status:** current as of **v3.8.2** · 2026-11-18 <!--@stamp-->
+> **Doc status:** current as of **v3.8.3** · 2026-11-19 <!--@stamp-->
 
 A step-by-step developer guide for bringing a new upstream Asuswrt-Merlin (or raw
 ASUS GPL) source drop into the RT-BE96U "reaper" fork with the least pain.
@@ -312,7 +312,7 @@ router.
 - Sync the lean repo (`REAPER-FIXES.md`, `patches/` = `git format-patch` of the
   hardening commits, and this guide), then push **the lean repo only**.
 
-**Patch-series regeneration recipe (the series is now at 1029 <!--@patchcount--> patches, through v3.8.2 <!--@treever-->,
+**Patch-series regeneration recipe (the series is now at 1036 <!--@patchcount--> patches, through v3.8.3 <!--@treever-->,
 appended + full-replay verified — `git am --keep-cr` of the series onto a fresh
 worktree of the base returned `AM_EXIT=0` and reproduced `release/src/router` with the
 only differences being vendored `*.md` files the pathspec

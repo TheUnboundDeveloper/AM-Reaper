@@ -72,6 +72,23 @@ static const struct rg_ref RT[] = {
 	{ 9, "br0", "br0", 0 },		/* a network riding the LAN bridge */
 };					/* index 8 names no enabled network */
 #define NRT ((int)(sizeof(RT) / sizeof(RT[0])))
+/* reaper 2026-11-19: zone paths - the shared zone-policy reader (shared/reaper_jfile.c) and the REAPER-GUEST-ZPOL
+ * block of reaper_guest_gen, run here on stand-in settings (case 48) */
+static const char *ZL = "", *PL = "", *SW = "0", *EN = "1", *ACC = "";
+static int nvram_match(const char *k, const char *v)
+{
+	const char *x = !strcmp(k, "reaper_fw_zpol_guest") ? SW : !strcmp(k, "reaper_fw_enable") ? EN : "";
+	return !strcmp(x, v);
+}
+static const char *nvram_safe_get(const char *k) { return !strcmp(k, "sdn_access_rl") ? ACC : ""; }
+static char *reaper_fw_list_live(const char *k) { return strdup(!strcmp(k, "zone") ? ZL : !strcmp(k, "zpol") ? PL : ""); }
+#define MTLAN_MAXINUM 22
+@@ZPOLPURE@@
+static void zpol_fill(struct rg_net *g, int n, const struct rg_ref *refs, int nref, const char lanif[])
+{
+	int k;
+@@ZPOLGEN@@
+}
 int main(int argc, char **argv)
 {
 	struct rg_net g[4]; char wan4[2][IFNAMSIZ] = { "eth0", "ppp0" }; char out[16];
@@ -161,6 +178,45 @@ int main(int argc, char **argv)
 	case 42: /* 2026-11-16: a portal handed a peer list by mistake - a portal has no peers */
 		g[0].sdn_idx = 4; strcpy(g[0].ifname, "tun22"); strcpy(g[0].brname, "br55"); strcpy(g[0].subnet, "192.168.52.0/24"); g[0].portal = 1;
 		strcpy(g[0].peer[0], "br54"); g[0].npeer = 1; n = 1; break;
+	case 43: case 44: case 45: /* reaper 2026-11-19: chosen devices - 43 a plain guest network, 44 kill switch on,
+				    * 45 a portal handed devices, discovery and a zone path by mistake */
+		if (s == 45) {
+			g[0].sdn_idx = 4; strcpy(g[0].ifname, "tun22"); strcpy(g[0].brname, "br55"); strcpy(g[0].subnet, "192.168.52.0/24");
+			g[0].portal = 1; g[0].mdns = 1; strcpy(g[0].zp[0].a, "br0"); strcpy(g[0].zp[0].b, "tun22"); g[0].nzp = 1;
+		} else {
+			g[0].sdn_idx = 5; strcpy(g[0].ifname, "br56"); strcpy(g[0].brname, "br56"); strcpy(g[0].subnet, "192.168.53.0/24");
+		}
+		if (s == 44) { strcpy(g[0].vpnif, "wgc5"); g[0].killsw = 1; }
+		strcpy(g[0].devlan, "br0"); strcpy(g[0].dev4[0], "192.168.50.10"); strcpy(g[0].dev4[1], "192.168.50.20"); g[0].ndev = 2;
+		n = 1; break;
+	case 46: /* reaper 2026-11-19: device discovery on */
+		g[0].sdn_idx = 5; strcpy(g[0].ifname, "br56"); strcpy(g[0].brname, "br56"); strcpy(g[0].subnet, "192.168.53.0/24");
+		g[0].mdns = 1; n = 1; break;
+	case 47: { /* reaper 2026-11-19: rg_dev_resolve - argv[2] devices, argv[3] dhcp_staticlist, argv[4] dhcp_static_x,
+		    * argv[5] lan_ipaddr (default 192.168.50.1); mask 255.255.255.0; AiMesh nodes aa:bb:cc:00:00:01 / :02 */
+		char aim[2][18] = { "AA:BB:CC:00:00:01", "aa:bb:cc:00:00:02" }, o[RG_DEV_MAX][16], sk[1024];
+		int i, nd;
+		nd = rg_dev_resolve(argv[2], argv[3], atoi(argv[4]), argc > 5 ? argv[5] : "192.168.50.1", "255.255.255.0", aim, 2,
+				    o, RG_DEV_MAX, sk, sizeof(sk));
+		for (i = 0; i < nd; i++) printf("%s,", o[i]);
+		printf("|%s\n", sk); return 0; }
+	case 48: { /* reaper 2026-11-19: zone paths as reaper_guest_gen builds them - the network set of case 41 under the pair
+		    * list argv[6]; argv[2] zone list, argv[3] zone policies, argv[4] reaper_fw_zpol_guest, argv[5] reaper_fw_enable;
+		    * argv[7] "ks" = network 3 bound to wgc5 with the kill switch on */
+		int i;
+		ZL = argv[2]; PL = argv[3]; SW = argv[4]; EN = argv[5]; ACC = argc > 6 ? argv[6] : "";
+		for (i = 0; i < NRT && n < 4; i++) {
+			const struct rg_ref *r = &RT[i];
+			if (r->idx == 0 || !strcmp(r->br, "br0")) continue;
+			if (!r->portal && rg_main_access(ACC, r->idx, RT, NRT, "br0")) continue;
+			g[n].sdn_idx = r->idx; strcpy(g[n].ifname, r->ifname); strcpy(g[n].brname, r->br); g[n].portal = r->portal;
+			if (r->portal && rg_main_access(ACC, r->idx, RT, NRT, "br0")) { g[n].lan_ok = 1; strcpy(g[n].lanif, "br0"); }
+			g[n].npeer = rg_peers(ACC, r->idx, RT, NRT, "br0", g[n].peer, RG_PEER_MAX);
+			if (argc > 7 && !strcmp(argv[7], "ks") && r->idx == 3) { strcpy(g[n].vpnif, "wgc5"); g[n].killsw = 1; }
+			n++;
+		}
+		zpol_fill(g, n, RT, NRT, "br0");
+		break; }
 	case 7: /* parsers */
 		rg_vpnif(5, out, sizeof(out)); printf("%s ", out); rg_vpnif(6, out, sizeof(out)); printf("%s ", out);
 		rg_vpnif(10, out, sizeof(out)); printf("%s ", out); rg_vpnif(0, out, sizeof(out)); printf("[%s] ", out);
@@ -176,7 +232,12 @@ try:
     c = os.path.join(tmp, "g.c"); exe = os.path.join(tmp, "g")
     msrv = re.search(r"/\* REAPER-GUEST-SRV-BEGIN[^\n]*\*/\n(.*?)\t/\* REAPER-GUEST-SRV-END \*/", gsrc, re.S)
     check("reaper_guest.c carries the REAPER-GUEST-SRV block (the VPN server list, run here as rc runs it)", msrv is not None)
-    open(c, "w").write(HARNESS.replace("@@PURE@@", m.group(1)).replace("@@SRV@@", msrv.group(1) if msrv else ""))
+    # reaper 2026-11-19: the zone-policy reader (shared) and the zone-path block of reaper_guest_gen
+    mzp = re.search(r"/\* REAPER-ZPOL-PURE-BEGIN.*?\*/(.*?)/\* REAPER-ZPOL-PURE-END \*/", read("shared/reaper_jfile.c"), re.S)
+    mzg = re.search(r"/\* REAPER-GUEST-ZPOL-BEGIN.*?\*/(.*?)\t/\* REAPER-GUEST-ZPOL-END \*/", gsrc, re.S)
+    check("shared/reaper_jfile.c carries REAPER-ZPOL-PURE and reaper_guest_gen the REAPER-GUEST-ZPOL block", mzp is not None and mzg is not None)
+    open(c, "w").write(HARNESS.replace("@@PURE@@", m.group(1)).replace("@@SRV@@", msrv.group(1) if msrv else "")
+                       .replace("@@ZPOLPURE@@", mzp.group(1) if mzp else "").replace("@@ZPOLGEN@@", mzg.group(1) if mzg else ""))
     r = subprocess.run([CC, "-Wall", "-Werror", "-Wno-unused-function", "-o", exe, c], capture_output=True, text=True)
     check("the block compiles with -Wall -Werror", r.returncode == 0, r.stderr)
     if r.returncode != 0:
@@ -193,6 +254,12 @@ try:
         return L
     def nat(txt):
         return [l for l in txt.splitlines() if l.startswith("R iptables -t nat ")]
+    def guigf(txt):
+        # reaper 2026-11-19: REAPER_GUI / REAPER_GUF stay deny-only; the layer's one ACCEPT is REAPER_GUA (chosen devices)
+        return [l for l in txt.splitlines() if " REAPER_GUI " in l or " REAPER_GUF " in l]
+    def acc_ok(txt):
+        return not [l for l in guigf(txt) if " -j ACCEPT" in l] and all(
+            " -A REAPER_GUA " in l for l in txt.splitlines() if " -j ACCEPT" in l)
 
     p = gen(7).split()
     check("vpnc_idx -> interface: 1..5 wgcN, 6..10 tun1N, anything else none", p == ["wgc5", "tun11", "tun15", "[]", "[]"], p)
@@ -293,7 +360,7 @@ try:
           "br54" not in t42 and rules(t42) == rules(gen(2)))
     for rl in ("<12>3", "<0>5", "<9>5", "<8>5", "<4>3", "<0>4", "<0>12<12>3", "<12>3<3>5<4>5"):
         t = gen(41, rl)
-        check("pair list %s: the layer never ACCEPTs (RETURN or DROP only)" % rl, " -j ACCEPT" not in t and rules(t), t[:200])
+        check("pair list %s: the layer never ACCEPTs (RETURN or DROP only)" % rl, acc_ok(t) and rules(t), t[:200])
     if shutil.which("sh"):
         sc = os.path.join(tmp, "pair.sh"); open(sc, "w").write(tk)
         r = subprocess.run(["sh", "-n", sc], capture_output=True, text=True)
@@ -305,7 +372,7 @@ try:
 
     for s in (1, 2, 3, 4, 5):
         t = gen(s)
-        check("set %d: the layer never ACCEPTs (deny-only: RETURN or DROP)" % s, " -j ACCEPT" not in t and rules(t), t[:300])
+        check("set %d: the layer never ACCEPTs (deny-only: RETURN or DROP)" % s, acc_ok(t) and rules(t), t[:300])
 
     t1 = gen(1); r4 = rules(t1, 4); r6 = rules(t1, 6)
     check("guest network, to the router (v4): AiMesh, established/DNAT'd flows, DHCP, DNS to its own gateway only, then DROP",
@@ -435,7 +502,7 @@ try:
           and "R ip6tables -A REAPER_GUF -i br56 -o wgs1 -m conntrack --ctstate RELATED,ESTABLISHED -j RETURN" in r6
           and r6.index("R ip6tables -A REAPER_GUF -o br56 -i wgs1 -j RETURN") < r6.index("R ip6tables -A REAPER_GUF -o br56 -j DROP"))
     check("...nothing new toward the router itself (REAPER_GUI as for any guest network), still deny-only",
-          [l for l in r4 if "REAPER_GUI" in l] == [l for l in rules(t1, 4) if "REAPER_GUI" in l] and " -j ACCEPT" not in t10)
+          [l for l in r4 if "REAPER_GUI" in l] == [l for l in rules(t1, 4) if "REAPER_GUI" in l] and acc_ok(t10))
     check("...and the script says so on the network's line",
           "# network 5: br56\n#   clients of the router's own VPN servers may open connections into it; it may only answer\n" in t10
           and "own VPN servers" not in t1)
@@ -458,7 +525,7 @@ try:
     t1x = gen(1)
     check("...port 53 only, and only a redirected (DNAT) connection: nothing else of the guest's reaches the main network",
           [l for l in rules(t1x) if "ctstate DNAT" in l and "REAPER_GUF" in l and "--dport 53 " not in l] == []
-          and "-i br56 -o br0" not in t1x and " -j ACCEPT" not in t1x)
+          and "-i br56 -o br0" not in t1x and acc_ok(t1x))
     check("...not on a portal (its DNS is held to its own resolver before DNS Director runs)",
           not [l for l in rules(gen(2)) + rules(gen(3)) + rules(gen(8)) if "REAPER_GUF" in l and "ctstate DNAT" in l])
     check("...not while the kill switch is on (the network's DNS stays in the tunnel)",
@@ -493,7 +560,7 @@ try:
     check("...IPv4 only (VPN Director writes IPv4 ip rules): the IPv6 chain has no rule exit",
           not [l for l in r6 if " -s 192.168." in l or ("-o tun11 -j RETURN" in l) or ("-o wgc2 -j RETURN" in l)], r6)
     check("...still deny-only, nothing toward a bridge or the router: every new exit leaves by a VPN client interface",
-          " -j ACCEPT" not in tr and [l for l in r4 if "REAPER_GUI" in l and "br54" in l] == [l.replace("br56", "br54") for l in rules(t1, 4) if "REAPER_GUI" in l]
+          acc_ok(tr) and [l for l in r4 if "REAPER_GUI" in l and "br54" in l] == [l.replace("br56", "br54") for l in rules(t1, 4) if "REAPER_GUI" in l]
           and all(re.search(r" -o (tun1[1-5]|wgc[1-5]) ", l) for l in rules(tr) if (" -s " in l or " -d " in l) and "REAPER_GUF" in l))
     check("...the script names the route on the network's line",
           "#   VPN Director / redirect-all routes it to tun11 (from 192.168.54.0/24 to any)\n" in tr)
@@ -572,12 +639,139 @@ try:
             r = subprocess.run([bb, "ash", "-n", sc], capture_output=True, text=True)
             check("the generated script parses (busybox ash -n)", r.returncode == 0, r.stderr)
 
+    # ---- reaper 2026-11-19 (owner, Image 2): the opt-in paths ----
+    # 43+: chosen main-network devices (REAPER_GUF RETURN + REAPER_GUA NEW ACCEPT), device discovery (REAPER_GUI 5353),
+    # zone paths (main -> guest one-way, with the Firewall switch and the rules engine on).
+    t1 = gen(1); t43 = gen(43); r4 = rules(t43, 4); r6 = rules(t43, 6)
+    dv = ["R iptables -A REAPER_GUF -i br56 -o br0 -d 192.168.50.10 -j RETURN",
+          "R iptables -A REAPER_GUF -i br56 -o br0 -d 192.168.50.20 -j RETURN"]
+    ga = ["R iptables -A REAPER_GUA -i br56 -o br0 -d 192.168.50.10 -m conntrack --ctstate NEW -j ACCEPT",
+          "R iptables -A REAPER_GUA -i br56 -o br0 -d 192.168.50.20 -m conntrack --ctstate NEW -j ACCEPT"]
+    check("devices: one RETURN per chosen device in REAPER_GUF, before the network's DROP (the chain stays deny-only)",
+          all(r4.count(x) == 1 for x in dv) and max(r4.index(x) for x in dv) < r4.index("R iptables -A REAPER_GUF -i br56 -j DROP"), r4)
+    check("devices: REAPER_GUA accepts only NEW connections to exactly those addresses, nothing else in that chain",
+          [l for l in r4 if " REAPER_GUA " in l] == ga, [l for l in r4 if " REAPER_GUA " in l])
+    check("devices: the only ACCEPTs are REAPER_GUA's; REAPER_GUI / REAPER_GUF still RETURN or DROP only",
+          acc_ok(t43) and [l for l in t43.splitlines() if " -j ACCEPT" in l] == ga)
+    check("devices: nothing opens from the main LAN into the network (no -o br56 -i br0 rule of any kind; replies only)",
+          not [l for l in t43.splitlines() if "-o br56 -i br0" in l or ("-o br56" in l and "-i br0" in l)]
+          and "R iptables -A REAPER_GUF -o br56 -m conntrack --ctstate RELATED,ESTABLISHED -j RETURN" in r4)
+    check("devices: IPv4 only - the IPv6 chain is exactly a plain guest network's",
+          r6 == rules(t1, 6) and "REAPER_GUA" not in "\n".join(r6))
+    check("devices: without them the chains are exactly a plain guest network's (set 1)",
+          [l for l in rules(t43) if l not in dv and l not in ga] == rules(t1))
+    check("devices: the script names them on the network's line",
+          "#   chosen main-network devices it may open connections to: 192.168.50.10 192.168.50.20 (they may only answer)\n" in t43)
+    t44 = gen(44); r4 = rules(t44, 4)
+    check("devices: kept with the kill switch on (the main LAN is not a way out); the WAN stays closed",
+          all(x in r4 for x in dv) and all(x.replace("br56", "br56") in r4 for x in ga) and "-i br56 -o eth0" not in t44
+          and "R iptables -A REAPER_GUF -i br56 -o wgc5 -j RETURN" in r4, r4)
+    t45 = gen(45)
+    check("a portal handed devices, discovery and a zone path by mistake: none of them (rules exactly a portal's)",
+          rules(t45) == rules(gen(2)) and "REAPER_GUA" not in "\n".join(rules(t45)) and "5353" not in t45
+          and "chosen main-network" not in t45 and "zone policy" not in t45, [l for l in rules(t45) if l not in rules(gen(2))])
+    t46 = gen(46); r4 = rules(t46, 4)
+    md = "R iptables -A REAPER_GUI -i br56 -p udp --dport 5353 -j RETURN"
+    check("discovery: udp 5353 to the router's reflector, inside the network's REAPER_GUI before its DROP, IPv4 only",
+          r4.count(md) == 1 and r4.index(md) < r4.index("R iptables -A REAPER_GUI -i br56 -j DROP")
+          and "5353" not in "\n".join(rules(t46, 6)) and [l for l in rules(t46) if l != md] == rules(t1)
+          and "#   device discovery (mDNS) with the main network: the picked service types only\n" in t46, r4)
+    for nm_, tx in (("devices", t43), ("kill switch", t44), ("discovery", t46)):
+        if shutil.which("sh"):
+            sc = os.path.join(tmp, "x.sh"); open(sc, "w").write(tx)
+            ok = subprocess.run(["sh", "-n", sc], capture_output=True).returncode == 0
+            if shutil.which("busybox"):
+                ok = ok and subprocess.run(["busybox", "ash", "-n", sc], capture_output=True).returncode == 0
+            check("the generated script with %s parses (sh -n / ash -n)" % nm_, ok)
+
+    # rg_dev_resolve: reserved, reservations on, inside the LAN, not the router, not an AiMesh node; strict MACs
+    STL = ("<AA:BB:CC:DD:EE:01>192.168.50.10>>nas<aa:bb:cc:dd:ee:02>192.168.50.20>>tv<AA:BB:CC:00:00:01>192.168.50.2>>node"
+           "<AA:BB:CC:DD:EE:03>192.168.60.5>>far<AA:BB:CC:DD:EE:04>192.168.50.1>>me<AA:BB:CC:DD:EE:05>192.168.50.255>>bc"
+           "<AA:BB:CC:DD:EE:06>192.168.50.0>>net<AA:BB:CC:DD:EE:07>>>noip")
+    def dres(devs, stat="1", lan=None):
+        return gen(47, devs, STL, stat, *( [lan] if lan else [])).rstrip("\n")
+    check("devices: reserved devices resolve to their reserved IPv4 address, MAC case does not matter (either side)",
+          dres("<aa:bb:cc:dd:ee:01<AA:BB:CC:DD:EE:02") == "192.168.50.10,192.168.50.20,|"
+          and dres("<aa:bb:cc:dd:ee:01><AA:BB:CC:DD:EE:02>") == "192.168.50.10,192.168.50.20,|", dres("<aa:bb:cc:dd:ee:01<AA:BB:CC:DD:EE:02"))
+    check("devices: DHCP reservations off (dhcp_static_x 0) - nothing, each one named",
+          dres("<aa:bb:cc:dd:ee:01>", "0") == "|aa:bb:cc:dd:ee:01 (DHCP reservations are off)", dres("<aa:bb:cc:dd:ee:01>", "0"))
+    check("devices: an unreserved device is skipped and named",
+          dres("<AA:BB:CC:DD:EE:09>") == "|AA:BB:CC:DD:EE:09 (no DHCP reservation)", dres("<AA:BB:CC:DD:EE:09>"))
+    o_ = dres("<AA:BB:CC:DD:EE:03><AA:BB:CC:DD:EE:04><AA:BB:CC:DD:EE:05><AA:BB:CC:DD:EE:06><AA:BB:CC:DD:EE:07>")
+    check("devices: outside the LAN subnet, the router's own address, the subnet's broadcast / network address, no address - all skipped",
+          o_.startswith("|") and o_.count("(reserved address is not a device address on the main LAN)") == 5, o_)
+    check("devices: an AiMesh node (registry MAC, any case) is never a chosen device - its address opens the node's UI / SSH",
+          dres("<aa:bb:cc:00:00:01><AA:BB:CC:DD:EE:01>") == "192.168.50.10,|aa:bb:cc:00:00:01 (an AiMesh node)",
+          dres("<aa:bb:cc:00:00:01><AA:BB:CC:DD:EE:01>"))
+    o_ = dres("<zz:zz:zz:zz:zz:zz><AA:BB:CC:DD:EE:01x><AA-BB-CC-DD-EE-01><;reboot><AA:BB:CC:DD:EE:01>")
+    check("devices: strict MACs - junk, a trailing character, dashes are refused and never echoed into the log",
+          o_ == "192.168.50.10,|an entry that is not a MAC address, an entry that is not a MAC address, an entry that is not a MAC address, an entry that is not a MAC address"
+          and "reboot" not in o_ and "zz" not in o_, o_)
+    check("devices: a device named twice gives one address",
+          dres("<AA:BB:CC:DD:EE:01><aa:bb:cc:dd:ee:01>") == "192.168.50.10,|", dres("<AA:BB:CC:DD:EE:01><aa:bb:cc:dd:ee:01>"))
+    o_ = dres("".join("<AA:BB:CC:DD:EE:%02X>" % i for i in range(9, 27)))
+    check("devices: at most 16 are looked at; the rest are named as ignored", o_.count("(no DHCP reservation)") == 16
+          and o_.endswith("devices past the first 16 ignored"), o_)
+    check("devices: no usable LAN address - nothing is inside it", dres("<AA:BB:CC:DD:EE:01>", "1", "x").startswith("|"))
+
+    # zone paths (reaper_fw_zpol_guest): the case-41 network set - guests br54 (3), br57 (12), br56 (5), portal tun22 on br55 (4)
+    Z = ("<LAN>br0>main<IOT>br54>iot<GUEST>br57>guest<WAN>eth0,ppp0>wan<VPN>wgc1,tun11>vpn<WILD>br+>any"
+         "<PORTAL>tun22,br55>portal<HOME>br0,br54>mixed")
+    def zp(pol, sw="1", en="1", rl="", *more):
+        return gen(48, Z, pol, sw, en, rl, *more)
+    base = gen(41, "")
+    zl = ["R iptables -A REAPER_GUF -i br54 -o br0 -m conntrack --ctstate RELATED,ESTABLISHED -j RETURN",
+          "R iptables -A REAPER_GUF -o br54 -i br0 -j RETURN"]
+    zl6 = [l.replace("R iptables ", "R ip6tables ") for l in zl]
+    check("zone paths: switch off - the script is byte-identical to the one without any zone policy",
+          zp("<LAN>IOT>accept", "0") == base and zp("<LAN>IOT>accept", "1", "0") == base and zp("", "1") == base)
+    t = zp("<LAN>IOT>accept"); r4 = rules(t, 4); r6 = rules(t, 6)
+    check("zone paths: main -> guest (LAN -> IOT accept): new connections in from br0 and replies back, v4 and v6 mirror",
+          sorted(l for l in rules(t) if l not in rules(base)) == sorted(zl + zl6)
+          and r4.index(zl[0]) < r4.index("R iptables -A REAPER_GUF -i br54 -j DROP") < r4.index(zl[1]) < r4.index("R iptables -A REAPER_GUF -o br54 -j DROP")
+          and r6.index(zl6[0]) < r6.index("R ip6tables -A REAPER_GUF -i br54 -j DROP") < r6.index(zl6[1]) < r6.index("R ip6tables -A REAPER_GUF -o br54 -j DROP")
+          and "#   a zone policy opens a one-way path from br0 into br54\n" in t and acc_ok(t), [l for l in rules(t) if l not in rules(base)])
+    check("zone paths: nothing toward the router (REAPER_GUI unchanged), and the guest never opens a connection to br0",
+          [l for l in rules(t) if "REAPER_GUI" in l] == [l for l in rules(base) if "REAPER_GUI" in l]
+          and not [l for l in rules(t) if "-i br54 -o br0" in l and "ESTABLISHED" not in l])
+    check("zone paths: kept with the kill switch on (not a way out to the Internet)",
+          all(x in rules(zp("<LAN>IOT>accept", "1", "1", "", "ks")) for x in zl + zl6))
+    for pol, why in (("<GUEST>IOT>accept<IOT>GUEST>accept", "guest -> guest (owner rule)"),
+                     ("<IOT>LAN>accept", "a guest-as-source policy (stays held)"),
+                     ("<WAN>IOT>accept<VPN>IOT>accept<WILD>IOT>accept", "WAN, VPN client and wildcard sources"),
+                     ("<LAN>IOT>drop<LAN>IOT>accept", "the first match is a DROP"),
+                     ("<WILD>IOT>reject<LAN>IOT>accept", "the first match is a wildcard REJECT (br+ matches br0)"),
+                     ("<LAN>PORTAL>accept", "into a Guest Portal"),
+                     ("<HOME>HOME>accept", "a policy inside one zone"),
+                     ("<LAN>IOT>log", "an unknown action"),
+                     ("<LAN>NOPE>accept<NOPE>IOT>accept", "a zone that does not exist")):
+        check("zone paths never: %s" % why, zp(pol) == base, [l for l in rules(zp(pol)) if l not in rules(base)])
+    check("zone paths: first match decides - an ACCEPT before a DROP for the same pair opens",
+          all(x in rules(zp("<LAN>IOT>accept<LAN>IOT>drop")) for x in zl + zl6))
+    t = zp("<GUEST>IOT>accept", "1", "1", "<0>12"); b2 = gen(41, "<0>12")
+    check("zone paths: a source network paired with the Main Network counts as the main side (br57 -> br54)",
+          sorted(l for l in rules(t) if l not in rules(b2)) == sorted(
+              [x.replace("br0", "br57") for x in zl] + [x.replace("br0", "br57") for x in zl6]), [l for l in rules(t) if l not in rules(b2)])
+    many = "".join("<X%d>IOT>drop" % i for i in range(64)) + "<LAN>IOT>accept"
+    check("zone paths: past the engine's 64 policies nothing counts (it emits none of them)", zp(many) == base)
+    if shutil.which("sh"):
+        sc = os.path.join(tmp, "zp.sh"); open(sc, "w").write(zp("<LAN>IOT>accept"))
+        ok = subprocess.run(["sh", "-n", sc], capture_output=True).returncode == 0
+        if shutil.which("busybox"):
+            ok = ok and subprocess.run(["busybox", "ash", "-n", sc], capture_output=True).returncode == 0
+        check("the generated script with zone paths parses (sh -n / ash -n)", ok)
+
     t6 = gen(6)
     check("no guest network left: the layer is unhooked and removed, the front chains re-pinned",
           "-D REAPER_HOOK -j REAPER_GUI" in t6 and "-D REAPER_HOOK_F -j REAPER_GUF" in t6 and "$T -X $C" in t6
           and "HOOK_RUN" in t6 and "R " not in t6)
     check("...and the DNS redirect chain is unhooked and removed with it",
           "iptables -t nat -D PREROUTING -j REAPER_GUN 2>/dev/null" in t6 and "iptables -t nat -X REAPER_GUN" in t6)
+    check("...and the chosen-devices chain with them: its jump out of the FORWARD front chain, emptied, removed (reaper 2026-11-19)",
+          "$T -D REAPER_HOOK_F -j REAPER_GUA 2>/dev/null" in t6 and "for C in REAPER_GUI REAPER_GUF REAPER_GUA; do $T -F $C" in t6)
+    check("the rule-by-rule load creates and empties REAPER_GUA too; the batch names it in each family's commit",
+          "for C in REAPER_GUI REAPER_GUF REAPER_GUA; do $T -N $C 2>/dev/null; $T -F $C; done" in t1
+          and "echo ':REAPER_GUF - [0:0]'; echo ':REAPER_GUA - [0:0]'; cat" in t1)
 finally:
     shutil.rmtree(tmp, ignore_errors=True)
 
@@ -630,6 +824,20 @@ check("hook.sh: REAPER_GUI / REAPER_GUF right after Warden, ahead of Gatekeeper 
       hook.find("-j REAPER_WARDEN\\n\"\n\t  /* 2026-11-12: guest isolation") > 0
       and hook.find("-j REAPER_GUI\\n") < hook.find("if $T -nL REAPER_GKI >/dev/null") < hook.find("-j REAPER_FWI")
       and hook.find("-j REAPER_GUF\\n") < hook.find("if $T -nL REAPER_GKF >/dev/null") < hook.find("-j REAPER_FWF"))
+_fw_case = hook[hook.find("      FORWARD)"):hook.find("      OUTPUT)")]
+check("hook.sh: REAPER_GUA (chosen devices, the layer's one ACCEPT) LAST in the FORWARD front chain, after the rules engine, only when it exists",
+      _fw_case.count('$T -nL REAPER_GUA >/dev/null 2>&1 && $T -A \\"$C\\" -j REAPER_GUA\\n') == 1
+      and _fw_case.find("-j REAPER_FWF\\n") < _fw_case.find("-j REAPER_GUA\\n") and hook.count("REAPER_GUA >/dev/null") == 1)
+check("source: chosen devices / discovery read from the network's own apgN keys, never for a portal; AiMesh list from reaper_aimesh_macs",
+      "if (!portal && m->sdn_t.apg_idx > 0) {" in gsrc and 'snprintf(key, sizeof(key), "apg%d_rg_devs", m->sdn_t.apg_idx);' in gsrc
+      and 'snprintf(key, sizeof(key), "apg%d_rg_mdns", m->sdn_t.apg_idx);' in gsrc and "naim = reaper_aimesh_macs(aim, REAPER_AIMESH_MAX, NULL);" in gsrc
+      and 'nvram_get_int("dhcp_static_x") == 1' in gsrc and "cfg_relist" not in gsrc[gsrc.index("void reaper_guest_gen(void)"):])
+check("source: zone paths only with reaper_fw_zpol_guest AND the rules engine on, from the lists the engine runs",
+      'if (n > 0 && nvram_match("reaper_fw_zpol_guest", "1") && nvram_match("reaper_fw_enable", "1")) {' in gsrc
+      and 'reaper_fw_list_live("zone")' in gsrc and 'reaper_fw_list_live("zpol")' in gsrc)
+check("source: a skipped device is logged only when the list of them changes; the reservation signature is kept",
+      'logmessage("reaper", "guest isolation: chosen device(s) left out - %s", skipall);' in gsrc
+      and 'f_write_string(RG_DIR "/resv.sig", sig, 0, 0);' in gsrc)
 fw = read("rc/firewall.c")
 check("re-applied at the end of every firewall build, under the lock held there",
       "\treaper_guest_apply(1);\n#endif\n\tfile_unlock(llock);" in fw)

@@ -1977,3 +1977,74 @@ usr/sbin/reaper_diag|SAN_STAGES="lit arg ctx mail mac ip6 ip4"|1
 # review 2026-11-17 batch p9 (2026-11-18): the USB filesystem probe runs in a child of the watchdog; a crashed or hung probe retires the partition
 sbin/rc|reading its filesystem crashed the probe (signal %d)|1
 sbin/rc|its filesystem did not answer within %d s|1
+# 2026-11-19 guest plan, image 1 -- a VPN-bound guest network's routing rules are put back after every WAN
+# route rebuild (they were flushed until the VPN client restarted); IPv6 /57-/63 delegations are split into a /64
+# per guest network; Rule Status shows a zone ACCEPT that guest isolation holds as "held", not red; the Guest
+# Portal web server loads a stand-in libsmbclient.so.0 (ENOSYS) instead of Samba 3.5.8 - only the real library
+# exports smbc_set_context. The removed Samba 4 libsmbclient.so.0.7.0 cannot be pinned (a missing file fails).
+sbin/rc|VPN routing put back for %d network(s) after a WAN route change|1||RTCONFIG_MULTILAN_CFG
+sbin/rc|/tmp/reaper/v6split_ula.%d.%d|1||RTCONFIG_MULTILAN_CFG
+usr/lib/libshared.so|mtlan_prefix_subnet64|1
+www/Reaper_IPv6Setup.asp|staticFill|2
+usr/bin/reaper_fwsim|guest isolation on %s holds this path|1
+usr/bin/reaper_fwsim|%d red, %d held, %d depends|1
+www/Reaper_Firewall.asp|held:['h',|1
+www/Reaper_Firewall.asp|.wpill.h{|1
+www/Main_ReaperDash.asp|(s.held|1
+usr/sbin/reaper_diag|zone policy row(s) held by guest isolation|1
+bin/rmcpd|green/red/held/depends/na|1|MCP
+usr/lib/libsmbclient.so.0|!smbc_set_context|||RTCONFIG_CAPTIVE_PORTAL
+# 2026-11-19 guest plan, image 2 -- opt-in cross-boundary switches: chosen main-network devices (REAPER_GUA, the
+# guest layer's only ACCEPT, hooked after the rules engine), per-network Device discovery (avahi reflect-guest star:
+# main <-> one guest network, filtered by service type, never guest <-> guest, no router records on guests), and the
+# Firewall switch "Zone policies may open one-way paths from the main network into isolated guest networks".
+# Rule Status 1.16 rows G5 / G6 / F2 reverse. Min counts are LINES (grep -c), so every line here asks for 1.
+sbin/rc|$T -nL REAPER_GUA >/dev/null 2>&1 && $T -A "$C" -j REAPER_GUA|1
+sbin/rc|-A REAPER_GUA -i %s -o %s -d %s -m conntrack --ctstate NEW -j ACCEPT|1||RTCONFIG_MULTILAN_CFG
+sbin/rc|-A REAPER_GUI -i %s -p udp --dport 5353 -j RETURN|1||RTCONFIG_MULTILAN_CFG
+sbin/rc|echo ':REAPER_GUA - [0:0]'|1||RTCONFIG_MULTILAN_CFG
+sbin/rc|guest isolation: chosen device(s) left out - %s|1||RTCONFIG_MULTILAN_CFG
+sbin/rc|reflect-guest=%s|1||RTCONFIG_MDNS
+sbin/rc|service restart_reaper_guest >/dev/null 2>&1|1
+usr/lib/libshared.so|/tmp/reaper_fw/armed|1
+usr/sbin/avahi-daemon|a guest network - only these service types cross to and from the main network|1||RTCONFIG_MDNS
+usr/sbin/avahi-daemon|reflect-guest: entry "%s" ignored (no valid interface name)|1||RTCONFIG_MDNS
+usr/lib/libavahi-core.so.7.1.0|reflect-guest: legacy unicast query on %s is not reflected (guest network).|1||RTCONFIG_MDNS
+usr/bin/reaper_fwsim|Zone policies may open one-way paths from the main network into isolated guest networks to allow it|1
+usr/bin/reaper_fwsim|A Guest Portal network stays closed to the main network|1
+usr/bin/reaper_fwsim|reaches chosen device|1
+usr/bin/reaper_fwsim|discovery (mDNS) is open|1
+usr/bin/reaper_fwsim|reverse stays closed|1
+usr/bin/reaper_fwsim|Decided by your own Firewall rule|1
+usr/bin/reaper_fwsim|apg%d_rg_devs|1
+usr/sbin/httpd|reaper_fw_zpol_guest|1
+usr/sbin/httpd|apg%d_rg_mdns|1||RTCONFIG_MULTILAN_CFG
+www/SDN/sdn.js|reaper_guest_cross_fill(_obj, _profile_data)|1||RTCONFIG_MULTILAN_CFG
+www/SDN/sdn.js|_nvramSet_obj.rc_service = "restart_reaper_guest;";|1||RTCONFIG_MULTILAN_CFG
+www/SDN/sdn.js|prefix + _idx + "_rg_devs", prefix + _idx + "_rg_mdns"], true);|1||RTCONFIG_MULTILAN_CFG
+www/SDN/sdn.js|+ "_rg_mdns"] = "";|1||RTCONFIG_MULTILAN_CFG
+www/Reaper_Firewall.asp|data-nv="reaper_fw_zpol_guest"|1
+www/Reaper_Firewall.asp|fwApply({reaper_fw_zpol_guest:tgGet($('zg_en'))})|1
+# 2026-11-19 image 3 -- AP Isolation becomes Off / Wi-Fi only (default) / Wi-Fi and LAN ports on every network, both
+# lines (since GPL 102.40585 the firmware isolated every wired main-bridge port when the switch was on; GT-BE98 alpha NAS report):
+# rc reaper_brport_wired_open + the reaper_brport rwatch tick; Network page choice row; label back to "AP Isolation".
+# Also: AiMesh tab MLO mark (httpd, no new literal - pinned by test_aimesh_tab_mlo.py), 2.4 GHz label, the shell tab
+# bar no longer shrunk by fit.js on phones. Min counts are LINES (grep -c).
+sbin/rc|AP Isolation: wired ports opened / isolated:|1||RTCONFIG_MULTILAN_CFG
+sbin/rc|/tmp/reaper/brport_iso|1||RTCONFIG_MULTILAN_CFG
+sbin/rc|[ -x /sbin/reaper_brport ] && /sbin/reaper_brport >/dev/null 2>&1|1
+usr/sbin/httpd|reaper_ap_isolate_lan|1
+usr/sbin/httpd|apg%d_ap_isolate_lan|1||RTCONFIG_MULTILAN_CFG
+usr/bin/reaper_fwsim|closed by AP Isolation|1
+usr/bin/reaper_fwsim|!AP Isolation (WiFi Only)
+www/SDN/sdn.js|reaper_apiso_lan_collect($(_obj), sdn_profile, nvramSet_obj);|1||RTCONFIG_MULTILAN_CFG
+www/SDN/sdn.js|_nvramSet_obj.reaper_ap_isolate_lan = next;|1||RTCONFIG_MULTILAN_CFG
+www/SDN/sdn.js|"_ap_isolate_lan"] = "";|1||RTCONFIG_MULTILAN_CFG
+www/Reaper_VLAN.asp|o[p + 'ap_isolate_lan'] = '0';|1
+www/Reaper_VLAN.asp|o[p + 'rg_devs'] = ''; o[p + 'rg_mdns'] = '';|1
+www/EN.dict|Wi-Fi only: wireless devices cannot reach each other; wired devices stay reachable.|1
+www/EN.dict|!AP Isolation (WiFi Only)
+www/aimesh/aimesh_topology.html|.replace(/^2G/, "2.4G").replace("G", " GHz")|1
+www/reaper_shell.asp|data-rfit-keep|1
+www/reaper_shell.asp|#tabbar a.rtab{max-width:100%;overflow:hidden;text-overflow:ellipsis}|1
+www/Reaper_System.asp|.wins .win{flex:0 0 auto;max-width:100%}|1

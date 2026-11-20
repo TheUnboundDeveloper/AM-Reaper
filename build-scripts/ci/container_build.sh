@@ -166,12 +166,28 @@ if [ "$(id -u)" = 0 ]; then
     echo "   resolver not ready ($i/6); retrying in $((i * 10)) s"
     sleep $((i * 10))
   done
-  apt-get update -qq
+  # 2026-11-19 (run 44529567993, BQ16_PRO MCP, 1 job of 16): security.ubuntu.com
+  # answered HTTP 520 for focal-security InRelease, apt-get update exited 100 and
+  # the job ended 25 s into the container. A mirror outage is transient: retry the
+  # index fetch a few times (about 3.5 min at most), then fail naming the cause.
+  apt_update(){
+    local i
+    for i in 1 2 3 4 5; do
+      apt-get -o Acquire::Retries=3 update -qq && return 0
+      if [ "$i" -eq 5 ]; then
+        echo "::error::apt-get update failed 5 times (Ubuntu mirror outage?); see the E: lines above"
+        return 1
+      fi
+      echo "   apt-get update failed ($i/5); retrying in $((i * 20)) s"
+      sleep $((i * 20))
+    done
+  }
+  apt_update
   apt-get install -y -qq software-properties-common ca-certificates \
                          git curl wget sudo >/dev/null
   add-apt-repository -y universe >/dev/null 2>&1
   dpkg --add-architecture i386
-  apt-get update -qq
+  apt_update
 
   PKGS="build-essential bison flex gawk gettext libreadline-dev libssl-dev
         autogen autoconf automake libtool gtk-doc-tools u-boot-tools

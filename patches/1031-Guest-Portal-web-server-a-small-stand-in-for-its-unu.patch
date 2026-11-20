@@ -1,0 +1,333 @@
+From 841dd9901e734715972cc370b5a9e01de4a0278f Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Thu, 19 Nov 2026 20:36:58 -0500
+Subject: [PATCH] Guest Portal web server: a small stand-in for its unused
+ file-sharing library
+
+- The portal web server is linked against a file-sharing client library it never uses (its file-sharing
+  code is not built). A Reaper stand-in libsmbclient.so.0 (about 5 KB) now provides the same calls, each
+  answering "not supported", in place of the 3.7 MB Samba 3.5.8 library.
+- The Samba 3.5.8 package is still built (the web server links against it) but no longer installed; an
+  unused Samba 4 copy of the same library is removed from the image. About 0.9 MB of flash comes back.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ release/src-rt-5.04behnd.4916/targets/buildFS |   8 +-
+ release/src/router/Makefile                   |  29 +++-
+ release/src/router/libsmbclient-stub/Makefile |  28 ++++
+ .../router/libsmbclient-stub/libsmbclient.map |  36 +++++
+ .../libsmbclient-stub/libsmbclient_stub.c     | 127 ++++++++++++++++++
+ 5 files changed, 221 insertions(+), 7 deletions(-)
+ create mode 100644 release/src/router/libsmbclient-stub/Makefile
+ create mode 100644 release/src/router/libsmbclient-stub/libsmbclient.map
+ create mode 100644 release/src/router/libsmbclient-stub/libsmbclient_stub.c
+
+diff --git a/release/src-rt-5.04behnd.4916/targets/buildFS b/release/src-rt-5.04behnd.4916/targets/buildFS
+index 1921fedb93..f5700bad07 100755
+--- a/release/src-rt-5.04behnd.4916/targets/buildFS
++++ b/release/src-rt-5.04behnd.4916/targets/buildFS
+@@ -856,13 +856,17 @@ reaper_rm_lib usr/lib/libdcerpc-samr.so.0.0.1
+ # the files above are gone. Walked from every program and every plugin folder (DT_NEEDED) and searched as a
+ # name in every other file, on the RT-BE96U image (both lines) and the GT-BE98, GT-BE98 Pro, GT-BE19000,
+ # RT-BE86U, BQ16 and BQ16 Pro images. NOT here on purpose: libnss_mdns4_minimal.so.2 (glibc loads it by the name
+-# in nsswitch.conf), libsmbclient.so.0.7.0 (shares its soname with the library the portal web server links),
+-# lib64/libnss_files.so.2 (the 64-bit ebtables resolves protocol names through it).
++# in nsswitch.conf), lib64/libnss_files.so.2 (the 64-bit ebtables resolves protocol names through it).
+ for l in lib/libnl-route-3.so.200.20.0 lib/libnl-nf-3.so.200.20.0 usr/lib/libdcerpc.so.0.0.1 \
+ 	usr/lib/libyaml-0.so.2.0.5 usr/lib/libev.so.4.0.0 usr/lib/libnetfilter_queue.so.1 usr/lib/libpcreposix.so.0.0.1 \
+ 	usr/lib/libnetsnmphelpers.so.40.2.1 usr/lib/libiptc.so; do reaper_rm_lib $l; done
+ for l in libsmbclient-raw-samba4.so libhdb-samba4.so.11.0.2 libdcerpc-samba4.so libgpo-samba4.so libhttp-samba4.so \
+ 	libLIBWBCLIENT-OLD-samba4.so libauth-unix-token-samba4.so; do reaper_rm_lib usr/lib/samba/$l; done
++# REAPER-SMBSTUB (2026-11-19, review 2026-11-17 P6 slice 1): the Samba 4 libsmbclient.so.0.7.0. No file has
++# DT_NEEDED on that file name; its soname libsmbclient.so.0 is now the Guest Portal stand-in (router/
++# libsmbclient-stub, installed by lighttpd-1.4.39-install). The sweep also drops libsmbclient.so, the Samba 4
++# link to it (and libsmbclient.so.0 on a model without the portal, where that is a link to it too).
++reaper_rm_lib usr/lib/libsmbclient.so.0.7.0
+ # the 64-bit DNS name-service library cannot load: it needs a 64-bit libresolv, which does not ship
+ [ -e $R_FS/lib64/libresolv.so.2 ] || rm -f $R_FS/lib64/libnss_dns.so.2
+ # sample configs, a Trend Micro test signature (that engine does not ship), scripts nothing runs
+diff --git a/release/src/router/Makefile b/release/src/router/Makefile
+index a12a22121f..04e521f36e 100644
+--- a/release/src/router/Makefile
++++ b/release/src/router/Makefile
+@@ -1708,7 +1708,9 @@ obj-$(RTCONFIG_FREERADIUS) += sqlite pcre-8.31
+ obj-$(RTCONFIG_FREERADIUS) += talloc-2.1.1
+ obj-$(RTCONFIG_FREERADIUS) += freeradius-server-3.0.0
+ obj-$(RTCONFIG_CAPTIVE_PORTAL) += sqlite libxml2 pcre-8.31 lighttpd-1.4.39 libexif curl
+-obj-$(RTCONFIG_CAPTIVE_PORTAL) += samba-3.5.8
++# REAPER-SMBSTUB-OBJ: samba-3.5.8 is still BUILT for the portal (lighttpd-1.4.39 depends on it and links it)
++# but no longer installed: its own install step merged after lighttpd's and put the 3.69 MB Samba 3.5.8
++# libsmbclient.so.0 back over the stand-in. libsmbclient-stub/ ships in its place (lighttpd-1.4.39-install).
+ 
+ obj-$(RTCONFIG_FBWIFI) += fb_wifi
+ obj-$(RTCONFIG_FBWIFI) += httpd_uam
+@@ -8331,13 +8333,16 @@ else
+ endif
+ 	@touch $@
+ 
+-lighttpd-1.4.39: shared $(if $(BCM_502L07P2),ethctl_lib) nvram$(BCMEX)$(EX7) libpasswd libdisk samba-3.5.8 pcre-8.31 libxml2 sqlite libexif openssl curl $(if $(RTCONFIG_PERMISSION_MANAGEMENT),PMS_DBapis) $(if $(RTCONFIG_MXL_826XX),libhostapi) lighttpd-1.4.39/stamp-h1
++lighttpd-1.4.39: shared $(if $(BCM_502L07P2),ethctl_lib) nvram$(BCMEX)$(EX7) libpasswd libdisk samba-3.5.8 libsmbclient-stub pcre-8.31 libxml2 sqlite libexif openssl curl $(if $(RTCONFIG_PERMISSION_MANAGEMENT),PMS_DBapis) $(if $(RTCONFIG_MXL_826XX),libhostapi) lighttpd-1.4.39/stamp-h1
+ 	$(MAKE) -C lighttpd-1.4.39 $(PARALLEL_BUILD)
+ 
+ # lighttpd ships ONLY as the captive-portal uamsrv: no AiCloud/WebDAV modules,
+ # no lighttpd-monitor/arpping (webdav-only helpers), no AiCloud UI/js, no APP-IPK
+ # controls. Keep-list = what write_uam_conf (rc/services.c) actually loads/serves.
+-# libsmbclient.so.0 stays: DT_NEEDED by lighttpd core + all 3 kept CP modules.
++# libsmbclient.so.0 stays (DT_NEEDED by lighttpd core and every module) but is the REAPER-SMBSTUB stand-in
++# (libsmbclient-stub/: the 29 smbc_* names the server imports, each failing ENOSYS). Every smbc_* call sits
++# behind con->mode == SMB_BASIC/SMB_NTLM, which nothing that ships sets (review 2026-11-17 P6 slice 1).
++# RTCONFIG_SAMBACLIENT (off on every model) needs the real Samba 3.5.8 library, so it keeps that one.
+ lighttpd-1.4.39-install:
+ 	if [ -f lighttpd-1.4.39/Makefile ] ; then \
+ 		install -D lighttpd-1.4.39/src/.libs/lighttpd $(INSTALLDIR)/lighttpd-1.4.39/usr/sbin/lighttpd ; \
+@@ -8352,7 +8357,7 @@ lighttpd-1.4.39-install:
+ 		fi ; \
+ 		rm -f $(INSTALLDIR)/lighttpd-1.4.39/usr/lib/mod_webdav.so ; \
+ 		rm -f $(INSTALLDIR)/lighttpd-1.4.39/usr/lib/mod_smbdav.so ; \
+-		install -D samba-3.5.8/source3/bin/libsmbclient.so.0 $(INSTALLDIR)/lighttpd-1.4.39/usr/lib/libsmbclient.so.0 ; \
++		$(if $(RTCONFIG_SAMBACLIENT),install -D samba-3.5.8/source3/bin/libsmbclient.so.0 $(INSTALLDIR)/lighttpd-1.4.39/usr/lib/libsmbclient.so.0,$(MAKE) -C libsmbclient-stub install INSTALLDIR=$(INSTALLDIR)/lighttpd-1.4.39) ; \
+ 		mkdir -p $(INSTALLDIR)/lighttpd-1.4.39/usr/lighttpd/css && mkdir -p $(INSTALLDIR)/lighttpd-1.4.39/usr/lighttpd/js ; \
+ 		cp -f lighttpd-1.4.39/external_file/css/uam.html $(INSTALLDIR)/lighttpd-1.4.39/usr/lighttpd/css/ ; \
+ 		cp -f lighttpd-1.4.39/external_file/css/uam.js $(INSTALLDIR)/lighttpd-1.4.39/usr/lighttpd/css/ ; \
+@@ -8367,6 +8372,16 @@ lighttpd-1.4.39-install:
+ lighttpd-1.4.39-clean:
+ 	-@$(MAKE) -C lighttpd-1.4.39 clean
+ 	@rm -f lighttpd-1.4.39/stamp-h1
++	-@$(MAKE) -C libsmbclient-stub clean
++
++# REAPER-SMBSTUB-TARGET: the Guest Portal's stand-in libsmbclient.so.0 (built for lighttpd-1.4.39, installed
++# by lighttpd-1.4.39-install; not an obj-y package of its own).
++.PHONY: libsmbclient-stub libsmbclient-stub-clean
++libsmbclient-stub:
++	@$(MAKE) -C $@
++
++libsmbclient-stub-clean:
++	@$(MAKE) -C libsmbclient-stub clean
+ 
+ 
+ 
+@@ -10131,7 +10146,11 @@ nettle-clean:
+ 
+ samba-3.6.x: libiconv-1.14
+ 	@$(MAKE) -C samba-3.6.x $(PARALLEL_BUILD)
+-samba-3.5.8:
++# REAPER-SMBSTUB-FORCE: samba-3.5.8 is no longer in obj-y (its own install must not reach the rootfs), so it lost
++# the "$(obj-y) ...: dummy" force below. lighttpd-1.4.39 still links it; without dummy the existing directory reads
++# as an up-to-date target and a clean tree never builds source3/bin/libsmbclient.so. Build only: obj-install (obj-y)
++# never names samba-3.5.8-install, and obj-clean still cleans it (obj- holds it while RTCONFIG_SAMBACLIENT is unset).
++samba-3.5.8: dummy
+ 	@$(MAKE) -C samba-3.5.8 $(PARALLEL_BUILD)
+ 
+ # reaper Samba 4.x (SMB3): build-reaper.sh cross-builds the GnuTLS crypto chain +
+diff --git a/release/src/router/libsmbclient-stub/Makefile b/release/src/router/libsmbclient-stub/Makefile
+new file mode 100644
+index 0000000000..07a363b131
+--- /dev/null
++++ b/release/src/router/libsmbclient-stub/Makefile
+@@ -0,0 +1,28 @@
++# REAPER-SMBSTUB: stand-in libsmbclient.so.0 for the Guest Portal web server (see README.md).
++# Installed by the router Makefile's lighttpd-1.4.39-install in place of the Samba 3.5.8 library.
++include ../common.mak
++
++CFLAGS += -fPIC -Os -Wall -Wextra $(EXTRACFLAGS) -D_FILE_OFFSET_BITS=64 \
++	-D_FORTIFY_SOURCE=2 -fstack-protector-strong -fvisibility=hidden \
++	-fno-semantic-interposition -Wformat -Wformat-security
++SHARED_FLAGS := $(EXTRALDFLAGS) -shared -Wl,--gc-sections -Wl,--as-needed \
++	-Wl,-Bsymbolic-functions -Wl,-z,defs -Wl,-z,relro -Wl,-z,now \
++	-Wl,-z,noexecstack
++
++all: libsmbclient.so.0
++
++libsmbclient_stub.o: libsmbclient_stub.c
++	$(CC) $(CFLAGS) -c $< -o $@
++
++libsmbclient.so.0: libsmbclient_stub.o libsmbclient.map
++	$(CC) $(SHARED_FLAGS) -Wl,-soname,libsmbclient.so.0 \
++		-Wl,--version-script=libsmbclient.map -o $@ libsmbclient_stub.o
++
++install: all
++	install -D libsmbclient.so.0 $(INSTALLDIR)$(INSTALLSUBDIR)/usr/lib/libsmbclient.so.0
++	$(if $(RTCONFIG_DEBUG),,$(STRIP) $(INSTALLDIR)$(INSTALLSUBDIR)/usr/lib/libsmbclient.so.0)
++
++clean:
++	rm -f *.o libsmbclient.so.0
++
++.PHONY: all install clean
+diff --git a/release/src/router/libsmbclient-stub/libsmbclient.map b/release/src/router/libsmbclient-stub/libsmbclient.map
+new file mode 100644
+index 0000000000..d18a6de1d3
+--- /dev/null
++++ b/release/src/router/libsmbclient-stub/libsmbclient.map
+@@ -0,0 +1,36 @@
++/* REAPER-SMBSTUB: the shipped lighttpd imports these names UNVERSIONED (the Samba 3.5.8 library has no
++ * symbol versions), so this is an anonymous version node: exact export list, no version definitions. */
++{
++    global:
++        smbc_close;
++        smbc_closedir;
++        smbc_creat;
++        smbc_lseek;
++        smbc_mkdir;
++        smbc_open;
++        smbc_opendir;
++        smbc_parse_path;
++        smbc_read;
++        smbc_readdir;
++        smbc_rename;
++        smbc_rmdir;
++        smbc_stat;
++        smbc_unlink;
++        smbc_write;
++        smbc_cli_close;
++        smbc_cli_closedir;
++        smbc_cli_lseek;
++        smbc_cli_ntcreate;
++        smbc_cli_open;
++        smbc_cli_open_share;
++        smbc_cli_opendir;
++        smbc_cli_read;
++        smbc_cli_readdir;
++        smbc_cli_rename;
++        smbc_cli_rmdir;
++        smbc_cli_stat;
++        smbc_cli_unlink;
++        smbc_cli_write;
++    local:
++        *;
++};
+diff --git a/release/src/router/libsmbclient-stub/libsmbclient_stub.c b/release/src/router/libsmbclient-stub/libsmbclient_stub.c
+new file mode 100644
+index 0000000000..4004ece15c
+--- /dev/null
++++ b/release/src/router/libsmbclient-stub/libsmbclient_stub.c
+@@ -0,0 +1,127 @@
++/*
++ * libsmbclient-stub - REAPER-SMBSTUB
++ *
++ * A stand-in libsmbclient.so.0 for the Guest Portal web server (lighttpd, run as uamsrv).
++ * The ASUS lighttpd fork links the Samba 3.5.8 client library for its AiCloud SMB-share code.
++ * AiCloud / WebDAV are not built, and every smbc_* call in the shipped server sits behind
++ * con->mode == SMB_BASIC / SMB_NTLM, a mode nothing that ships sets (review 2026-11-17 P6
++ * slice 1). This file exports exactly the smbc_* names the shipped server imports, so the
++ * dynamic loader is satisfied without mapping a 3.69 MB SMB client from 2011 into a process
++ * that answers unauthenticated guests.
++ *
++ * Every function fails: errno = ENOSYS, and the failure value of its real prototype
++ * (samba-3.5.8/source3/include/libsmbclient.h):
++ *   int / ssize_t / off_t      -> -1
++ *   pointer                    -> NULL
++ *   size_t (smbc_cli_read/write), uint32_t offset (smbc_cli_lseek) -> all bits set, the real
++ *                                 error value of those calls
++ *   uint32_t NT status (smbc_cli_close/unlink/rmdir/rename) -> NT_STATUS_NOT_IMPLEMENTED
++ * Arguments are never read. Build with -D_FILE_OFFSET_BITS=64 (lighttpd and Samba 3.5.8 are
++ * built with it), so smbc_lseek returns a 64-bit off_t as the caller expects.
++ */
++#include <errno.h>
++#include <stddef.h>
++#include <stdint.h>
++#include <sys/types.h>
++#include <sys/stat.h>
++
++#define STUB_EXPORT __attribute__((visibility("default")))
++#define STUB_NT_STATUS_NOT_IMPLEMENTED ((uint32_t)0xC0000002u)
++
++/* opaque: never dereferenced here */
++struct cli_state;
++struct smbc_dirent;
++typedef struct _SMBCFILE SMBCFILE;
++typedef struct reaper_smb_file smb_file_t;
++
++#define STUB_FAIL(val) do { errno = ENOSYS; return (val); } while (0)
++
++/* ---- standard libsmbclient calls ---- */
++STUB_EXPORT int smbc_open(const char *furl, int flags, mode_t mode)
++{ (void)furl; (void)flags; (void)mode; STUB_FAIL(-1); }
++
++STUB_EXPORT int smbc_creat(const char *furl, mode_t mode)
++{ (void)furl; (void)mode; STUB_FAIL(-1); }
++
++STUB_EXPORT ssize_t smbc_read(int fd, void *buf, size_t bufsize)
++{ (void)fd; (void)buf; (void)bufsize; STUB_FAIL(-1); }
++
++STUB_EXPORT ssize_t smbc_write(int fd, const void *buf, size_t bufsize)
++{ (void)fd; (void)buf; (void)bufsize; STUB_FAIL(-1); }
++
++STUB_EXPORT off_t smbc_lseek(int fd, off_t offset, int whence)
++{ (void)fd; (void)offset; (void)whence; STUB_FAIL((off_t)-1); }
++
++STUB_EXPORT int smbc_close(int fd)
++{ (void)fd; STUB_FAIL(-1); }
++
++STUB_EXPORT int smbc_unlink(const char *furl)
++{ (void)furl; STUB_FAIL(-1); }
++
++STUB_EXPORT int smbc_rename(const char *ourl, const char *nurl)
++{ (void)ourl; (void)nurl; STUB_FAIL(-1); }
++
++STUB_EXPORT int smbc_opendir(const char *durl)
++{ (void)durl; STUB_FAIL(-1); }
++
++STUB_EXPORT int smbc_closedir(int dh)
++{ (void)dh; STUB_FAIL(-1); }
++
++STUB_EXPORT struct smbc_dirent *smbc_readdir(unsigned int dh)
++{ (void)dh; STUB_FAIL(NULL); }
++
++STUB_EXPORT int smbc_mkdir(const char *durl, mode_t mode)
++{ (void)durl; (void)mode; STUB_FAIL(-1); }
++
++STUB_EXPORT int smbc_rmdir(const char *durl)
++{ (void)durl; STUB_FAIL(-1); }
++
++STUB_EXPORT int smbc_stat(const char *url, struct stat *st)
++{ (void)url; (void)st; STUB_FAIL(-1); }
++
++STUB_EXPORT int smbc_parse_path(const char *purl, char *pWorkgroup, char *pServer, char *pShare, char *pPath)
++{ (void)purl; (void)pWorkgroup; (void)pServer; (void)pShare; (void)pPath; STUB_FAIL(-1); }
++
++/* ---- ASUS AiCloud additions (libsmb_webdav.c) ---- */
++STUB_EXPORT int smbc_cli_stat(struct cli_state *cli, const char *fname, struct stat *st)
++{ (void)cli; (void)fname; (void)st; STUB_FAIL(-1); }
++
++STUB_EXPORT SMBCFILE *smbc_cli_opendir(struct cli_state *cli, const char *fname)
++{ (void)cli; (void)fname; STUB_FAIL(NULL); }
++
++STUB_EXPORT SMBCFILE *smbc_cli_open_share(struct cli_state *cli, const char *fname)
++{ (void)cli; (void)fname; STUB_FAIL(NULL); }
++
++STUB_EXPORT uint32_t smbc_cli_rmdir(struct cli_state *cli, const char *dname)
++{ (void)cli; (void)dname; STUB_FAIL(STUB_NT_STATUS_NOT_IMPLEMENTED); }
++
++STUB_EXPORT uint32_t smbc_cli_rename(struct cli_state *cli, char *src, char *dst)
++{ (void)cli; (void)src; (void)dst; STUB_FAIL(STUB_NT_STATUS_NOT_IMPLEMENTED); }
++
++STUB_EXPORT struct smbc_dirent *smbc_cli_readdir(SMBCFILE *dir)
++{ (void)dir; STUB_FAIL(NULL); }
++
++STUB_EXPORT int smbc_cli_closedir(SMBCFILE *dir)
++{ (void)dir; STUB_FAIL(-1); }
++
++STUB_EXPORT smb_file_t *smbc_cli_ntcreate(struct cli_state *cli, char *fname, uint32_t desired_access,
++	uint32_t create_disposition, uint32_t create_options)
++{ (void)cli; (void)fname; (void)desired_access; (void)create_disposition; (void)create_options; STUB_FAIL(NULL); }
++
++STUB_EXPORT smb_file_t *smbc_cli_open(struct cli_state *cli, char *rname, int flags)
++{ (void)cli; (void)rname; (void)flags; STUB_FAIL(NULL); }
++
++STUB_EXPORT uint32_t smbc_cli_lseek(struct cli_state *cli, smb_file_t *smbf, off_t offset, int whence)
++{ (void)cli; (void)smbf; (void)offset; (void)whence; STUB_FAIL((uint32_t)-1); }
++
++STUB_EXPORT size_t smbc_cli_write(struct cli_state *cli, smb_file_t *smbf, uint16_t write_mode, const char *buf, size_t size)
++{ (void)cli; (void)smbf; (void)write_mode; (void)buf; (void)size; STUB_FAIL((size_t)-1); }
++
++STUB_EXPORT size_t smbc_cli_read(struct cli_state *cli, smb_file_t *smbf, char *buf, size_t size)
++{ (void)cli; (void)smbf; (void)buf; (void)size; STUB_FAIL((size_t)-1); }
++
++STUB_EXPORT uint32_t smbc_cli_close(struct cli_state *cli, smb_file_t *smbf)
++{ (void)cli; (void)smbf; STUB_FAIL(STUB_NT_STATUS_NOT_IMPLEMENTED); }
++
++STUB_EXPORT uint32_t smbc_cli_unlink(struct cli_state *cli, const char *fname, uint16_t mayhave_attrs)
++{ (void)cli; (void)fname; (void)mayhave_attrs; STUB_FAIL(STUB_NT_STATUS_NOT_IMPLEMENTED); }
+-- 
+2.25.1
+

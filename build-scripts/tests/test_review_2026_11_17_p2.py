@@ -6,10 +6,12 @@ WHY THIS EXISTS. The root filesystem sits about 2.2 MB under its flash slot. The
 that nothing can reach or load. A removal is only safe while its reason holds, so each one is pinned together
 with the condition it depends on - and with the files the review proposed that must NOT go:
   - libnss_mdns4_minimal.so.2: glibc loads it by the name in nsswitch.conf ("hosts: files mdns4_minimal ...");
-  - libsmbclient.so.0.7.0: it shares its soname with the library the portal web server links;
   - lib64/libnss_files.so.2: the 64-bit ebtables resolves protocol names through it.
+(libsmbclient.so.0.7.0 was on that list while it shared its soname with the library the portal web server links;
+since 2026-11-19 that soname is the portal's stand-in, router/libsmbclient-stub, and 0.7.0 goes - REAPER-SMBSTUB,
+pinned in full by test_portal_smb_stub.py; here only while the router Makefile installs the stand-in.)
 
-WHAT IT DOES. Reads www/Makefile, httpd/reaper_inject.c, www/reaper/menu.js, targets/buildFS and the name-service
+WHAT IT DOES. Reads www/Makefile, the router Makefile, httpd/reaper_inject.c, www/reaper/menu.js, targets/buildFS and the name-service
 configuration of the tree. Exit 0 pass, 1 fail, 77 skipped (no router source tree)."""
 import os, re, sys
 
@@ -108,14 +110,18 @@ if os.path.isfile(bf):
             "usr/lib/libyaml-0.so.2.0.5", "usr/lib/libev.so.4.0.0", "usr/lib/libnetfilter_queue.so.1",
             "usr/lib/libpcreposix.so.0.0.1", "usr/lib/libnetsnmphelpers.so.40.2.1", "usr/lib/libiptc.so",
             "libsmbclient-raw-samba4.so", "libhdb-samba4.so.11.0.2", "libdcerpc-samba4.so", "libgpo-samba4.so",
-            "libhttp-samba4.so", "libLIBWBCLIENT-OLD-samba4.so", "libauth-unix-token-samba4.so"]
-    check("image: the sixteen unneeded libraries go through reaper_rm_lib (it clears the links they leave)",
-          sorted(libs) == sorted(want) and code.count("reaper_rm_lib") == 2, sorted(libs))
+            "libhttp-samba4.so", "libLIBWBCLIENT-OLD-samba4.so", "libauth-unix-token-samba4.so",
+            "usr/lib/libsmbclient.so.0.7.0"]
+    check("image: the seventeen unneeded libraries go through reaper_rm_lib (it clears the links they leave)",
+          sorted(libs) == sorted(want) and code.count("reaper_rm_lib") == 3, sorted(libs))
+    rmk = rd(os.path.join(SRC, "Makefile")) if os.path.isfile(os.path.join(SRC, "Makefile")) else ""
+    check("image: libsmbclient.so.0.7.0 goes only while the portal server's libsmbclient.so.0 is the stand-in",
+          "$(MAKE) -C libsmbclient-stub install INSTALLDIR=$(INSTALLDIR)/lighttpd-1.4.39" in rmk
+          and "obj-$(RTCONFIG_CAPTIVE_PORTAL) += samba-3.5.8" not in rmk)
     check("image: the 64-bit DNS name-service file goes only while no 64-bit resolver library ships",
           "[ -e $R_FS/lib64/libresolv.so.2 ] || rm -f $R_FS/lib64/libnss_dns.so.2" in code)
     whole = "\n".join(l for l in b.split("\n") if not l.lstrip().startswith("#"))
     for keep, why in (("libnss_mdns4_minimal", "glibc loads it by the name in nsswitch.conf"),
-                      ("libsmbclient.so.0.7.0", "same soname as the library the portal web server links"),
                       ("libnss_files", "the 64-bit ebtables resolves protocol names through it"),
                       ("libbcmcrypto", "closed; not before a boot test")):
         check("image: %s is NOT removed (%s)" % (keep, why), keep not in whole)

@@ -1,0 +1,79 @@
+From 9746c578f597d763ab3ec8426298068162d0c4bf Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Sun, 15 Nov 2026 17:48:32 -0500
+Subject: [PATCH] First setup: the login name follows the stock rule (either
+ case) (102.8 line)
+
+- The first-setup page lowercased the login name and refused upper case; the login is
+  case-sensitive and every other page accepts either case. It now follows the stock rule: letters
+  of either case, digits, '-' and '_', at least two, not starting with '-' or '_'.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ release/src/router/www/Reaper_WiFiSetup.asp | 23 ++++++++++++---------
+ 1 file changed, 13 insertions(+), 10 deletions(-)
+
+diff --git a/release/src/router/www/Reaper_WiFiSetup.asp b/release/src/router/www/Reaper_WiFiSetup.asp
+index bbe8f827f5..7365a6a603 100644
+--- a/release/src/router/www/Reaper_WiFiSetup.asp
++++ b/release/src/router/www/Reaper_WiFiSetup.asp
+@@ -34,7 +34,13 @@
+ 	wraps only the credential fields; the Wi-Fi fields reach the box through the
+ 	CGI alone. Both new-password fields carry autocomplete="new-password".
+ 	(2) Nothing is prepopulated: the login name starts empty (placeholder only).
+-	(3) The login name is lowercase-only - lowercased as typed, rejected otherwise.
++	(3) The login name follows stock's rule (Main_Password.asp chkLoginId): letters
++	of either case, digits, '-' and '_', at least 2, not starting with '-'/'_'.
++	v3.3.2 to v3.7.9 forced lowercase here (an owner preference, no technical
++	need: httpd compares the name exactly, stock pages accept A-Z, and
++	Main_Password.asp never folded); dropped 2026-11-15 after a v3.7.9 field
++	report that the field "only accepts lowercase letters". The login is
++	case-sensitive, as on stock.
+ 	(4) After "Apply & Reboot" the page shows the shell's REBOOTING overlay
+ 	(same look as the GUI's Reboot: title, countdown, note), counts the model's
+ 	reboot time down, then polls /httpd_check.xml and lands on "/". The form's
+@@ -320,11 +326,6 @@ function initial(){
+ 		})(i);
+ 	}
+ }
+-/* the router login name is lowercase only (owner rule): fold as typed, keep the caret */
+-function lowerLogin(el){
+-	var l = el.value.toLowerCase();
+-	if(el.value !== l) el.value = l;
+-}
+ var frameArmed = false;
+ var rebootWait = parseInt('<% get_default_reboot_time(); %>', 10) || 170;
+ function showRebooting(ssid){
+@@ -535,15 +536,17 @@ function fail(msg){
+ }
+ var validator = {
+ 	chkLoginId: function(obj){
+-		lowerLogin(obj);
+-		var re = new RegExp("^[a-z0-9][a-z0-9\-\_]+$","g");
++		/* stock's rule (Main_Password.asp): either case; the login compares exactly */
++		var re = new RegExp("^[a-zA-Z0-9][a-zA-Z0-9\-\_]+$","g");
++		var lc = obj.value.toLowerCase();
+ 		if(obj.value == ""){
+ 			showError("<#File_Pop_content_alert_desc1#>");
+ 			obj.focus(); obj.select();
+ 			return false;
+ 		}
+ 		else if(re.test(obj.value)){
+-			if(obj.value == "root" || obj.value == "guest" || obj.value == "anonymous"){
++			/* reserved names in any case ("Guest" is "guest" to Samba) */
++			if(lc == "root" || lc == "guest" || lc == "anonymous"){
+ 				showError("<#USB_Application_account_alert#>");
+ 				obj.focus(); obj.select();
+ 				return false;
+@@ -672,7 +675,7 @@ function showError(str){
+ 				</div>
+ 				<div class="lbl"><#Router_Login_Name#></div>
+ 				<div>
+-					<input type="text" name="http_username_x" id="http_username_x" tabindex="3" class="form_input" maxlength="32" value="" autocapitalize="off" autocomplete="off" spellcheck="false" oninput="lowerLogin(this)" placeholder="<#Router_Login_Name#>">
++					<input type="text" name="http_username_x" id="http_username_x" tabindex="3" class="form_input" maxlength="32" value="" autocapitalize="off" autocomplete="off" spellcheck="false" placeholder="<#Router_Login_Name#>">
+ 				</div>
+ 				<div class="lbl"><#RWFS_5#></div>
+ 				<div>
+-- 
+2.25.1
+

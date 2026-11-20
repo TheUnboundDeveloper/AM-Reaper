@@ -14,7 +14,7 @@
 #   - the two ASUS model-asset sysdep dirs (www/sysdep/<MODEL> art, router/sysdep staging)
 #   - prebuilt blobs / per-model build dirs / kernel+bootloader trees
 #   - per-model config + the model-unique banner
-PP_PROTECT_RE='(release/src/router/(www/)?sysdep/|/prebuild/|/prebuilt/|targets/|bootloaders/|bcmdrivers/|/dts/|/rdp/|router-sysdep\.|\.o$|\.a$|\.so$|\.ko$|\.bin$|/config_[a-z0-9_-]+$|_REAPER_Header(_anim)?\.(png|mp4)$)'
+PP_PROTECT_RE='(release/src/router/(www/)?sysdep/|/prebuild/|/prebuilt/|targets/|bootloaders/|bcmdrivers/|/dts/|/rdp/|router-sysdep\.|\.o$|\.a$|\.so$|\.ko$|\.bin$|/config_[a-z0-9_-]+$|_REAPER_Header(_anim)?\.(png|webp|mp4)$)'
 
 # Inside the protected www/sysdep, FUNCTION/ is FLAG-keyed shared code
 # (MSWAN WAN page, VPN pages, SDN, QIS, themes) -- ALWAYS shared.
@@ -85,7 +85,7 @@ pp_classify(){ # $1 = repo-relative path
 }
 
 # strip the model-unique banner filename for normalized comparison
-pp_norm_banner(){ sed -E 's/[A-Za-z0-9_-]*_REAPER_Header_anim\.png/BANNER_ANIM/g; s/[A-Za-z0-9_-]*_REAPER_Header\.(png|mp4)/BANNER.\1/g'; }
+pp_norm_banner(){ sed -E 's/[A-Za-z0-9_-]*_REAPER_Header_anim\.(png|webp)/BANNER_ANIM/g; s/[A-Za-z0-9_-]*_REAPER_Header\.(png|webp|mp4)/BANNER.\1/g'; }
 
 # pp_canon_deleted CANON_REF REF PATH -> 0 when PATH is absent from CANON_REF and
 # REF's copy is byte-identical to a blob canon's history once carried at that path:

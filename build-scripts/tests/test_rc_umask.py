@@ -8,9 +8,10 @@ explicit mode - fopen("w"), a shell ">" - came out 0666, writable by the non-roo
 (dnsmasq and tftpd as nobody, Entware daemons) between root writing it and root reading it.
 
 WHAT IT PINS.
-- rc/init.c turns umask(022) on, once, AFTER the directory block whose 0777 directories ASUS
-  made on purpose (/var/lock, /var/state, /var/tmp/dhcp) and after /tmp's 01777, so those keep
-  their stock modes; the commented-out line is gone.
+- rc/init.c turns umask(022) on, once, AFTER the directory block (/var/state 0777 as ASUS made
+  it; /var/lock and /var/tmp/dhcp 0755 since review 2026-11-03, C-1 - a world-writable lock
+  directory let any uid wedge PID 1 on firewall.lock) and after /tmp's 01777, so each keeps
+  exactly the mode it is made with; the commented-out line is gone.
 - Each service that must create files as another user sets its own mode, so it does not depend
   on rc's umask: vsftpd local_umask=000, Samba force create/directory mode 0777, tftpd started
   without -p (tftp-hpa then uses its own umask 0), mkdir_if_none() creates with "mkdir -m 0777"
@@ -48,10 +49,12 @@ check("rc/init.c sets umask(022) exactly once", len(on) == 1, on)
 check("the commented-out stock line is gone", "//umask(022);" not in init)
 if len(on) == 1:
     at = on[0]
-    for d in ('mkdir("/var/lock", 0777)', 'mkdir("/var/state", 0777)', 'mkdir("/var/tmp/dhcp", 0777)',
+    for d in ('mkdir("/var/lock", 0755)', 'mkdir("/var/state", 0777)', 'mkdir("/var/tmp/dhcp", 0755)',
               'chmod("/tmp", 01777)'):
         i = code.find(d)
-        check("%s runs before the umask, so it keeps its stock mode" % d, 0 <= i < at, i)
+        check("%s runs before the umask, so it keeps exactly that mode" % d, 0 <= i < at, i)
+    for d in ('mkdir("/var/lock", 0777)', 'mkdir("/var/tmp/dhcp", 0777)'):
+        check("%s is gone (review 2026-11-03, C-1)" % d, d not in code)
     z = [m.start() for m in re.finditer(r"^\s*umask\(0\);", code, re.M)]
     check("the stock umask(0) still comes first (the boot block relies on it)", z and z[0] < at, z)
     check("nothing resets rc to umask 0 after it", not any(p > at for p in z), z)

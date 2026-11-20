@@ -1,0 +1,479 @@
+From 4e0fd964b32b6e21165b799bea4c07ceed8132bd Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Thu, 19 Nov 2026 20:37:13 -0500
+Subject: [PATCH] Guest networks: VPN routing comes back after a WAN reconnect;
+ IPv6 from a /57-/63 prefix
+
+- A network bound to a VPN client keeps its routing through a WAN reconnect: after every WAN route rebuild
+  the router puts back the network's VPN policy rules (IPv4 and, where used, IPv6), the main network's
+  default-VPN rule included. Before, the network used the WAN until its VPN client restarted. The rc
+  route applet now also re-applies the VPN kill switch rules.
+- Unbinding a network from its VPN client removes its IPv6 rule into the tunnel; the main network's
+  default-VPN rules are no longer added twice.
+- A delegated IPv6 prefix of /57 to /63 is now divided too: each guest or VLAN network whose number fits
+  gets its own public /64 (a /60 has room for 15). A network that does not fit, or whose /64 would equal
+  the main network's, gets a private (ULA) prefix, logged once per boot. The main network keeps its own
+  address; /56 and larger work as before.
+- New or reset routers ask the provider for a /56 (ipv6_prefix_len_wan 56). The IPv6 page fills in 64
+  when Static IPv6 is picked on a router that still holds that untouched value.
+- sdn.c also carries the guest-network service name of the next commit's light save in its settle list.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ release/src/router/rc/sdn.c                 | 230 +++++++++++++++++++-
+ release/src/router/rc/wan.c                 |   6 +
+ release/src/router/rc/wanduck.c             |   3 +
+ release/src/router/shared/mtlan_utils.c     |  79 +++++++
+ release/src/router/shared/mtlan_utils.h     |   7 +
+ release/src/router/www/Reaper_IPv6Setup.asp |  13 ++
+ 6 files changed, 334 insertions(+), 4 deletions(-)
+
+diff --git a/release/src/router/rc/sdn.c b/release/src/router/rc/sdn.c
+index 3fc323bf06..436e7ee55e 100644
+--- a/release/src/router/rc/sdn.c
++++ b/release/src/router/rc/sdn.c
+@@ -1711,6 +1711,209 @@ static VPNC_PROTO reaper_vpnc_proto(int vpnc_idx)
+ }
+ #endif
+ 
++/* REAPER-SDNVPN-BEGIN */
++/* reaper 2026-11-19 (guest VPN binding B2): every WAN event runs add_multi_routes(), which opens with `ip rule flush`
++ * (the shipped DUALWAN build is a closed blob with the same prologue). That drops the rule that sends each VPN-bound
++ * network into its client's table (`iif brN table T pref P`) and, when the default WAN is a VPN client, br0's pref-999
++ * rule. Nothing put them back until the VPN client restarted, so a bound guest network left by the WAN meanwhile.
++ * reaper_sdn_vpn_rules() re-adds exactly the rules _handle_sdn_wan() adds for those two cases and nothing else: no
++ * grep-and-delete (the kill-switch `prohibit` rules belong to amvpn_set_kilswitch_rules_all(), called right after
++ * it), no iptables, its own lock (which serialises it with itself only). Each rule is first deleted in its exact form,
++ * so a second run adds no copy.
++ * Callers: every add_multi_routes() site (rc/wan.c wan_up and the load-balance branch of wan_down, rc/wanduck.c,
++ * the add_multi_routes applet in rc/rc.c), after reaper_pbr_reassert() and before the kill-switch call. */
++/* REAPER-SDNVPN-PURE-BEGIN */
++#define RSDNVPN_IDX_MAX 16	/* vpnc_idx 1 to MAX_VPNC_PROFILE (rc/vpnc_fusion.h) */
++#define RSDNVPN_RULES_MAX 4	/* per network: its binding (IPv4 + IPv6) and br0's default VPN (IPv4 + IPv6) */
++typedef struct {
++	int v6;
++	char iif[IFNAMSIZ];
++	char table[12];
++	char pref[12];
++} RSDNVPN_RULE;
++
++static int rsdnvpn_put(RSDNVPN_RULE *r, int n, int max, int v6, const char *iif, int table, int pref)
++{
++	if (n >= max)
++		return n;
++	r[n].v6 = v6;
++	snprintf(r[n].iif, sizeof(r[n].iif), "%s", iif);
++	snprintf(r[n].table, sizeof(r[n].table), "%d", table);
++	snprintf(r[n].pref, sizeof(r[n].pref), "%d", pref);
++	return n + 1;
++}
++
++/* The rules _handle_sdn_wan() adds for one network: bound to VPN client vpnc_idx (pref 1000 + 3n, or 999 for the main
++ * LAN), and the main LAN when the default WAN is VPN client vpnc_default_wan. v6_bound / v6_default: IPv6 is on for
++ * the network and that client is WireGuard or OpenVPN (reaper_vpnc_proto). Returns the number of rules in r. */
++static int rsdnvpn_rules(const char *ifname, int sdn_idx, int nw_idx, int vpnc_idx, int v6_bound,
++			 int is_lan, int vpnc_default_wan, int v6_default, RSDNVPN_RULE *r, int max)
++{
++	int n = 0, pref;
++
++	if (!ifname || !*ifname)
++		return 0;
++	if (sdn_idx != 0 && nw_idx == 0)	/* shares the main LAN subnet: _handle_sdn_wan() skips it too */
++		return 0;
++	if (vpnc_idx > 0 && vpnc_idx <= RSDNVPN_IDX_MAX) {
++		pref = sdn_idx ? IP_RULE_PREF_VPNC_POLICY_IF + vpnc_idx * 3 : IP_RULE_PREF_DEFAULT_CONN;
++		n = rsdnvpn_put(r, n, max, 0, ifname, IP_ROUTE_TABLE_ID_VPNC_BASE + vpnc_idx, pref);
++		if (v6_bound)
++			n = rsdnvpn_put(r, n, max, 1, ifname, IP_ROUTE_TABLE_ID_VPNC_BASE + vpnc_idx, pref);
++	}
++	if (is_lan && vpnc_default_wan > 0 && vpnc_default_wan <= RSDNVPN_IDX_MAX) {
++		n = rsdnvpn_put(r, n, max, 0, ifname, IP_ROUTE_TABLE_ID_VPNC_BASE + vpnc_default_wan, IP_RULE_PREF_DEFAULT_CONN);
++		if (v6_default)
++			n = rsdnvpn_put(r, n, max, 1, ifname, IP_ROUTE_TABLE_ID_VPNC_BASE + vpnc_default_wan, IP_RULE_PREF_DEFAULT_CONN);
++	}
++	return n;
++}
++
++/* argv of `ip [-6] rule <op> iif X table T pref P` - the form _handle_sdn_wan() adds, so a del removes that rule only */
++static void rsdnvpn_argv(const RSDNVPN_RULE *r, const char *op, char *argv[11])
++{
++	int n = 0;
++
++	argv[n++] = (char *)"ip";
++	if (r->v6)
++		argv[n++] = (char *)"-6";
++	argv[n++] = (char *)"rule";
++	argv[n++] = (char *)op;
++	argv[n++] = (char *)"iif";
++	argv[n++] = (char *)r->iif;
++	argv[n++] = (char *)"table";
++	argv[n++] = (char *)r->table;
++	argv[n++] = (char *)"pref";
++	argv[n++] = (char *)r->pref;
++	argv[n] = NULL;
++}
++
++/* REAPER-SDNVPN-STALE2 */
++/* One line of `ip -6 -N rule show`. -N (numeric tables) is needed: /rom/etc/iproute2/rt_tables names tables 1-10
++ * wgc1..wgc5 / ovpnc1..ovpnc5, and iproute2 5.11 prints names without it. Shapes: "1003:	from all iif br52 lookup 1",
++ * and while the bridge is down "1003:	from all iif br52 [detached] lookup 1" (iprule.c prints the flag right after
++ * the interface name). Returns 1 and fills r only for a VPN binding rule of ifname: iif exactly ifname, a numeric VPN
++ * client table and that binding's own pref (1000 + 3n, or 999). The kill switch, Policy Routing, another interface,
++ * a named table or any extra word never match. */
++static int rsdnvpn_v6_stale(const char *line, const char *ifname, RSDNVPN_RULE *r)
++{
++	char iif[IFNAMSIZ + 8], w1[16], w2[16], w3[16], w4[16];
++	const char *tstr;
++	char *end;
++	unsigned int pref;
++	long table;
++	int idx, got;
++
++	if (!line || !ifname || !*ifname)
++		return 0;
++	got = sscanf(line, "%u: from all iif %23s %15s %15s %15s %15s", &pref, iif, w1, w2, w3, w4);
++	if (got == 4 && !strcmp(w1, "lookup"))
++		tstr = w2;
++	else if (got == 5 && !strcmp(w1, "[detached]") && !strcmp(w2, "lookup"))
++		tstr = w3;
++	else
++		return 0;
++	if (strcmp(iif, ifname))
++		return 0;
++	table = strtol(tstr, &end, 10);
++	if (end == tstr || *end || table < 0 || table > 0xffff)
++		return 0;
++	idx = (int)table - IP_ROUTE_TABLE_ID_VPNC_BASE;
++	if (idx < 1 || idx > RSDNVPN_IDX_MAX)
++		return 0;
++	if (pref != (unsigned int)IP_RULE_PREF_DEFAULT_CONN && pref != (unsigned int)(IP_RULE_PREF_VPNC_POLICY_IF + idx * 3))
++		return 0;
++	rsdnvpn_put(r, 0, 1, 1, ifname, (int)table, (int)pref);
++	return 1;
++}
++/* REAPER-SDNVPN-PURE-END */
++
++static void rsdnvpn_ip(const RSDNVPN_RULE *r, const char *op)
++{
++	char *argv[11];
++
++	rsdnvpn_argv(r, op, argv);
++	_eval(argv, strcmp(op, "del") ? NULL : ">/dev/null", 0, NULL);	/* "del" of a rule that is not there is normal */
++}
++
++#ifdef RTCONFIG_IPV6
++/* _handle_sdn_wan() for a network with no VPN client: drop the IPv6 binding rule an earlier binding left (unbinding
++ * never removed it; the IPv4 rule goes with the grep at the top of _handle_sdn_wan) */
++static void rsdnvpn_v6_unbind(const char *ifname)
++{
++	FILE *fp;
++	char line[256];
++	RSDNVPN_RULE r[RSDNVPN_IDX_MAX + 2];
++	int n = 0, i;
++
++	if (!ifname || !*ifname || !(fp = popen("ip -6 -N rule show", "r")))
++		return;
++	while (fgets(line, sizeof(line), fp))
++		if (n < (int)(sizeof(r) / sizeof(r[0])) && rsdnvpn_v6_stale(line, ifname, &r[n]))
++			n++;
++	pclose(fp);
++	for (i = 0; i < n; i++)
++		rsdnvpn_ip(&r[i], "del");
++}
++#endif
++
++static int rsdnvpn_v6ok(const MTLAN_T *pmtl, int vpnc_idx)
++{
++#if defined(RTCONFIG_IPV6) && defined(RTCONFIG_VPN_FUSION)
++	VPNC_PROTO proto;
++
++	if (!vpnc_idx || !ipv6_enabled() || !pmtl->nw_t.v6_enable)
++		return 0;
++	proto = reaper_vpnc_proto(vpnc_idx);
++	return proto == VPNC_PROTO_OVPN || proto == VPNC_PROTO_WG;
++#else
++	return 0;
++#endif
++}
++
++void reaper_sdn_vpn_rules(void)
++{
++	MTLAN_T *pmtl;
++	size_t mtl_sz = 0, i;
++	RSDNVPN_RULE r[RSDNVPN_RULES_MAX];
++	char lan_ifname[IFNAMSIZ];
++	int n, j, lock, rules = 0, nets = 0, vpnc_default_wan, is_lan;
++
++	if (client_mode() && !nvram_match("re_mode", "1"))	/* handle_sdn_feature() adds no SDN WAN rules there */
++		return;
++	if (!(pmtl = (MTLAN_T *)INIT_MTLAN(sizeof(MTLAN_T))))
++		return;
++	/* serialises this helper with itself only: stock _handle_sdn_wan() takes no lock, and an overlap with it can at
++	 * worst leave a duplicate rule, never lose one (each side deletes before it adds, so the last step is an add) */
++	lock = file_lock("reaper_sdnvpn");
++	vpnc_default_wan = nvram_get_int("vpnc_default_wan");
++	strlcpy(lan_ifname, nvram_safe_get("lan_ifname"), sizeof(lan_ifname));
++	get_mtlan(pmtl, &mtl_sz);
++	for (i = 0; i < mtl_sz; i++) {
++		if (!pmtl[i].enable && pmtl[i].sdn_t.sdn_idx != 0)
++			continue;
++		is_lan = !strcmp(pmtl[i].nw_t.ifname, lan_ifname);
++#ifdef RTCONFIG_MULTIWAN_IF
++		if (pmtl[i].sdn_t.wan_idx || pmtl[i].sdn_t.mtwan_idx)	/* an assigned WAN replaces the default VPN there */
++			is_lan = 0;
++#endif
++		n = rsdnvpn_rules(pmtl[i].nw_t.ifname, pmtl[i].sdn_t.sdn_idx, pmtl[i].nw_t.idx, pmtl[i].sdn_t.vpnc_idx,
++				  rsdnvpn_v6ok(&pmtl[i], pmtl[i].sdn_t.vpnc_idx), is_lan, vpnc_default_wan,
++				  is_lan && rsdnvpn_v6ok(&pmtl[i], vpnc_default_wan), r, RSDNVPN_RULES_MAX);
++		for (j = 0; j < n; j++) {
++			rsdnvpn_ip(&r[j], "del");
++			rsdnvpn_ip(&r[j], "add");
++		}
++		rules += n;
++		nets += n ? 1 : 0;
++	}
++	file_unlock(lock);
++	FREE_MTLAN((void *)pmtl);
++	if (rules)
++		logmessage("sdn", "VPN routing put back for %d network(s) after a WAN route change (%d rules)", nets, rules);
++}
++/* REAPER-SDNVPN-END */
++
+ static int _handle_sdn_wan(const MTLAN_T *pmtl, const char *logdrop, const char *logaccept)
+ {
+ 	int vpnc_default_wan, assigned_wan = 0;
+@@ -1756,6 +1959,12 @@ static int _handle_sdn_wan(const MTLAN_T *pmtl, const char *logdrop, const char
+ #endif
+ #endif
+ 	}
++#ifdef RTCONFIG_IPV6
++	else {	/* reaper 2026-11-19 (B2, REAPER-SDNVPN-V6UNBIND): no VPN client - drop the IPv6 binding rule an earlier
++		 * binding left (the IPv6 removal below is RTCONFIG_MULTIWAN_IF only, which no Reaper model builds) */
++		rsdnvpn_v6_unbind(pmtl->nw_t.ifname);
++	}
++#endif
+ 
+ #ifdef RTCONFIG_MULTIWAN_IF
+ #ifdef RTCONFIG_MULTIWAN_PROFILE
+@@ -1826,6 +2035,14 @@ static int _handle_sdn_wan(const MTLAN_T *pmtl, const char *logdrop, const char
+ 		{
+ 			snprintf(table, sizeof(table), "%d", IP_ROUTE_TABLE_ID_VPNC_BASE + vpnc_default_wan);
+ 			snprintf(pref, sizeof(pref), "%d", IP_RULE_PREF_DEFAULT_CONN);
++			{	/* reaper 2026-11-19 (B2, REAPER-SDNVPN-LANDEL): remove before adding - every run added another copy */
++				RSDNVPN_RULE dr;
++
++				rsdnvpn_put(&dr, 0, 1, 0, pmtl->nw_t.ifname, IP_ROUTE_TABLE_ID_VPNC_BASE + vpnc_default_wan, IP_RULE_PREF_DEFAULT_CONN);
++				rsdnvpn_ip(&dr, "del");
++				dr.v6 = 1;
++				rsdnvpn_ip(&dr, "del");
++			}
+ 			eval("ip", "rule", "add", "iif", (char*)pmtl->nw_t.ifname, "table", table, "pref", pref);
+ #if defined(RTCONFIG_IPV6) && defined(RTCONFIG_VPN_FUSION)
+ 			if(ipv6_enabled() && pmtl->nw_t.v6_enable)
+@@ -2338,9 +2555,12 @@ int write_dnsmasq_conf_sdn_ra_dhcp6_range(FILE* fp, const MTLAN_T *pmtl)
+ 	if (v6_prefix[0] && v6_prefix_length <= 104)
+ 	{
+ 		if (share_subnet) {
+-			if (v6_prefix_length <= 56 || v6_prefix_div) {
+-				sdn_prefix_length = mtlan_extend_prefix_by_subnet_idx(
+-					v6_prefix, v6_prefix_length, pmtl->nw_t.idx, 8, sdn_prefix, sizeof(sdn_prefix));
++			char lan6[INET6_ADDRSTRLEN];	/* REAPER-V6SPLIT-LANCLASH: the main LAN's own address (its stock path) */
++
++			strlcpy(lan6, ipv6_router_address(NULL), sizeof(lan6));
++			if (mtlan_prefix_split_ok_lan(v6_prefix, v6_prefix_length, pmtl->nw_t.idx, v6_prefix_div, lan6)) {	/* REAPER-V6SPLIT: /57-/63 too */
++				sdn_prefix_length = mtlan_prefix_by_subnet(
++					v6_prefix, v6_prefix_length, pmtl->nw_t.idx, sdn_prefix, sizeof(sdn_prefix));
+ 				if (sdn_prefix_length < 64)
+ 					sdn_prefix_length = 64;
+ 			}
+@@ -2400,7 +2620,9 @@ int write_dnsmasq_conf_sdn_ra_dhcp6_range(FILE* fp, const MTLAN_T *pmtl)
+  * records (httpd/web.c reaper_sdn_tok) */
+ int reaper_sdn_list_has_svc(const char *list)
+ {
+-	static const char *const tok[] = { "restart_sdn", "start_sdn_del", "restart_chilli", "restart_uam_srv", "restart_CP", NULL };
++	/* reaper 2026-11-19: restart_reaper_guest = the Network page's light save (chosen devices / device discovery) */
++	static const char *const tok[] = { "restart_sdn", "start_sdn_del", "restart_chilli", "restart_uam_srv", "restart_CP",
++					   "restart_reaper_guest", NULL };
+ 	const char *p, *q;
+ 	size_t w;
+ 	int i;
+diff --git a/release/src/router/rc/wan.c b/release/src/router/rc/wan.c
+index 9b63c3d2ff..6e6c64362d 100644
+--- a/release/src/router/rc/wan.c
++++ b/release/src/router/rc/wan.c
+@@ -4439,6 +4439,9 @@ NOIP:
+ 	 * Upstream re-asserts its own killswitch on the very next line for the same
+ 	 * reason. IPv4-only flush, but reaper_pbr_reassert() rebuilds both families. */
+ 	reaper_pbr_reassert();
++#ifdef RTCONFIG_MULTILAN_CFG
++	reaper_sdn_vpn_rules();	/* REAPER-SDNVPN-WANUP: guest networks bound to a VPN client lose their rule to the same flush */
++#endif
+ #if defined(RTCONFIG_WIREGUARD) || defined(RTCONFIG_OPENVPN)
+ 	amvpn_set_kilswitch_rules_all();
+ #endif
+@@ -4975,6 +4978,9 @@ wan_down(char *wan_ifname)
+ 	if(nvram_match("wans_mode", "lb")) {
+ 		add_multi_routes(1, -1);
+ 		reaper_pbr_reassert();	/* same ip-rule flush as wan_up() - see the note there */
++#ifdef RTCONFIG_MULTILAN_CFG
++		reaper_sdn_vpn_rules();	/* REAPER-SDNVPN-WANLB: guest networks bound to a VPN client lose their rule to the same flush */
++#endif
+ #if defined(RTCONFIG_WIREGUARD) || defined(RTCONFIG_OPENVPN)
+ 		amvpn_set_kilswitch_rules_all();
+ #endif
+diff --git a/release/src/router/rc/wanduck.c b/release/src/router/rc/wanduck.c
+index ad7b19f636..78489f9d5c 100644
+--- a/release/src/router/rc/wanduck.c
++++ b/release/src/router/rc/wanduck.c
+@@ -2331,6 +2331,9 @@ _dprintf("# wanduck(%d): if_wan_phyconnected: x_Setting=%d, link_modem=%d, sim_s
+ 				if(nvram_get_int(strcat_r(prefix, "dhcpenable_x", tmp)) == 0 && !found_default_route(wan_unit)) {
+ 					add_multi_routes(0, -1);
+ 					reaper_pbr_reassert();	/* same ip-rule flush as wan_up() - see the note there */
++#ifdef RTCONFIG_MULTILAN_CFG
++					reaper_sdn_vpn_rules();	/* REAPER-SDNVPN-WANDUCK: guest networks bound to a VPN client lose their rule to the same flush */
++#endif
+ #if defined(RTCONFIG_WIREGUARD) || defined(RTCONFIG_OPENVPN)
+ 					amvpn_set_kilswitch_rules_all();
+ #endif
+diff --git a/release/src/router/shared/mtlan_utils.c b/release/src/router/shared/mtlan_utils.c
+index b151d81d99..ee60acaf19 100644
+--- a/release/src/router/shared/mtlan_utils.c
++++ b/release/src/router/shared/mtlan_utils.c
+@@ -1351,6 +1351,85 @@ int mtlan_extend_prefix_by_subnet_idx(const char* prefix, int prefix_length, uin
+ 	return ((n+1)*8);
+ }
+ 
++/* REAPER-V6SPLIT-BEGIN */
++/* reaper 2026-11-19 (IPv6 prefix split): a provider prefix of /57 to /63 gives each network its own /64. The network's
++ * subnet index goes into bits plen..63, so the main LAN (index 0) keeps the first /64 and is never renumbered.
++ * mtlan_extend_prefix_by_subnet_idx() above is unchanged: it splits on whole bytes only, which is right for /56 and
++ * larger and gave a /72 (no SLAAC) between /57 and /63, so those prefixes were only used with ipv6_prefix_div. */
++
++/* 1 when a /57-/63 prefix has a /64 for subnet index idx (idx < 2^(64-plen)) */
++int mtlan_prefix_subnet64_fits(int prefix_length, int subnet_idx)
++{
++	return prefix_length >= 57 && prefix_length <= 63 && subnet_idx >= 0 && subnet_idx < (1 << (64 - prefix_length));
++}
++
++/* the /64 of subnet index idx in a /57-/63 prefix: returns 64, or 0 (buf untouched) when it does not fit or parse */
++int mtlan_prefix_subnet64(const char *prefix, int prefix_length, int subnet_idx, char *buf, size_t len)
++{
++	uint8_t addr[16];
++	char out[INET6_ADDRSTRLEN];
++	int bits, i;
++
++	if (!prefix || !buf || !mtlan_prefix_subnet64_fits(prefix_length, subnet_idx))
++		return 0;
++	if (inet_pton(AF_INET6, prefix, addr) != 1)
++		return 0;
++	bits = 64 - prefix_length;	/* 1 to 7: all inside byte 7 */
++	addr[7] = (uint8_t)((addr[7] & (0xff << bits)) | subnet_idx);
++	for (i = 8; i < 16; i++)
++		addr[i] = 0;
++	if (!inet_ntop(AF_INET6, addr, out, sizeof(out)) || strlen(out) >= len)
++		return 0;
++	memcpy(buf, out, strlen(out) + 1);
++	return 64;
++}
++
++/* Does a network get a split of the provider prefix? /56 and larger: the whole-byte split as before. /57-/63: its own
++ * /64 only while its index fits - never the old split, even with ipv6_prefix_div (REAPER-V6SPLIT-STRICT: that gave a
++ * /72 inside the main LAN's /64). /64 and longer: the old split only when ipv6_prefix_div asks (as before).
++ * 0 = no: the caller keeps its private (ULA) fallback. */
++int mtlan_prefix_split_ok(int prefix_length, int subnet_idx, int prefix_div)
++{
++	if (prefix_length >= 57 && prefix_length <= 63)
++		return mtlan_prefix_subnet64_fits(prefix_length, subnet_idx);
++	return prefix_length <= 56 || prefix_div;
++}
++
++/* the network's prefix under that order (call it after mtlan_prefix_split_ok() said yes); returns its length or 0 */
++int mtlan_prefix_by_subnet(const char *prefix, int prefix_length, int subnet_idx, char *buf, size_t len)
++{
++	if (prefix_length >= 57 && prefix_length <= 63)
++		return mtlan_prefix_subnet64(prefix, prefix_length, subnet_idx, buf, len);	/* 0 when it does not fit */
++	if (subnet_idx < 0 || subnet_idx > 255)
++		return 0;
++	return mtlan_extend_prefix_by_subnet_idx(prefix, prefix_length, (uint8_t)subnet_idx, 8, buf, len);
++}
++/* REAPER-V6SPLIT-LANCLASH: 1 when two IPv6 addresses / prefixes share their first 64 bits (both must parse) */
++int mtlan_prefix_same64(const char *a, const char *b)
++{
++	uint8_t x[16], y[16];
++
++	if (!a || !b || inet_pton(AF_INET6, a, x) != 1 || inet_pton(AF_INET6, b, y) != 1)
++		return 0;
++	return !memcmp(x, y, 8);
++}
++
++/* mtlan_prefix_split_ok() for a guest / VLAN network, also refusing a /57-/63 split whose /64 is the main LAN's own:
++ * with a /57-/63 the main LAN keeps its stock address (ipv6_router_address(), lan_addr here), which with Static IPv6
++ * can sit outside the first /64 (prefix ::a0/60, router ::a5:1 = index 5's /64). That network then gets ULA. */
++int mtlan_prefix_split_ok_lan(const char *prefix, int prefix_length, int subnet_idx, int prefix_div, const char *lan_addr)
++{
++	char p64[INET6_ADDRSTRLEN];
++
++	if (!mtlan_prefix_split_ok(prefix_length, subnet_idx, prefix_div))
++		return 0;
++	if (prefix_length >= 57 && prefix_length <= 63 && prefix && *prefix && lan_addr && *lan_addr
++	    && mtlan_prefix_subnet64(prefix, prefix_length, subnet_idx, p64, sizeof(p64)) == 64 && mtlan_prefix_same64(p64, lan_addr))
++		return 0;
++	return 1;
++}
++/* REAPER-V6SPLIT-END */
++
+ CP_RADIUS_PROFILE *get_cpX_radius_profile(CP_RADIUS_PROFILE *cpX_radius_profile, int idx)
+ {
+ 	char *nv = NULL, *nvp = NULL, *b;
+diff --git a/release/src/router/shared/mtlan_utils.h b/release/src/router/shared/mtlan_utils.h
+index 4305765832..67f02661f9 100644
+--- a/release/src/router/shared/mtlan_utils.h
++++ b/release/src/router/shared/mtlan_utils.h
+@@ -257,6 +257,13 @@ extern VPN_VPNX_T* get_vpnx_by_vpns_idx(VPN_VPNX_T* vpnx, int vpns_idx);
+ extern VPN_VPNX_T* get_vpnx_by_gre_idx(VPN_VPNX_T* vpnx, int gre_idx);
+ extern int mtlan_extend_prefix_by_subnet_idx(const char* prefix, int prefix_length
+ 				, uint8_t subnet_idx, int subnet_length, char* buf, size_t len);
++/* reaper 2026-11-19 (IPv6 prefix split, REAPER-V6SPLIT): one /64 per network from a /57-/63 */
++extern int mtlan_prefix_subnet64_fits(int prefix_length, int subnet_idx);
++extern int mtlan_prefix_subnet64(const char *prefix, int prefix_length, int subnet_idx, char *buf, size_t len);
++extern int mtlan_prefix_split_ok(int prefix_length, int subnet_idx, int prefix_div);
++extern int mtlan_prefix_by_subnet(const char *prefix, int prefix_length, int subnet_idx, char *buf, size_t len);
++extern int mtlan_prefix_same64(const char *a, const char *b);
++extern int mtlan_prefix_split_ok_lan(const char *prefix, int prefix_length, int subnet_idx, int prefix_div, const char *lan_addr);
+ //for freewifi 
+ extern CP_TYPE_RL *get_cp_type_byidx(int index, CP_TYPE_RL *lst);
+ extern CP_PROFILE *get_cpX_profile_by_cpidx(int index, CP_PROFILE *lst);
+diff --git a/release/src/router/www/Reaper_IPv6Setup.asp b/release/src/router/www/Reaper_IPv6Setup.asp
+index 0bed62401d..406d1f5f3b 100644
+--- a/release/src/router/www/Reaper_IPv6Setup.asp
++++ b/release/src/router/www/Reaper_IPv6Setup.asp
+@@ -189,6 +189,17 @@ var LIVE = {prefix: NV.ipv6_prefix, plen: NV.ipv6_prefix_length, rtr: NV.ipv6_rt
+    Empty or 0 = let the provider choose. */
+ var PD_MIN = 48, PD_MAX = 64;
+ function pdLenOk(s){ return s === '' || s === '0' || rp.v.int(s, PD_MIN, PD_MAX); }
++/* reaper 2026-11-19 (IPv6 split): new routers ask for a /56 (shared/defaults.c ipv6_prefix_len_wan = 56), so guest and
++   VLAN networks get their own public /64. The same key is the Static IPv6 WAN address length: when Static is picked
++   on a router where it still holds that native 56, the field shows 64 (the usual static length) and goes back to 56
++   if Static is left again with the field untouched. A value the user typed is never changed. */
++var PLEN_NATIVE = '56', PLEN_STATIC = '64', PLEN_FILLED = false;
++function staticFill(){
++  var f = q('i_plenwan'), v = svc();
++  if (v === 'other' && ORIG !== 'other' && !PLEN_FILLED && NV.ipv6_prefix_len_wan === PLEN_NATIVE && f.value.trim() === PLEN_NATIVE){ f.value = PLEN_STATIC; PLEN_FILLED = true; }
++  else if (v !== 'other' && PLEN_FILLED){ if (f.value.trim() === PLEN_STATIC) f.value = PLEN_NATIVE; PLEN_FILLED = false; }
++}
++function plenTyped(){ PLEN_FILLED = false; }
+ 
+ function svc(){ return q('s_service').value; }
+ 
+@@ -455,6 +466,8 @@ function boot(){
+   });
+   on('applybtn', 'click', applyAll);
+   on('discardbtn', 'click', function(){ location.reload(); });
++  on('s_service', 'change', staticFill);   /* reaper 2026-11-19: before sync, which reads the field */
++  on('i_plenwan', 'input', plenTyped);
+   ['s_service', 's_ifdev', 't_pd', 't_6rddhcp', 's_ac', 't_dnsauto'].forEach(function(id){ on(id, 'change', sync); });
+   on('i_rtr', 'input', sync);
+   on('i_plenwan', 'input', sync);   /* reaper 2026-11-16: the stored-value line follows the field */
+-- 
+2.25.1
+

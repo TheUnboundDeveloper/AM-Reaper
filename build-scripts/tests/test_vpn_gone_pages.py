@@ -48,7 +48,8 @@ check("stub runs only for a missing .asp file (review 2026-10-24 Q-B-6: no acces
       and '<noscript><meta http-equiv=\\"refresh\\"' in out and "#include <unistd.h>" in inj)
 # review 2026-10-24 (Q-B-2): handle_request() answered "file not found" before reaper_output() could run the stub
 hc = open(os.path.join(SRC, "httpd", "httpd.c"), encoding="utf-8", errors="replace").read()
-g = hc.find("reaper_gone_page(file)")
+# review 2026-11-11 (B-P3): the gate matches on the path without its query; the stub still gets `file`
+g = hc.find("reaper_gone_page(reaper_fp) && !check_if_file_exist(reaper_fp)")
 check("httpd asks reaper_gone_page() and serves the bounce BEFORE its own 404 for a missing page",
       0 < g < hc.find('send_error( 404, "Not Found", (char*) 0, "File not found." );') and "int reaper_gone_page(const char *file)" in inj
       and "reaper_output(handler, file, conn_fp);" in hc[g:g + 600])

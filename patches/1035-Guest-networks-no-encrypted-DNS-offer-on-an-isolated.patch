@@ -1,0 +1,35 @@
+From 5e00b647aa906dbf03f3ef48eb00e304fafc2ec6 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Sun, 15 Nov 2026 17:48:31 -0500
+Subject: [PATCH] Guest networks: no encrypted-DNS offer on an isolated network
+ or a portal (102.8 line)
+
+- An isolated guest network (and a Guest Portal network) reaches the router only for DHCP and
+  plain DNS, yet its DHCP offer named the router's encrypted DNS service (option 162). Phones that
+  honour the offer (iOS does) moved to a resolver they could not reach and lost DNS. The offer is
+  now made only on networks that can reach it.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ release/src/router/rc/sdn.c | 5 ++++-
+ 1 file changed, 4 insertions(+), 1 deletion(-)
+
+diff --git a/release/src/router/rc/sdn.c b/release/src/router/rc/sdn.c
+index 2e57f8e4d1..fc970a000f 100644
+--- a/release/src/router/rc/sdn.c
++++ b/release/src/router/rc/sdn.c
+@@ -1179,7 +1179,10 @@ static int _gen_sdn_dnsmasq_conf(const MTLAN_T *pmtl, char *config_file, const s
+ 			}
+ 			else	/* 2026-11-10: the router is this network's DNS server - offer its encrypted DNS (rc/encdns.c) */
+ 			{
+-				rednsd_dnr_option(fp, pmtl->nw_t.ifname, pmtl->nw_t.addr);
++				/* 2026-11-15: not on an isolated guest network or a portal - REAPER_GUI lets those guests reach
++				 * the router on DHCP / port 53 only, so a DNR offer (DoH / DoT) would name a resolver they cannot use */
++				if (!reaper_sdn_hide_lan_names(pmtl) && pmtl->sdn_t.cp_idx <= 0)
++					rednsd_dnr_option(fp, pmtl->nw_t.ifname, pmtl->nw_t.addr);
+ 			}
+ 		}
+ 
+-- 
+2.25.1
+

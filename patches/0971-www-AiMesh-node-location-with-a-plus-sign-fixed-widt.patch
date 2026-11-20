@@ -1,0 +1,109 @@
+From 4263585bf812405c443274600e5391c2bf3c00cf Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Fri, 6 Nov 2026 17:29:50 -0500
+Subject: [PATCH] www: AiMesh node location with a plus sign; fixed-width clock
+ digits (102.8 line)
+
+- aimesh_topology.html: a node location stored form-encoded ('First+Floor') is shown as typed.
+- reaper_clock.js, reaper_shell.asp (and Main_ReaperDash.asp, in the Security Review commit): the
+  shipped Rajdhani has no tabular figures, so the clocks use fixed-width digit cells and no longer
+  jitter.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ release/src/router/www/aimesh/aimesh_topology.html | 14 ++++++++++++++
+ release/src/router/www/js/reaper_clock.js          | 10 ++++++++--
+ release/src/router/www/reaper_shell.asp            |  4 +++-
+ 3 files changed, 25 insertions(+), 3 deletions(-)
+
+diff --git a/release/src/router/www/aimesh/aimesh_topology.html b/release/src/router/www/aimesh/aimesh_topology.html
+index 98217a8299a..8c2d048a0eb 100644
+--- a/release/src/router/www/aimesh/aimesh_topology.html
++++ b/release/src/router/www/aimesh/aimesh_topology.html
+@@ -226,7 +226,19 @@ function control_category_block(_category){
+ 	}
+ }
+ 
++/* reaper 2026-11-06: a node location stored as "First+Floor" (a space form-encoded by
++ * whatever wrote it - this page sends %20 and httpd decodes "+") fails the preset
++ * match and showed raw as a Custom name. "+" is read as a space only when that gives
++ * a stock preset exactly; a Custom name keeps any "+" the user typed. */
++function reaper_loc_norm(v){
++	if(typeof v != "string" || v.indexOf("+") < 0) return v;
++	var s = v.replace(/\+/g, " ");
++	for(var i = 0; i < aimesh_location_arr.length; i += 1)
++		if(aimesh_location_arr[i].value == s) return s;
++	return v;
++}
+ function gen_custom_select(_location){
++	_location = reaper_loc_norm(_location);
+ 	$(".custom_select .custom_select_selected").remove();
+ 	$(".custom_select .custom_select_items").remove();
+ 	$(".custom_select #sel_location").find("option").remove();
+@@ -416,6 +428,7 @@ function closeAllPopup(e) {
+ 	}
+ }
+ function set_custom_select_value(_location){
++	_location = reaper_loc_norm(_location);
+ 	if($(".primary_info_bg .custom_select #input_location").is(":focus"))
+ 		return;
+ 	if(_location == "" || _location == undefined)
+@@ -5044,6 +5057,7 @@ function transform_location(_nodeMac, _node_info){
+ 		if(alias != _nodeMac)
+ 			node_location_text = alias;
+ 	}
++	node_location_text = reaper_loc_norm(node_location_text);
+ 	var specific_location = aimesh_location_arr.filter(function(item, index, _array){
+ 		return (item.value == node_location_text);
+ 	})[0];
+diff --git a/release/src/router/www/js/reaper_clock.js b/release/src/router/www/js/reaper_clock.js
+index 2aeff0dd2b3..6d5c17f986e 100644
+--- a/release/src/router/www/js/reaper_clock.js
++++ b/release/src/router/www/js/reaper_clock.js
+@@ -39,13 +39,19 @@
+ 	}
+ 	function sane(ms){ return !isNaN(ms) && ms >= SANE_AFTER; }
+ 	function p2(n){ return (n<10?'0':'')+n; }
++	/* reaper 2026-11-06: the shipped Rajdhani has no OpenType features, so the pages'
++	 * font-variant-numeric:tabular-nums does nothing and each digit has its own width
++	 * ("1" 334, "8" 542 per 1000 em): the clock box changed width every second, which
++	 * moved the mobile top bar. Every digit (and placeholder dash) sits in a fixed .rd
++	 * cell, so the width follows the font size alone - i.e. the viewport. */
++	function cells(s){ return String(s).replace(/[0-9-]/g, '<b class="rd">$&</b>'); }
+ 	function dashes(){
+-		et.textContent = '--:--:--';
++		et.innerHTML = cells('--:--:--');
+ 		if (ed) ed.textContent = '\u2014';
+ 	}
+ 	function tk(){
+ 		var d = new Date(b + (Date.now()-t0));
+-		et.innerHTML = p2(d.getHours())+':'+p2(d.getMinutes())+':<span class="rc-sec">'+p2(d.getSeconds())+'</span>';
++		et.innerHTML = cells(p2(d.getHours()))+':'+cells(p2(d.getMinutes()))+':<span class="rc-sec">'+cells(p2(d.getSeconds()))+'</span>';
+ 		if (ed) ed.textContent = C.dw[d.getDay()]+' '+d.getDate()+' '+C.mo[d.getMonth()]+' '+d.getFullYear();
+ 	}
+ 	function adopt(ms){
+diff --git a/release/src/router/www/reaper_shell.asp b/release/src/router/www/reaper_shell.asp
+index 39bb3d884f9..e2aaac7feae 100644
+--- a/release/src/router/www/reaper_shell.asp
++++ b/release/src/router/www/reaper_shell.asp
+@@ -137,6 +137,8 @@ html{scrollbar-width:thin;scrollbar-color:var(--crimson) #000}
+ .railclock{padding:6px 6px 14px;text-align:center;line-height:1.05}
+ .railclock .rc-time{font-family:var(--hdr);font-weight:700;font-size:23px;letter-spacing:.07em;color:var(--bone);font-variant-numeric:tabular-nums}
+ .railclock .rc-sec{color:var(--crimson)}
++/* fixed digit cells (js/reaper_clock.js): Rajdhani has no tabular figures; .62em = widest digit .542em + the .07em tracking */
++.railclock .rc-time .rd{display:inline-block;width:.62em;text-align:center;letter-spacing:0;font-weight:inherit}
+ .railclock .rc-date{font-family:var(--hdr);font-weight:600;font-size:10.5px;letter-spacing:.16em;text-transform:uppercase;color:var(--steel);margin-top:4px}
+ /* reaper 2026-08-17: STICKY, so the signet stays reachable no matter how long
+    the rail gets. margin-top:auto alone pins it to the foot of the RAIL, and the
+@@ -334,7 +336,7 @@ a.item .cnt{font-size:11px;color:var(--steel);margin-left:4px}
+     </div>
+   </header>
+   <aside class="rail" id="rail">
+-    <div class="railclock"><div class="rc-time" id="rc_time">--:--:--</div><div class="rc-date" id="rc_date">&mdash;</div></div>
++    <div class="railclock"><div class="rc-time" id="rc_time"><b class="rd">-</b><b class="rd">-</b>:<b class="rd">-</b><b class="rd">-</b>:<b class="rd">-</b><b class="rd">-</b></div><div class="rc-date" id="rc_date">&mdash;</div></div>
+     <script>var RP_CLK={seed:"<% uptime(); %>",dw:[`<#date_Sun_itemdesc#>`,`<#date_Mon_itemdesc#>`,`<#date_Tue_itemdesc#>`,`<#date_Wed_itemdesc#>`,`<#date_Thu_itemdesc#>`,`<#date_Fri_itemdesc#>`,`<#date_Sat_itemdesc#>`],mo:[`<#Reaper_c_mon_0#>`,`<#Reaper_c_mon_1#>`,`<#Reaper_c_mon_2#>`,`<#Reaper_c_mon_3#>`,`<#Reaper_c_mon_4#>`,`<#Reaper_c_mon_5#>`,`<#Reaper_c_mon_6#>`,`<#Reaper_c_mon_7#>`,`<#Reaper_c_mon_8#>`,`<#Reaper_c_mon_9#>`,`<#Reaper_c_mon_10#>`,`<#Reaper_c_mon_11#>`]};</script><script src="/js/reaper_clock.js"></script>
+     <div class="raillang"><span class="raillbl"><#Reaper_c_language#>:</span><select class="raillangsel" id="select_lang" title="<#Reaper_c_language#>" aria-label="<#Reaper_c_language#>"></select></div>
+     <a class="railabout" href="/reaper_shell.asp#Reaper_About.asp" title="<#RABT_00#>">
+-- 
+2.25.1
+

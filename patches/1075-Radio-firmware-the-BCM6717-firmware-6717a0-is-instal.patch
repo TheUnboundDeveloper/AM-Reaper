@@ -1,0 +1,47 @@
+From bfa9fef2c71ae7ac705984139291f4272c31f965 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Wed, 18 Nov 2026 17:05:40 -0500
+Subject: [PATCH] Radio firmware: the BCM6717 firmware 6717a0 is installed only
+ for models with that chip (102.8 line)
+
+- GT-BE98, GT-BE98 Pro, GT-BE19000, BQ16 and BQ16 Pro: every board file names BCM6726 radios only,
+  so the BCM6717 firmware (6717a0, about 4 MB) is not installed for them. The RT-BE96U keeps both:
+  its early units carry three BCM6717 radios.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ release/src-rt/Makefile | 11 ++++++++++-
+ 1 file changed, 10 insertions(+), 1 deletion(-)
+
+diff --git a/release/src-rt/Makefile b/release/src-rt/Makefile
+index 536a79f995..5f869f0ffa 100644
+--- a/release/src-rt/Makefile
++++ b/release/src-rt/Makefile
+@@ -629,6 +629,13 @@ cfe_sysdep:
+ 		fi; \
+ 	fi;
+ 
++# REAPER-NO-6717A0 (review 2026-11-17, phase 7): models whose every board file (targets/nvram/6813/<boardid>.nvm)
++# names BCM6726 radios only (device ids 0x602c-e; GT-BE98 / GT-BE98_PRO / BQ16 / BQ16_PRO four radios, GT-BE19000
++# three). No unit of these models has a BCM6717, so its radio firmware (dongle 6717a0, about 4 MB) is not installed,
++# and a copy an earlier build left in dongle/bin/ is removed. The file stays in sysdeps/. NEVER list the RT-BE96U:
++# its early units carry three BCM6717 radios (RT-BE96U.nvm, ids 0x6025-27) and need 6717a0.
++REAPER_NO_6717A0 := GT-BE98 GT-BE98_PRO GT-BE19000 BQ16 BQ16_PRO
++
+ wl_sysdep:
+ 	if [ -d $(SRCBASE)/../../../bcm9$(BRCM_CHIP)/$(DONGLE_DIR)/src/wl/sysdeps/$(BUILD_NAME) ]; then \
+ 		if [ "$(BCM_MFG)" = "y" ] && [ -f $(SRCBASE)/../../../bcm9$(BRCM_CHIP)/$(DONGLE_DIR)/src/wl/sysdeps/$(BUILD_NAME)/clm/src/wlc_clm_data_mfg.c ]; then \
+@@ -690,7 +697,9 @@ wl_sysdep:
+ 			mkdir -p $(SRCBASE)/../../../bcm9$(BRCM_CHIP)/$(DHD_DIR)/src/dongle/bin/43684b0/ ; \
+ 			cp -f $(SRCBASE)/../../../bcm9$(BRCM_CHIP)/$(DHD_DIR)/src/dongle/sysdeps/$(BUILD_NAME)/43684b0/rtecdc.bin $(SRCBASE)/../../../bcm9$(BRCM_CHIP)/$(DHD_DIR)/src/dongle/bin/43684b0/. ; \
+ 		fi; \
+-		if [ -f $(SRCBASE)/../../../bcm9$(BRCM_CHIP)/$(DHD_DIR)/src/dongle/sysdeps/$(BUILD_NAME)/6717a0/rtecdc.bin ]; then \
++		if [ -n "$(filter $(BUILD_NAME),$(REAPER_NO_6717A0))" ]; then \
++			rm -rf $(SRCBASE)/../../../bcm9$(BRCM_CHIP)/$(DHD_DIR)/src/dongle/bin/6717a0 ; \
++		elif [ -f $(SRCBASE)/../../../bcm9$(BRCM_CHIP)/$(DHD_DIR)/src/dongle/sysdeps/$(BUILD_NAME)/6717a0/rtecdc.bin ]; then \
+ 			mkdir -p $(SRCBASE)/../../../bcm9$(BRCM_CHIP)/$(DHD_DIR)/src/dongle/bin/6717a0/release/ ; \
+ 			cp -f $(SRCBASE)/../../../bcm9$(BRCM_CHIP)/$(DHD_DIR)/src/dongle/sysdeps/$(BUILD_NAME)/6717a0/rtecdc.bin $(SRCBASE)/../../../bcm9$(BRCM_CHIP)/$(DHD_DIR)/src/dongle/bin/6717a0/release/. ; \
+ 		fi; \
+-- 
+2.25.1
+

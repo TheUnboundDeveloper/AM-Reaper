@@ -1,0 +1,170 @@
+From da40e4d5e8e14fe87c987c1038bdaa363bd3d800 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Mon, 9 Nov 2026 20:28:04 -0500
+Subject: [PATCH] libwebapi: full RELRO, FORTIFY, and a gate in front of the
+ stock input checks (102.8 line)
+
+- The library links with -z relro -z now and its open webapi.c builds with FORTIFY; every symbol
+  it imports resolves in each program that loads it (rc, httpd, wps_pbcd), so binding at load is
+  safe.
+- webapi.h routes every open caller of check_cmd_injection_blacklist, check_xss_blacklist and
+  validate_apply_input_value through a reaper_ gate in webapi.c. It refuses a line break or any
+  other control character in the values they look at and in settings whose format is one line,
+  applies the command-character check and the open name rules (is_valid_domainname,
+  is_valid_netbios_name) to those settings on every model, then asks the stock check as before.
+  Unlisted settings keep multi-line values (certificates, keys).
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ release/src/router/libwebapi/Makefile |  5 ++
+ release/src/router/libwebapi/webapi.c | 92 +++++++++++++++++++++++++++
+ release/src/router/libwebapi/webapi.h | 10 +++
+ 3 files changed, 107 insertions(+)
+
+diff --git a/release/src/router/libwebapi/Makefile b/release/src/router/libwebapi/Makefile
+index d287912467f..33a8dcc14e7 100755
+--- a/release/src/router/libwebapi/Makefile
++++ b/release/src/router/libwebapi/Makefile
+@@ -24,6 +24,10 @@ OBJS = webapi.o
+ OBJS += priv_webapi.o
+ 
+ CFLAGS += -Os -Wall $(EXTRACFLAGS) -fPIC
++# reaper 2026-11-09 (review-2026-11-03 F-4): FORTIFY for the open webapi.c (the prebuilt priv_webapi.o keeps
++# its own flags) and full RELRO for the library. Every symbol the library imports resolves in each program that
++# loads it (rc, httpd, wps_pbcd), so resolving them all at load is safe.
++CFLAGS += -D_FORTIFY_SOURCE=2
+ CFLAGS += -I. -I$(TOP)/shared -I$(SRCBASE)/include
+ CFLAGS += -I$(TOP)/json-c
+ 
+@@ -42,6 +46,7 @@ CFLAGS += -I$(TOP)/httpd
+ 
+ LDFLAGS += -L$(TOP)/json-c/.libs -ljson-c
+ LDFLAGS += -L$(TOP)/shared -lshared
++LDFLAGS += -Wl,-z,relro,-z,now
+ 
+ ifeq ($(RTCONFIG_BWDPI),y)
+ LDFLAGS += -L$(TOP)/bwdpi_source/asus -lbwdpi
+diff --git a/release/src/router/libwebapi/webapi.c b/release/src/router/libwebapi/webapi.c
+index 82b42ab1ab5..970e201f3cf 100644
+--- a/release/src/router/libwebapi/webapi.c
++++ b/release/src/router/libwebapi/webapi.c
+@@ -1404,3 +1404,95 @@ int do_upload_config(void)
+ 
+ 	return ret;
+ }
++
++/* reaper-gate: begin (2026-11-09) - Reaper's gate in front of the stock input checks; webapi.h routes every
++ * open caller here. A line break or other control character never belongs in a value these checks look at
++ * (an address, a host or domain name, an e-mail address, a page name, a rule list), so the gate refuses it
++ * and then asks the stock check exactly as before. */
++#undef check_cmd_injection_blacklist
++#undef check_xss_blacklist
++#undef validate_apply_input_value
++
++static int reaper_has_ctl(const char *s)
++{
++	const unsigned char *p = (const unsigned char *)s;
++
++	if (!p)
++		return 0;
++	for (; *p; p++)
++		if (*p < 0x20 || *p == 0x7f)
++			return 1;
++	return 0;
++}
++
++/* settings whose format is a single line. The first list (and the wanX_..._ipaddr family, matched below) also
++ * takes the command-character check; the domain names and the Samba workgroup take the open name rules of
++ * shared/misc.c (the NetBIOS one local, below). Every model gets the same checks. */
++static const char *const reaper_cmd_line[] = {
++	"PM_MY_EMAIL", "PM_SMTP_AUTH_USER", "fb_email", "qos_bw_rulelist", "ntp_server0", "ntp_server1", NULL
++};
++static const char *const reaper_one_line[] = {
++	"ddns_hostname_x", "lan_domain", "st_samba_workgroup", "filter_wllist", "filter_lwlist",
++	"url_rulelist", "keyword_rulelist", "tm_vol_size", NULL
++};
++
++/* the NetBIOS name rule of shared/misc.c (1-15 letters / digits, '-' and '.' not first or last), local here: the
++ * 3006.102.8 line's shared code has no is_valid_netbios_name */
++static int reaper_netbios_ok(const char *s)
++{
++	size_t i, n = s ? strlen(s) : 0;
++
++	if (!n || n > 15)
++		return 0;
++	for (i = 0; i < n; i++) {
++		if (isalnum((unsigned char)s[i]))
++			continue;
++		if ((s[i] == '-' || s[i] == '.') && i > 0 && i < n - 1)
++			continue;
++		return 0;
++	}
++	return 1;
++}
++
++static int reaper_in(const char *name, const char *const *list)
++{
++	int i;
++
++	for (i = 0; list[i]; i++)
++		if (strcmp(name, list[i]) == 0)
++			return 1;
++	return 0;
++}
++
++int reaper_check_cmd_injection_blacklist(char *para)
++{
++	if (reaper_has_ctl(para))
++		return 1;
++	return check_cmd_injection_blacklist(para);
++}
++
++int reaper_check_xss_blacklist(char *para, int check_www)
++{
++	if (reaper_has_ctl(para))
++		return 1;
++	return check_xss_blacklist(para, check_www);
++}
++
++int reaper_validate_apply_input_value(char *name, char *value)
++{
++	if (name && value) {
++		int cmd = (strncmp(name, "wan", 3) == 0 && strstr(name, "_ipaddr") != NULL) || reaper_in(name, reaper_cmd_line);
++
++		if ((cmd || reaper_in(name, reaper_one_line)) && reaper_has_ctl(value))
++			return 0;
++		if (cmd && check_cmd_injection_blacklist(value))
++			return 0;
++		if (*value && (strcmp(name, "lan_domain") == 0 || strcmp(name, "ddns_hostname_x") == 0)
++		    && !is_valid_domainname(value))
++			return 0;
++		if (*value && strcmp(name, "st_samba_workgroup") == 0 && !reaper_netbios_ok(value))
++			return 0;
++	}
++	return validate_apply_input_value(name, value);
++}
++/* reaper-gate: end */
+diff --git a/release/src/router/libwebapi/webapi.h b/release/src/router/libwebapi/webapi.h
+index 74c91cd7bbb..44e5739759d 100644
+--- a/release/src/router/libwebapi/webapi.h
++++ b/release/src/router/libwebapi/webapi.h
+@@ -179,6 +179,16 @@ extern int get_security_update(void);
+ extern int check_cmd_injection_blacklist(char *para);
+ extern int check_xss_blacklist(char* para, int check_www);
+ extern int validate_apply_input_value(char *name, char *value);
++/* reaper 2026-11-09: every open caller of the three input checks above includes this header, so these macros
++ * route each call through Reaper's gate in webapi.c first. The gate refuses a line break or any other control
++ * character - in the values these checks look at, and in the settings whose format is a single line - and then
++ * asks the stock check as before. */
++extern int reaper_check_cmd_injection_blacklist(char *para);
++extern int reaper_check_xss_blacklist(char *para, int check_www);
++extern int reaper_validate_apply_input_value(char *name, char *value);
++#define check_cmd_injection_blacklist(p)	reaper_check_cmd_injection_blacklist(p)
++#define check_xss_blacklist(p, w)	reaper_check_xss_blacklist(p, w)
++#define validate_apply_input_value(n, v)	reaper_validate_apply_input_value(n, v)
+ extern int detect_vul_scan(void);
+ #ifdef RTCONFIG_AI_SERVICE
+ extern int set_AI_board_EULA(char *AI_board_EULA, char *from_service);
+-- 
+2.25.1
+

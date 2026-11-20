@@ -1,0 +1,95 @@
+From e94a77ff71d14462cfda850f00ae285169d2500d Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Wed, 18 Nov 2026 17:05:26 -0500
+Subject: [PATCH] QoS: flows learned again after the class rules load; a first
+ packet keeps its class (102.8 line)
+
+- Classful hardware QoS: the flow cache is flushed after the class rules are restored and after
+  the class queues are rebuilt. restart_qos flushed it only while stopping, so flows were learned
+  again with mark 0 and stayed in queue 0.
+- The packet mark is restored after the QoS jump on the WAN, IPv4 and IPv6, so the first packet of
+  a connection goes to its class (Traditional QoS too).
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ release/src/router/rc/qos.c | 39 +++++++++++++++++++++++++++++++++----
+ 1 file changed, 35 insertions(+), 4 deletions(-)
+
+diff --git a/release/src/router/rc/qos.c b/release/src/router/rc/qos.c
+index e71fa5834b..6ad7b13572 100644
+--- a/release/src/router/rc/qos.c
++++ b/release/src/router/rc/qos.c
+@@ -1013,11 +1013,19 @@ static int add_qos_rules(char *pcWANIF)
+ 		fprintf(fn, "-A POSTROUTING -o %s -j QOSO\n", lan_ifname);
+ 	}
+ #endif
++		/* The class rules and the catch-all above write only the CONNECTION
++		 * mark; the packet mark is restored at the top of QOSO, before they run.
++		 * So the first packet of every connection left with packet mark 0: the
++		 * default qdisc class in software QoS, qid 0 in classful hardware QoS -
++		 * every SYN and every one-packet exchange (a DNS query, NTP). The restore
++		 * after the jump gives that packet the class its connection just got. */
+ 		fprintf(fn,
+ 			"-A QOSO -j CONNMARK %s 0x%x/0x%x\n"
+-			"-A POSTROUTING -o %s -j QOSO\n",
++			"-A POSTROUTING -o %s -j QOSO\n"
++			"-A POSTROUTING -o %s -j CONNMARK --restore-mark --mask 0x%x\n",
+ 				action, class_num|class_gum, class_mask|class_gum,
+-				pcWANIF
++				pcWANIF,
++				pcWANIF, class_mask
+ 			);
+ 
+ #ifdef RTCONFIG_IPV6
+@@ -1038,9 +1046,11 @@ static int add_qos_rules(char *pcWANIF)
+ #endif
+ 		fprintf(fn_ipv6,
+ 			"-A QOSO -j CONNMARK %s 0x%x/0x%x\n"
+-			"-A POSTROUTING -o %s -j QOSO\n",
++			"-A POSTROUTING -o %s -j QOSO\n"
++			"-A POSTROUTING -o %s -j CONNMARK --restore-mark --mask 0x%x\n",
+ 				action, class_num|class_gum, class_mask|class_gum,
+-				wan6face
++				wan6face,
++				wan6face, class_mask
+ 			);
+ 	}
+ #endif
+@@ -2867,6 +2877,21 @@ int add_iQosRules(char *pcWANIF)
+ 	 * dead until rwatch noticed, up to five minutes later. */
+ 	reaper_pbr_reassert();
+ 
++#ifdef HND_ROUTER
++	/* Classful hardware QoS keeps the flow accelerator on, and the accelerator
++	 * copies the queue bits of skb->mark into a flow once, when it learns the
++	 * flow. The builder above cleared the mangle table and then restored it, so
++	 * any flow learned in between was recorded with mark 0 and leaves through
++	 * qid 0 until it ends - a tunnel or a long upload stays there for days.
++	 * restart_qos made this certain rather than rare: its only flush runs in the
++	 * stop phase, so every busy flow was learned again before these rules
++	 * existed (field report 2026-11-18: about half the upload bytes in qid 0
++	 * 16 h after an apply). Flush now that the rules are back; this also covers
++	 * every start_firewall(), which rebuilds the table through here. */
++	if (IS_HWQOS_CLASSFUL())
++		eval("fc", "flush");
++#endif
++
+ 	return status;
+ }
+ 
+@@ -3671,6 +3696,12 @@ int start_hwqos_classful(void)
+ 	if (eval((char *)qosfn, "start") != 0)
+ 		logmessage("qos", "hardware QoS (classful) apply script failed - shaping may not be active");
+ 
++	/* The script above deletes and recreates the class queues. In restart_qos
++	 * it runs after add_iQosRules(), so flows learned between that flush and
++	 * this point were bound while qid 1-5 were being rebuilt. Flush once more
++	 * so every flow is learned against the finished queue layout. */
++	eval("fc", "flush");
++
+ 	return 0;
+ }
+ #endif
+-- 
+2.25.1
+

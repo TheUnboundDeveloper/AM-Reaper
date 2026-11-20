@@ -1,0 +1,36 @@
+From 0a608eabaf4f315f870b2bf2b7f6fdd948c5e9de Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Tue, 3 Nov 2026 20:14:11 -0500
+Subject: [PATCH] busybox: udhcpc drops a DHCP reply shorter than its headers
+ (CVE-2026-88833) (102.8 line)
+
+udhcp_recv_raw_packet() took the packet length from the IP header; a total length below the IP and
+UDP headers plus the fixed DHCP part wrapped the length (the UDP length test compares against the
+wrapped value) and the final memcpy ran with a negative size, which crashed udhcpc - the WAN DHCP
+client - from anyone on the WAN segment. Such a reply is now ignored. No upstream fix yet.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ release/src/router/busybox/networking/udhcp/dhcpc.c | 6 ++++++
+ 1 file changed, 6 insertions(+)
+
+diff --git a/release/src/router/busybox/networking/udhcp/dhcpc.c b/release/src/router/busybox/networking/udhcp/dhcpc.c
+index 09d75b1e083..b65956500f9 100644
+--- a/release/src/router/busybox/networking/udhcp/dhcpc.c
++++ b/release/src/router/busybox/networking/udhcp/dhcpc.c
+@@ -908,6 +908,12 @@ static NOINLINE int udhcp_recv_raw_packet(struct dhcp_packet *dhcp_pkt, int fd)
+ 
+ 	/* ignore any extra garbage bytes */
+ 	bytes = ntohs(packet.ip.tot_len);
++	/* reaper (CVE-2026-88833): a total length below the IP and UDP headers plus the fixed DHCP part wrapped
++	 * `bytes` (udp.len is compared against the wrapped value) and the memcpy at the end ran with a negative size */
++	if (bytes < (int)(sizeof(packet.ip) + sizeof(packet.udp) + offsetof(struct dhcp_packet, options))) {
++		log1("packet is too short, ignoring");
++		return -2;
++	}
+ 
+ 	/* make sure its the right packet for us, and that it passes sanity checks */
+ 	if (packet.ip.protocol != IPPROTO_UDP
+-- 
+2.25.1
+

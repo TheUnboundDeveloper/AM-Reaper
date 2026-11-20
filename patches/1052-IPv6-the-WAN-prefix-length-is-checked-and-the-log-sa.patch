@@ -1,0 +1,149 @@
+From 9a15165dedc3400d0038c3dd9df106c46c72aed0 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Mon, 16 Nov 2026 16:23:28 -0500
+Subject: [PATCH] IPv6: the WAN prefix length is checked, and the log says when
+ no size is requested (102.8 line)
+
+- Native with prefix delegation accepted any length. rc sends a size only for 48 to 64 and dropped
+  anything else while the log named the typed value. The page accepts empty, 0 or 48 to 64 there
+  (an untouched older value is left alone) and says that guest networks need a /56 or larger; the
+  log reads "Requested: none" when no size is sent.
+
+Co-Authored-By: Claude Fable 5.2 <noreply@anthropic.com>
+---
+ release/src/router/rc/udhcpc.c              | 32 +++++++++++++++------
+ release/src/router/www/Reaper_IPv6Setup.asp | 19 +++++++++++-
+ 2 files changed, 42 insertions(+), 9 deletions(-)
+
+diff --git a/release/src/router/rc/udhcpc.c b/release/src/router/rc/udhcpc.c
+index 7753a4cd3e..1023d22e3b 100644
+--- a/release/src/router/rc/udhcpc.c
++++ b/release/src/router/rc/udhcpc.c
+@@ -1837,6 +1837,17 @@ static char *get_s46_ra_routes(char *rules, char *addr, size_t addrsz)
+ }
+ #endif
+ 
++/* REAPER-PD-HINT-BEGIN */
++/* reaper 2026-11-16: the DHCP-PD size hint - one rule for the request (odhcp6c -P) and for the log line.
++ * ipv6_prefix_len_wan is shared with Static IPv6, where 127 or 128 is normal, so only 48 to 64 is asked
++ * for; anything else (also empty or 0) asks for no size and the provider chooses. The WAN > IPv6 page
++ * checks the same window. The log printed the stored value even when nothing had been requested. */
++static int dhcp6c_pd_hint(int len)
++{
++	return (len >= 48 && len <= 64) ? len : 0;
++}
++/* REAPER-PD-HINT-END */
++
+ static int
+ bound6(char *wan_ifname, int bound)
+ {
+@@ -1976,8 +1987,15 @@ bound6(char *wan_ifname, int bound)
+ 			nvram_set(ipv6_nvname_by_unit("ipv6_rtr_addr", wan_unit), "");
+ 			nvram_set(ipv6_nvname_by_unit("ipv6_prefix", wan_unit), addr);
+ 			nvram_set_int(ipv6_nvname_by_unit("ipv6_prefix_length", wan_unit), size);
+-			logmessage("dhcp6 client", "WAN Prefix Size Requested:/%d, Received:/%d",
+-				 nvram_get_int(ipv6_nvname_by_unit("ipv6_prefix_len_wan", wan_unit)), size);
++			{
++				/* reaper 2026-11-16: log what was really asked for (dhcp6c_pd_hint), not the stored value */
++				int hint = dhcp6c_pd_hint(nvram_get_int(ipv6_nvname_by_unit("ipv6_prefix_len_wan", wan_unit)));
++
++				if (hint)
++					logmessage("dhcp6 client", "WAN Prefix Size Requested:/%d, Received:/%d", hint, size);
++				else
++					logmessage("dhcp6 client", "WAN Prefix Size Requested: none (provider default), Received:/%d", size);
++			}
+ 		}
+ 		if (*addr)
+ 			add_ip6_lanaddr();
+@@ -2345,9 +2363,8 @@ start_dhcp6c(void)
+ 			((unsigned long)(duid.ea[3] & 0x0f) << 16) |
+ 			((unsigned long)(duid.ea[4]) << 8) |
+ 			((unsigned long)(duid.ea[5])) : 1;
+-		i = (nvram_get_int(ipv6_nvname("ipv6_prefix_len_wan")) ? : 0);
+-		if ((i < 48) || (i > 64))
+-			i = 0;
++		/* reaper 2026-11-16: 48 to 64, else 0 = no size asked for (the one rule, dhcp6c_pd_hint) */
++		i = dhcp6c_pd_hint(nvram_get_int(ipv6_nvname("ipv6_prefix_len_wan")));
+ 		snprintf(prefix_arg, sizeof(prefix_arg), "%d:%lx", i, iaid);
+ 		dhcp6c_argv[index++] = "-P";
+ 		dhcp6c_argv[index++] = prefix_arg;
+@@ -2539,9 +2556,8 @@ int start_mtwan_dhcp6c(int unit)
+ 			((unsigned long)(duid.ea[3] & 0x0f) << 16) |
+ 			((unsigned long)(duid.ea[4]) << 8) |
+ 			((unsigned long)(duid.ea[5])) : 1;
+-		i = (nvram_get_int(ipv6_nvname("ipv6_prefix_len_wan")) ? : 0);
+-		if ((i < 48) || (i > 64))
+-			i = 0;
++		/* reaper 2026-11-16: 48 to 64, else 0 = no size asked for (the one rule, dhcp6c_pd_hint) */
++		i = dhcp6c_pd_hint(nvram_get_int(ipv6_nvname("ipv6_prefix_len_wan")));
+ 		snprintf(prefix_arg, sizeof(prefix_arg), "%d:%lx", i, iaid);
+ 		dhcp6c_argv[index++] = "-P";
+ 		dhcp6c_argv[index++] = prefix_arg;
+diff --git a/release/src/router/www/Reaper_IPv6Setup.asp b/release/src/router/www/Reaper_IPv6Setup.asp
+index ce02a639a2..0bed62401d 100644
+--- a/release/src/router/www/Reaper_IPv6Setup.asp
++++ b/release/src/router/www/Reaper_IPv6Setup.asp
+@@ -24,6 +24,7 @@
+ /* page-specific rules only; the Reaper look comes from /reaper/rp.css */
+ .frow input.wide{width:340px} .frow input.num{width:90px} .frow input.hex{width:80px} .frow select{min-width:220px}
+ .frow.off,.panel.off{display:none}
++.frow .fh.off{display:none} .frow .fh.warn{color:var(--amber)}
+ .frow.bad input,.frow.bad select{border-color:var(--crimson)!important;box-shadow:0 0 0 2px rgba(225,6,0,.25)}
+ .fv.dim{color:var(--steel)}
+ .pfx{color:var(--bone-dim)}
+@@ -89,7 +90,7 @@
+   <h2><#IPv6_WAN_Setting#></h2>
+   <div class="secerr"><#RADM_78#></div>
+   <div class="frow" id="r_ipaddr"><div class="fl"><#IPv6_wan_addr#></div><div class="fc"><input type="text" class="wide mono" id="i_ipaddr" maxlength="39" autocomplete="off"></div></div>
+-  <div class="frow" id="r_plenwan"><div class="fl"><#IPv6_wan_Prefix_len#></div><div class="fc"><input type="text" class="num mono" id="i_plenwan" maxlength="3" autocomplete="off"></div></div>
++  <div class="frow" id="r_plenwan"><div class="fl"><#IPv6_wan_Prefix_len#></div><div class="fc"><input type="text" class="num mono" id="i_plenwan" maxlength="3" autocomplete="off"></div><div class="fh off" id="h_plenwan"><#RIP6_37#></div><div class="fh warn off" id="h_plenwan_old"><#RIP6_38#></div></div>
+   <div class="frow" id="r_gw"><div class="fl"><#IPv6_wan_gateway#></div><div class="fc"><input type="text" class="wide mono" id="i_gw" maxlength="39" autocomplete="off"></div><div class="fh"><#RIP6_14#></div></div>
+ </div>
+ 
+@@ -183,6 +184,12 @@ var TYPEHELP = {disabled: `<#RIP6_34#>`, dhcp6: `<#RIP6_32#>`, other: `<#RIP6_33
+   '6to4': `<#RIP6_35#>`, '6in4': `<#RIP6_20#>`, '6rd': `<#RIP6_36#>`};
+ var LIVE = {prefix: NV.ipv6_prefix, plen: NV.ipv6_prefix_length, rtr: NV.ipv6_rtr_addr};
+ 
++/* reaper 2026-11-16: with Native and prefix delegation on, WAN Prefix Length is the prefix size to ask the provider
++   for. rc (dhcp6c_pd_hint in rc/udhcpc.c) sends 48 to 64 and asks for no size otherwise - the same window as here.
++   Empty or 0 = let the provider choose. */
++var PD_MIN = 48, PD_MAX = 64;
++function pdLenOk(s){ return s === '' || s === '0' || rp.v.int(s, PD_MIN, PD_MAX); }
++
+ function svc(){ return q('s_service').value; }
+ 
+ /* stock GetIPv6_split: the first four groups of an address (or what precedes "::"), the /64 the pool lives in */
+@@ -280,6 +287,10 @@ function sync(){
+   show('r_6rddhcp', R.rd); ['r_6rdprefix', 'r_6rdrouter', 'r_6rdip4size'].forEach(function(id){ show(id, R.rdman); });
+   show('r_mtu', R.mtu); show('r_ttl', R.ttl);
+   show('p_wan', R.wan); show('r_ipaddr', R.ipaddr); show('r_plenwan', R.plenwan); show('r_gw', R.gw);
++  /* reaper 2026-11-16: the size hint under WAN Prefix Length, for Native with prefix delegation only. The second
++     line shows while the stored value is untouched and outside the window (an old Static value: no size is asked) */
++  var pdm = v === 'dhcp6' && q('t_pd').checked;
++  show('h_plenwan', pdm); show('h_plenwan_old', pdm && val('i_plenwan') === NV.ipv6_prefix_len_wan && !pdLenOk(val('i_plenwan')));
+   show('p_lan', R.lan); show('r_rtr', R.rtr); show('r_rtrv', R.rtrv); show('r_plen', R.plen); show('r_plenv', R.plenv);
+   show('r_prefix', R.prefix); show('r_prefixv', R.prefixv); show('r_ac', R.ac);
+   ['r_start', 'r_end', 'r_life'].forEach(function(id){ show(id, R.pool); });
+@@ -363,6 +374,11 @@ function validate(c){
+     if (!rng('i_plenwan', 3, 128)) return eN('i_plenwan', 3, 128);
+     if (!v6('i_gw', true)) return e6('i_gw');
+   }
++  /* reaper 2026-11-16: Native with prefix delegation. Anything outside 48 to 64 did nothing (rc asks for no size)
++     and the log still said it was requested. A stored value the user did not touch is not judged: this key is
++     shared with Static, where 127 or 128 is normal, and an old value must never block a save. */
++  if (v === 'dhcp6' && q('t_pd').checked && val('i_plenwan') !== NV.ipv6_prefix_len_wan && !pdLenOk(val('i_plenwan')))
++    return eN('i_plenwan', PD_MIN, PD_MAX);
+   if (v === 'other' || (v === 'dhcp6' && !q('t_pd').checked)){
+     if (!rng('i_plen', 3, maxlen)) return eN('i_plen', 3, maxlen);
+     if (!v6('i_rtr')) return e6('i_rtr');
+@@ -441,6 +457,7 @@ function boot(){
+   on('discardbtn', 'click', function(){ location.reload(); });
+   ['s_service', 's_ifdev', 't_pd', 't_6rddhcp', 's_ac', 't_dnsauto'].forEach(function(id){ on(id, 'change', sync); });
+   on('i_rtr', 'input', sync);
++  on('i_plenwan', 'input', sync);   /* reaper 2026-11-16: the stored-value line follows the field */
+   document.addEventListener('input', dirty); document.addEventListener('change', dirty);
+   sync(); dirty();
+   setTimeout(poll, 3000);
+-- 
+2.25.1
+

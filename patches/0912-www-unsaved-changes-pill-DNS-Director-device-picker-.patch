@@ -1,0 +1,880 @@
+From 68ae9b93ae9f2f5eb37711c1aa161fda315a0144 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Fri, 30 Oct 2026 09:48:04 -0400
+Subject: [PATCH] www: unsaved-changes pill, DNS Director device picker,
+ Dreadwatch names itself, form fixes (102.8 line)
+
+- www/reaper/reaper_pending.js (new): "Unsaved changes: N" + Discard, the kit pages' cue, for the
+  pages that keep list edits on the page until their Apply / Save - QoS, Policy Routing, WAN Ports,
+  Wallguard, Dreadwatch. Owner on metal: a QoS rule's x edited only the page and nothing said Apply
+  was owed, so the delete was never written. Each page passes a snapshot of what its Apply / Save
+  writes; Wallguard's Save builds its request in shPayload() (byte-identical requests).
+- DNS Director (Reaper_DNS.asp): a picker of connected devices before the MAC box (the stock page
+  had a client list); offline devices and devices that already have a rule are left out; typing a
+  MAC still works.
+- Dreadwatch: the apply overlay and the how-it-works card used Warden's strings; RDWT_66 / RDWT_67
+  in all 25 packs (each pack derived from its own Wallguard / Warden text).
+- VPN Director: one card per client, tags on their own line. Wireless Settings: the band dot is the
+  radio's state, as on the dashboard (it was a per-radio colour). Wallguard / Dreadwatch "Add a
+  source": Request and the key header fold away for a plain list; the API key field is styled.
+- EN.dict VLAN_port_binding_note: "In use by %@." (was "This port(s) is using by %@.").
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ release/src/router/www/BR.dict                |  2 +
+ release/src/router/www/CN.dict                |  2 +
+ release/src/router/www/CZ.dict                |  2 +
+ release/src/router/www/DA.dict                |  2 +
+ release/src/router/www/DE.dict                |  2 +
+ release/src/router/www/EN.dict                |  4 +-
+ release/src/router/www/ES.dict                |  2 +
+ release/src/router/www/FI.dict                |  2 +
+ release/src/router/www/FR.dict                |  2 +
+ release/src/router/www/HU.dict                |  2 +
+ release/src/router/www/IT.dict                |  2 +
+ release/src/router/www/JP.dict                |  2 +
+ release/src/router/www/KR.dict                |  2 +
+ release/src/router/www/MS.dict                |  2 +
+ release/src/router/www/NL.dict                |  2 +
+ release/src/router/www/NO.dict                |  2 +
+ release/src/router/www/PL.dict                |  2 +
+ release/src/router/www/RO.dict                |  2 +
+ release/src/router/www/RU.dict                |  2 +
+ release/src/router/www/Reaper_DNS.asp         | 29 +++++++++
+ release/src/router/www/Reaper_Dreadwatch.asp  | 33 ++++++++--
+ release/src/router/www/Reaper_QoS.asp         | 16 ++++-
+ release/src/router/www/Reaper_VPNDirector.asp | 21 ++++---
+ release/src/router/www/Reaper_VPNRouting.asp  |  7 ++-
+ release/src/router/www/Reaper_WANPorts.asp    |  9 +++
+ release/src/router/www/Reaper_Wallguard.asp   | 49 ++++++++++++---
+ .../src/router/www/Reaper_WiFiSettings.asp    |  6 +-
+ release/src/router/www/SL.dict                |  2 +
+ release/src/router/www/SV.dict                |  2 +
+ release/src/router/www/TH.dict                |  2 +
+ release/src/router/www/TR.dict                |  2 +
+ release/src/router/www/TW.dict                |  2 +
+ release/src/router/www/UK.dict                |  2 +
+ .../src/router/www/reaper/reaper_pending.js   | 63 +++++++++++++++++++
+ 34 files changed, 256 insertions(+), 29 deletions(-)
+ create mode 100644 release/src/router/www/reaper/reaper_pending.js
+
+diff --git a/release/src/router/www/BR.dict b/release/src/router/www/BR.dict
+index ae4421f934f..56e5b513c49 100644
+--- a/release/src/router/www/BR.dict
++++ b/release/src/router/www/BR.dict
+@@ -8907,3 +8907,5 @@ RSHD_161=API
+ RSHD_162=chave salva
+ RSHD_163=Para colocar a chave no próprio endereço, digite $APIkey onde ela deve ficar (por exemplo https://example.com/feed?api_token=$APIkey); o roteador insere a chave salva a cada download, e o cabeçalho da chave pode ficar vazio.
+ RBST_00=Bastion
++RDWT_66=Aplicando as configurações do Dreadwatch…
++RDWT_67=Como o Dreadwatch funciona
+diff --git a/release/src/router/www/CN.dict b/release/src/router/www/CN.dict
+index f33c53fd1cf..b9c0986fce5 100644
+--- a/release/src/router/www/CN.dict
++++ b/release/src/router/www/CN.dict
+@@ -8907,3 +8907,5 @@ RSHD_161=API
+ RSHD_162=密钥已保存
+ RSHD_163=要把密钥放在地址中，请在密钥应在的位置输入 $APIkey（例如 https://example.com/feed?api_token=$APIkey）；路由器每次下载时会填入已保存的密钥，API 密钥标头可留空。
+ RBST_00=Bastion
++RDWT_66=正在应用 Dreadwatch 设置…
++RDWT_67=Dreadwatch 的工作原理
+diff --git a/release/src/router/www/CZ.dict b/release/src/router/www/CZ.dict
+index 62107b7740a..b12c976fb0e 100644
+--- a/release/src/router/www/CZ.dict
++++ b/release/src/router/www/CZ.dict
+@@ -8907,3 +8907,5 @@ RSHD_161=API
+ RSHD_162=klíč uložen
+ RSHD_163=Chcete-li klíč vložit přímo do adresy, napište $APIkey na místo, kam patří (například https://example.com/feed?api_token=$APIkey); router při každém stahování doplní uložený klíč a hlavičku klíče můžete nechat prázdnou.
+ RBST_00=Bastion
++RDWT_66=Používá se nastavení Dreadwatch…
++RDWT_67=Jak Dreadwatch funguje
+diff --git a/release/src/router/www/DA.dict b/release/src/router/www/DA.dict
+index a77121de997..e2480c43596 100644
+--- a/release/src/router/www/DA.dict
++++ b/release/src/router/www/DA.dict
+@@ -8907,3 +8907,5 @@ RSHD_161=API
+ RSHD_162=nøgle gemt
+ RSHD_163=Skal nøglen stå i selve adressen, så skriv $APIkey der, hvor den hører til (f.eks. https://example.com/feed?api_token=$APIkey); routeren indsætter din gemte nøgle ved hver download, og nøgleheaderen kan stå tom.
+ RBST_00=Bastion
++RDWT_66=Anvender Dreadwatch-indstillinger…
++RDWT_67=Sådan fungerer Dreadwatch
+diff --git a/release/src/router/www/DE.dict b/release/src/router/www/DE.dict
+index 59d6cb3a0ca..7d94e45d176 100644
+--- a/release/src/router/www/DE.dict
++++ b/release/src/router/www/DE.dict
+@@ -8907,3 +8907,5 @@ RSHD_161=API
+ RSHD_162=Schlüssel gespeichert
+ RSHD_163=Gehört der Schlüssel in die Adresse, schreiben Sie $APIkey an die Stelle, an der er stehen soll (z. B. https://example.com/feed?api_token=$APIkey); der Router setzt bei jedem Download Ihren gespeicherten Schlüssel ein, der Schlüssel-Header kann leer bleiben.
+ RBST_00=Bastion
++RDWT_66=Dreadwatch-Einstellungen werden übernommen…
++RDWT_67=So funktioniert Dreadwatch
+diff --git a/release/src/router/www/EN.dict b/release/src/router/www/EN.dict
+index ef4f66909a7..ed6fa4a0767 100644
+--- a/release/src/router/www/EN.dict
++++ b/release/src/router/www/EN.dict
+@@ -4238,7 +4238,7 @@ VLAN_New_Subnet=New Subnet
+ VLAN_Untagged=Untagged
+ VLAN_Tagged=Tagged
+ VLAN_Override=Override
+-VLAN_port_binding_note=This port(s) is using by %@.
++VLAN_port_binding_note=In use by %@.
+ VLAN_port_DualWAN_note=This port is currently unavailable for use with the VLAN feature due to hardware limitations.
+ VLAN_port_iso=Port Isolation
+ VALN_Profile=VLAN Profile
+@@ -8907,3 +8907,5 @@ RSHD_161=API
+ RSHD_162=key saved
+ RSHD_163=To put the key inside the address, type $APIkey where it belongs (for example https://example.com/feed?api_token=$APIkey); the router fills in your saved key at each download, and the key header can stay empty.
+ RBST_00=Bastion
++RDWT_66=Applying Dreadwatch settings…
++RDWT_67=How Dreadwatch works
+diff --git a/release/src/router/www/ES.dict b/release/src/router/www/ES.dict
+index 7ecdaaa32c6..4929b0717e4 100644
+--- a/release/src/router/www/ES.dict
++++ b/release/src/router/www/ES.dict
+@@ -8907,3 +8907,5 @@ RSHD_161=API
+ RSHD_162=clave guardada
+ RSHD_163=Para poner la clave dentro de la dirección, escriba $APIkey donde debe ir (por ejemplo https://example.com/feed?api_token=$APIkey); el router inserta la clave guardada en cada descarga y la cabecera de la clave puede quedar vacía.
+ RBST_00=Bastion
++RDWT_66=Aplicando la configuración de Dreadwatch…
++RDWT_67=Cómo funciona Dreadwatch
+diff --git a/release/src/router/www/FI.dict b/release/src/router/www/FI.dict
+index ebc781f8c0d..baad0e7b4d8 100644
+--- a/release/src/router/www/FI.dict
++++ b/release/src/router/www/FI.dict
+@@ -8907,3 +8907,5 @@ RSHD_161=API
+ RSHD_162=avain tallennettu
+ RSHD_163=Jos avain kuuluu itse osoitteeseen, kirjoita $APIkey sen paikalle (esimerkiksi https://example.com/feed?api_token=$APIkey); reititin lisää tallennetun avaimen jokaisella latauksella, ja avaimen otsake voi jäädä tyhjäksi.
+ RBST_00=Bastion
++RDWT_66=Otetaan Dreadwatch-asetukset käyttöön…
++RDWT_67=Miten Dreadwatch toimii
+diff --git a/release/src/router/www/FR.dict b/release/src/router/www/FR.dict
+index caad89ce40c..483ad18be58 100644
+--- a/release/src/router/www/FR.dict
++++ b/release/src/router/www/FR.dict
+@@ -8907,3 +8907,5 @@ RSHD_161=API
+ RSHD_162=clé enregistrée
+ RSHD_163=Pour placer la clé dans l’adresse, saisissez $APIkey à l’endroit voulu (par exemple https://example.com/feed?api_token=$APIkey) ; le routeur y insère votre clé enregistrée à chaque téléchargement, et l’en-tête de la clé peut rester vide.
+ RBST_00=Bastion
++RDWT_66=Application des réglages de Dreadwatch…
++RDWT_67=Comment fonctionne Dreadwatch
+diff --git a/release/src/router/www/HU.dict b/release/src/router/www/HU.dict
+index 48bf6930a6d..202fcfd9625 100644
+--- a/release/src/router/www/HU.dict
++++ b/release/src/router/www/HU.dict
+@@ -8907,3 +8907,5 @@ RSHD_161=API
+ RSHD_162=kulcs mentve
+ RSHD_163=Ha a kulcs magába a címbe kerül, írja be a $APIkey jelölőt oda, ahová a kulcs tartozik (például https://example.com/feed?api_token=$APIkey); a router minden letöltéskor beírja a mentett kulcsot, a kulcs fejléce üresen maradhat.
+ RBST_00=Bastion
++RDWT_66=Dreadwatch-beállítások alkalmazása…
++RDWT_67=Hogyan működik a Dreadwatch
+diff --git a/release/src/router/www/IT.dict b/release/src/router/www/IT.dict
+index 7e3e7cf0bb5..2c442f9a266 100644
+--- a/release/src/router/www/IT.dict
++++ b/release/src/router/www/IT.dict
+@@ -8907,3 +8907,5 @@ RSHD_161=API
+ RSHD_162=chiave salvata
+ RSHD_163=Per inserire la chiave nell’indirizzo, scrivi $APIkey nel punto in cui va (ad esempio https://example.com/feed?api_token=$APIkey); il router inserisce la chiave salvata a ogni download e l’intestazione della chiave può restare vuota.
+ RBST_00=Bastion
++RDWT_66=Applicazione delle impostazioni di Dreadwatch…
++RDWT_67=Come funziona Dreadwatch
+diff --git a/release/src/router/www/JP.dict b/release/src/router/www/JP.dict
+index 77156f342a5..b940762c77a 100644
+--- a/release/src/router/www/JP.dict
++++ b/release/src/router/www/JP.dict
+@@ -8907,3 +8907,5 @@ RSHD_161=API
+ RSHD_162=キー保存済み
+ RSHD_163=キーをアドレス内に入れる場合は、キーが入る位置に $APIkey と入力してください（例: https://example.com/feed?api_token=$APIkey）。ダウンロードのたびにルーターが保存済みのキーを入れます。キーのヘッダーは空のままでかまいません。
+ RBST_00=Bastion
++RDWT_66=Dreadwatch の設定を適用しています…
++RDWT_67=Dreadwatch の仕組み
+diff --git a/release/src/router/www/KR.dict b/release/src/router/www/KR.dict
+index ee737d7e905..5542c4e8691 100644
+--- a/release/src/router/www/KR.dict
++++ b/release/src/router/www/KR.dict
+@@ -8907,3 +8907,5 @@ RSHD_161=API
+ RSHD_162=키 저장됨
+ RSHD_163=키를 주소 안에 넣으려면 키가 들어갈 자리에 $APIkey 를 입력하십시오(예: https://example.com/feed?api_token=$APIkey). 라우터가 다운로드할 때마다 저장된 키를 넣으며, 키 헤더는 비워 두어도 됩니다.
+ RBST_00=Bastion
++RDWT_66=Dreadwatch 설정 적용 중…
++RDWT_67=Dreadwatch 작동 방식
+diff --git a/release/src/router/www/MS.dict b/release/src/router/www/MS.dict
+index 9816279650a..a58fedad656 100644
+--- a/release/src/router/www/MS.dict
++++ b/release/src/router/www/MS.dict
+@@ -8907,3 +8907,5 @@ RSHD_161=API
+ RSHD_162=kunci disimpan
+ RSHD_163=Untuk meletakkan kunci di dalam alamat, taip $APIkey di tempat kunci itu sepatutnya (contohnya https://example.com/feed?api_token=$APIkey); penghala mengisi kunci yang disimpan pada setiap muat turun, dan pengepala kunci boleh dibiarkan kosong.
+ RBST_00=Bastion
++RDWT_66=Menggunakan tetapan Dreadwatch…
++RDWT_67=Bagaimana Dreadwatch berfungsi
+diff --git a/release/src/router/www/NL.dict b/release/src/router/www/NL.dict
+index e8e691be17c..e732089ac7f 100644
+--- a/release/src/router/www/NL.dict
++++ b/release/src/router/www/NL.dict
+@@ -8907,3 +8907,5 @@ RSHD_161=API
+ RSHD_162=sleutel opgeslagen
+ RSHD_163=Hoort de sleutel in het adres zelf, typ dan $APIkey op de plek waar hij hoort (bijvoorbeeld https://example.com/feed?api_token=$APIkey); de router vult bij elke download uw opgeslagen sleutel in en de sleutelheader mag leeg blijven.
+ RBST_00=Bastion
++RDWT_66=Dreadwatch-instellingen worden toegepast…
++RDWT_67=Hoe Dreadwatch werkt
+diff --git a/release/src/router/www/NO.dict b/release/src/router/www/NO.dict
+index f0ee9da70d6..c4f9069ca12 100644
+--- a/release/src/router/www/NO.dict
++++ b/release/src/router/www/NO.dict
+@@ -8907,3 +8907,5 @@ RSHD_161=API
+ RSHD_162=nøkkel lagret
+ RSHD_163=Skal nøkkelen stå i selve adressen, skriver du $APIkey der den hører hjemme (for eksempel https://example.com/feed?api_token=$APIkey); ruteren setter inn den lagrede nøkkelen ved hver nedlasting, og nøkkelheaderen kan stå tom.
+ RBST_00=Bastion
++RDWT_66=Bruker Dreadwatch-innstillinger…
++RDWT_67=Slik fungerer Dreadwatch
+diff --git a/release/src/router/www/PL.dict b/release/src/router/www/PL.dict
+index a5048226767..e0f579c38d5 100644
+--- a/release/src/router/www/PL.dict
++++ b/release/src/router/www/PL.dict
+@@ -8907,3 +8907,5 @@ RSHD_161=API
+ RSHD_162=klucz zapisany
+ RSHD_163=Aby umieścić klucz w samym adresie, wpisz $APIkey w miejscu, w którym ma się znaleźć (na przykład https://example.com/feed?api_token=$APIkey); router przy każdym pobraniu wstawi zapisany klucz, a nagłówek klucza może pozostać pusty.
+ RBST_00=Bastion
++RDWT_66=Stosowanie ustawień Dreadwatch…
++RDWT_67=Jak działa Dreadwatch
+diff --git a/release/src/router/www/RO.dict b/release/src/router/www/RO.dict
+index 4365801374d..45b5b91118f 100644
+--- a/release/src/router/www/RO.dict
++++ b/release/src/router/www/RO.dict
+@@ -8907,3 +8907,5 @@ RSHD_161=API
+ RSHD_162=cheie salvată
+ RSHD_163=Pentru a pune cheia chiar în adresă, tastați $APIkey acolo unde trebuie să apară (de exemplu https://example.com/feed?api_token=$APIkey); routerul introduce cheia salvată la fiecare descărcare, iar antetul cheii poate rămâne gol.
+ RBST_00=Bastion
++RDWT_66=Se aplică setările Dreadwatch…
++RDWT_67=Cum funcționează Dreadwatch
+diff --git a/release/src/router/www/RU.dict b/release/src/router/www/RU.dict
+index 2a3940f8b9f..e95035752c3 100644
+--- a/release/src/router/www/RU.dict
++++ b/release/src/router/www/RU.dict
+@@ -8907,3 +8907,5 @@ RSHD_161=API
+ RSHD_162=ключ сохранён
+ RSHD_163=Чтобы поместить ключ прямо в адрес, введите $APIkey там, где он должен стоять (например, https://example.com/feed?api_token=$APIkey); при каждой загрузке роутер подставит сохранённый ключ, а заголовок ключа можно оставить пустым.
+ RBST_00=Bastion
++RDWT_66=Применение настроек Dreadwatch…
++RDWT_67=Как работает Dreadwatch
+diff --git a/release/src/router/www/Reaper_DNS.asp b/release/src/router/www/Reaper_DNS.asp
+index a8de4f13c58..e3c53a64e06 100644
+--- a/release/src/router/www/Reaper_DNS.asp
++++ b/release/src/router/www/Reaper_DNS.asp
+@@ -153,6 +153,7 @@ table.classes td.mono{font-family:var(--mono)}
+     <div class="secerr"><#RADM_78#></div>
+     <table class="classes"><thead><tr><th><#MAC_Address#></th><th><#RDNS_23#></th><th></th></tr></thead><tbody id="ddtbody"></tbody></table>
+     <div class="bwl-add" id="ddadd">
++      <div class="f"><label><#Clientlist_device#></label><select id="s_ddpick"><option value=""><#Select_menu_default#></option></select></div>
+       <div class="f"><label><#MAC_Address#></label><input type="text" class="ip mono" id="a_ddmac" maxlength="17" placeholder="AA:BB:CC:DD:EE:FF" autocomplete="off"></div>
+       <div class="f"><label><#RDNS_23#></label><select id="s_ddnew"></select></div>
+       <button type="button" class="btn small" id="ddaddbtn"><#CTL_add#></button>
+@@ -444,6 +445,7 @@ section('p_cli', 'cli', function(){
+ 
+ /* --- DNS Director --- */
+ var DDL = [], DD_EDITED = false, DD_ALL = '';
++var DD_DEVS = [];   /* connected devices for the picker: {mac, label} */
+ var DD_KEYS = ['dnsfilter_rulelist', 'dnsfilter_rulelist1', 'dnsfilter_rulelist2', 'dnsfilter_rulelist3', 'dnsfilter_rulelist4', 'dnsfilter_rulelist5'];
+ section('p_dd', 'dd', function(){
+   q('t_ddon').checked = NV.dnsfilter_enable_x === '1';
+@@ -477,6 +479,30 @@ function ddDraw(){
+   q('ddtbody').innerHTML = h || '<tr><td colspan="3" class="empty">' + hx(`<#IPConnection_VSList_Norule#>`) + '</td></tr>';
+   Array.prototype.forEach.call(document.querySelectorAll('#ddtbody select.ddrow'), function(s){ modeOpts(s, DDL[+s.getAttribute('data-i')].mode); });
+   var b = q('ddbudget'); b.textContent = DDL.length + ' / ' + DD_MAX; b.classList.toggle('hot', DDL.length >= DD_MAX);
++  ddPickDraw();
++}
++/* 2026-10-30 (owner): pick the device from the connected ones - picking fills the MAC box, typing one still
++   works, and ddAdd() checks either the same way. A device that already has a rule is left out. Names come
++   from the clients themselves, so they go in as text, never markup. */
++function ddPickDraw(){
++  var s = q('s_ddpick'), have = {}; if (!s) return;
++  DDL.forEach(function(r){ have[r.mac] = 1; });
++  while (s.options.length > 1) s.remove(1);
++  DD_DEVS.forEach(function(d){ if (have[d.mac]) return; var o = document.createElement('option'); o.value = d.mac; o.textContent = d.label; s.appendChild(o); });
++  if (!pick(s, val('a_ddmac').toUpperCase())) s.value = '';
++}
++function ddPickLoad(){
++  try {
++    ReaperNames.refresh('<% nvram_char_to_ascii("", "custom_clientlist"); %>', function(cl){
++      var ml = (cl && cl.maclist) || [], out = [];
++      ml.forEach(function(mac){ var c = cl[mac], m = String(mac).toUpperCase(), nm;
++        if (!c || !rp.v.mac(m) || String(c.isOnline) === '0') return;
++        nm = ReaperNames.byMac(mac, m);
++        out.push({mac: m, label: (nm !== m ? nm + ' - ' : '') + m + (c.ip ? ' (' + c.ip + ')' : '')}); });
++      out.sort(function(a, b){ return a.label.toLowerCase() < b.label.toLowerCase() ? -1 : 1; });
++      DD_DEVS = out; ddPickDraw();
++    });
++  } catch (e) {}
+ }
+ function ddAdd(){
+   lmsg('ddmsg', '');
+@@ -655,6 +681,9 @@ function boot(){
+   on('dotaddbtn', 'click', dotAdd); on('s_dotpre', 'change', dotPreset);
+   on('dottbody', 'click', function(e){ var t = e.target; if (t && t.classList && t.classList.contains('bwldel')){ DOT.splice(+t.getAttribute('data-i'), 1); DOT_EDITED = true; dotDraw(); syncAll(); } });
+   on('ddaddbtn', 'click', ddAdd);
++  on('s_ddpick', 'change', function(){ if (this.value){ q('a_ddmac').value = this.value; lmsg('ddmsg', ''); } });
++  on('a_ddmac', 'input', function(){ var s = q('s_ddpick'); if (s && !pick(s, val('a_ddmac').toUpperCase())) s.value = ''; });
++  ddPickLoad();
+   on('ddtbody', 'click', function(e){ var t = e.target; if (t && t.classList && t.classList.contains('bwldel')){ DDL.splice(+t.getAttribute('data-i'), 1); DD_EDITED = true; ddDraw(); syncAll(); } });
+   on('ddtbody', 'change', function(e){ var t = e.target; if (t && t.classList && t.classList.contains('ddrow')){ DDL[+t.getAttribute('data-i')].mode = t.value; DD_EDITED = true; } });
+   document.addEventListener('input', syncAll); document.addEventListener('change', syncAll);
+diff --git a/release/src/router/www/Reaper_Dreadwatch.asp b/release/src/router/www/Reaper_Dreadwatch.asp
+index 02f46641862..9cc3332cdde 100644
+--- a/release/src/router/www/Reaper_Dreadwatch.asp
++++ b/release/src/router/www/Reaper_Dreadwatch.asp
+@@ -97,6 +97,8 @@ textarea{width:100%;height:120px;resize:vertical;font-family:ui-monospace,Consol
+ .sfgrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,240px),1fr));gap:10px 14px;margin:4px 0 8px}
+ .sfgrid label{display:flex;flex-direction:column;gap:4px;font-size:12px;color:var(--steel)}
+ .sfgrid .wide{grid-column:1/-1}
++.sfmore{font-size:12px;color:var(--bone-dim);text-decoration:underline;cursor:pointer}
++.sfmore:hover{color:var(--bone)}
+ .srcapi{font-family:var(--hdr);font-size:10px;letter-spacing:.08em;color:var(--amber);border:1px solid rgba(224,169,59,.4);border-radius:8px;padding:0 6px;margin-left:6px}
+ .dwtbl td.acts{white-space:nowrap;text-align:right}
+ .dwtbl td.acts .btng{margin-left:6px}
+@@ -153,11 +155,12 @@ textarea{width:100%;height:120px;resize:vertical;font-family:ui-monospace,Consol
+       <label class="wide"><#RSHD_145#><input type="text" id="sf_url" maxlength="400" placeholder="https://" autocomplete="off"></label>
+       <label><#RSHD_146#><select id="sf_fmt" onchange="dwSrcShow()"><option value="list"><#RSHD_147#></option><option value="json"><#RSHD_148#></option></select></label>
+       <label id="sf_fieldw"><#RSHD_149#><input type="text" id="sf_field" maxlength="32" placeholder="ioc" autocomplete="off"></label>
+-      <label><#RSHD_150#><select id="sf_method" onchange="dwSrcShow()"><option value="get">GET</option><option value="post">POST</option></select></label>
++      <label id="sf_methw"><#RSHD_150#><select id="sf_method" onchange="dwSrcShow()"><option value="get">GET</option><option value="post">POST</option></select></label>
+       <label class="wide" id="sf_bodyw"><#RSHD_151#><textarea id="sf_body" maxlength="1024" style="height:56px"></textarea></label>
+-      <label><#RSHD_152#><input type="text" id="sf_hdr" maxlength="40" placeholder="Auth-Key" autocomplete="off"></label>
++      <label id="sf_hdrw"><#RSHD_152#><input type="text" id="sf_hdr" maxlength="40" placeholder="Auth-Key" autocomplete="off"></label>
+       <label><#RSHD_153#><input type="password" id="sf_key" maxlength="200" autocomplete="new-password"></label>
+     </div>
++    <div id="sf_morew" style="margin:0 0 10px"><a href="#" class="sfmore" onclick="dwSrcMore();return false"><#RSHD_150#> &middot; <#RSHD_152#> &rsaquo;</a></div>
+     <div class="desc" style="margin:0 0 4px"><#RSHD_163#></div>
+     <div class="desc" id="sf_keyhint" style="margin:0 0 8px"></div>
+     <div class="srow"><button type="button" class="btng" id="sf_ok" onclick="dwSrcOk()"><#CTL_ok#></button><button type="button" class="btng" id="sf_cancel" onclick="dwSrcClose()"><#CTL_Cancel#></button><span class="dim" id="sf_msg"></span></div>
+@@ -215,7 +218,7 @@ textarea{width:100%;height:120px;resize:vertical;font-family:ui-monospace,Consol
+ </div>
+ 
+ <div class="card" style="margin-top:16px">
+-  <h2><#RWDN_38#></h2>
++  <h2><#RDWT_67#></h2>
+   <ul>
+     <li><#RDWT_44#></li>
+     <li><#RWDN_113#></li>
+@@ -223,7 +226,7 @@ textarea{width:100%;height:120px;resize:vertical;font-family:ui-monospace,Consol
+   </ul>
+ </div>
+ 
+-<div class="applying" id="applying"><div class="box"><h3><#Reaper_c_applying#></h3><p><#RWDN_30#></p></div></div>
++<div class="applying" id="applying"><div class="box"><h3><#Reaper_c_applying#></h3><p><#RDWT_66#></p></div></div>
+ 
+ <iframe name="hidden_frame" id="hidden_frame" style="display:none" width="0" height="0"></iframe>
+ <form method="post" name="form" action="/start_apply.htm" target="hidden_frame">
+@@ -237,6 +240,7 @@ textarea{width:100%;height:120px;resize:vertical;font-family:ui-monospace,Consol
+ </form>
+ 
+ <script src="/reaper_util.js"></script>
++<script src="/reaper/reaper_pending.js"></script>
+ <script>
+ /* 2026-10-20 Dreadwatch: the threat-domain list on its own page (it used to be a card on the
+    Warden page). Settings: rwarden_dns / rwarden_dns_feeds (nvram, this form) and the
+@@ -272,6 +276,9 @@ var SRC_TPL = {
+           body: '', hdr: 'Auth-Key'}
+ };
+ var DW = {hidden: {}, off: {}, customs: [], haskey: {}, keyUpd: {}, orig: ''}, srcEdit = null, dwLast = null;
++/* a plain list needs neither Request nor the key header ($APIkey in the address covers a keyed list):
++   both stay folded until asked for, or until the source uses them (owner 2026-10-29) */
++var srcMore = false;
+ var DNS_NAME_RE = /^[a-z0-9]([a-z0-9-]{0,62}\.)*[a-z][a-z0-9-]{0,62}$/;
+ function $(id){ return document.getElementById(id); }
+ function dwSplit(s){ return String(s||'').split(/[\s,<>]+/).filter(function(x){ return x.length; }); }
+@@ -405,15 +412,20 @@ function dwPaintSrc(){
+ /* the form (Wallguard's, same checks) */
+ function dwSrcFree(){ for(var i = 1; i <= 8; i++) if(!DW.customs.some(function(s){ return s.slot === i; })) return i; return 0; }
+ function dwSrcShow(){
+-  $('sf_fieldw').style.display = $('sf_fmt').value === 'json' ? '' : 'none';
+-  $('sf_bodyw').style.display = $('sf_method').value === 'post' ? '' : 'none';
++  var json = $('sf_fmt').value === 'json', adv = json || srcMore;
++  $('sf_fieldw').style.display = json ? '' : 'none';
++  $('sf_methw').style.display = $('sf_hdrw').style.display = adv ? '' : 'none';
++  $('sf_bodyw').style.display = adv && $('sf_method').value === 'post' ? '' : 'none';
++  $('sf_morew').style.display = adv ? 'none' : '';
+   $('sf_keyhint').textContent = srcEdit && dwHasKey(srcEdit.slot) ? `<#RSHD_154#>` : `<#RDWT_65#>`;
+ }
+ function dwSrcFill(s){
+   $('sf_name').value = s.name || ''; $('sf_url').value = s.url || ''; $('sf_fmt').value = s.fmt === 'json' ? 'json' : 'list';
+   $('sf_field').value = s.field || ''; $('sf_method').value = s.method === 'post' ? 'post' : 'get'; $('sf_body').value = s.body || '';
+   $('sf_hdr').value = s.hdr || ''; $('sf_key').value = '';
++  srcMore = !!(s.hdr || s.method === 'post');
+ }
++function dwSrcMore(){ srcMore = true; dwSrcShow(); $('sf_method').focus(); }
+ function dwSrcTpl(v){ var tp = SRC_TPL[v]; if(!tp) return; var keep = $('sf_key').value; dwSrcFill(tp); $('sf_key').value = keep; dwSrcShow(); }
+ function dwSrcOpen(s){
+   if(!s && !dwSrcFree()){ alert(`<#RSHD_159#>`); return; }
+@@ -426,6 +438,7 @@ function dwSrcOk(){
+   var s = {slot: srcEdit ? srcEdit.slot : dwSrcFree(), name: $('sf_name').value.trim(), url: $('sf_url').value.trim(),
+            fmt: $('sf_fmt').value, field: $('sf_field').value.trim(), method: $('sf_method').value,
+            body: $('sf_body').value.replace(/\r?\n/g, ' ').trim(), hdr: $('sf_hdr').value.trim()};
++  if(s.fmt !== 'json' && !srcMore){ s.method = 'get'; s.hdr = ''; }
+   var key = $('sf_key').value.trim(), bad = false;
+   if(!s.slot || !s.name || s.name.length > 40 || /[<>&"'`\\]/.test(s.name)) bad = true;
+   /* the one "$" allowed is $APIkey, after the host (2026-10-28) */
+@@ -606,6 +619,14 @@ function dwSave(updateNow){
+ dwSrcInit();
+ dwPaint();
+ dwPaintSrc();
++/* 2026-10-30: Save writes the switch, the feeds, the exemptions and the sources edited here - say when that is owed */
++function dwSnap(){
++  return {on: $('tgdns').className.indexOf('on') >= 0 ? '1' : '0',
++          feeds: DNS_BUILTIN.filter(function(id){ var c = $('fd_' + id); return !DW.hidden[id] && c && c.checked; }).join(' '),
++          allow: $('dnsallow').value, sources: dwSrcText(), keys: Object.keys(DW.keyUpd).sort().join(' ')};
++}
++ReaperPending.watch({at: document.querySelector('button[onclick="dwSave(false)"]'), btnClass: 'btng', snap: dwSnap, label: `<#RADM_77#>`, discard: `<#Discard#>`});
++ReaperPending.arm();
+ ReaperNames.refresh('<% nvram_char_to_ascii("", "custom_clientlist"); %>', function(){ dwStats(); });
+ setInterval(dwStats, 30000);
+ </script>
+diff --git a/release/src/router/www/Reaper_QoS.asp b/release/src/router/www/Reaper_QoS.asp
+index 4b510202fb0..fbed53d07ac 100644
+--- a/release/src/router/www/Reaper_QoS.asp
++++ b/release/src/router/www/Reaper_QoS.asp
+@@ -46,6 +46,7 @@ table.classes input.bwlnum{width:66px}
+ </head>
+ <body>
+ <script src="/reaper_util.js"></script>
++<script src="/reaper/reaper_pending.js"></script>
+ <script>
+ /* Reaper-native page: standalone hits get the shell chrome (fragment passes the shell allow-list) */
+ if (self === top) location.href = '/reaper_shell.asp#Reaper_QoS.asp';
+@@ -59,7 +60,7 @@ if (self === top) location.href = '/reaper_shell.asp#Reaper_QoS.asp';
+   <span class="pill" id="engpill"><span class="dot"></span><span id="engpill_t"><#Reaper_c_loading#></span></span>
+   <div class="spacer"></div>
+   <button type="button" class="btn ghost" onclick="faqOpen()"><#RQOS_02#></button>
+-  <button type="button" class="btn primary" onclick="applyQoS()"><#CTL_apply#></button>
++  <button type="button" class="btn primary" id="qos_apply" onclick="applyQoS()"><#CTL_apply#></button>
+ </div>
+ 
+ <div class="panel">
+@@ -996,6 +997,19 @@ document.getElementById('tg_dscp').checked = (NV.dscp === '1');
+ document.getElementById('tg_ipolicer').checked = (NV.ipolicer !== '0');
+ /* (review 2026-10-24, Q-C2-6: syncPanels draws the rules once the modes are known; the extra boot-time renderRules went) */
+ parseRules(); renderModes(); syncPanels(); buildEditor(); parseBwl(); renderBwl(); fetchBwlClients(); pollStats(); fetchPresets(); ohInit(); tqBuild(); protoSync();
++/* 2026-10-30 (owner; metal 2026-10-22: a rule's x had only edited the page, so the first delete was never
++   written): the unsaved-changes pill compares what applyQoS() writes with what the page loaded */
++function qosSnap(){
++  function v(id){ var e = document.getElementById(id); return e ? (e.type === 'checkbox' ? (e.checked ? '1' : '0') : e.value) : ''; }
++  function all(id){ var e = document.querySelectorAll('#' + id + ' input, #' + id + ' select'), o = [], i;
++    for (i = 0; i < e.length; i++) o.push(e[i].type === 'checkbox' ? (e[i].checked ? '1' : '0') : e[i].value); return o.join('|'); }
++  return {mode: sel, up: v('bw_up'), dn: v('bw_dn'), classes: all('ctbody'), queues: all('tqbody'),
++          pshaper: v('tg_pshaper'), minrates: v('tg_minrates'), dscp: v('tg_dscp'), ipolicer: v('tg_ipolicer'),
++          flags: ['tg_ack', 'tg_syn', 'tg_fin', 'tg_rst', 'tg_icmp'].map(function(id){ return v(id); }).join(''),
++          overhead: [v('oh_bytes'), v('oh_atm'), v('oh_mpu')].join('|'), limits: JSON.stringify(BWL), rules: serializeRules()};
++}
++ReaperPending.watch({at: document.getElementById('qos_apply'), snap: qosSnap, label: `<#RADM_77#>`, discard: `<#Discard#>`});
++ReaperPending.arm();
+ </script>
+ </body>
+ </html>
+diff --git a/release/src/router/www/Reaper_VPNDirector.asp b/release/src/router/www/Reaper_VPNDirector.asp
+index e9ce0ef830a..833b0c73a62 100644
+--- a/release/src/router/www/Reaper_VPNDirector.asp
++++ b/release/src/router/www/Reaper_VPNDirector.asp
+@@ -47,10 +47,15 @@ table.classes td.en{width:70px}
+ .link{color:var(--bone-dim);text-decoration:underline;font-size:12.5px;cursor:pointer}
+ .link:hover{color:var(--bone)}
+ .msg{font-size:12.5px;color:var(--amber);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:100%;min-width:0;display:none}
+-.cl{display:grid;grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:8px 14px;font-size:12.5px}
+-.cl .c{display:flex;align-items:center;gap:8px;padding:6px 0;border-top:1px solid var(--line-soft)}
+-.cl .c .n{font-family:var(--hdr);font-weight:600;letter-spacing:.04em;color:var(--bone)}
+-.cl .c .d{color:var(--bone-dim);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1}
++/* one card per client: name + description on the first line, its tags on a line of their own
++   (owner 2026-10-29: name, description and up to three tags in one 210px cell ran into each other) */
++.cl{display:grid;grid-template-columns:repeat(auto-fill,minmax(250px,1fr));gap:12px;font-size:12.5px;margin-top:8px}
++.cl .c{display:flex;flex-direction:column;gap:9px;padding:11px 14px;border:1px solid var(--line-soft);border-radius:10px;background:rgba(255,255,255,.015);min-width:0}
++.cl .c .t{display:flex;align-items:baseline;gap:10px;min-width:0}
++.cl .c .n{font-family:var(--hdr);font-weight:600;letter-spacing:.04em;color:var(--bone);white-space:nowrap}
++.cl .c .d{color:var(--bone-dim);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;min-width:0}
++.cl .c .g{display:flex;flex-wrap:wrap;gap:6px}
++.cl .c .tag{white-space:nowrap}
+ .hint a,.sub a{color:var(--bone-dim)}
+ </style>
+ </head>
+@@ -184,15 +189,15 @@ section('p_clients', function(){
+   var h = '', n, st;
+   if (sup('openvpnd')) for (n = 1; n <= 5; n++){
+     st = OV[n].state;
+-    h += '<div class="c"><span class="n">OpenVPN ' + n + '</span><span class="d" title="' + hx(OV[n].desc) + '">' + hx(OV[n].desc || ('Client ' + n)) + '</span>' +
++    h += '<div class="c"><div class="t"><span class="n">OpenVPN ' + n + '</span><span class="d" title="' + hx(OV[n].desc) + '">' + hx(OV[n].desc || ('Client ' + n)) + '</span></div><div class="g">' +
+       (ovEnabled(n) ? '<span class="tag good">' + hx(st === '2' ? `<#Connected#>` : (st === '1' ? `<#Connecting_str#>` : (st === '-1' ? `<#RVDR_17#>` : `<#CTL_Enabled#>`))) + '</span>' : '<span class="tag">' + hx(`<#RVDR_18#>`) + '</span>') +
+       (OV[n].rgw === '2' || OV[n].rgw === '3' ? '<span class="tag">' + hx(`<#Reaper_c_vpn_director#>`) + '</span>' : (OV[n].rgw === '1' ? '<span class="tag warn">' + hx(`<#RVDR_19#>`) + '</span>' : '')) +
+-      (OV[n].ks === '1' ? '<span class="tag warn">' + hx(`<#RVDR_20#>`) + '</span>' : '') + '</div>';
++      (OV[n].ks === '1' ? '<span class="tag warn">' + hx(`<#RVDR_20#>`) + '</span>' : '') + '</div></div>';
+   }
+   if (WIREGUARD) for (n = 1; n <= 5; n++){
+-    h += '<div class="c"><span class="n">WireGuard ' + n + '</span><span class="d" title="' + hx(WG[n].desc) + '">' + hx(WG[n].desc || ('Client ' + n)) + '</span>' +
++    h += '<div class="c"><div class="t"><span class="n">WireGuard ' + n + '</span><span class="d" title="' + hx(WG[n].desc) + '">' + hx(WG[n].desc || ('Client ' + n)) + '</span></div><div class="g">' +
+       (WG[n].en === '1' ? '<span class="tag good">' + hx(`<#CTL_Enabled#>`) + '</span>' : '<span class="tag">' + hx(`<#RVDR_18#>`) + '</span>') +
+-      (WG[n].ks === '1' ? '<span class="tag warn">' + hx(`<#RVDR_20#>`) + '</span>' : '') + '</div>';
++      (WG[n].ks === '1' ? '<span class="tag warn">' + hx(`<#RVDR_20#>`) + '</span>' : '') + '</div></div>';
+   }
+   q('cllist').innerHTML = h;
+ }, function(c){});
+diff --git a/release/src/router/www/Reaper_VPNRouting.asp b/release/src/router/www/Reaper_VPNRouting.asp
+index f3f988acc5c..5d92361bf69 100644
+--- a/release/src/router/www/Reaper_VPNRouting.asp
++++ b/release/src/router/www/Reaper_VPNRouting.asp
+@@ -218,6 +218,7 @@ td.doms{font-family:ui-monospace,Consolas,monospace;font-size:11.5px;color:var(-
+ <div class="applying" id="applying"><#RVR_67#></div>
+ 
+ <script src="/reaper_util.js"></script>
++<script src="/reaper/reaper_pending.js"></script>
+ <script>
+ var NV = {
+   enable:   <% nvram_get_js("reaper_pbr_enable"); %>,
+@@ -461,6 +462,7 @@ function applyPBR(){
+   pbrcgi(q,function(j){
+     if(!j||!j.ok){ settle(false); showErr((j&&j.error)?errText(j.error):`<#RFW_155#>`); return; }
+     NV.rulelist=serialize(); NV.enable=masterOn?'1':'0';
++    ReaperPending.arm();   /* written: this is the new baseline */
+     /* v3.0.5 (F6): poll to the REAL deadline, not a fixed 8.4 s. The apply
+        CGI returns as soon as rc is signalled; the armed state lands after the
+        sets rebuild, the teardown loop and the candidate run, which routinely
+@@ -613,12 +615,15 @@ function objDelete(k){
+   pbrTypeChange();
+   pbrTargetChange();
+   loadObjects();
++  /* 2026-10-30: the rule list and the master switch are written by Apply only - say when that is owed */
++  ReaperPending.watch({at: document.getElementById('applybtn'), btnClass: 'btng', snap: function(){ return {on: masterOn ? '1' : '0', rules: serialize()}; }, label: `<#RADM_77#>`, discard: `<#Discard#>`});
++  ReaperPending.arm();
+   document.getElementById('armkeep').onclick=function(){ pbrcgi('action=confirm',function(j){ if(pbrAck(j,`<#RFW_278#>`)) setTimeout(armPoll,800); }); };
+   document.getElementById('armrevert').onclick=function(){ pbrcgi('action=rollback',function(j){ if(pbrAck(j,`<#RFW_279#>`)) setTimeout(function(){ location.reload(); },1500); }); };
+   /* an apply from another tab, or a page reload inside the window */
+   pbrcgi('action=cfg',function(j){
+     if(j&&j.ok){ cfgArrays(j); renderTargets(); ARM.armed=j.armed?1:0; ARM.left=j.left||0; if(j.confirm)CONFIRM=j.confirm; showErr(j.err?errText(j.err):'');
+-      NV.rulelist=j.rulelist||''; parseRules(); render(); armUI(); }
++      NV.rulelist=j.rulelist||''; parseRules(); render(); armUI(); ReaperPending.arm(); }
+     else showErr(`<#RFW_281#>`);   /* v3.0.5 (F11): a LOAD failure is not "could not be saved" */
+   });
+ })();
+diff --git a/release/src/router/www/Reaper_WANPorts.asp b/release/src/router/www/Reaper_WANPorts.asp
+index e76c7914f01..a7b3102871c 100644
+--- a/release/src/router/www/Reaper_WANPorts.asp
++++ b/release/src/router/www/Reaper_WANPorts.asp
+@@ -359,6 +359,7 @@ select.fx option{background:#0b0b0d;color:var(--bone)}
+ <div class="ovl" id="ovl"><div class="box"><div class="t" id="ovl_t"></div><div class="s" id="ovl_s"></div><div class="beat"><i></i></div></div></div>
+ <iframe name="wp_hidden" style="display:none" title="apply"></iframe>
+ 
++<script src="/reaper/reaper_pending.js"></script>
+ <script>
+ /* ===================== router state (server-side, read once) ===================== */
+ var UI = [<% get_ui_support(); %>][0];
+@@ -1341,6 +1342,14 @@ function redetect(){
+     loadVlanPorts(function(){});
+     loadPingList();
+     window.__ready = 1;
++    /* 2026-10-30: Apply writes everything set on this page - say when that is owed (S minus the
++       option lists, the ISP tab in view and fbExists, which are view state) */
++    ReaperPending.watch({at: $id('apply'), btnClass: 'btn', label: `<#RADM_77#>`, discard: `<#Discard#>`, snap: function(){
++      var o = {}, k;
++      for(k in S) if(Object.prototype.hasOwnProperty.call(S, k) && !/Opts$/.test(k) && k !== 'ispUnit' && k !== 'fbExists') o[k] = JSON.stringify(S[k]);
++      return o;
++    }});
++    ReaperPending.arm();
+   });
+ })();
+ </script>
+diff --git a/release/src/router/www/Reaper_Wallguard.asp b/release/src/router/www/Reaper_Wallguard.asp
+index 54398c46bcf..c8df53a4501 100644
+--- a/release/src/router/www/Reaper_Wallguard.asp
++++ b/release/src/router/www/Reaper_Wallguard.asp
+@@ -63,6 +63,8 @@ ol.steps li::marker{font-family:var(--hdr);font-weight:700;color:var(--crimson)}
+ .sfgrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,240px),1fr));gap:10px 14px;margin:4px 0 8px}
+ .sfgrid label{display:flex;flex-direction:column;gap:4px;font-size:12px;color:var(--steel)}
+ .sfgrid .wide{grid-column:1/-1}
++.sfmore{font-size:12px;color:var(--bone-dim);text-decoration:underline;cursor:pointer}
++.sfmore:hover{color:var(--bone)}
+ .srcapi{font-family:var(--hdr);font-size:10px;letter-spacing:.08em;color:var(--amber);border:1px solid rgba(224,169,59,.4);border-radius:8px;padding:0 6px;margin-left:6px}
+ .tbl td.acts{white-space:nowrap;text-align:right}
+ .tbl td.acts .btng{margin-left:6px}
+@@ -79,7 +81,7 @@ label.ck .box{width:18px;height:18px;border-radius:5px;border:1px solid rgba(255
+ label.ck input:checked + .box{border-color:var(--crimson-deep);background:rgba(225,6,0,.18)}
+ label.ck input:checked + .box::after{content:"";position:absolute;left:5px;top:1px;width:5px;height:10px;border:solid var(--crimson);border-width:0 2px 2px 0;transform:rotate(45deg)}
+ label.ck input:disabled + .box{opacity:.35}
+-select,textarea,input[type="text"],input[type="time"]{background:var(--panel-2);border:1px solid var(--line-soft);border-radius:8px;color:var(--bone);font-family:var(--body);font-size:12.5px;padding:6px 10px}
++select,textarea,input[type="text"],input[type="password"],input[type="time"]{background:var(--panel-2);border:1px solid var(--line-soft);border-radius:8px;color:var(--bone);font-family:var(--body);font-size:12.5px;padding:6px 10px}
+ textarea{width:100%;height:110px;resize:vertical;font-family:ui-monospace,Consolas,monospace;line-height:1.5}
+ .row{display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin:8px 0}
+ .row input[type="text"]{flex:1;min-width:200px}
+@@ -166,11 +168,12 @@ label.chip{gap:7px;padding:5px 11px 5px 7px;border:1px solid var(--line-soft);bo
+       <label class="wide"><#RSHD_145#><input type="text" id="sf_url" maxlength="400" placeholder="https://" autocomplete="off"></label>
+       <label><#RSHD_146#><select id="sf_fmt"><option value="list"><#RSHD_147#></option><option value="json"><#RSHD_148#></option></select></label>
+       <label id="sf_fieldw"><#RSHD_149#><input type="text" id="sf_field" maxlength="32" placeholder="ioc" autocomplete="off"></label>
+-      <label><#RSHD_150#><select id="sf_method"><option value="get">GET</option><option value="post">POST</option></select></label>
++      <label id="sf_methw"><#RSHD_150#><select id="sf_method"><option value="get">GET</option><option value="post">POST</option></select></label>
+       <label class="wide" id="sf_bodyw"><#RSHD_151#><textarea id="sf_body" maxlength="1024" style="height:56px"></textarea></label>
+-      <label><#RSHD_152#><input type="text" id="sf_hdr" maxlength="40" placeholder="Auth-Key" autocomplete="off"></label>
++      <label id="sf_hdrw"><#RSHD_152#><input type="text" id="sf_hdr" maxlength="40" placeholder="Auth-Key" autocomplete="off"></label>
+       <label><#RSHD_153#><input type="password" id="sf_key" maxlength="200" autocomplete="new-password"></label>
+     </div>
++    <div id="sf_morew" style="margin:0 0 10px"><a href="#" class="sfmore" id="sf_more"><#RSHD_150#> &middot; <#RSHD_152#> &rsaquo;</a></div>
+     <div class="desc" style="margin:0 0 4px"><#RSHD_163#></div>
+     <div class="desc" id="sf_keyhint" style="margin:0 0 8px"></div>
+     <div class="row"><button type="button" class="btng" id="sf_ok"><#CTL_ok#></button><button type="button" class="btng" id="sf_cancel"><#CTL_Cancel#></button><span class="dim" id="sf_msg"></span></div>
+@@ -278,6 +281,7 @@ label.chip{gap:7px;padding:5px 11px 5px 7px;border:1px solid var(--line-soft);bo
+ </form>
+ 
+ <script src="/reaper_util.js"></script>
++<script src="/reaper/reaper_pending.js"></script>
+ <script src="/reaper/rp.js"></script>
+ <script>
+ (function(){
+@@ -384,6 +388,9 @@ function shSubscribed(){
+    method=get|post body= hdr=<header>]" with %-encoded values; the API key never rides it (keys: write-only,
+    config reports only which slots have one). "hidden <preset>" is a built-in list removed from the table. */
+ var srcEdit = null;
++/* a plain list needs neither Request nor the key header ($APIkey in the address covers a keyed list):
++   both stay folded until asked for, or until the source uses them (owner 2026-10-29) */
++var srcMore = false;
+ function shDec(v){ try{ return decodeURIComponent(v); }catch(e){ return v; } }
+ function shEnc(v){ return encodeURIComponent(v).replace(/[!'()*~]/g, function(c){ return '%' + c.charCodeAt(0).toString(16).toUpperCase(); }); }
+ function shSrcHost(s){ return String(s.url).replace(/^https:\/\//, '').split('/')[0]; }
+@@ -717,7 +724,7 @@ function shStoreLine(st){
+   a.href = 'Reaper_Storage.asp'; el.appendChild(a);
+ }
+ function shStatus(){ shReq('GET', 'action=status', null, shRender); }
+-function shConfig(cb){ shReq('GET', 'action=config', null, function(j){ if(j && j.ok){ shParseConfig(j); shPaint(); } if(cb) cb(); }); }
++function shConfig(cb){ shReq('GET', 'action=config', null, function(j){ if(j && j.ok){ shParseConfig(j); shPaint(); ReaperPending.arm(); } if(cb) cb(); }); }
+ 
+ /* ---- actions */
+ function shAct(a){ shReq('GET', 'action=' + a, null, function(j){ if(!j || !j.ok) shErr(j); else setTimeout(shStatus, 1500); }); }
+@@ -788,9 +795,11 @@ function shReset(){ if(confirm(`<#RDWT_29#>`)) shAct('reset'); }
+ /* ---- your own sources: the form */
+ function shSrcFree(){ for(var i = 1; i <= 8; i++) if(!cfg.customs.some(function(s){ return s.slot === i; })) return i; return 0; }
+ function shSrcShow(){
+-  var json = $('sf_fmt').value === 'json', post = $('sf_method').value === 'post';
++  var json = $('sf_fmt').value === 'json', post = $('sf_method').value === 'post', adv = json || srcMore;
+   $('sf_fieldw').style.display = json ? '' : 'none';
+-  $('sf_bodyw').style.display = post ? '' : 'none';
++  $('sf_methw').style.display = $('sf_hdrw').style.display = adv ? '' : 'none';
++  $('sf_bodyw').style.display = adv && post ? '' : 'none';
++  $('sf_morew').style.display = adv ? 'none' : '';
+   var slot = srcEdit ? srcEdit.slot : 0;
+   $('sf_keyhint').textContent = slot && shHasKey(slot) ? `<#RSHD_154#>` : `<#RSHD_155#>`;
+ }
+@@ -798,6 +807,7 @@ function shSrcFill(s){
+   $('sf_name').value = s.name || ''; $('sf_url').value = s.url || ''; $('sf_fmt').value = s.fmt === 'json' ? 'json' : 'list';
+   $('sf_field').value = s.field || ''; $('sf_method').value = s.method === 'post' ? 'post' : 'get'; $('sf_body').value = s.body || '';
+   $('sf_hdr').value = s.hdr || ''; $('sf_key').value = '';
++  srcMore = !!(s.hdr || s.method === 'post');
+ }
+ function shSrcOpen(s){
+   if(!s && !shSrcFree()){ alert(`<#RSHD_159#>`); return; }
+@@ -810,6 +820,7 @@ function shSrcOk(){
+   var s = {slot: srcEdit ? srcEdit.slot : shSrcFree(), name: $('sf_name').value.trim(), url: $('sf_url').value.trim(),
+            fmt: $('sf_fmt').value, field: $('sf_field').value.trim(), method: $('sf_method').value,
+            body: $('sf_body').value.replace(/\r?\n/g, ' ').trim(), hdr: $('sf_hdr').value.trim()};
++  if(s.fmt !== 'json' && !srcMore){ s.method = 'get'; s.hdr = ''; }
+   var key = $('sf_key').value.trim(), bad = false;
+   if(!s.slot || !s.name || s.name.length > 40 || /[<>&"'`\\]/.test(s.name)) bad = true;
+   /* the one "$" allowed is $APIkey, after the host (2026-10-28) */
+@@ -828,8 +839,8 @@ function shSrcOk(){
+   cfg.customs.sort(function(a, b){ return a.slot - b.slot; });
+   shSrcClose(); shPaintLists(); shPaintProfiles();
+ }
+-function shSave(){
+-  if(!cfg) return;
++/* 2026-10-30: the save's payload on its own, so the unsaved-changes pill can compare it */
++function shPayload(){
+   var lists = [];
+   cfg.presets.forEach(function(p){ if(cfg.sel[p.id] && !cfg.hidden[p.id]) lists.push(p.id); });
+   cfg.presets.forEach(function(p){ if(cfg.hidden[p.id]) lists.push('hidden ' + p.id); });
+@@ -841,9 +852,23 @@ function shSave(){
+   var svc = Object.keys(cfg.svc).filter(function(k){ return pids[k] && cfg.svc[k].length; }).map(function(k){ return k + ' ' + cfg.svc[k].join(','); });
+   var sch = []; Object.keys(cfg.sch).forEach(function(k){ if(pids[k] && cfg.svc[k]) cfg.sch[k].forEach(function(w){ sch.push(k + ' ' + w.d.toString(16) + ' ' + w.a + ' ' + w.z); }); });
+   var saf = Object.keys(cfg.saf).filter(function(k){ return pids[k] && cfg.saf[k]; }).map(function(k){ return k + ' ' + cfg.saf[k]; });
++  return {action: 'save', lists: lists.join('\n'), keys: keys.join('\n'), block: $('block').value, allow: $('allow').value, profiles: prof.join('\n'), assign: asg.join('\n'),
++          services: svc.join('\n'), sched: sch.join('\n'), safe: saf.join('\n')};
++}
++/* what Save writes, a typed API key reduced to "set" (the key itself stays in cfg only) */
++function shSnap(){
++  var p = shPayload(), o = {}, k;
++  for(k in p) if(k !== 'keys') o[k] = p[k];
++  o.keys = Object.keys(cfg.keyUpd).sort().map(function(s){ return s + (cfg.keyUpd[s] === '-' ? ' -' : ' set'); }).join(' ');
++  o.on = $('tgon').className.indexOf('on') >= 0 ? '1' : '0';
++  o.mode = $('mode').value;
++  return o;
++}
++function shSave(){
++  if(!cfg) return;
++  var p = shPayload();
+   $('applying').className = 'applying show';
+-  shPost({action: 'save', lists: lists.join('\n'), keys: keys.join('\n'), block: $('block').value, allow: $('allow').value, profiles: prof.join('\n'), assign: asg.join('\n'),
+-          services: svc.join('\n'), sched: sch.join('\n'), safe: saf.join('\n')}, function(j){
++  shPost(p, function(j){
+     if(!j || !j.ok){ $('applying').className = 'applying'; shErr(j); return; }
+     var f = document.form;
+     f.wallguard_enable.value = $('tgon').className.indexOf('on') >= 0 ? '1' : '0';
+@@ -864,9 +889,13 @@ $('sf_ok').addEventListener('click', shSrcOk);
+ $('sf_cancel').addEventListener('click', shSrcClose);
+ $('sf_fmt').addEventListener('change', shSrcShow);
+ $('sf_method').addEventListener('change', shSrcShow);
++$('sf_more').addEventListener('click', function(e){ e.preventDefault(); srcMore = true; shSrcShow(); $('sf_method').focus(); });
+ $('livebtn').addEventListener('click', function(){ shLive(); });
+ $('ubdev').addEventListener('change', function(){ shUnbreak(); });
+ shPaint();
++/* 2026-10-30: Save writes the lists, profiles, assignments and schedules edited here - say when that is owed
++   (the baseline is taken each time the router's config is loaded, in shConfig) */
++ReaperPending.watch({at: document.querySelector('[data-act="save"]'), btnClass: 'btng', snap: shSnap, label: `<#RADM_77#>`, discard: `<#Discard#>`});
+ ReaperNames.refresh(NV.clients, function(){ shConfig(shStatus); });
+ /* review 2026-10-24 (Q-C2-4): no poll while the tab is hidden; a tab that comes back polls at once */
+ setInterval(function(){ if(!document.hidden) shStatus(); }, 15000);
+diff --git a/release/src/router/www/Reaper_WiFiSettings.asp b/release/src/router/www/Reaper_WiFiSettings.asp
+index 1eb2b01fd89..9bc39ed02e9 100644
+--- a/release/src/router/www/Reaper_WiFiSettings.asp
++++ b/release/src/router/www/Reaper_WiFiSettings.asp
+@@ -217,7 +217,8 @@ a{color:var(--ice)}
+ 
+   var BAND_LABEL={"2":"2.4 GHz","1":"5 GHz","4":"6 GHz"};
+   var BAND_TYPE ={"2":"2.4","1":"5","4":"6"};
+-  var DOT=["var(--jade)","var(--amber)","var(--red)","var(--ice)"];
++  /* the band card's dot is the radio's state, as on the dashboard (jade = on, steel = off); it was a
++     per-radio colour (wl1 amber) that read as a warning next to the dashboard's green (owner 2026-10-29) */
+ 
+   /* build the ordered radio list; disambiguate a dual-same-band router (5 GHz-1 / 5 GHz-2) */
+   function buildRadios(nb){
+@@ -644,7 +645,8 @@ a{color:var(--ice)}
+     RADIOS.forEach(function(r){ TB[r.unit]=buildTables(CSP[r.ifn]||[]); });
+     document.documentElement.style.setProperty("--bands",RADIOS.length);
+     document.getElementById("bandRoot").innerHTML='<div class="hint"></div>'+RADIOS.map(function(r){
+-      return '<div class="bh"><span class="bh-dot" style="background:'+(DOT[r.unit]||"var(--steel)")+'"></span>'+
++      var on=nv(r.unit,"radio")==="1";
++      return '<div class="bh"><span class="bh-dot" style="background:'+(on?"var(--jade)":"var(--steel)")+'"></span>'+
+              '<div><div class="bh-name">'+esc(r.label)+'</div><div class="bh-sub">'+esc(r.ifn)+'</div></div></div>'; }).join("");
+     document.getElementById("matrixRoot").innerHTML=SCHEMA.map(function(s){
+       var rows=s.rows.filter(function(row){ return RADIOS.some(function(r){ return applies(row,r.unit); }); });
+diff --git a/release/src/router/www/SL.dict b/release/src/router/www/SL.dict
+index b748d8792a1..86670586e83 100644
+--- a/release/src/router/www/SL.dict
++++ b/release/src/router/www/SL.dict
+@@ -8907,3 +8907,5 @@ RSHD_161=API
+ RSHD_162=ključ shranjen
+ RSHD_163=Če naj bo ključ kar v naslovu, vnesite $APIkey na mesto, kamor sodi (na primer https://example.com/feed?api_token=$APIkey); usmerjevalnik ob vsakem prenosu vstavi shranjeni ključ, glava ključa pa lahko ostane prazna.
+ RBST_00=Bastion
++RDWT_66=Uveljavljanje nastavitev Dreadwatch…
++RDWT_67=Kako deluje Dreadwatch
+diff --git a/release/src/router/www/SV.dict b/release/src/router/www/SV.dict
+index d094d19d235..130c5810e0c 100644
+--- a/release/src/router/www/SV.dict
++++ b/release/src/router/www/SV.dict
+@@ -8907,3 +8907,5 @@ RSHD_161=API
+ RSHD_162=nyckel sparad
+ RSHD_163=Ska nyckeln stå i själva adressen skriver du $APIkey där den hör hemma (till exempel https://example.com/feed?api_token=$APIkey); routern fyller i din sparade nyckel vid varje hämtning, och nyckelns header kan lämnas tom.
+ RBST_00=Bastion
++RDWT_66=Tillämpar Dreadwatch-inställningar…
++RDWT_67=Så fungerar Dreadwatch
+diff --git a/release/src/router/www/TH.dict b/release/src/router/www/TH.dict
+index 3a65fb039d3..37351622db8 100644
+--- a/release/src/router/www/TH.dict
++++ b/release/src/router/www/TH.dict
+@@ -8907,3 +8907,5 @@ RSHD_161=API
+ RSHD_162=บันทึกคีย์แล้ว
+ RSHD_163=หากต้องการใส่คีย์ไว้ในที่อยู่ ให้พิมพ์ $APIkey ตรงตำแหน่งที่คีย์ต้องอยู่ (เช่น https://example.com/feed?api_token=$APIkey) เราเตอร์จะใส่คีย์ที่บันทึกไว้ทุกครั้งที่ดาวน์โหลด และเว้นส่วนหัวของคีย์ว่างไว้ได้
+ RBST_00=Bastion
++RDWT_66=กำลังใช้การตั้งค่า Dreadwatch…
++RDWT_67=Dreadwatch ทำงานอย่างไร
+diff --git a/release/src/router/www/TR.dict b/release/src/router/www/TR.dict
+index 3d8be175b05..fc504c77df8 100644
+--- a/release/src/router/www/TR.dict
++++ b/release/src/router/www/TR.dict
+@@ -8907,3 +8907,5 @@ RSHD_161=API
+ RSHD_162=anahtar kayıtlı
+ RSHD_163=Anahtarı adresin içine koymak için anahtarın geleceği yere $APIkey yazın (örneğin https://example.com/feed?api_token=$APIkey); yönlendirici her indirmede kayıtlı anahtarınızı oraya koyar, anahtar başlığı boş kalabilir.
+ RBST_00=Bastion
++RDWT_66=Dreadwatch ayarları uygulanıyor…
++RDWT_67=Dreadwatch nasıl çalışır
+diff --git a/release/src/router/www/TW.dict b/release/src/router/www/TW.dict
+index cfcc5773381..c426f88763f 100644
+--- a/release/src/router/www/TW.dict
++++ b/release/src/router/www/TW.dict
+@@ -8907,3 +8907,5 @@ RSHD_161=API
+ RSHD_162=金鑰已儲存
+ RSHD_163=若要把金鑰放在位址中，請在金鑰應在的位置輸入 $APIkey（例如 https://example.com/feed?api_token=$APIkey）；路由器每次下載時會填入已儲存的金鑰，金鑰標頭可留空。
+ RBST_00=Bastion
++RDWT_66=正在套用 Dreadwatch 設定…
++RDWT_67=Dreadwatch 的運作方式
+diff --git a/release/src/router/www/UK.dict b/release/src/router/www/UK.dict
+index 9d115710369..cdc1f871657 100644
+--- a/release/src/router/www/UK.dict
++++ b/release/src/router/www/UK.dict
+@@ -8907,3 +8907,5 @@ RSHD_161=API
+ RSHD_162=ключ збережено
+ RSHD_163=Щоб вставити ключ просто в адресу, введіть $APIkey там, де він має стояти (наприклад, https://example.com/feed?api_token=$APIkey); під час кожного завантаження роутер підставить збережений ключ, а заголовок ключа можна залишити порожнім.
+ RBST_00=Bastion
++RDWT_66=Застосування налаштувань Dreadwatch…
++RDWT_67=Як працює Dreadwatch
+diff --git a/release/src/router/www/reaper/reaper_pending.js b/release/src/router/www/reaper/reaper_pending.js
+new file mode 100644
+index 00000000000..17f7bed82bf
+--- /dev/null
++++ b/release/src/router/www/reaper/reaper_pending.js
+@@ -0,0 +1,63 @@
++/* Reaper: an "Unsaved changes: N" pill and a Discard button for a page that keeps its edits on the
++   page until its own Apply / Save writes them (2026-10-30, owner: on Reaper QoS a row's x edited only
++   the page and nothing said Apply was still owed, so the first delete was never written).
++   Same look and wording as the kit pages' chgpill (rp.css / rp.pill), styled here so a page that does
++   not load the kit gets it too. Nothing is written by this file.
++     ReaperPending.watch({at: el, snap: fn, label: str, discard: str})
++       el    - the page's Apply / Save button; the pill and Discard go just before it
++       snap  - returns {key: value} of everything the Apply / Save would write; a key whose value
++               differs from the baseline counts as one change
++     ReaperPending.arm()   - takes the baseline (call once the page has drawn its data; again after a
++                             save that does not reload the page)
++     ReaperPending.hold()  - hides the pill while the page applies
++   The page is re-checked one tick after any input, change, click or focus change, so the page's own
++   handler has updated its data first. Discard reloads the page. */
++(function(){
++  'use strict';
++  var cfg = null, base = null, pill = null, cnt = null, btn = null, held = false, timer = 0;
++  function css(){
++    if (document.getElementById('rpend_css')) return;
++    var s = document.createElement('style'); s.id = 'rpend_css';
++    s.textContent = '.rpend{display:none;align-items:center;gap:7px;border:1px solid rgba(224,169,59,.45);' +
++      'border-radius:999px;padding:5px 12px;font-size:12px;color:#ECE7DB;white-space:nowrap;line-height:1.2}' +
++      '.rpend.show{display:inline-flex}.rpend .dot{width:8px;height:8px;border-radius:50%;background:#E0A93B}' +
++      '.rpend b{color:#E0A93B;font-weight:700}';
++    (document.head || document.documentElement).appendChild(s);
++  }
++  function take(){ try { var s = cfg.snap(); return (s && typeof s === 'object') ? s : null; } catch (e) { return null; } }
++  function differ(a, b){
++    var n = 0, seen = {}, k;
++    for (k in a) if (Object.prototype.hasOwnProperty.call(a, k)){ seen[k] = 1; if (String(a[k]) !== String(b[k])) n++; }
++    for (k in b) if (Object.prototype.hasOwnProperty.call(b, k) && !seen[k]) n++;
++    return n;
++  }
++  function check(){
++    timer = 0;
++    if (!cfg || held || !base) return;
++    var s = take(); if (!s) return;
++    var n = differ(base, s);
++    cnt.textContent = String(n);
++    pill.classList.toggle('show', n > 0);
++    btn.disabled = !n;
++  }
++  function later(){ if (!timer) timer = setTimeout(check, 0); }
++  window.ReaperPending = {
++    watch: function(o){
++      if (cfg || !o || !o.at || !o.at.parentNode || typeof o.snap !== 'function') return;
++      cfg = o; css();
++      pill = document.createElement('span'); pill.className = 'rpend'; pill.id = 'rpend'; pill.setAttribute('role', 'status');
++      var dot = document.createElement('span'); dot.className = 'dot';
++      var t = document.createElement('span'); t.textContent = (o.label || 'Unsaved changes') + ': ';
++      cnt = document.createElement('b'); cnt.textContent = '0'; t.appendChild(cnt);
++      pill.appendChild(dot); pill.appendChild(t);
++      btn = document.createElement('button'); btn.type = 'button'; btn.id = 'rpend_discard';
++      btn.className = o.btnClass || 'btn ghost'; btn.textContent = o.discard || 'Discard'; btn.disabled = true;
++      btn.addEventListener('click', function(){ location.reload(); });
++      o.at.parentNode.insertBefore(pill, o.at); o.at.parentNode.insertBefore(btn, o.at);
++      ['input', 'change', 'click', 'keyup', 'focusout'].forEach(function(ev){ document.addEventListener(ev, later, true); });
++    },
++    arm: function(){ if (!cfg) return; base = take(); held = false; check(); },
++    hold: function(){ held = true; if (pill){ pill.classList.remove('show'); btn.disabled = true; } },
++    check: function(){ check(); }
++  };
++})();
+-- 
+2.25.1
+

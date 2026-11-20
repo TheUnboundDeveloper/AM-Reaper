@@ -1,0 +1,88 @@
+From 1f9008f3edb7babe0f054a86698b45f99e47f1d8 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Thu, 19 Nov 2026 20:37:17 -0500
+Subject: [PATCH] Pages: AiMesh MLO band names, phone tab bar, System page on
+ phones
+
+- AiMesh, a node's MLO backhaul list: the 2.4 GHz band reads "2.4 GHz", as everywhere else.
+- On a phone the menu's tab bar keeps its size: a page wider than the screen pans sideways instead of
+  shrinking the tabs (Administration > System on an iPhone).
+- Administration > System: long values such as the remote-access address wrap inside the screen.
+- The AiMesh tab's MLO icon (web.c, in the guest-paths commit) now follows Reaper's own device scan, so
+  MLO devices on the router and on nodes show as MLO.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ release/src/router/www/Reaper_System.asp          | 15 +++++++++++++++
+ .../src/router/www/aimesh/aimesh_topology.html    |  2 +-
+ release/src/router/www/reaper_shell.asp           |  8 +++++++-
+ 3 files changed, 23 insertions(+), 2 deletions(-)
+
+diff --git a/release/src/router/www/Reaper_System.asp b/release/src/router/www/Reaper_System.asp
+index 23a846f7d4..2076cc0bd3 100644
+--- a/release/src/router/www/Reaper_System.asp
++++ b/release/src/router/www/Reaper_System.asp
+@@ -44,6 +44,21 @@
+ table.classes{max-width:760px}
+ .panel.af{box-shadow:0 0 0 2px var(--crimson) inset}
+ .pagehead .tz{font-family:var(--mono);font-size:12px;color:var(--steel)}
++/* REAPER-PHONEFIT-BEGIN (2026-11-19, iPhone: the Administration tabs shrank a second after this page opened).
++   A framed page wider than the shell's stage makes the shell widen its frame, and the shell's fit.js then
++   squeezed the shell tab bar for that overflow (fixed in reaper_shell.asp, REAPER-TABBAR-KEEP). This page keeps
++   its own values inside a phone screen: a long unbroken value (the remote-access address with a long DDNS
++   name measured 341 px in a 319 px row at 375 px) breaks anywhere, a button or tab button never outgrows its row
++   (the tab buttons wrap to the next line and do not shrink), and on a phone the access list keeps the kit's
++   sideways-scrolling box (the 760 px cap above came after the kit's phone rule and replaced its max-width).
++   No overflow-x:auto on .wins: a scrolling strip is a clip box, and fit.js would squeeze its buttons. */
++.frow .fc>.fv,.frow .fc>.link{min-width:0;max-width:100%;overflow-wrap:anywhere;word-break:break-word}
++.wins .win{flex:0 0 auto;max-width:100%}
++.btns .btn{max-width:100%}
++@media (max-width:680px){
++  table.classes{max-width:100%}
++}
++/* REAPER-PHONEFIT-END */
+ </style>
+ </head>
+ <body>
+diff --git a/release/src/router/www/aimesh/aimesh_topology.html b/release/src/router/www/aimesh/aimesh_topology.html
+index 4c9acf479c..5a4633841f 100644
+--- a/release/src/router/www/aimesh/aimesh_topology.html
++++ b/release/src/router/www/aimesh/aimesh_topology.html
+@@ -1852,7 +1852,7 @@ function get_connect_quality(_node_info){
+ 				result.rssi = rssi;
+ 				$.each(_node_info.mlo_status, function(item, value){
+ 					if(item.substring(0,4) == "rssi"){
+-						const wl_band = item.replace("rssi", "").replace("l", "-1").replace("h", "-2").toUpperCase().replace("G", " GHz");
++						const wl_band = item.replace("rssi", "").replace("l", "-1").replace("h", "-2").toUpperCase().replace(/^2G/, "2.4G").replace("G", " GHz"); /* REAPER-24GHZ: the 2 GHz band reads 2.4 GHz, as on every other page */
+ 						if(value == "") value = `--`;
+ 						result.rssi_info.push({"title":wl_band, "rssi":value});
+ 					}
+diff --git a/release/src/router/www/reaper_shell.asp b/release/src/router/www/reaper_shell.asp
+index 05f29f3a54..7f1c7e3ce5 100644
+--- a/release/src/router/www/reaper_shell.asp
++++ b/release/src/router/www/reaper_shell.asp
+@@ -214,6 +214,8 @@ a.item .cnt{font-size:11px;color:var(--steel);margin-left:4px}
+ #tabbar a.rtab:hover{color:var(--bone);background:var(--panel-2)}
+ #tabbar a.rtab.on{color:var(--bone);background:linear-gradient(180deg,rgba(225,6,0,.22),var(--panel-2));
+   border-color:rgba(225,6,0,.35);box-shadow:inset 0 -2px 0 var(--crimson)}
++/* REAPER-TABBAR-KEEP: a tab label never runs past the bar (one line, "...", whole text on hover via fit.js) */
++#tabbar a.rtab{max-width:100%;overflow:hidden;text-overflow:ellipsis}
+ #page_frame{width:100%;flex:1 1 auto;border:0;display:block;background:var(--bg);min-height:calc(100vh - 64px);overflow:hidden;opacity:1;transition:opacity .12s ease}
+ /* anti-flash veil (backlog 2026-07-22): hidden instantly on a page swap, revealed
+    once the new document is themed (or by the loadPage failsafe timer) - masks any
+@@ -348,7 +350,11 @@ a.item .cnt{font-size:11px;color:var(--steel);margin-left:4px}
+     </a>
+   </aside>
+   <main class="stage">
+-    <div id="tabbar"></div>
++    <!-- REAPER-TABBAR-KEEP (2026-11-19, iPhone): fit.js never squeezes the tab bar for the stage's overflow. That
++         overflow is a framed page wider than the stage (the frame-grow below), which no tab label can fix: each
++         pass cut the labels further, and on a phone the tabs shrank to one tiny line a second after the page
++         opened. A label longer than the whole bar is cut by its own CSS (#tabbar a.rtab max-width). -->
++    <div id="tabbar" data-rfit-keep></div>
+     <iframe id="page_frame" name="reaper_frame" title="<#Settings#>" scrolling="no"></iframe>
+   </main>
+ </div>
+-- 
+2.25.1
+

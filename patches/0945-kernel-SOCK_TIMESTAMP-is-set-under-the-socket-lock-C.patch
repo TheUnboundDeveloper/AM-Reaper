@@ -1,0 +1,89 @@
+From 7bdbb6de107ee5da61da48caa0c2b9dce8a0e49f Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Tue, 3 Nov 2026 20:14:13 -0500
+Subject: [PATCH] kernel: SOCK_TIMESTAMP is set under the socket lock
+ (CVE-2026-98276) (102.8 line)
+
+Backport of upstream 9ed55f3dbef4 ("net: lock the socket in sock_gettstamp()"). sock_set_flag() is
+not atomic, so setting SOCK_TIMESTAMP from the SIOCGSTAMP ioctl without the socket lock could lose
+another flag change and lead to a use-after-free. 4.19 has the helper twice in net/core/sock.c and
+twice in net/compat.c (the path 32-bit userspace takes on this kernel); all four take the lock
+when the flag is not yet set. No built caller holds the socket lock there.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ .../kernel/linux-4.19/net/compat.c               | 16 ++++++++++++++--
+ .../kernel/linux-4.19/net/core/sock.c            | 16 ++++++++++++++--
+ 2 files changed, 28 insertions(+), 4 deletions(-)
+
+diff --git a/release/src-rt-5.04behnd.4916/kernel/linux-4.19/net/compat.c b/release/src-rt-5.04behnd.4916/kernel/linux-4.19/net/compat.c
+index 2778a236e09..55fc5fd2b9d 100644
+--- a/release/src-rt-5.04behnd.4916/kernel/linux-4.19/net/compat.c
++++ b/release/src-rt-5.04behnd.4916/kernel/linux-4.19/net/compat.c
+@@ -467,7 +467,13 @@ int compat_sock_get_timestamp(struct sock *sk, struct timeval __user *userstamp)
+ 
+ 	ctv = (struct compat_timeval __user *) userstamp;
+ 	err = -ENOENT;
+-	sock_enable_timestamp(sk, SOCK_TIMESTAMP);
++	/* reaper (CVE-2026-98276, upstream 9ed55f3dbef4): sk_flags change only under the socket lock -
++	 * sock_set_flag() is not atomic */
++	if (!sock_flag(sk, SOCK_TIMESTAMP)) {
++		lock_sock(sk);
++		sock_enable_timestamp(sk, SOCK_TIMESTAMP);
++		release_sock(sk);
++	}
+ 	tv = ktime_to_timeval(sock_read_timestamp(sk));
+ 
+ 	if (tv.tv_sec == -1)
+@@ -496,7 +502,13 @@ int compat_sock_get_timestampns(struct sock *sk, struct timespec __user *usersta
+ 
+ 	ctv = (struct compat_timespec __user *) userstamp;
+ 	err = -ENOENT;
+-	sock_enable_timestamp(sk, SOCK_TIMESTAMP);
++	/* reaper (CVE-2026-98276, upstream 9ed55f3dbef4): sk_flags change only under the socket lock -
++	 * sock_set_flag() is not atomic */
++	if (!sock_flag(sk, SOCK_TIMESTAMP)) {
++		lock_sock(sk);
++		sock_enable_timestamp(sk, SOCK_TIMESTAMP);
++		release_sock(sk);
++	}
+ 	ts = ktime_to_timespec(sock_read_timestamp(sk));
+ 	if (ts.tv_sec == -1)
+ 		return err;
+diff --git a/release/src-rt-5.04behnd.4916/kernel/linux-4.19/net/core/sock.c b/release/src-rt-5.04behnd.4916/kernel/linux-4.19/net/core/sock.c
+index 06d84fb1e8f..3f0342cf8e6 100644
+--- a/release/src-rt-5.04behnd.4916/kernel/linux-4.19/net/core/sock.c
++++ b/release/src-rt-5.04behnd.4916/kernel/linux-4.19/net/core/sock.c
+@@ -2998,7 +2998,13 @@ int sock_get_timestamp(struct sock *sk, struct timeval __user *userstamp)
+ {
+ 	struct timeval tv;
+ 
+-	sock_enable_timestamp(sk, SOCK_TIMESTAMP);
++	/* reaper (CVE-2026-98276, upstream 9ed55f3dbef4): sk_flags change only under the socket lock -
++	 * sock_set_flag() is not atomic */
++	if (!sock_flag(sk, SOCK_TIMESTAMP)) {
++		lock_sock(sk);
++		sock_enable_timestamp(sk, SOCK_TIMESTAMP);
++		release_sock(sk);
++	}
+ 	tv = ktime_to_timeval(sock_read_timestamp(sk));
+ 	if (tv.tv_sec == -1)
+ 		return -ENOENT;
+@@ -3015,7 +3021,13 @@ int sock_get_timestampns(struct sock *sk, struct timespec __user *userstamp)
+ {
+ 	struct timespec ts;
+ 
+-	sock_enable_timestamp(sk, SOCK_TIMESTAMP);
++	/* reaper (CVE-2026-98276, upstream 9ed55f3dbef4): sk_flags change only under the socket lock -
++	 * sock_set_flag() is not atomic */
++	if (!sock_flag(sk, SOCK_TIMESTAMP)) {
++		lock_sock(sk);
++		sock_enable_timestamp(sk, SOCK_TIMESTAMP);
++		release_sock(sk);
++	}
+ 	ts = ktime_to_timespec(sock_read_timestamp(sk));
+ 	if (ts.tv_sec == -1)
+ 		return -ENOENT;
+-- 
+2.25.1
+

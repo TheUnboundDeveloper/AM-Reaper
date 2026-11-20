@@ -210,7 +210,7 @@ try:
     open(os.path.join(work, "mounts"), "w").write(
         "/dev/sda1 %s/asus ext4 rw 0 0\n/dev/sda2 %s/asustor ext4 rw 0 0\n" % (mnt, mnt))
     def run_sh(vid, mode="usb"):
-        script = ('_nv() { case "$1" in reaper_store) echo %s;; reaper_store_vid) echo "%s";; esac; }\n%s'
+        script = ('_nv() { case "$1" in reaper_store) echo %s;; reaper_store_vid) echo "%s";; esac; }\n_nvc() { _nv "$1"; }\n%s'
                   'rstore_base\n') % (mode, vid, fn)
         rr = subprocess.run([SH, "-c", script], capture_output=True, text=True)
         if rr.returncode != 0:
@@ -280,7 +280,7 @@ for ek in ("RDEVE_16", "RDEVE_17", "RDEVE_18"):
 for f in ('\\"state\\":', '\\"vols\\":[', '\\"pin\\":', '\\"present\\":%d,\\"seen\\":%ld}'):
     must(web, f, None, "httpd: store_status emits %s" % f)
 
-must(rwatch, 'V=\\"$(_nv reaper_store_vid)\\"', 1, "rwatch: rstore_base() reads the pin")
+must(rwatch, 'V=\\"$(_nvc reaper_store_vid)\\"', 1, "rwatch: rstore_base() reads the pin")
 must_not(rwatch, 'mkdir -p \\"$b\\"', "rwatch: rstore_base() creates no folder on a volume")
 
 must(usbmon, "void reaper_store_check(void)", 1, "rc: reaper_store_check() defined")
@@ -411,7 +411,7 @@ try:
     if rb.returncode:
         die("rstore does not build on the host: " + rb.stderr[-400:])
     def edns(dot):
-        sc = ('_nv() { case "$1" in reaper_dot_srv) echo %s;; *) echo 0;; esac; }\nDS=",edns,"; VOLATILE=0; BASE=%s; NOWH=1792800000\n'
+        sc = ('_nv() { case "$1" in reaper_dot_srv) echo %s;; *) echo 0;; esac; }\n_nvc() { _nv "$1"; }\nDS=",edns,"; VOLATILE=0; BASE=%s; NOWH=1792800000\n'
               % (dot, hb)) + body.replace("/tmp/rednsd/run/status.json", stj).replace("/usr/sbin/rstore", rsx)
         return subprocess.run([SH, "-c", sc], capture_output=True, text=True, env=dict(os.environ, PATH=fb + ":" + os.environ["PATH"]))
     r = edns(1)
@@ -430,7 +430,8 @@ must(usbmon, "wallguard_store_attached();", 1, "rc: a USB base that appears wake
 must(rc_h, "extern void wallguard_store_attached(void);", 1, "rc/rc.h: prototype")
 must(wallguard_c, 'sh_run_bg("restore");', 1, "rc/wallguard.c: the attach hook runs restore")
 must(rwarden, "\t  RSTORE_SH_DIR\n", 1, "rc/rwarden.c: the Dreadwatch collector carries the reader")
-must(rwatch, "for _ds in dev traf watch chq slog shl shh dw edns; do", 1, "rwatch: collecting-since for the new rows")
+# 2026-11-08: + fwlog, the firewall log collector's day files (test_fwlog_nflog.py)
+must(rwatch, "for _ds in dev traf watch chq fwlog slog shl shh dw edns; do", 1, "rwatch: collecting-since for the new rows")
 must(rwatch, '/usr/sbin/rstore stamp \\"$BASE\\" \\"$_ds.since\\" \\"$NOWH\\"', 1, "rwatch: the since stamps never follow a link (rstore stamp)")
 must(rwatch, '[ -f \\"$BASE/$_ds.since\\" ] || /usr/sbin/rstore stamp', 1, "rwatch: a stamp that exists is not re-offered every tick (review 2026-10-24 Q-A-7)")
 must_not(rwatch, '> \\"$BASE/ednshist.log', "rwatch: the Encrypted DNS line is never written by path")

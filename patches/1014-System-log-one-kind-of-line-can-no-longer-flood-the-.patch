@@ -1,0 +1,184 @@
+From f35f16d2fb7a774e769189ae493ae711055964d3 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Fri, 13 Nov 2026 18:39:37 -0500
+Subject: [PATCH] System log: one kind of line can no longer flood the log on
+ flash (102.8 line)
+
+Every system log line is appended to the log on flash and nothing limited how fast: a device
+looping on DHCP, a daemon repeating one error or a driver printing a line per packet rotated the
+real history out of the 1 MB file in seconds and kept the flash and a CPU busy. Some of these
+sources are closed, so the limit sits in syslogd, where every line passes. One kind of line - the
+program's tag and the first 12 characters of its text, digits levelled - may be written 300 times
+at once and 10 times a second after that. What is held back is counted, and one line says how
+many: every 30 s while it lasts and once 5 s after it stops. Severity crit and above is never held
+back, and the remote log server still gets every line.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ release/src/router/busybox/sysklogd/syslogd.c | 143 ++++++++++++++++++
+ 1 file changed, 143 insertions(+)
+
+diff --git a/release/src/router/busybox/sysklogd/syslogd.c b/release/src/router/busybox/sysklogd/syslogd.c
+index 5ed0f0532d..0dbfed1fcf 100644
+--- a/release/src/router/busybox/sysklogd/syslogd.c
++++ b/release/src/router/busybox/sysklogd/syslogd.c
+@@ -826,6 +826,133 @@ static void parse_fac_prio_20(int pri, char *res20)
+ 	snprintf(res20, 20, "<%d>", pri);
+ }
+ 
++/* REAPER-LOGCAP-BEGIN (compiled on the host by test_syslogd_logcap.py)
++ * reaper 2026-11-13 (owner question: which logs could clog the system log on a network with a great many
++ * devices). Every line is appended to the log on flash and nothing in the path limits how fast: a device
++ * looping on DHCP, a daemon repeating one error, or a driver that prints one line per packet writes without
++ * bound, rotates the real history out of the 1 MB file in seconds and keeps the flash and a CPU busy. The
++ * sources are several, and some are closed (the Wi-Fi driver, band steering, the access point's own config
++ * writer), so the limit sits here, where every line passes.
++ *
++ * One KIND of line - the program's tag and the first characters of its text, digits levelled so a counter or
++ * an address does not make each line its own kind - may be written RLC_BURST times at once and RLC_RATE times a
++ * second after that. What is held back is counted, and one line says how many and of which kind: every
++ * RLC_REPORT seconds while it keeps coming, and once after it has stopped for RLC_QUIET seconds. Lines of
++ * severity crit and above are never held back, and the remote log server is sent every line as before. */
++#define RLC_SLOTS	24
++#define RLC_TAG		15
++#define RLC_TEXT	12
++#define RLC_KEY		(RLC_TAG + 1 + RLC_TEXT)
++#define RLC_BURST	300
++#define RLC_RATE	10
++#define RLC_REPORT	30
++#define RLC_QUIET	5
++
++struct rlc_slot {
++	char key[RLC_KEY + 1];
++	unsigned tokens;	/* lines this kind may still write now */
++	unsigned dropped;	/* held back since the last "suppressed" line */
++	unsigned fill;		/* when tokens was last topped up */
++	unsigned seen;		/* when a line of this kind last arrived */
++	unsigned told;		/* when the count was last reported (or the first line was held back) */
++	unsigned char used;
++};
++struct rlc {
++	struct rlc_slot s[RLC_SLOTS];
++};
++
++/* "tag[pid]: text" -> "tag:text-prefix"; a leading "[ 1234.567890] " (the kernel's own clock) is skipped and
++ * every digit becomes '#'. key holds RLC_KEY + 1 bytes. */
++static void rlc_key(const char *msg, char *key)
++{
++	int n = 0, t = 0;
++	const char *p = msg, *q;
++
++	while (*p && *p != ':' && *p != '[' && *p != ' ' && n < RLC_TAG)
++		key[n++] = *p++;
++	while (*p && *p != ':' && *p != ' ')	/* the rest of a long tag, and "[pid]" */
++		p++;
++	if (*p == ':') p++;
++	while (*p == ' ') p++;
++	if (*p == '[') {
++		q = p + 1;
++		while (*q == ' ' || *q == '.' || (*q >= '0' && *q <= '9')) q++;
++		if (*q == ']' && q > p + 1) {
++			p = q + 1;
++			while (*p == ' ') p++;
++		}
++	}
++	key[n++] = ':';
++	while (*p && t < RLC_TEXT) {
++		key[n++] = (*p >= '0' && *p <= '9') ? '#' : *p;
++		p++; t++;
++	}
++	key[n] = 0;
++}
++
++/* One line arriving at `now` (seconds, any steady clock). Returns 1 = hold this line back.
++ * *told > 0 = also write "that many lines like `like` were suppressed" (like holds RLC_KEY + 1 bytes). */
++static int rlc_check(struct rlc *c, unsigned now, const char *msg, unsigned *told, char *like)
++{
++	char key[RLC_KEY + 1];
++	struct rlc_slot *s = NULL, *free_s = NULL, *old = NULL, *r = NULL;
++	unsigned add;
++	int i, pass;
++
++	*told = 0;
++	rlc_key(msg, key);
++	for (i = 0; i < RLC_SLOTS; i++) {
++		struct rlc_slot *x = &c->s[i];
++		if (!x->used) { if (!free_s) free_s = x; continue; }
++		if (!strcmp(x->key, key)) { s = x; break; }
++		/* a slot to give up: the longest unseen one, one with nothing left to report first */
++		if (!old || (old->dropped && !x->dropped) || ((!old->dropped) == (!x->dropped) && (int)(old->seen - x->seen) > 0))
++			old = x;
++	}
++	if (!s) {
++		s = free_s ? free_s : old;
++		memset(s, 0, sizeof(*s));
++		strcpy(s->key, key);
++		s->used = 1;
++		s->tokens = RLC_BURST;
++		s->fill = now;
++	}
++	add = now - s->fill;
++	if (add) {
++		s->fill = now;
++		if (add > RLC_BURST / RLC_RATE) add = RLC_BURST / RLC_RATE;
++		s->tokens += add * RLC_RATE;
++		if (s->tokens > RLC_BURST) s->tokens = RLC_BURST;
++	}
++	s->seen = now;
++	if (s->tokens) {
++		s->tokens--;
++		pass = 1;
++	} else {
++		if (!s->dropped) s->told = now;
++		s->dropped++;
++		pass = 0;
++	}
++	/* the count to report now: this kind's when it has been coming for a while, else one that has gone quiet */
++	if (s->dropped && now - s->told >= RLC_REPORT)
++		r = s;
++	else
++		for (i = 0; i < RLC_SLOTS; i++) {
++			struct rlc_slot *x = &c->s[i];
++			if (x->used && x->dropped && x != s && now - x->seen >= RLC_QUIET) { r = x; break; }
++		}
++	if (r) {
++		*told = r->dropped;
++		strcpy(like, r->key);
++		r->dropped = 0;
++		r->told = now;
++	}
++	return !pass;
++}
++/* REAPER-LOGCAP-END */
++
++static struct rlc reaper_rlc;
++
+ /* len parameter is used only for "is there a timestamp?" check.
+  * NB: some callers cheat and supply len==0 when they know
+  * that there is no timestamp, short-circuiting the test. */
+@@ -853,6 +980,22 @@ static void timestamp_and_log(int pri, char *msg, int len)
+ 		return;
+ 	}
+ 
++	/* REAPER-LOGCAP: one kind of line cannot flood the local log (see above). Only lines the level filter
++	 * would write are counted; severity crit and above always goes through. */
++	if (LOG_PRI(pri) < G.logLevel && LOG_PRI(pri) > LOG_CRIT) {
++		unsigned told = 0;
++		char like[RLC_KEY + 1], say[128];
++		int hold = rlc_check(&reaper_rlc, monotonic_sec(), msg, &told, like);
++
++		if (told) {
++			snprintf(say, sizeof(say), "syslogd: %u line(s) not logged - the same kind of line more than %d times a second: %s...",
++				 told, RLC_RATE, like);
++			timestamp_and_log(LOG_SYSLOG | LOG_NOTICE, say, 0);	/* its own kind; writes through this same path */
++		}
++		if (hold)
++			return;
++	}
++
+ 	if (option_mask32 & OPT_small)
+ 		sprintf(G.printbuf, "%s %s\n", timestamp, msg);
+ 	else {
+-- 
+2.25.1
+

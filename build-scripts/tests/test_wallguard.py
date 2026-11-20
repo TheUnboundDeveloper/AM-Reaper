@@ -91,6 +91,21 @@ try:
           src.get("dnsm", {}).get("names") == 4 and src["dnsm"]["unsupported"] == 1, src.get("dnsm"))
     check("dedupe across lists: shared.example counts as unique only for the earlier list",
           src.get("shared2", {}).get("unique") == 1 and src["shared2"]["names"] == 2, src.get("shared2"))
+    # 2026-11-07 (field): AdGuard DNS's Popup Hosts list is ||name^$dnsrewrite=ad-block.dns.adguard.com throughout
+    # (it came out as 0 names); its exceptions list carries @@|name^| exact allows
+    agx = wf("agx", "||pop.example^$dnsrewrite=ad-block.dns.adguard.com\n||nx.example^$dnsrewrite=NXDOMAIN\n"
+                    "||imp.example^$important,dnsrewrite=0.0.0.0\n||real.example^$dnsrewrite=1.2.3.4\n||cl.example^$client=1.2.3.4\n"
+                    "|exact.example^|\n@@|exallow.example^|\n@@||subal.example^$important\n||comma.example^$important,\n||^\n")
+    aout, ast = os.path.join(work, "agx.db"), os.path.join(work, "agx.json")
+    r = subprocess.run([SC, "build", "--out", aout, "--stats", ast, "--list", "7:agx:" + agx], capture_output=True, text=True)
+    a = {s["id"]: s for s in json.load(open(ast))["sources"]}["agx"] if r.returncode == 0 else {}
+    check("AdGuard: $dnsrewrite to a sinkhole is a block, one bar is exact, @@| an exact allow; a real-address rewrite, $client, a trailing comma, an empty name unsupported",
+          a.get("names") == 4 and a.get("allows") == 2 and a.get("unsupported") == 4, (r.stderr, a))
+    def aexp(name):
+        return json.loads(subprocess.run([SC, "explain", "--db", aout, name], capture_output=True, text=True).stdout)["verdict"]
+    check("explain: the sinkhole rules cover subdomains; |exact^ does not; @@| allows that name only; @@|| its subdomains too",
+          [aexp(n) for n in ("a.pop.example", "nx.example", "exact.example", "sub.exact.example", "exallow.example", "sub.exallow.example", "deep.subal.example")]
+          == ["blocked", "blocked", "blocked", "pass", "allowed", "pass", "allowed"])
     def explain(name, mask=None):
         a = [SC, "explain", "--db", out] + (["--mask", mask] if mask else []) + [name]
         return json.loads(subprocess.run(a, capture_output=True, text=True).stdout)
@@ -315,8 +330,18 @@ try:
     rc2, a2, _ = q("www.cloak.test")
     check("CNAME uncloaking: a chain into a listed name is NXDOMAIN with EDE 15", rc == 3 and ede and a == [], (rc, a, ede))
     check("...and never cached: the second lookup went upstream again", seen.get("www.cloak.test", 0) == n0 + 2, seen.get("www.cloak.test"))
-    check("...recorded as reason c with the list entry the target matched (review S-A-1: not the target itself)",
-          any(x[3] == "c" and x[5] == "tracker-cdn.test" for x in hits()) and not any(x[5] == "edge.www.tracker-cdn.test" for x in hits()), hits()[-3:])
+    # 2026-11-15 (D1): a c record names the ASKED name (what the device shows, what an allow must name) and adds a
+    # 7th field, the list entry the chain matched (review S-A-1: never the target itself)
+    check("...recorded as reason c under the asked name, with the list entry the target matched as a 7th field",
+          any(x[3] == "c" and x[5] == "www.cloak.test" and x[6:] == ["tracker-cdn.test"] for x in hits())
+          and not any("edge.www.tracker-cdn.test" in x for x in hits()), hits()[-3:])
+    # 2026-11-15 (D2): allowing the asked name is enough - its hidden CNAME target's list entry no longer blocks it
+    build("@@||ok.cloak.test^\n"); time.sleep(2.2)
+    n2 = len(hits())
+    ra, rw = q("ok.cloak.test"), q("www.cloak.test")
+    check("an allowed name is answered although its CNAME chain reaches a listed name; others still blocked",
+          ra[0] == 0 and "93.184.215.7" in ra[1] and rw[0] == 3 and not any(x[5] == "ok.cloak.test" for x in hits()[n2:]), (ra, rw))
+    build(); time.sleep(2.2)
     policy("default 7fffffff\nnet 127.0.0.3/32 0\n"); time.sleep(2.2)
     n1 = seen.get("cdn.cloak.test", 0)
     rb = q("cdn.cloak.test", src="127.0.0.3"); rb2 = q("cdn.cloak.test", src="127.0.0.3")
@@ -384,7 +409,7 @@ check("both copies of wallguard_db.h are identical", read("wallguard/wallguard_d
 fw, rf, op = read("dnsmasq/src/forward.c"), read("dnsmasq/src/rfc1035.c"), read("dnsmasq/src/option.c")
 check("dnsmasq: the option, the UDP and TCP gates (before the cache, real device), the CNAME hook, the build object",
       '{ "wallguard-dir", 1, 0, LOPT_WALLGUARD_DIR },' in op and fw.count("wallguard_answer(") == 2 and fw.count("reaper_client(&") >= 3
-      and "rc = wallguard_cname_verdict(wallguard_client, now) ? 4 : 0;" in fw and "wallguard_cname_listed(name)" in rf
+      and "rc = wallguard_cname_verdict(header, n, wallguard_client, now) ? 4 : 0;" in fw and "wallguard_cname_listed(name)" in rf
       and "wallguard.o" in read("dnsmasq/Makefile"))
 # review 2026-10-21: the CNAME verdict gets the device rednsd named (stored with the forwarded
 # query), and a listed chain is reported only after the whole reply was checked

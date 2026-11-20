@@ -1,0 +1,33 @@
+From 4b8de16314adf9dedd45d34904feba5c45109dfd Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Mon, 16 Nov 2026 16:23:22 -0500
+Subject: [PATCH] Saved settings keep their spaces (a plus sign was stored for
+ each space) (102.8 line)
+
+- A page that saves through the stock form helper sends spaces as plus signs. The page-token hook
+  added on 2026-11-03 decoded the body without turning them back, so any value with spaces saved
+  from such a page - a network name set as MLO Fronthaul, for one - was stored with a plus sign in
+  place of each space. The hook now reads a plus sign as a space, as the form encoding defines it.
+- Values already stored with plus signs are not rewritten: enter the name again.
+
+Co-Authored-By: Claude Fable 5.2 <noreply@anthropic.com>
+---
+ release/src/router/httpd/reaper_inject.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/release/src/router/httpd/reaper_inject.c b/release/src/router/httpd/reaper_inject.c
+index b842d9fb80..c6ccc02e49 100644
+--- a/release/src/router/httpd/reaper_inject.c
++++ b/release/src/router/httpd/reaper_inject.c
+@@ -234,7 +234,7 @@
+ 	"function arm(f){try{if(!f||f.tagName!=='FORM'||!hit(f.getAttribute('action')))return;var i=f.querySelector('input[name=\"http_id\"]');if(!i){i=document.createElement('input');i.type='hidden';i.name='http_id';f.appendChild(i);}i.value=t;}catch(e){}}" \
+ 	"var S=HTMLFormElement.prototype.submit;HTMLFormElement.prototype.submit=function(){arm(this);return S.apply(this,arguments);};" \
+ 	"document.addEventListener('submit',function(e){arm(e.target);},true);" \
+-	"function add(b){if(b==null||b==='')return 'http_id='+t;if(window.FormData&&b instanceof FormData){if(!b.has||!b.has('http_id'))b.append('http_id',t);return b;}if(typeof b!=='string')return b;var s=b,enc=/^%7B/i.test(s);if(enc)s=decodeURIComponent(s);if(/^\\s*\\{/.test(s)){var o=JSON.parse(s);o.http_id=t;s=JSON.stringify(o);return enc?encodeURIComponent(s):s;}return b+'&http_id='+t;}" \
++	"function add(b){if(b==null||b==='')return 'http_id='+t;if(window.FormData&&b instanceof FormData){if(!b.has||!b.has('http_id'))b.append('http_id',t);return b;}if(typeof b!=='string')return b;var s=b,enc=/^%7B/i.test(s);if(enc)s=decodeURIComponent(s.replace(/\\+/g,'%20'));if(/^\\s*\\{/.test(s)){var o=JSON.parse(s);o.http_id=t;s=JSON.stringify(o);return enc?encodeURIComponent(s):s;}return b+'&http_id='+t;}" \
+ 	"function q(u){return u+(u.indexOf('?')<0?'?':'&')+'http_id='+t;}" \
+ 	"var X=XMLHttpRequest.prototype,O=X.open,D=X.send;" \
+ 	"X.open=function(m,u){var a=Array.prototype.slice.call(arguments);this.__rpT=0;try{if(hit(u)){if(String(m).toUpperCase()==='POST')this.__rpT=1;else a[1]=q(String(u));}}catch(e){}return O.apply(this,a);};" \
+-- 
+2.25.1
+

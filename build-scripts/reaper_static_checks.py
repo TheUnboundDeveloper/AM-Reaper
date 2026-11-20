@@ -469,7 +469,10 @@ def check_warden_log_prefixes(router):
 
     src = open(rwarden, "r", encoding="utf-8", errors="replace").read()
     # fprintf writes them escaped:  --log-prefix \"REAPER-WARDEN-OUT \"
-    prefixes = sorted(set(re.findall(r'--log-prefix\s+\\"([A-Z0-9][A-Z0-9-]*)\s+\\"', src)))
+    prefixes = set(re.findall(r'--log-prefix\s+\\"([A-Z0-9][A-Z0-9-]*)\s+\\"', src))
+    # 2026-11-08: the log rules take their target from shared/reaper_fwlog.h - the prefix is an argument,
+    # rfl_tgt(..., RFL_G_WARDEN, "REAPER-WARDEN-OUT ", ...); the same text reaches the NFLOG and the LOG line
+    prefixes = sorted(prefixes | set(re.findall(r'RFL_G_WARDEN,\s*"([A-Z0-9][A-Z0-9-]*)\s+"', src)))
     if not prefixes:
         return (False, "no --log-prefix emissions found in rwarden.c -- the "
                        "extraction pattern no longer matches; fix this check "
@@ -639,8 +642,14 @@ def check_firstboot_wifi(router):
         bad.append("the Wi-Fi key and the new login password are not both autocomplete=new-password")
     if 'value="<% nvram_get("http_username"); %>"' in page:
         bad.append("the login name is prepopulated from nvram (must start empty)")
-    if 'oninput="lowerLogin(this)"' not in page or '"^[a-z0-9][a-z0-9' not in page:
-        bad.append("the login name is not lowercase-only (lowerLogin + lowercase regex)")
+    # 2026-11-15 (v3.7.9 field report: "only accepts lowercase letters"): the
+    # v3.3.2 lowercase-only rule was an owner preference with no technical need
+    # (httpd compares http_username exactly; stock Main_Password.asp accepts A-Z).
+    # The box now takes stock's rule; it must neither fold the name nor narrow it.
+    if "lowerLogin" in page or '"^[a-z0-9][a-z0-9' in page:
+        bad.append("the login name is folded or limited to lowercase again (stock accepts A-Z)")
+    if '"^[a-zA-Z0-9][a-zA-Z0-9\\-\\_]+$"' not in page:
+        bad.append("the login name is not validated with stock's chkLoginId rule (^[a-zA-Z0-9][a-zA-Z0-9-_]+$)")
     if 'name="action_wait" value="<% get_default_reboot_time(); %>"' not in page:
         bad.append("action_wait is not the model's reboot time (the hidden frame bounces back at 0)")
     if 'id="reboot_overlay"' not in page or "/httpd_check.xml" not in page:
@@ -987,6 +996,8 @@ def check_warden_outbound_log(router):
     # -- 1. a distinct outbound prefix actually exists ----------------------
     emitted = set(re.findall(r'--log-prefix\s+\\"([A-Z0-9][A-Z0-9-]*\s*)\\"', src))
     emitted = set(x for x in emitted)
+    # 2026-11-08: the helper form, rfl_tgt(..., RFL_G_WARDEN, "<prefix> ", ...) (shared/reaper_fwlog.h)
+    emitted |= set(re.findall(r'RFL_G_WARDEN,\s*"([A-Z0-9][A-Z0-9-]*\s*)"', src))
     if not emitted:
         return (False, "no --log-prefix emissions found in rwarden.c -- the "
                        "extraction pattern no longer matches; fix this check "
@@ -1002,7 +1013,12 @@ def check_warden_outbound_log(router):
 
     # -- 2/3. RW_ODROP logs before it drops, gated, and is reachable --------
     for ipt in ("iptables", "ip6tables"):
-        i_log = src.find('%s -A RW_ODROP -j LOG' % ipt)
+        # 2026-11-07: every firewall LOG rule carried REAPER_LOG_LIMIT (rc/rc.h) between the
+        # chain and -j LOG; 2026-11-08: the target comes from rfl_tgt() (shared/reaper_fwlog.h,
+        # NFLOG or the limited LOG); later the same day the target is chosen when apply.sh runs
+        # (rfl_sh_rule). Accept any of these forms.
+        m_log = re.search(r'%s -A RW_ODROP(?: (?:(?:" REAPER_LOG_LIMIT ")?-j LOG|%%s\\n", rfl_tgt\()|", RFL_G_WARDEN,)' % ipt, src)
+        i_log = m_log.start() if m_log else -1
         i_drop = src.find('%s -A RW_ODROP -j DROP' % ipt)
         if i_drop < 0:
             bad.append("%s: no `-A RW_ODROP -j DROP` emission -- the outbound "

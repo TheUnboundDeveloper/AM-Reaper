@@ -11,16 +11,15 @@
 #   bootloaders/obj.gt-be19000/ must be copied over u-boot-2019.07/ by hand
 #   (RTL_OBJS.o is untracked on every branch; the model enables rtl8372).
 #
-# DONGLE FIRMWARE (settled 2026-09-12, after one wrong turn). The non-AI
-# GT-BE19000 carries TWO radio chip types, BCM6717 rev A0 and BCM6726 rev B0 -
-# like its tri-band siblings. The AI SKU carries only the 6726b0, and reading
-# the chip set off the AI vendor image FIRST briefly put a 6726b0-only blob on
-# this branch with reaper_verify expecting only that: an image built then would
-# have brought one radio up with no firmware. Both blobs are now tracked here,
-#   bcmdrivers/.../dongle/sysdeps/GT-BE19000/{6717a0,6726b0}/rtecdc.bin
+# DONGLE FIRMWARE: bcmdrivers/.../dongle/sysdeps/GT-BE19000/{6717a0,6726b0}/rtecdc.bin,
 # taken from the vendor's own NON-AI image (102_39393), each Broadcom
 # 17.10.369.39012 (r839077) - the host dhd driver's version. The driver picks
-# firmware by the chip ID it reads off PCIe. reaper_verify 8c expects both.
+# firmware by the chip ID it reads off PCIe. Only 6726b0 is INSTALLED
+# (2026-11-18): the model's board file GT-BE19000.nvm names three radios, all
+# BCM6726 (ids 0x602c-e), so src-rt/Makefile (REAPER-NO-6717A0) leaves 6717a0
+# out and reaper_verify 8c fails an image that carries it. The 2026-09-12 note
+# that the non-AI SKU has a BCM6717 came from the folders in the vendor image,
+# not from the radios; both SKUs' board files name the same three BCM6726.
 
 case "${1:-}" in
   -h|--help) sed -n "2,4 p" "$0" | sed "s/^# \?//"; exit 0 ;;

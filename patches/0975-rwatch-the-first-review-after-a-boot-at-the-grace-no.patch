@@ -1,0 +1,62 @@
+From 8db8d5ec761e54eb2b2d962a60e102f6c055f1b0 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Sat, 7 Nov 2026 14:16:49 -0500
+Subject: [PATCH] rwatch: the first review after a boot at the grace, not the
+ next tick; Wallguard retry (102.8 line)
+
+- A review run takes a second; the first one after a boot waited for the first tick at or past the
+  300-s grace, 5 to 10 min by tick alignment. The first tick inside the grace now arms one
+  detached `review` run at boot + grace (same grace, same checks, the armed-candidate skip kept),
+  placed before the tick's own grace exit - at the review section it never ran inside the grace.
+  Every later tick runs the review as before.
+- The self-monitor's Wallguard block: with a table present and the pending mark due, `wallguard.sh
+  retry` (the owed lists only); the full fetch only when there is no table at all.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ release/src/router/rc/rwatch.c | 18 ++++++++++++++++--
+ 1 file changed, 16 insertions(+), 2 deletions(-)
+
+diff --git a/release/src/router/rc/rwatch.c b/release/src/router/rc/rwatch.c
+index 01e5c9e41da..bc29f453cf7 100644
+--- a/release/src/router/rc/rwatch.c
++++ b/release/src/router/rc/rwatch.c
+@@ -521,6 +521,15 @@ static void rwatch_gen(void)
+ 	  "fi\n"
+ 	  "done\n"
+ 	  "\n"
++	  /* 2026-11-07 (owner, option A; metal _r4 placed this at 3h, which the exit below never reaches inside the
++	   * grace): a review run takes 1 s, and the first one after a boot waited for the first tick at or past
++	   * HEALGRACE - 5 to 10 min by tick alignment. The first tick inside the grace arms ONE detached run at
++	   * boot + HEALGRACE: same grace, same checks, same add-on settle time; the ticks go on as before. The mark
++	   * is in /tmp, so every boot arms it once; a rules candidate armed at that moment skips it like a tick would. */
++	  "if [ \"$UP\" -lt \"$HEALGRACE\" ] && [ \"$(_nv rwatch_review)\" = 1 ] && [ ! -f $RV_TMP/review.boot ]; then\n"
++	  "  : > $RV_TMP/review.boot\n"
++	  "  ( sleep $((HEALGRACE - UP + 2)); [ -f /tmp/reaper_fw/armed ] || sh " RWATCH_SH " review ) </dev/null >/dev/null 2>&1 &\n"
++	  "fi\n"
+ 	  "# boot grace: the WAN is legitimately down for the first minutes\n"
+ 	  "[ \"$UP\" -lt 300 ] && exit 0\n"
+ 	  "\n"
+@@ -1219,12 +1228,17 @@ static void rwatch_gen(void)
+   "# (Long-Term Storage, no internet needed), else fetch them, at most every 30 min while the list\n"
+   "# hosts stay unreachable (state = the last attempt)\n"
+   "# 2026-10-25 (release review W-1): also when the table holds My rules alone because every list download\n"
+-  "# failed (wallguard.sh's pending mark - a boot before the WAN was up), every 10 min until they come down\n"
++  "# failed (wallguard.sh's pending mark - a boot before the WAN was up). 2026-11-07: the mark holds the epoch\n"
++  "# of the next try (0 = as soon as the WAN is up, else wallguard.sh's 10 min - 6 h backoff); retry fetches\n"
++  "# only the lists still owed\n"
+   "if [ \"$(_nv wallguard_enable)\" = 1 ] && { [ ! -s /tmp/wallguard/db ] || [ -f /tmp/wallguard/pending ]; }; then\n"
+   "  [ -s /tmp/wallguard/db ] || sh /usr/sbin/wallguard.sh restore >/dev/null 2>&1\n"
+-  "  if { [ ! -s /tmp/wallguard/db ] || [ -f /tmp/wallguard/pending ]; } && [ \"$(_nv wan0_state_t)\" = 2 ] &&\n"
++  "  if [ ! -s /tmp/wallguard/db ] && [ \"$(_nv wan0_state_t)\" = 2 ] &&\n"
+   "     { [ ! -f /tmp/wallguard/state ] || [ $(( $(date +%s) - $(date -r /tmp/wallguard/state +%s) )) -ge 600 ]; }; then\n"
+   "    logger -t rwatch \"Wallguard has no block lists yet - fetching them\"; service start_wallguard_update >/dev/null 2>&1\n"
++  "  elif [ -f /tmp/wallguard/pending ]; then\n"
++  "    _wp=$(tr -dc 0-9 < /tmp/wallguard/pending 2>/dev/null)\n"
++  "    [ \"$(date +%s)\" -ge \"${_wp:-0}\" ] && [ \"$(_nv wan0_state_t)\" = 2 ] && sh /usr/sbin/wallguard.sh retry >/dev/null 2>&1\n"
+   "  fi\n"
+   "fi\n"
+   "\n"
+-- 
+2.25.1
+

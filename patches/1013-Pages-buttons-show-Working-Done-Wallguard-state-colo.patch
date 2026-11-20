@@ -1,0 +1,754 @@
+From 243457c3960b772551dc9d38d629deb540ea07b3 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Fri, 13 Nov 2026 18:39:37 -0500
+Subject: [PATCH] Pages: buttons show Working / Done; Wallguard state colours
+ (102.8 line)
+
+- A shared helper in reaper_util.js: a button that starts a request shows Working... until the
+  router answers, then Done or Failed for a moment; a second click meanwhile is ignored; a 30 s
+  guard ends a request that never answers. Wired on 18 pages; the Devices dialog stays, its button
+  working, until the router answers.
+- Wallguard: the state and verdict colours reach their table cells (a table rule outranked the
+  bare classes, so ok was never green and failed / missing never amber).
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ release/src/router/www/Reaper_Advisor.asp     |  8 +-
+ release/src/router/www/Reaper_Analysis.asp    |  5 +-
+ release/src/router/www/Reaper_Analytics.asp   |  4 +
+ release/src/router/www/Reaper_Backup.asp      |  7 +-
+ release/src/router/www/Reaper_Conn.asp        |  5 +-
+ release/src/router/www/Reaper_Devices.asp     | 20 ++--
+ release/src/router/www/Reaper_Dreadwatch.asp  |  4 +-
+ .../src/router/www/Reaper_EncryptedDNS.asp    |  8 +-
+ release/src/router/www/Reaper_Firewall.asp    | 18 ++--
+ release/src/router/www/Reaper_GK.asp          |  4 +-
+ release/src/router/www/Reaper_Netstat.asp     |  3 +
+ release/src/router/www/Reaper_Survey.asp      |  6 +-
+ release/src/router/www/Reaper_USB.asp         |  1 +
+ release/src/router/www/Reaper_VPNRouting.asp  |  5 +-
+ release/src/router/www/Reaper_VPNServer.asp   |  5 +-
+ release/src/router/www/Reaper_WOL.asp         |  9 +-
+ release/src/router/www/Reaper_Wallguard.asp   | 17 ++--
+ release/src/router/www/Reaper_Wireless.asp    | 17 +++-
+ release/src/router/www/reaper_util.js         | 93 +++++++++++++++++++
+ 19 files changed, 194 insertions(+), 45 deletions(-)
+
+diff --git a/release/src/router/www/Reaper_Advisor.asp b/release/src/router/www/Reaper_Advisor.asp
+index c349a4a286..1ebe0fdc90 100644
+--- a/release/src/router/www/Reaper_Advisor.asp
++++ b/release/src/router/www/Reaper_Advisor.asp
+@@ -238,6 +238,7 @@ var AERR = {
+ };
+ function aerr(d, fb){ return (d && d.ek && AERR[d.ek]) || (d && d.error) || fb; }
+ 
++ReaperBusy.words(`<#RBSY_1#>`, `<#RBSY_2#>`, `<#RBSY_3#>`);	/* 2026-11-13: busy feedback words */
+ function provision(){
+   var code=document.getElementById('code').value.trim();
+   if(code.length<12){ setMsg('provMsg',`<#RADV_52#>`,'err'); return; }
+@@ -247,7 +248,9 @@ function provision(){
+     if(!oc){ setMsg('provMsg',`<#RADV_53#>`,'err'); return; }
+     p.oldcode=oc;
+   }
++  var bf=ReaperBusy.startLast();
+   post('provision',p).then(function(d){
++    bf(null);
+     if(d.ok){ setMsg('provMsg',`<#RADV_54#>`,'ok'); document.getElementById('code').value=''; document.getElementById('oldcode').value=''; loadStatus(); }
+     else setMsg('provMsg', aerr(d,`<#RADV_55#>`), 'err');
+   });
+@@ -259,7 +262,8 @@ function deprovision(){
+   if(provisionedNow){
+     var c=prompt(`<#RADV_57#>`); if(!c) return; p.code=c;
+   }
+-  post('deprovision',p).then(function(d){ setMsg('provMsg', d.ok?`<#RADV_58#>`:aerr(d,`<#RADV_55#>`), d.ok?'ok':'err'); loadStatus(); });
++  var bf=ReaperBusy.startLast();
++  post('deprovision',p).then(function(d){ bf(null); setMsg('provMsg', d.ok?`<#RADV_58#>`:aerr(d,`<#RADV_55#>`), d.ok?'ok':'err'); loadStatus(); });
+ }
+ 
+ function usbEnroll(){
+@@ -318,7 +322,7 @@ function arm(){
+   });
+ }
+ 
+-function disarm(){ post('disarm').then(function(){ setMsg('armMsg',`<#RADV_71#>`,'ok'); loadStatus(); }); }
++function disarm(){ var bf=ReaperBusy.startLast(); post('disarm').then(function(){ bf(null); setMsg('armMsg',`<#RADV_71#>`,'ok'); loadStatus(); }); }
+ 
+ function buildSnip(url,tok){
+   return '{\n  "mcpServers": {\n    "reaper-router": {\n      "url": "'+url+'",\n      "headers": { "Authorization": "Bearer '+tok+'" }\n    }\n  }\n}';
+diff --git a/release/src/router/www/Reaper_Analysis.asp b/release/src/router/www/Reaper_Analysis.asp
+index 6f62b3e6e5..07b50d5507 100644
+--- a/release/src/router/www/Reaper_Analysis.asp
++++ b/release/src/router/www/Reaper_Analysis.asp
+@@ -157,6 +157,7 @@ function poll(){
+   });
+ }
+ function stopTimer(){ if (timer){ clearInterval(timer); timer = null; } }
++ReaperBusy.words(`<#RBSY_1#>`, `<#RBSY_2#>`, `<#RBSY_3#>`);	/* 2026-11-13: busy feedback words */
+ function run(){
+   msg('');
+   var t = tool(), target = q('i_target').value.trim(), p = 'action=start&target=' + encodeURIComponent(target);
+@@ -170,7 +171,9 @@ function run(){
+     if (!rp.v.int(hp, 1, 30)){ msg(ERR.E_COUNT); q('i_hops').focus(); return; }
+     p += '&tool=traceroute&hops=' + hp + '&ver=' + ver() + (q('c_numeric').checked ? '&numeric=1' : '');
+   } else p += '&tool=nslookup';
++  var bf = ReaperBusy.startLast();
+   call(p, function(d){
++    bf(null);
+     if (!d){ msg(`<#RNT_27#>`); return; }
+     if (!d.ok){ msg(ERR[d.error] || d.error || `<#RNT_27#>`); return; }
+     text = ''; next = 0; PTS = []; render(); pill('running');
+@@ -179,7 +182,7 @@ function run(){
+ }
+ q('s_tool').addEventListener('change', layout);
+ q('b_run').addEventListener('click', run);
+-q('b_stop').addEventListener('click', function(){ call('action=cancel', function(){ poll(); }); });
++q('b_stop').addEventListener('click', function(){ var bf = ReaperBusy.startLast(); call('action=cancel', function(){ bf(null); poll(); }); });
+ q('i_target').addEventListener('keydown', function(e){ if (e.key === 'Enter') run(); });
+ rp.pingPresets(q('presets'));
+ layout();
+diff --git a/release/src/router/www/Reaper_Analytics.asp b/release/src/router/www/Reaper_Analytics.asp
+index 8a25586a30..028b87223b 100644
+--- a/release/src/router/www/Reaper_Analytics.asp
++++ b/release/src/router/www/Reaper_Analytics.asp
+@@ -192,8 +192,10 @@ pre.payload{background:#0a0a0c;border:1px solid var(--line-soft);border-radius:8
+   <span class="saved" id="saved" style="display:none">&nbsp;</span>
+ </div>
+ 
++<script src="/reaper_util.js"></script>
+ <script>
+ var REAPER_HTTPID = <% nvram_get_js("http_id"); %>;
++ReaperBusy.words(`<#RBSY_1#>`, `<#RBSY_2#>`, `<#RBSY_3#>`);	/* 2026-11-13: busy feedback words */
+ var C = null;             /* last loaded config */
+ var engine = 'splunk';
+ var tokenDirty = false;
+@@ -295,8 +297,10 @@ $('probeTg').onclick = function(){
+   /* v2.3.0 review: the probe is required while export is armed - do not let the user freeze the feed under an active exporter */
+   if(!want && C && C.mode && C.mode !== 'off'){ probeNote(`<#RANL_50#>`); return; }
+   self.style.pointerEvents = 'none';
++  var bf = ReaperBusy.start(self);
+   xhr('POST', '/reaper_export.cgi?action=probe&on=' + want + '&http_id=' + encodeURIComponent(REAPER_HTTPID), function(j){
+     self.style.pointerEvents = '';
++    bf(null);
+     if(j && j.ok){ if(!C) C = {}; C.hprobe = j.hprobe; probeNote(''); }
+     else if(j && j.export_armed){ probeNote(`<#RANL_50#>`); }
+     renderProbe();
+diff --git a/release/src/router/www/Reaper_Backup.asp b/release/src/router/www/Reaper_Backup.asp
+index 1011ecc2a5..7677a2bd0f 100644
+--- a/release/src/router/www/Reaper_Backup.asp
++++ b/release/src/router/www/Reaper_Backup.asp
+@@ -385,7 +385,7 @@ function pendingComplete(){
+ function rbkSend(f, statId, pass){
+   if(busy) return;
+   busy = 1;
+-  setStat(statId, '', '');
++  setStat(statId, `<#RBSY_1#>`, '');	/* 2026-11-13: busy feedback */
+   var fd = new FormData();
+   fd.append('http_id', HID);
+   if(pass) fd.append('pass', pass);   /* v3.0.8: a sealed archive's passphrase, checked server-side */
+@@ -488,11 +488,12 @@ function sealHead(head){
+ function rbkDownload(){
+   askAuth({ title: `<#RBKP_38#>`, note: `<#RBKP_47#>`, admin: 1, create: 1, okLabel: `<#RBKP_3#>` }, function(a){
+     if(!a) return;
++    setStat('st_rbk', `<#RBSY_1#>`, '');
+     reauth(a.admpw, 'st_rbk', function(ok){
+       if(!ok) return;
+       postDownload('/REAPER_' + clean(MODEL) + '_' + clean(VER) + '_settings.rbk' + (a.pass ? '.enc' : ''),
+                    { http_id: HID, admpw: a.admpw, pass: a.pass });
+-      setStat('st_rbk', a.pass ? `<#RBKP_48#>` : '', 'ok');
++      setStat('st_rbk', a.pass ? `<#RBKP_48#>` : `<#RBSY_2#>`, 'ok');
+     });
+   });
+ }
+@@ -523,6 +524,7 @@ function rbkRestore(f){
+ function cfgExport(){
+   askAuth({ title: `<#RBKP_38#>`, note: `<#RBKP_47#>`, admin: 1, create: 1, okLabel: `<#RDST_70#>` }, function(a){
+     if(!a) return;
++    setStat('st_cfg', `<#RBSY_1#>`, '');
+     var g = new XMLHttpRequest();
+     g.open('POST', '/reaper_cfg.cgi', true);
+     g.setRequestHeader('Content-Type', 'application/x-www-form-urlencoded');
+@@ -563,6 +565,7 @@ function b64bytes(s){
+ }
+ /* the no-reboot import of the Reaper half only (the pre-v3.0.6 path) */
+ function cfgImportJson(j){
++  setStat('st_cfg', `<#RBSY_1#>`, '');
+   var p = new XMLHttpRequest();
+   p.open('POST', '/reaper_cfg.cgi', true);
+   p.setRequestHeader('Content-Type', 'application/x-www-form-urlencoded');
+diff --git a/release/src/router/www/Reaper_Conn.asp b/release/src/router/www/Reaper_Conn.asp
+index 4d439dd79d..858f0adb5c 100644
+--- a/release/src/router/www/Reaper_Conn.asp
++++ b/release/src/router/www/Reaper_Conn.asp
+@@ -523,10 +523,11 @@ code{font-family:var(--mono)}
+   });
+   /* v3.3.4: destination names on/off (nvram rconn_names; rc restarts the listener) */
+   var nb=document.getElementById("namesbtn");
++  ReaperBusy.words(`<#RBSY_1#>`, `<#RBSY_2#>`, `<#RBSY_3#>`);	/* 2026-11-13: busy feedback words */
+   nb.addEventListener("click",function(){
+-    var x=new XMLHttpRequest(), want=namesOn?0:1;
++    var x=new XMLHttpRequest(), want=namesOn?0:1, bf=ReaperBusy.start(nb);	/* 2026-11-13: busy feedback */
+     x.open("GET",ENDPOINT+"?names="+want+"&http_id="+encodeURIComponent(<% nvram_get_js("http_id"); %>)+"&_="+Date.now(),true); x.timeout=6000;
+-    x.onreadystatechange=function(){ if(x.readyState!==4)return; var j; try{ j=JSON.parse(x.responseText); }catch(e){ return; }
++    x.onreadystatechange=function(){ if(x.readyState!==4)return; bf(null); var j; try{ j=JSON.parse(x.responseText); }catch(e){ return; }
+       if(j&&j.ok){ namesOn=+j.names; nb.classList.toggle("off",!namesOn); if(!namesOn){ names={}; render(); } } };
+     x.onerror=x.ontimeout=function(){}; x.send();
+   });
+diff --git a/release/src/router/www/Reaper_Devices.asp b/release/src/router/www/Reaper_Devices.asp
+index 576acfed1c..de19ae6e6b 100644
+--- a/release/src/router/www/Reaper_Devices.asp
++++ b/release/src/router/www/Reaper_Devices.asp
+@@ -677,8 +677,10 @@ function setGk(i, v){
+   xAct('/reaper_dev.cgi?action=set_state&mac=' + encodeURIComponent(D.devices[i].mac) + '&state=' + encodeURIComponent(v), function(){ loadAll(); });
+ }
+ function trafGo(){ top.location.href = '/reaper_shell.asp#Reaper_Traffic.asp'; return false; }
++ReaperBusy.words(`<#RBSY_1#>`, `<#RBSY_2#>`, `<#RBSY_3#>`);	/* 2026-11-13: busy feedback words */
+ function unpin(i){
+-  xAct('/reaper_dev.cgi?action=unpin&mac=' + encodeURIComponent(D.devices[i].mac), function(){ loadAll(); });
++  var fin = ReaperBusy.startLast();
++  xAct('/reaper_dev.cgi?action=unpin&mac=' + encodeURIComponent(D.devices[i].mac), function(j){ fin(!(j && j.ok === 0)); loadAll(); });
+ }
+ 
+ function pinAsk(i){
+@@ -709,8 +711,9 @@ function pinAsk(i){
+ function pinDo(i, inPool){
+   var d = D.devices[i];
+   var ip = inPool ? d.ip : (D.pool.subnet + '.' + D.next_free_out);
+-  pinClose();
++  var fin = ReaperBusy.startLast();	/* 2026-11-13: the dialog stays, its button working, until the router answers */
+   xAct('/reaper_dev.cgi?action=set_reserve&mac=' + encodeURIComponent(d.mac) + '&ip=' + encodeURIComponent(ip), function(j){
++    fin(null); pinClose();
+     if(j && j.ok === 0 && j.error) alert(errText(j));
+     loadAll();
+   });
+@@ -740,30 +743,33 @@ function pin6Ask(i){
+ function pin6Do(i, sfx){
+   var d = D.devices[i];
+   if(!/^::[0-9a-fA-F]{1,4}(:[0-9a-fA-F]{1,4}){0,3}$/.test(sfx)){ alert(errText({ek:'RDEVE_14'})); return; }
+-  pinClose();
++  var fin = ReaperBusy.startLast();
+   xAct('/reaper_dev.cgi?action=set_reserve6&mac=' + encodeURIComponent(d.mac) + '&suffix=' + encodeURIComponent(sfx), function(j){
++    fin(null); pinClose();
+     if(j && j.ok === 0 && j.error) alert(errText(j));
+     loadAll();
+   });
+ }
+ function unpin6(i){
+-  xAct('/reaper_dev.cgi?action=unpin6&mac=' + encodeURIComponent(D.devices[i].mac), function(){ loadAll(); });
++  var fin = ReaperBusy.startLast();
++  xAct('/reaper_dev.cgi?action=unpin6&mac=' + encodeURIComponent(D.devices[i].mac), function(j){ fin(!(j && j.ok === 0)); loadAll(); });
+ }
+ 
+ function fixIssue(iss, act){
+   if(act === 'widen'){
+     if(!confirm(T('RDEV_86'))) return;
+     /* widen to the whole usable subnet minus .1 (router): start = .2, end = last-1 */
+-    var base = D.pool.subnet;
+-    xAct('/reaper_dev.cgi?action=widen_pool&start=' + encodeURIComponent(base + '.2') + '&end=' + encodeURIComponent(base + '.254'), function(){ loadAll(); });
++    var base = D.pool.subnet, fin = ReaperBusy.startLast();
++    xAct('/reaper_dev.cgi?action=widen_pool&start=' + encodeURIComponent(base + '.2') + '&end=' + encodeURIComponent(base + '.254'), function(j){ fin(!(j && j.ok === 0)); loadAll(); });
+     return;
+   }
+   /* unpin_orphans / unpin_dup: remove each affected reservation */
+   var macs = iss.macs.slice(), done = 0;
+   if(!macs.length){ return; }
++  var fin = ReaperBusy.startLast();
+   macs.forEach(function(mac){
+     xAct('/reaper_dev.cgi?action=unpin&mac=' + encodeURIComponent(mac), function(){
+-      if(++done === macs.length) loadAll();
++      if(++done === macs.length){ fin(true); loadAll(); }
+     });
+   });
+ }
+diff --git a/release/src/router/www/Reaper_Dreadwatch.asp b/release/src/router/www/Reaper_Dreadwatch.asp
+index 10462c3ef3..32f1adcb6f 100644
+--- a/release/src/router/www/Reaper_Dreadwatch.asp
++++ b/release/src/router/www/Reaper_Dreadwatch.asp
+@@ -601,9 +601,11 @@ function dwTest(){
+     setTimeout(dwStats, 500);
+   }, 8000);
+ }
++ReaperBusy.words(`<#RBSY_1#>`, `<#RBSY_2#>`, `<#RBSY_3#>`);	/* 2026-11-13: busy feedback words */
+ function dwReset(){
+   if(!confirm(`<#RDWT_29#>`)) return;
+-  dwGet('action=dns_reset', function(){ dwStats(); });
++  var fin = ReaperBusy.startLast();
++  dwGet('action=dns_reset', function(){ dwStats(); fin(true); });
+ }
+ function dwSave(updateNow){
+   var f = document.form;
+diff --git a/release/src/router/www/Reaper_EncryptedDNS.asp b/release/src/router/www/Reaper_EncryptedDNS.asp
+index 4c94d209c3..11d2b2a174 100644
+--- a/release/src/router/www/Reaper_EncryptedDNS.asp
++++ b/release/src/router/www/Reaper_EncryptedDNS.asp
+@@ -218,6 +218,7 @@ input[type="text"]:focus{border-color:var(--line)}
+   <input type="hidden" name="reaper_dot_block" value="">
+ </form>
+ 
++<script src="/reaper_util.js"></script>
+ <script src="/reaper/rp.js"></script>
+ <script>
+ (function(){
+@@ -415,11 +416,12 @@ function encCopy(text){
+   try{ document.execCommand('copy'); }catch(e){}
+   ta.remove();
+ }
++ReaperBusy.words(`<#RBSY_1#>`, `<#RBSY_2#>`, `<#RBSY_3#>`);	/* 2026-11-13: busy feedback words */
+ function encDohUpdate(){
+-  var x = new XMLHttpRequest();
++  var x = new XMLHttpRequest(), fin = ReaperBusy.startLast();
+   x.open('GET', '/reaper_encdns.cgi?action=doh_update&http_id=' + encodeURIComponent(HID) + '&_=' + Date.now(), true);
+-  x.onreadystatechange = function(){ if(x.readyState === 4) setTimeout(encGet, 5000); };
+-  try{ x.send(); }catch(e){}
++  x.onreadystatechange = function(){ if(x.readyState === 4){ var ok = x.status === 200; setTimeout(function(){ encGet(); fin(ok); }, 5000); } };
++  try{ x.send(); }catch(e){ fin(false); }
+ }
+ function encGet(){
+   var x = new XMLHttpRequest();
+diff --git a/release/src/router/www/Reaper_Firewall.asp b/release/src/router/www/Reaper_Firewall.asp
+index adfc962332..49916c79cd 100644
+--- a/release/src/router/www/Reaper_Firewall.asp
++++ b/release/src/router/www/Reaper_Firewall.asp
+@@ -1611,10 +1611,11 @@ var RV_EK={RFW_338:`<#RFW_338#>`,RFW_355:`<#RFW_355#>`,RFW_356:`<#RFW_356#>`,RFW
+ var RV_ACT={'accept-all':`<#RFW_380#>`,'accept-one':`<#RFW_381#>`,'accept-many':`<#RFW_390#>`,rules:`<#RFW_382#>`,reset:`<#RFW_388#>`};
+ var rvRulesText='';
+ function rvcgi(q,cb){xhr('/reaper_watch.cgi?'+q+'&http_id='+encodeURIComponent(REAPER_HTTPID),cb||function(){});}
+-function rvpost(q,cb){
+-  var x=new XMLHttpRequest(),done=false;
++ReaperBusy.words(`<#RBSY_1#>`, `<#RBSY_2#>`, `<#RBSY_3#>`);	/* 2026-11-13: busy feedback words */
++function rvpost(q,cb,btn){
++  var x=new XMLHttpRequest(),done=false,bf=btn?ReaperBusy.start(btn):ReaperBusy.startLast();	/* 2026-11-13 */
+   cb=cb||function(){};
+-  function fin(j){if(done)return;done=true;cb(j);}
++  function fin(j){if(done)return;done=true;bf(null);cb(j);}
+   x.open('POST','/reaper_watch.cgi?http_id='+encodeURIComponent(REAPER_HTTPID)+'&_='+Date.now(),true);
+   x.setRequestHeader('Content-Type','application/x-www-form-urlencoded');
+   x.timeout=30000;
+@@ -1856,11 +1857,11 @@ function rvToggle(){
+ function rvAck(){
+   reaperConfirm(`<#RFW_353#>`,{okLabel:`<#RFW_331#>`},function(ok){
+     if(!ok)return;
+-    rvpost('action=ack',function(j){
++    rvpost('action=ack',function(j){	/* 2026-11-13: busy on the page's own button */
+       if(!j||!j.ok){$('rv_state').textContent=(j&&j.ek&&RV_EK[j.ek])?RV_EK[j.ek]:`<#RFW_359#>`;return;}
+       $('rv_state').textContent=`<#RFW_358#>`;
+       setTimeout(rvLoad,3000);setTimeout(rvLoad,8000);rvLoadLog();
+-    });
++    },$('rv_ack'));
+   });
+ }
+ 
+@@ -1873,7 +1874,7 @@ function rvReset(){
+       if(!j||!j.ok){$('rv_state').textContent=(j&&j.ek&&RV_EK[j.ek])?RV_EK[j.ek]:`<#RFW_359#>`;return;}
+       $('rv_state').textContent=`<#RFW_387#>`;
+       setTimeout(rvLoad,3000);setTimeout(rvLoad,8000);rvLoadLog();
+-    });
++    },$('rv_reset'));
+   });
+ }
+ 
+@@ -2246,7 +2247,9 @@ function initRfw(){
+      validation an interactive edit has to pass. It lands in the DRAFT, so the
+      operator still has to Apply (and confirm) before anything becomes live. */
+   $('io_exp').onclick=function(){
++    var bf=ReaperBusy.startLast();
+     fwcgi('action=export',function(j){
++      bf(null);
+       if(!j||!j.ok){showSaved($('io_saved'),false,(j&&j.error)||`<#RFW_155#>`);return;}
+       $('io_txt').value=JSON.stringify(j.cfg);
+       showSaved($('io_saved'),true,`<#RFW_221#>`);
+@@ -2257,12 +2260,13 @@ function initRfw(){
+     try{ o=JSON.parse($('io_txt').value); }catch(e){ o=null; }
+     if(!o||typeof o!=='object'||!('obj' in o)||!('rules' in o))
+       return showSaved($('io_saved'),false,`<#RFW_223#>`);
+-    var keys=['obj','grp','svc','zone','zpol','rules','edef','nat'],pending=keys.length,bad_=0;
++    var keys=['obj','grp','svc','zone','zpol','rules','edef','nat'],pending=keys.length,bad_=0,bf=ReaperBusy.startLast();
+     keys.forEach(function(k){
+       var v=(typeof o[k]==='string')?o[k]:'';
+       fwpost('action=save&k='+k,'v='+encodeURIComponent(v),function(j){
+         if(!j||!j.ok)bad_++;
+         if(--pending===0){
++          bf(null);
+           /* 2026-10-10: some lists may have landed - show the router's draft as it is */
+           if(bad_){ showSaved($('io_saved'),false,`<#RFW_155#>`); rfwLoad(); }
+           else{ showSaved($('io_saved'),true,`<#RFW_222#>`); rfwLoad(); }
+diff --git a/release/src/router/www/Reaper_GK.asp b/release/src/router/www/Reaper_GK.asp
+index 7ffe269f06..8400b12ed7 100644
+--- a/release/src/router/www/Reaper_GK.asp
++++ b/release/src/router/www/Reaper_GK.asp
+@@ -403,13 +403,15 @@ function gkFilter(el){
+   gkRender();
+ }
+ 
++ReaperBusy.words(`<#RBSY_1#>`, `<#RBSY_2#>`, `<#RBSY_3#>`);	/* 2026-11-13: busy feedback words */
+ function gkAct(url){
+   if(GK.busy) return;
+   GK.busy = true;
++  var fin = ReaperBusy.startLast();	/* a click only (not the settings selects) */
+   /* the choice is made, so release the control - otherwise gkEditing() would
+      defer the refresh this very action asks for and the row would look inert */
+   if(document.activeElement && document.activeElement.blur) document.activeElement.blur();
+-  gkGet(url + '&http_id=' + encodeURIComponent(REAPER_HTTPID), function(){ GK.busy = false; gkRefresh(); });
++  gkGet(url + '&http_id=' + encodeURIComponent(REAPER_HTTPID), function(){ GK.busy = false; gkRefresh(); fin(true); });
+ }
+ function gkSet(mac, state){
+   if(String(state) === '-1'){ gkAct('/reaper_gk.cgi?action=remove&mac=' + encodeURIComponent(mac)); return; }
+diff --git a/release/src/router/www/Reaper_Netstat.asp b/release/src/router/www/Reaper_Netstat.asp
+index b64f6c392e..bb4370a6ba 100644
+--- a/release/src/router/www/Reaper_Netstat.asp
++++ b/release/src/router/www/Reaper_Netstat.asp
+@@ -122,11 +122,14 @@ function poll(){
+     if (d.state !== 'running' && timer){ clearInterval(timer); timer = null; }
+   });
+ }
++ReaperBusy.words(`<#RBSY_1#>`, `<#RBSY_2#>`, `<#RBSY_3#>`);	/* 2026-11-13: busy feedback words */
+ function run(){
+   msg('');
+   var opts = +document.querySelector('input[name=scope]:checked').value;
+   Array.prototype.forEach.call(document.querySelectorAll('input.o'), function(c){ if (c.checked) opts |= +c.value; });
++  var bf = ReaperBusy.startLast();
+   call('action=start&tool=netstat&opts=' + opts, function(d){
++    bf(null);
+     if (!d){ msg(`<#RNT_27#>`); return; }
+     if (!d.ok){ msg(d.error === 'E_BUSY' ? `<#RNT_18#>` : (d.error || `<#RNT_27#>`)); return; }
+     text = ''; next = 0; draw(); pill('running');
+diff --git a/release/src/router/www/Reaper_Survey.asp b/release/src/router/www/Reaper_Survey.asp
+index ca7382895e..b3f7903b41 100644
+--- a/release/src/router/www/Reaper_Survey.asp
++++ b/release/src/router/www/Reaper_Survey.asp
+@@ -259,9 +259,11 @@ function svyStart(move){
+   var u=document.getElementById("svyunit").value||"a";
+   var x=new XMLHttpRequest(), done=false;
+   USERSTOP=false;
++  var bf=ReaperBusy.startLast();
+   x.open("GET","/reaper_wifi.cgi?action=svystart&unit="+encodeURIComponent(u)+(move?"&move=1":"")+reaperTok()+"&_="+Date.now(),true);
+   x.onreadystatechange=function(){
+     if(x.readyState!==4||done) return; done=true;
++    bf(null);
+     var r=null; try{r=JSON.parse(x.responseText);}catch(e){}
+     if(!r||!r.ok){
+       showToast((r&&(r.err==="busy"||r.err==="busycap"))?`<#RSVY_12#>`:((r&&r.err)?(`<#RWIF_83#>: `+r.err):`<#RWIF_83#>`));
+@@ -283,10 +285,12 @@ function svyMove(){
+   b.className="btn hot"; b.textContent=`<#RSVY_33#>`;
+   MOVEARM=setTimeout(function(){ MOVEARM=null; b.className="btn"; b.textContent=`<#RSVY_31#>`; },6000);
+ }
++ReaperBusy.words(`<#RBSY_1#>`, `<#RBSY_2#>`, `<#RBSY_3#>`);	/* 2026-11-13: busy feedback words */
+ function svyStop(){
+   USERSTOP=true;
+-  var x=new XMLHttpRequest();
++  var x=new XMLHttpRequest(),bf=ReaperBusy.startLast();
+   x.open("GET","/reaper_wifi.cgi?action=svystop"+reaperTok()+"&_="+Date.now(),true);
++  x.onreadystatechange=function(){if(x.readyState===4) bf(null);};
+   x.onerror=x.ontimeout=function(){};
+   x.send();
+ }
+diff --git a/release/src/router/www/Reaper_USB.asp b/release/src/router/www/Reaper_USB.asp
+index a219e77f88..f47c143138 100644
+--- a/release/src/router/www/Reaper_USB.asp
++++ b/release/src/router/www/Reaper_USB.asp
+@@ -317,6 +317,7 @@ function dkEject(port){
+   if(dkBusy) return;
+   reaperConfirm(`<#Safelyremovedisk_confirm#>`, { okLabel: `<#CTL_ok#>`, cancelLabel: `<#CTL_Cancel#>` }, function(go){
+   if(!go || dkBusy) return;
++  dkSetStat(port, esc(`<#RBSY_1#>`), '');	/* 2026-11-13: busy feedback */
+   var x = new XMLHttpRequest();
+   x.open('GET', '/device-map/safely_remove_disk.asp?disk=' + encodeURIComponent(port) + '&http_id=' + <% nvram_get_js("http_id"); %> + '&_=' + Date.now(), true);
+   x.onreadystatechange = function(){
+diff --git a/release/src/router/www/Reaper_VPNRouting.asp b/release/src/router/www/Reaper_VPNRouting.asp
+index 5d92361bf6..39af5bac2d 100644
+--- a/release/src/router/www/Reaper_VPNRouting.asp
++++ b/release/src/router/www/Reaper_VPNRouting.asp
+@@ -618,8 +618,9 @@ function objDelete(k){
+   /* 2026-10-30: the rule list and the master switch are written by Apply only - say when that is owed */
+   ReaperPending.watch({at: document.getElementById('applybtn'), btnClass: 'btng', snap: function(){ return {on: masterOn ? '1' : '0', rules: serialize()}; }, label: `<#RADM_77#>`, discard: `<#Discard#>`});
+   ReaperPending.arm();
+-  document.getElementById('armkeep').onclick=function(){ pbrcgi('action=confirm',function(j){ if(pbrAck(j,`<#RFW_278#>`)) setTimeout(armPoll,800); }); };
+-  document.getElementById('armrevert').onclick=function(){ pbrcgi('action=rollback',function(j){ if(pbrAck(j,`<#RFW_279#>`)) setTimeout(function(){ location.reload(); },1500); }); };
++  ReaperBusy.words(`<#RBSY_1#>`, `<#RBSY_2#>`, `<#RBSY_3#>`);	/* 2026-11-13: busy feedback words */
++  document.getElementById('armkeep').onclick=function(){ var bf=ReaperBusy.startLast(); pbrcgi('action=confirm',function(j){ var ok=pbrAck(j,`<#RFW_278#>`); bf(ok?true:false); if(ok) setTimeout(armPoll,800); }); };
++  document.getElementById('armrevert').onclick=function(){ var bf=ReaperBusy.startLast(); pbrcgi('action=rollback',function(j){ var ok=pbrAck(j,`<#RFW_279#>`); bf(ok?true:false); if(ok) setTimeout(function(){ location.reload(); },1500); }); };
+   /* an apply from another tab, or a page reload inside the window */
+   pbrcgi('action=cfg',function(j){
+     if(j&&j.ok){ cfgArrays(j); renderTargets(); ARM.armed=j.armed?1:0; ARM.left=j.left||0; if(j.confirm)CONFIRM=j.confirm; showErr(j.err?errText(j.err):'');
+diff --git a/release/src/router/www/Reaper_VPNServer.asp b/release/src/router/www/Reaper_VPNServer.asp
+index d9e809e6fd..9314a259f2 100644
+--- a/release/src/router/www/Reaper_VPNServer.asp
++++ b/release/src/router/www/Reaper_VPNServer.asp
+@@ -719,9 +719,12 @@ function switchInstance(u){
+   if (parseInt(q('chgcount').textContent, 10) > 0 && !confirm(`<#RVSV_134#>`)) return;
+   setCursor(u, function(){ location.href = 'Reaper_VPNServer.asp?tab=ovpn'; });
+ }
++ReaperBusy.words(`<#RBSY_1#>`, `<#RBSY_2#>`, `<#RBSY_3#>`);	/* 2026-11-13: busy feedback words */
+ function genClientKey(){
+   pmsg('ockeymsg', '');
++  var bf = ReaperBusy.startLast();
+   xget('/appGet.cgi?hook=ovpn_generate_client_key()', function(t){
++    bf(null);
+     var j = hookOf(jsonOf(t), 'ovpn_generate_client_key'), key = j && j.client_key;
+     if (!key || String(key).indexOf('Error') === 0){ msg(`<#RVSV_135#>`); return; }
+     q('ockeytext').value = key; panel('p_ockey', true);
+@@ -940,7 +943,7 @@ function renewIpCert(){
+   });
+ }
+ function loadIpLog(){ xget('/ajax_ipsec_log.xml', function(t){ var m = /<ipsec>([\s\S]*?)<\/ipsec>/.exec(t); q('iplog').textContent = m ? m[1].trim() : ''; }); }
+-function clearIpLog(){ xget('/clear_file.cgi?clear_file_name=ipsec', function(){ q('iplog').textContent = ''; }); }
++function clearIpLog(){ var bf = ReaperBusy.startLast(); xget('/clear_file.cgi?clear_file_name=ipsec', function(){ bf(null); q('iplog').textContent = ''; }); }
+ /* connections: ajax_ipsec.asp is one JS assignment of a JSON array - the array is parsed, the script never runs */
+ function pollIpsec(){
+   xget('/ajax_ipsec.asp', function(t){
+diff --git a/release/src/router/www/Reaper_WOL.asp b/release/src/router/www/Reaper_WOL.asp
+index 3efebbc27a..ae7af72363 100644
+--- a/release/src/router/www/Reaper_WOL.asp
++++ b/release/src/router/www/Reaper_WOL.asp
+@@ -114,19 +114,22 @@ function draw(){
+ 
+ /* ---------- wake through reaper_net.cgi ---------- */
+ function call(params, cb){ rp.net(HTTPID, params, cb); }
++ReaperBusy.words(`<#RBSY_1#>`, `<#RBSY_2#>`, `<#RBSY_3#>`);	/* 2026-11-13: busy feedback words */
+ function wake(mac){
+   msg('wakemsg', '');
+   mac = String(mac || '').trim().toUpperCase();
+   if (!macOk(mac)){ msg('wakemsg', `<#RNT_46#>`); return; }
++  var bf = ReaperBusy.startLast();
+   call('action=start&tool=wake&iface=br0&target=' + encodeURIComponent(mac), function(d){
+-    if (!d){ msg('wakemsg', `<#RNT_27#>`); return; }
+-    if (!d.ok){ msg('wakemsg', d.error === 'E_BUSY' ? `<#RNT_18#>` : d.error === 'E_MAC' ? `<#RNT_46#>` : (d.error || `<#RNT_27#>`)); return; }
++    if (!d){ bf(null); msg('wakemsg', `<#RNT_27#>`); return; }
++    if (!d.ok){ bf(null); msg('wakemsg', d.error === 'E_BUSY' ? `<#RNT_18#>` : d.error === 'E_MAC' ? `<#RNT_46#>` : (d.error || `<#RNT_27#>`)); return; }
+     var tries = 0;
+     if (timer) clearInterval(timer);
+     timer = setInterval(function(){
+       call('action=status', function(s){
+-        if (!s || !s.ok || s.state === 'running'){ if (++tries > 15){ clearInterval(timer); msg('wakemsg', `<#RNT_27#>`); } return; }
++        if (!s || !s.ok || s.state === 'running'){ if (++tries > 15){ clearInterval(timer); bf(null); msg('wakemsg', `<#RNT_27#>`); } return; }
+         clearInterval(timer);
++        bf(null);
+         if (s.state === 'done' && s.rc === 0) msg('wakemsg', `<#RNT_47#>` + ' ' + mac, true);
+         else msg('wakemsg', `<#RNT_27#>`);
+       });
+diff --git a/release/src/router/www/Reaper_Wallguard.asp b/release/src/router/www/Reaper_Wallguard.asp
+index a52421f06e..2c2b15736a 100644
+--- a/release/src/router/www/Reaper_Wallguard.asp
++++ b/release/src/router/www/Reaper_Wallguard.asp
+@@ -51,8 +51,9 @@ ol.steps li::marker{font-family:var(--hdr);font-weight:700;color:var(--crimson)}
+ .tbl td.mono{font-family:var(--mono);font-size:11.5px;word-break:break-all}
+ .tbl td.dim,.dim{color:var(--steel)}
+ .tbl td.empty{text-align:center;color:var(--steel);padding:18px}
+-.st-ok{color:var(--jade)} .st-failed,.st-missing{color:var(--amber)} .st-new{color:var(--steel)}
+-.v-b{color:var(--crimson)} .v-a{color:var(--jade)} .v-p{color:var(--amber)} .v--{color:var(--steel)}
++/* 2026-11-13: the .tbl td forms - `.tbl td{color:var(--bone)}` outranks a bare class, so these cells drew in bone */
++.st-ok,.tbl td.st-ok{color:var(--jade)} .st-failed,.st-missing,.tbl td.st-failed,.tbl td.st-missing{color:var(--amber)} .st-new,.tbl td.st-new{color:var(--steel)}
++.v-b,.tbl td.v-b{color:var(--crimson)} .v-a,.tbl td.v-a{color:var(--jade)} .v-p,.tbl td.v-p{color:var(--amber)} .v--,.tbl td.v--{color:var(--steel)}
+ .sub{display:block;font-size:11px;color:var(--steel)}
+ .srcurl{display:block;font-size:11px;color:var(--steel);text-decoration:none;word-break:break-all}
+ .srcurl:hover{color:var(--bone);text-decoration:underline}
+@@ -811,17 +812,19 @@ function shStoreLine(st){
+   el.textContent = (st.store ? `<#RSHD_131#>`.replace('%1', st.store) : `<#RSHD_132#>`) + (ht ? ' ' + ht : '') + ' ';
+   a.href = 'Reaper_Storage.asp'; el.appendChild(a);
+ }
+-function shStatus(){ shReq('GET', 'action=status', null, shRender); }
++function shStatus(cb){ shReq('GET', 'action=status', null, function(j){ shRender(j); if(typeof cb === 'function') cb(); }); }
+ function shConfig(cb){ shReq('GET', 'action=config', null, function(j){ if(j && j.ok){ shParseConfig(j); shPaint(); ReaperPending.arm(); } if(cb) cb(); }); }
+ 
+ /* ---- actions */
+-function shAct(a){ shReq('GET', 'action=' + a, null, function(j){ if(!j || !j.ok) shErr(j); else setTimeout(shStatus, 1500); }); }
++ReaperBusy.words(`<#RBSY_1#>`, `<#RBSY_2#>`, `<#RBSY_3#>`);	/* 2026-11-13: busy feedback words */
++function shAct(a){ var fin = ReaperBusy.startLast(); shReq('GET', 'action=' + a, null, function(j){ if(!j || !j.ok){ fin(false); shErr(j); } else setTimeout(function(){ shStatus(function(){ fin(true); }); }, 1500); }); }
+ function shPause(){
+   var t = $('ptarget').value, m = $('pmins').value;
+   if(m === 'six'){ var d = new Date(), s = new Date(d); s.setHours(6, 0, 0, 0); if(s <= d) s.setDate(s.getDate() + 1); m = Math.max(1, Math.round((s - d) / 60000)); }
+-  shReq('GET', 'action=pause&target=' + encodeURIComponent(t) + '&minutes=' + m, null, function(j){ if(!j || !j.ok) shErr(j); else shConfig(shStatus); });
++  var fin = ReaperBusy.startLast();
++  shReq('GET', 'action=pause&target=' + encodeURIComponent(t) + '&minutes=' + m, null, function(j){ if(!j || !j.ok){ fin(false); shErr(j); } else shConfig(function(){ shStatus(function(){ fin(true); }); }); });
+ }
+-function shResume(){ shReq('GET', 'action=resume&target=' + encodeURIComponent($('ptarget').value), null, function(j){ if(!j || !j.ok) shErr(j); else shConfig(shStatus); }); }
++function shResume(){ var fin = ReaperBusy.startLast(); shReq('GET', 'action=resume&target=' + encodeURIComponent($('ptarget').value), null, function(j){ if(!j || !j.ok){ fin(false); shErr(j); } else shConfig(function(){ shStatus(function(){ fin(true); }); }); }); }
+ function shWhy(){
+   var n = $('whyname').value.trim().toLowerCase(), box = $('whyres'); if(!n) return;
+   box.textContent = '...';
+@@ -861,7 +864,7 @@ function shUnbreak(){
+     });
+   });
+ }
+-function shAllow(name, dur){ shPost({action: 'allow', name: name, dur: dur}, function(j){ if(!j || !j.ok) shErr(j); else { shConfig(); setTimeout(shUnbreak, 2500); } }); }
++function shAllow(name, dur){ var fin = ReaperBusy.startLast(); shPost({action: 'allow', name: name, dur: dur}, function(j){ if(!j || !j.ok){ fin(false); shErr(j); } else { shConfig(); setTimeout(function(){ fin(true); shUnbreak(); }, 2500); } }); }
+ function shLiveStart(){
+   $('livetbl').style.display = ''; $('livebtn').textContent = `<#RSHD_81#>`;
+   function tick(){ shReq('GET', 'action=live', null, function(j){
+diff --git a/release/src/router/www/Reaper_Wireless.asp b/release/src/router/www/Reaper_Wireless.asp
+index e0075b0db3..1b35904228 100644
+--- a/release/src/router/www/Reaper_Wireless.asp
++++ b/release/src/router/www/Reaper_Wireless.asp
+@@ -417,6 +417,7 @@ function lock(unit){
+ }
+ function unlock(unit){
+   if(!confirm(`<#RWIF_61#>`)) return;
++  ReaperBusy.startLast({maxMs:60000});
+   submitApply(unit,"0","0");
+ }
+ function submitApply(unit,cs,bw){
+@@ -457,9 +458,11 @@ function capStart(){
+   var u=document.getElementById("capunit").value;
+   var s=document.getElementById("capsecs").value;
+   var x=new XMLHttpRequest();
++  var bf=ReaperBusy.startLast();
+   x.open("GET","/reaper_wifi.cgi?action=capstart&unit="+u+"&secs="+s+reaperTok()+"&_="+Date.now(),true);
+   x.onreadystatechange=function(){
+     if(x.readyState!==4) return;
++    bf(null);
+     var r=null; try{r=JSON.parse(x.responseText);}catch(e){}
+     if(!r||!r.ok){
+       showToast((r&&r.err==="busy")?`<#RWIF_55#>`:((r&&r.err)?(`<#RWIF_83#>: `+r.err):`<#RWIF_83#>`));
+@@ -470,9 +473,9 @@ function capStart(){
+   x.send();
+ }
+ function capStop(){
+-  var x=new XMLHttpRequest();
++  var x=new XMLHttpRequest(),bf=ReaperBusy.startLast();
+   x.open("GET","/reaper_wifi.cgi?action=capstop"+reaperTok()+"&_="+Date.now(),true);
+-  x.onreadystatechange=function(){if(x.readyState===4) fetchStatus();};
++  x.onreadystatechange=function(){if(x.readyState===4){ bf(null); fetchStatus(); }};
+   x.send();
+ }
+ function capPoll(){
+@@ -640,9 +643,11 @@ function scanStart(){
+   if(!confirm(`<#RWIF_33#>`)) return;
+   SCAN_USERSTOP=false;
+   var x=new XMLHttpRequest();
++  var bf=ReaperBusy.startLast();
+   x.open("GET","/reaper_wifi.cgi?action=scanstart&unit="+unit+reaperTok()+"&_="+Date.now(),true);
+   x.onreadystatechange=function(){
+     if(x.readyState!==4) return;
++    bf(null);
+     var r=null; try{r=JSON.parse(x.responseText);}catch(e){}
+     if(!r||!r.ok){
+       document.getElementById("scanprog").textContent =
+@@ -657,8 +662,9 @@ function scanStart(){
+ }
+ function scanStop(){
+   SCAN_USERSTOP=true;
+-  var x=new XMLHttpRequest();
++  var x=new XMLHttpRequest(),bf=ReaperBusy.startLast();
+   x.open("GET","/reaper_wifi.cgi?action=scanstop"+reaperTok()+"&_="+Date.now(),true);
++  x.onreadystatechange=function(){if(x.readyState===4) bf(null);};
+   x.send();
+ }
+ function scanPoll(){
+@@ -846,11 +852,12 @@ function downloadReport(){
+ }
+ 
+ /* ---- Passive Channel Monitor (rchqd): opt-in, read-only, advises only ---- */
++ReaperBusy.words(`<#RBSY_1#>`, `<#RBSY_2#>`, `<#RBSY_3#>`);	/* 2026-11-13: busy feedback words */
+ function chqToggle(){
+   var on=(ST&&ST.chq_on)?0:1;
+-  var x=new XMLHttpRequest();
++  var x=new XMLHttpRequest(),bf=ReaperBusy.startLast();
+   x.open("GET","/reaper_wifi.cgi?action=chqset&on="+on+reaperTok()+"&_="+Date.now(),true);
+-  x.onreadystatechange=function(){if(x.readyState===4) setTimeout(function(){fetchStatus();},600);};
++  x.onreadystatechange=function(){if(x.readyState===4) setTimeout(function(){fetchStatus();bf(null);},600);};
+   x.send();
+ }
+ function chqPoll(){
+diff --git a/release/src/router/www/reaper_util.js b/release/src/router/www/reaper_util.js
+index 32f15f06c8..a0ada2a3d9 100644
+--- a/release/src/router/www/reaper_util.js
++++ b/release/src/router/www/reaper_util.js
+@@ -345,3 +345,96 @@ window.ReaperAddons = (function(){
+   return { isAddonTab: isAddonTab, isAddonMenu: isAddonMenu, entries: entries,
+            split: split, fromText: fromText, isExternal: isExternal };
+ })();
++
++/* REAPER-BUSY-BEGIN (run under node by test_busy_feedback.py)
++   2026-11-13 (owner, 2026-11-07: "buttons that don't visually show when they have been clicked"): a button that starts
++   background work shows it. ReaperBusy.start(btn) greys the button out and writes "Working..." beside it, and returns
++   finish(ok, text): the button comes back and the note says "Done hh:mm:ss" (ok), the error / "Failed" (ok === false)
++   or nothing (ok === null: just restore), then fades after a few seconds. A second press while busy does nothing. A
++   guard restores the button after opts.maxMs (30 s) if the page never calls finish, so a lost reply cannot leave it
++   dead. The words come from the page (dictionary tokens): ReaperBusy.words(working, done, failed) once per page. */
++window.ReaperBusy = (function(){
++  var W = { working: 'Working...', done: 'Done', fail: 'Failed' }, styled = false;
++  function style(){
++    if(styled || !document.head) return;
++    styled = true;
++    var s = document.createElement('style');
++    s.textContent = '.rbusy{opacity:.5;cursor:progress!important}'
++      + '.rbusy-note{margin-left:8px;font-size:12px;color:#B7B1A4;white-space:nowrap}'
++      + '.rbusy-note.ok{color:#4FB286}.rbusy-note.err{color:#E0A93B}';
++    document.head.appendChild(s);
++  }
++  function two(x){ return (x < 10 ? '0' : '') + x; }
++  function now(){ var d = new Date(); return two(d.getHours()) + ':' + two(d.getMinutes()) + ':' + two(d.getSeconds()); }
++  function noteFor(btn, where){
++    var host = where || btn, n = host.nextSibling;
++    if(!(n && n.nodeType === 1 && /(^| )rbusy-note( |$)/.test(n.className))){
++      n = document.createElement('span');
++      n.className = 'rbusy-note';
++      host.parentNode.insertBefore(n, host.nextSibling);
++    }
++    return n;
++  }
++  function words(working, done, fail){
++    if(working) W.working = working;
++    if(done) W.done = done;
++    if(fail) W.fail = fail;
++  }
++  function start(btn, opts){
++    opts = opts || {};
++    if(!btn || !btn.parentNode) return function(){};
++    if(btn.__rbusy) return function(){};
++    style();
++    var wasDisabled = !!btn.disabled, n = noteFor(btn, opts.after), ended = false, guard;
++    btn.__rbusy = true;
++    btn.disabled = true;
++    btn.className = (btn.className ? btn.className + ' ' : '') + 'rbusy';
++    btn.setAttribute('aria-busy', 'true');
++    if(n.__fade){ clearTimeout(n.__fade); n.__fade = null; }
++    n.className = 'rbusy-note';
++    n.textContent = opts.working || W.working;
++    function finish(ok, text){
++      if(ended) return;
++      ended = true;
++      clearTimeout(guard);
++      btn.__rbusy = false;
++      btn.disabled = wasDisabled;
++      btn.className = btn.className.replace(/(^| )rbusy( |$)/, ' ').replace(/^ +| +$/g, '');
++      btn.removeAttribute('aria-busy');
++      if(ok === null || ok === undefined && !text){ if(n.parentNode) n.parentNode.removeChild(n); return; }
++      n.className = 'rbusy-note ' + (ok === false ? 'err' : 'ok');
++      n.textContent = text || (ok === false ? (opts.fail || W.fail) : (opts.done || W.done) + ' ' + now());
++      n.__fade = setTimeout(function(){ if(n.parentNode) n.parentNode.removeChild(n); }, opts.showMs || 8000);
++    }
++    guard = setTimeout(function(){ finish(null); }, opts.maxMs || 30000);
++    return finish;
++  }
++  /* the button (or .btn / [data-act] / switch) the operator just clicked: a capture listener notes it, startLast()
++     uses it once - within 60 s, so a confirm() in between is fine - and only while it is still on the page. Call
++     startLast() only from a click's own handler chain, never from a timer. */
++  var last = null;
++  if(typeof document !== 'undefined' && document.addEventListener)
++    document.addEventListener('click', function(e){
++      var t = e && e.target, k = 0;
++      while(t && t.nodeType === 1 && k++ < 6){
++        if(t.tagName === 'BUTTON' || /(^| )(btn|tg)( |$)/.test(t.className || '') || (t.getAttribute && t.getAttribute('data-act'))){
++          last = { el: t, at: Date.now() }; return;
++        }
++        t = t.parentNode;
++      }
++    }, true);
++  function startLast(opts){
++    var l = last, ev = (typeof window !== 'undefined') ? window.event : null;
++    /* only inside the handling of a click: a change / input handler that reaches the same action function
++       (e.g. a select) must not light up a button clicked earlier */
++    if(ev && ev.type && ev.type !== 'click') return function(){};
++    last = null;
++    if(!l || Date.now() - l.at > 60000) return function(){};
++    /* still in the document - not a button inside a dialog that has just closed (reaperConfirm's OK) */
++    var root = document.documentElement;
++    if(root && root.contains ? !root.contains(l.el) : !l.el.parentNode) return function(){};
++    return start(l.el, opts);
++  }
++  return { start: start, startLast: startLast, words: words };
++})();
++/* REAPER-BUSY-END */
+-- 
+2.25.1
+

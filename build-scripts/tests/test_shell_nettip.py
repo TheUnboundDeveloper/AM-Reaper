@@ -173,6 +173,50 @@ check("IPv6-only: runs clean", o is not None, err)
 if o:
     check("IPv6-only: Connected, and the Internet line says (IPv6)", o["p_wan"] == "[Connected]" and rows_text(o)[0] == "[Internet]: [Connected] (IPv6)", rows_text(o))
 
+# 2026-11-12 field report: "Connected" followed the lease while the router's internet check (the WAN
+# LED) said red, and an IPv6 address with no route kept IPv6 green. wanN_auxstate_t from rc/wanduck.c:
+# 1 = no link on the WAN port, 2 = the internet check failed.
+# 6. lease held, internet check failing (LED red): "No internet" in danger, even with an IPv6 route
+o, err = run(scenario(**{'nvram_get("wan0_auxstate_t")': "2", 'nvram_get("reaper_landns_state")': "ok 60 -"}))
+check("no internet (aux 2): runs clean", o is not None, err)
+if o:
+    check("no internet (aux 2): the word is No internet in danger, no amber, although IPv6 still has a route",
+          o["p_wan"] == "[RDSH_121]" and o["dot_bg"] == "var(--danger)" and o["p_wan_color"] == "", o)
+    check("no internet (aux 2): readings = Internet No internet (lease ip) / the check is failing",
+          rows_text(o) == ["[Internet]: [RDSH_121] (203.0.113.5)", "[RDSH_122]"] and o["rows"][0]["cls"] == "r bad", rows_text(o))
+
+# 7. WAN port without link, lease not yet dropped: Disconnected, no stale address, the no-link line
+o, err = run(scenario(**{'nvram_get("wan0_auxstate_t")': "1", 'nvram_get("reaper_landns_state")': "ok 60 -"}))
+check("no link (aux 1): runs clean", o is not None, err)
+if o:
+    check("no link (aux 1): Disconnected in danger; readings = Internet Disconnected / no link (no stale address)",
+          o["p_wan"] == "[Disconnected]" and o["dot_bg"] == "var(--danger)"
+          and rows_text(o) == ["[Internet]: [Disconnected]", "[RDSH_123]"], (o["p_wan"], rows_text(o)))
+
+# 8. IPv6 address left on the WAN face with no default route, no IPv4: not connected
+o, err = run(scenario(**{'nvram_get("wan0_state_t")': "0", 'nvram_get("wan0_ipaddr")': "",
+                         "wan_ipv6_network()": '{"status":"1","Connection_Type":"native","IPv6_Address":"2001:db8::1/64","IPv6_Gateway":"","DNS_Servers":""}',
+                         'nvram_get("reaper_landns_state")': "wan 10 -"}))
+check("IPv6 address without a route: runs clean", o is not None, err)
+if o:
+    check("IPv6 address without a route: Disconnected (an address alone is not a working IPv6)",
+          o["p_wan"] == "[Disconnected]" and o["dot_bg"] == "var(--danger)" and rows_text(o) == ["[Internet]: [Disconnected]", "[RDSH_102]"], rows_text(o))
+
+# 9. load balance: the primary holds a lease but fails the check, the second line passes -> Connected on it
+o, err = run(scenario(**{'nvram_get("wans_mode")': "lb", 'nvram_get("wan0_auxstate_t")': "2",
+                         'nvram_get("wan1_state_t")': "2", 'nvram_get("wan1_ipaddr")': "198.51.100.7", 'nvram_get("wan1_auxstate_t")': "0",
+                         'nvram_get("reaper_landns_state")': "ok 60 -"}))
+check("load balance, primary failing the check: runs clean", o is not None, err)
+if o:
+    check("load balance, primary failing the check: Connected on the second line's address",
+          o["p_wan"] == "[Connected]" and rows_text(o)[0] == "[Internet]: [Connected] (198.51.100.7)", rows_text(o))
+
+# 10. PD-only native line (no WAN-side global, default route present), check passing: Connected
+o, err = run(scenario(**{"wan_ipv6_network()": '{"status":"1","Connection_Type":"Native with DHCP-PD","IPv6_Address":"","IPv6_Gateway":"fe80::1","DNS_Servers":""}',
+                         'nvram_get("wan0_auxstate_t")': "0", 'nvram_get("reaper_landns_state")': "ok 60 -"}))
+check("DHCP-PD line with a route, check passing: runs clean, Connected (ip)", o is not None and o["p_wan"] == "[Connected]"
+      and rows_text(o)[0] == "[Internet]: [Connected] (203.0.113.5)", err or (o and rows_text(o)))
+
 print("\n%d check(s) failed" % len(fails) if fails else "\nall checks passed")
 for f in fails:
     print(" - " + f)

@@ -56,7 +56,7 @@ diag = read("others/reaper_diag")
 for want in ('#define GK_SINK_CONF GK_DIR "/sink.conf"', '#define GK_SINK_PID  GK_DIR "/sink.pid"', '#define GK_SINK_PORT "5300"',
              "static void gk_gen_sink(const char *gkifs)", '"pid-file=" GK_SINK_PID "\\n"', '"port=" GK_SINK_PORT "\\n"',
              '"bind-dynamic\\n"', '"except-interface=lo\\n"', '"no-resolv\\n"', '"no-hosts\\n"', '"no-poll\\n"',
-             '"cache-size=0\\n"', '"local-ttl=0\\n"', '"address=/#/%s\\n"', '"log-facility=/dev/null\\n"',
+             '"cache-size=0\\n"', '"local-ttl=0\\n"', '"address=/#/%s\\n"', '"log-facility=" GK_DIR "/sink.log\\n"',	# review 2026-11-03: /dev/null was fchown()ed to nobody
              'chmod(GK_SINK_CONF ".tmp", 0600);', 'rename(GK_SINK_CONF ".tmp", GK_SINK_CONF)'):
     check("gatekeeper.c sink conf: %s" % want, want in src)
 check("the sinkhole port is not mDNS (5353) and not the resolver (53)", '"5353"' not in src and 'GK_SINK_PORT "53"' not in src)
@@ -147,7 +147,7 @@ check("self_heal calls heal_sink in the armed branch, after heal_lost_rules and 
 
 # ---------------------------------------------------------------- diag, markers
 check("reaper_diag 14b reports the sinkhole (pid, port, redirect rule counts) and is v1.3.48",
-      'VER="REAPER-DIAG v1.3.51"' in diag and "dns sinkhole      : pid=" in diag and "grep -c 'redir ports 5300'" in diag
+      'VER="REAPER-DIAG v1.3.61"' in diag and "dns sinkhole      : pid=" in diag and "grep -c 'redir ports 5300'" in diag
       and diag.index("captive redirect  :") < diag.index("dns sinkhole      :"))
 mk = open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "verify_markers.txt"), encoding="utf-8").read()
 check("markers pin the conf path, the redirect and the catch-all answer in the staged rc, and the heal line in the staged gkd",

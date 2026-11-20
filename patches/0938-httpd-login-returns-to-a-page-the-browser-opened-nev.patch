@@ -1,0 +1,91 @@
+From ee4bd2329830a785f59bd6a81c2e04537215b613 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Tue, 3 Nov 2026 18:42:57 -0500
+Subject: [PATCH] httpd: login returns to a page the browser opened, never a
+ background request (102.8 line)
+
+send_login_page() kept the address of whatever request failed the login check as the page to open
+after the next login. A page's background requests fail it too - the security banner's fragment,
+the ajax_ polls - and login then opened the banner fragment as a page: a blank white screen (field
+report on v3.7.0). Only a navigation is kept now: Sec-Fetch-Dest document, iframe or frame, or no
+such header and a name that is not the fragment or an ajax_ poll; anything else returns to the
+index page.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ release/src/router/httpd/httpd.c | 37 ++++++++++++++++++++++++++++++--
+ 1 file changed, 35 insertions(+), 2 deletions(-)
+
+diff --git a/release/src/router/httpd/httpd.c b/release/src/router/httpd/httpd.c
+index 7974771f890..9ca11e43585 100644
+--- a/release/src/router/httpd/httpd.c
++++ b/release/src/router/httpd/httpd.c
+@@ -602,6 +602,29 @@ page_default_redirect(int fromapp_flag, char* url)
+ 	send_page( 200, "OK", (char*) 0, inviteCode, fromapp_flag);
+ }
+ 
++/* reaper 2026-11-03 (metal: a white page after login): send_login_page() records the URL of whatever request failed
++ * auth as the page login returns to. A page's background requests fail auth too - the security banner's GET of its
++ * fragment, the ajax_*.asp polls - and login then opened that fragment as the top page (Reaper_SecBanner.asp is a
++ * hidden-span fragment, so: white). Only a navigation becomes the landing page: Sec-Fetch-Dest document, iframe or
++ * frame; with no such header (curl, old browsers) any name except the fragment and the ajax_ polls. */
++static char reaper_sfd[16];	/* this request's Sec-Fetch-Dest, "" when absent (handle_request) */
++
++static int reaper_login_landing(const char *u)
++{
++	const char *b;
++
++	if (!u || !*u)
++		return 1;
++	if (reaper_sfd[0] && strcasecmp(reaper_sfd, "document") && strcasecmp(reaper_sfd, "iframe") &&
++	    strcasecmp(reaper_sfd, "frame"))
++		return 0;
++	b = strrchr(u, '/');
++	b = b ? b + 1 : u;
++	if (!strncasecmp(b, "Reaper_SecBanner.asp", 20) || !strncasecmp(b, "ajax_", 5))
++		return 0;
++	return 1;
++}
++
+ void
+ send_login_page(int fromapp_flag, int error_status, char* url, char* file, int lock_time, int logintry)
+ {
+@@ -627,9 +650,10 @@ send_login_page(int fromapp_flag, int error_status, char* url, char* file, int l
+ 		}
+ 	}
+ 
+-	if(url == NULL)
++	if(url == NULL || !reaper_login_landing(url)) {	/* reaper: a background request is not a landing page */
+ 		strncpy(login_url, indexpage, sizeof(login_url));
+-	else
++		file = NULL;
++	} else
+ 		strncpy(login_url, url, sizeof(login_url));
+ 
+ 	login_dt = lock_time;
+@@ -1651,6 +1675,7 @@ handle_request(void)
+ 
+ 	/* Initialize the request variables. */
+ 	auth_result = 1;
++	reaper_sfd[0] = '\0';	/* reaper: Sec-Fetch-Dest of this request (reaper_login_landing) */
+ 	url_do_auth = 0;
+ 	boundary = cookies = referer = useragent = NULL;
+ 	host_name[0] = '\0';
+@@ -1786,6 +1811,14 @@ handle_request(void)
+ 			strlcpy(sec_fetch_site, cp, sizeof(sec_fetch_site));
+ 			sec_fetch_site[strcspn(sec_fetch_site, "\r\n \t")] = '\0';
+ 		}
++		else if ( strncasecmp( cur, "Sec-Fetch-Dest:", 15 ) == 0 )
++		{
++			/* reaper 2026-11-03: copied out, cur not advanced (as Sec-Fetch-Site) - reaper_login_landing */
++			cp = &cur[15];
++			cp += strspn( cp, " \t" );
++			strlcpy(reaper_sfd, cp, sizeof(reaper_sfd));
++			reaper_sfd[strcspn(reaper_sfd, "\r\n \t")] = '\0';
++		}
+ 		else if ( strncasecmp( cur, "Host:", 5 ) == 0 )
+ 		{
+ 			cp = &cur[5];
+-- 
+2.25.1
+

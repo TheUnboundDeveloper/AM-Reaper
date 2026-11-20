@@ -1,0 +1,79 @@
+From 8bd42ca3789c647cc0c3b544aa1560c3ad6f0347 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Wed, 18 Nov 2026 17:05:27 -0500
+Subject: [PATCH] Firewall rules from settings: IPv6 fields and keywords
+ checked; SNMP accepted per WAN (102.8 line)
+
+- The writer of the IPv6 filter rules checks each rule field and the keyword list before use, and
+  quotes the keyword string.
+- SNMP access from the WAN is accepted on each WAN interface.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ release/src/router/rc/firewall.c | 26 +++++++++++++++++++++++---
+ 1 file changed, 23 insertions(+), 3 deletions(-)
+
+diff --git a/release/src/router/rc/firewall.c b/release/src/router/rc/firewall.c
+index fade11c8f9..09def4d568 100644
+--- a/release/src/router/rc/firewall.c
++++ b/release/src/router/rc/firewall.c
+@@ -7961,6 +7961,23 @@ TRACE_PT("writing Parental Control\n");
+ 		}
+ #endif
+ 
++		/* reaper 2026-11-17 (review C-4): REAPER-C4-SNMP SNMP from the WAN, as filter_setting() has it - pinned to
++		 * each WAN interface, never open to a guest network or a tunnel. This writer (Dual WAN load balance) had
++		 * no such rule, so the setting did nothing in that mode. */
++		if (nvram_match("snmpd_enable", "1") && nvram_match("snmpd_wan", "1")) {
++			for (unit = WAN_UNIT_FIRST; unit < wan_max_unit; ++unit) {
++				const char *wan_if = get_wan_ifname(unit);	/* a local of this block: the function's own wan_if keeps its value */
++
++				if (!wan_if || !*wan_if)
++					continue;
++				fprintf(fp, "-A INPUT -i %s -p udp --dport 161 -j %s\n", wan_if, logaccept);
++			}
++#ifdef RTCONFIG_IPV6
++			if (ipv6_enabled() && nvram_match("ipv6_fw_enable", "1") && *wan6face)
++				fprintf(fp_ipv6, "-A INPUT -i %s -p udp --dport 161 -j %s\n", wan6face, logaccept);
++#endif
++		}
++
+ #ifdef RTCONFIG_IPV6
+ 		switch (get_ipv6_service()) {
+ 		case IPV6_6IN4:
+@@ -8448,6 +8465,9 @@ TRACE_PT("writing Parental Control\n");
+ 				char srciprule[64], dstiprule[64];
+ 				if ((vstrsep(b, ">", &desc, &srcip, &dstip, &port, &proto) != 5))
+ 					continue;
++				/* reaper 2026-11-17 (review C-4): REAPER-C4-V6RULE the same field check filter_setting() makes */
++				if ((srcip[0] && !_fw_field_safe(srcip)) || (dstip[0] && !_fw_field_safe(dstip)) || !_fw_field_safe(port))
++					continue;
+ 				if (srcip[0] != '\0')
+ 					snprintf(srciprule, sizeof(srciprule), "-s %s", srcip);
+ 				else
+@@ -8926,19 +8946,19 @@ TRACE_PT("write wl filter\n");
+ 		{
+ 			if(vstrsep(b, ">", &filterstr) != 1)
+ 				continue;
+-			if(*filterstr)
++			if(*filterstr && _fw_keyword_safe(filterstr))	/* reaper 2026-11-17 (review C-4): REAPER-C4-KEYWORD as in filter_setting() */
+ 			{
+ #ifndef HND_ROUTER
+ 				fprintf(fp, "-I FORWARD -p tcp --sport 80 %s -m string --string \"%s\" --algo bm -j REJECT --reject-with tcp-reset\n", timef, filterstr);
+ #else
+-				fprintf(fp, "-I FORWARD -p tcp --sport 80 %s -m string --string %s --algo bm -j REJECT --reject-with tcp-reset\n", timef, filterstr);
++				fprintf(fp, "-I FORWARD -p tcp --sport 80 %s -m string --string \"%s\" --algo bm -j REJECT --reject-with tcp-reset\n", timef, filterstr);
+ #endif
+ #ifdef RTCONFIG_IPV6
+ 				if (ipv6_enabled())
+ #ifndef HND_ROUTER
+ 					fprintf(fp_ipv6, "-I FORWARD -p tcp --sport 80 %s -m string --string \"%s\" --algo bm -j REJECT --reject-with tcp-reset\n", timef, filterstr);
+ #else
+-					fprintf(fp_ipv6, "-I FORWARD -p tcp --sport 80 %s -m string --string %s --algo bm -j REJECT --reject-with tcp-reset\n", timef, filterstr);
++					fprintf(fp_ipv6, "-I FORWARD -p tcp --sport 80 %s -m string --string \"%s\" --algo bm -j REJECT --reject-with tcp-reset\n", timef, filterstr);
+ #endif
+ #endif
+ 			}
+-- 
+2.25.1
+

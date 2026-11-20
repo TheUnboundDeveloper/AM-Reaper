@@ -1,0 +1,289 @@
+From 5230657999c2967f883e4f612db85a684a8a83e9 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Mon, 9 Nov 2026 20:28:01 -0500
+Subject: [PATCH] Rule Status walker 1.14: a rule with no target counts; every
+ WAN address masked (102.8 line)
+
+- A rule with no -j / -g only counts what it matches; iptables walks on. The log chains' counter
+  rule had made 35 rows Inconclusive.
+- A port forward whose external ports cover a WAN witness port is matched (GT-BE98 field report).
+- The fixture dump masks every address on every WAN-side device, broadcast included, everywhere it
+  appears.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ .../src/router/reaper_fwsim/reaper_fwsim.c    | 174 +++++++++++++-----
+ 1 file changed, 127 insertions(+), 47 deletions(-)
+
+diff --git a/release/src/router/reaper_fwsim/reaper_fwsim.c b/release/src/router/reaper_fwsim/reaper_fwsim.c
+index 454c6ade8f2..885296b340c 100644
+--- a/release/src/router/reaper_fwsim/reaper_fwsim.c
++++ b/release/src/router/reaper_fwsim/reaper_fwsim.c
+@@ -47,7 +47,7 @@
+ #include <shared.h>
+ #endif
+ 
+-#define FWSIM_VER	"1.13"
++#define FWSIM_VER	"1.14"
+ #define FWSIM_DIR	"/tmp/reaper"
+ #define FWSIM_JSON	FWSIM_DIR "/fwstatus.json"
+ #define FWSIM_STATIC	"/usr/share/reaper/witness.static"
+@@ -1098,6 +1098,11 @@ static int walk_chain(struct ctx *c, struct table *t, struct chain *ch, int dept
+ 	c->hops++;
+ 	for (i = 0; i < ch->n; i++) {
+ 		struct rule *r = &ch->r[i];
++		/* v1.14: a rule with no -j / -g only counts the packets it matches and iptables walks on. The log chains
++		 * carry one on purpose (`-A logaccept -m state --state NEW`, the counter the log collector reads to report
++		 * suppressed lines); read as an unknown target it made every row through logaccept / logdrop inconclusive
++		 * (owner, on the router, 2026-11-08). Nothing it matches can change the outcome, whatever its matches. */
++		if (!r->target[0]) continue;
+ 		/* a rule that consults a field an earlier unmodelled rule may have
+ 		 * set: this is where the deferred doubt is honestly cashed in */
+ 		if (c->p->unsure[0] && ((r->has_mark && (c->p->unsure_f & 1)) || (r->has_cmark && (c->p->unsure_f & 2)) || (r->has_dscp && (c->p->unsure_f & 4)))) {
+@@ -1854,6 +1859,32 @@ static int host_free(const struct addr *net, int want, char *out, size_t len)
+ 	return cand != (base | (unsigned)want);
+ }
+ 
++/* reaper 2026-11-07 (field, GT-BE98): an enabled port forward whose external ports cover tcp/<port> for any WAN
++ * source ("a", "a:b" ranges, "a,b" lists; TCP or BOTH; no source restriction). A6b's DROP is then not the
++ * promise: the forward is the user's own, its translation is witnessed under B, and the router's own port stays
++ * closed. A forward restricted to some sources keeps A6b - from the witness source it must still drop. */
++static int vts_forwards_tcp(int port, char *to, size_t tl)
++{
++	char *rl, *p, *row; int hit = 0;
++	if (!nv_is("vts_enable_x", "1")) return 0;
++	rl = xstrdup(nv_get("vts_rulelist")); p = rl;
++	while (!hit && (row = strsep(&p, "<")) != NULL) {
++		char *f[6] = {"", "", "", "", "", ""}; char *q = row, *pl, *t; int k = 0;
++		if (!row[0]) continue;
++		while (k < 6 && q) { char *e = strchr(q, '>'); f[k++] = q; if (!e) break; *e = 0; q = e + 1; }
++		if (k < 5 || !f[1][0] || !f[2][0]) continue;
++		if (strcasecmp(f[4], "TCP") && strcasecmp(f[4], "BOTH")) continue;
++		if (f[5][0] && strcmp(f[5], "0.0.0.0")) continue;
++		pl = f[1];
++		while ((t = strsep(&pl, ",")) != NULL) {
++			char *c = strchr(t, ':'); int a = atoi(t), b = c ? atoi(c + 1) : a;
++			if (a > 0 && port >= a && port <= b) { snprintf(to, tl, "%s", f[2]); hit = 1; break; }
++		}
++	}
++	free(rl);
++	return hit;
++}
++
+ static void gen_witnesses(void)
+ {
+ 	char lanhost[48], rtr[48], wanip[48], buf[200], id[16], feat[80], lanmac[20];
+@@ -1956,7 +1987,14 @@ static void gen_witnesses(void)
+ 			else
+ 				wit_pkt("A6a", wanweb ? "WAN web management is open (as configured)" : "WAN web management is closed", 4, wan_ifname, (wanweb && acc) ? accw : wansrc, wanip, "tcp", wp, "NEW", wanweb ? "ACCEPT" : "DROP", "", "");
+ 		}
+-		wit_pkt("A6b", "WAN port 80 is closed", 4, wan_ifname, wansrc, wanip, "tcp", "80", "NEW", "DROP", "", "");
++		{
++			char fto[40], note[160];
++			if (vts_forwards_tcp(80, fto, sizeof(fto))) {
++				snprintf(note, sizeof(note), "NOTE tcp/80 is forwarded to %.39s by your port forward (witnessed under B) - the router's own port 80 is not exposed", fto);
++				wit_shape("A6b", "WAN port 80: forwarded to a LAN host by your port forward", 4, note, "OK");
++			} else
++				wit_pkt("A6b", "WAN port 80 is closed", 4, wan_ifname, wansrc, wanip, "tcp", "80", "NEW", "DROP", "", "");
++		}
+ 		{
+ 			char accw[48]; int acc = nv_is("enable_acc_restriction", "1");
+ 			acc_wan_pick(lan4, accw, sizeof(accw));
+@@ -2683,8 +2721,35 @@ static const char *dump_keys[] = {
+ 	NULL
+ };
+ 
+-/* copy `in` to `out`, replacing each non-empty mask string with [WAN-IP] */
+-static void mask_copy(const char *in, const char *out, const char **masks, int nmask)
++/* v1.14 (2026-11-08): replace every occurrence of each mask in `line` by its token ([WAN-IP] / [WAN-BRD]), only
++ * where the mask is a whole address - an IPv4 mask must not eat the front of a longer address (one more digit after
++ * its last part) or the tail of one (one more digit before its first part), and an IPv6 mask must not match inside
++ * a longer address. A port after an IPv4 address (<address>:443) still masks. */
++static void mask_line(char *line, size_t len, const char **masks, const char **toks, int nmask)
++{
++	int i;
++	for (i = 0; i < nmask; i++) {
++		char tmp[4096]; char *at, *from = line; size_t ml; int v6;
++		if (!masks[i] || !masks[i][0]) continue;
++		ml = strlen(masks[i]); v6 = strchr(masks[i], ':') != NULL;
++		/* every occurrence, not just the first: a WAN address shows up many times in one iptables-save line set */
++		while ((at = strstr(from, masks[i])) != NULL) {
++			char pv = at > line ? at[-1] : ' ', nx = at[ml], n2 = nx ? at[ml + 1] : 0;
++			int bad = v6 ? (isxdigit((unsigned char)pv) || pv == ':' || isxdigit((unsigned char)nx) ||
++					(nx == ':' && (isxdigit((unsigned char)n2) || n2 == ':')))
++				     : (isdigit((unsigned char)pv) || pv == '.' || isdigit((unsigned char)nx) ||
++					(nx == '.' && isdigit((unsigned char)n2)));
++			if (bad) { from = at + 1; continue; }
++			snprintf(tmp, sizeof(tmp), "%.*s%s%s", (int)(at - line), line, toks[i], at + ml);
++			from = line + (at - line) + strlen(toks[i]);
++			snprintf(line, len, "%s", tmp);
++			if ((size_t)(from - line) >= strlen(line)) break;
++		}
++	}
++}
++
++/* copy `in` to `out` through mask_line */
++static void mask_copy(const char *in, const char *out, const char **masks, const char **toks, int nmask)
+ {
+ 	FILE *fi = fopen(in, "r"), *fo;
+ 	char line[4096];
+@@ -2692,34 +2757,44 @@ static void mask_copy(const char *in, const char *out, const char **masks, int n
+ 	fo = fopen(out, "w");
+ 	if (!fo) { fclose(fi); return; }
+ 	while (fgets(line, sizeof(line), fi)) {
+-		int i;
+-		for (i = 0; i < nmask; i++) {
+-			char tmp[4096]; char *at; size_t ml;
+-			if (!masks[i] || !masks[i][0]) continue;
+-			ml = strlen(masks[i]);
+-			/* every occurrence, not just the first: a WAN address shows up
+-			 * many times in one iptables-save line set */
+-			while ((at = strstr(line, masks[i])) != NULL) {
+-				snprintf(tmp, sizeof(tmp), "%.*s[WAN-IP]%s", (int)(at - line), line, at + ml);
+-				snprintf(line, sizeof(line), "%s", tmp);
+-			}
+-		}
++		mask_line(line, sizeof(line), masks, toks, nmask);
+ 		fputs(line, fo);
+ 	}
+ 	fclose(fi); fclose(fo);
+ }
+ 
+ static int run_to(const char *path, char *const argv[]);	/* the inputs section below */
+-static void dump_one(const char *dir, const char *suffix, char *const argv[], const char **masks, int nmask)
++static void dump_one(const char *dir, const char *suffix, char *const argv[], const char **masks, const char **toks, int nmask)
+ {
+ 	char tmp[300], dst[300];
+ 	snprintf(tmp, sizeof(tmp), "%s/.fwsim-dump.tmp", dir);
+ 	snprintf(dst, sizeof(dst), "%s/%s", dir, suffix);
+ 	if (run_to(tmp, argv) != 0) { unlink(tmp); return; }
+-	mask_copy(tmp, dst, masks, nmask);
++	mask_copy(tmp, dst, masks, toks, nmask);
+ 	unlink(tmp);
+ }
+ 
++/* v1.14: is ifn one of the router's WAN-side devices (either WAN unit, its PPPoE device, the IPv6 WAN face)? */
++static int dump_wan_if(const char *ifn)
++{
++	static const char *k[] = { "wan0_ifname", "wan0_pppoe_ifname", "wan1_ifname", "wan1_pppoe_ifname", NULL };
++	int i;
++	if (!ifn || !ifn[0]) return 0;
++	if (!strcmp(ifn, wan_ifname) || !strcmp(ifn, wan6_ifname)) return 1;
++	for (i = 0; k[i]; i++) { const char *v = nv_get(k[i]); if (v && v[0] && !strcmp(v, ifn)) return 1; }
++	return 0;
++}
++
++/* v1.14: add s as a mask with token t, once */
++static void dump_mask_add(const char *s, const char *t, char (*store)[48], const char **masks, const char **toks, int *n, int max)
++{
++	int i;
++	if (!s || !s[0] || !strcmp(s, "0.0.0.0") || *n >= max) return;
++	for (i = 0; i < *n; i++) if (!strcmp(masks[i], s)) return;
++	snprintf(store[*n], 48, "%s", s);
++	masks[*n] = store[*n]; toks[*n] = t; (*n)++;
++}
++
+ /* Everything the generator reads, in the shape tier 2 replays, with the WAN
+  * addresses masked. Read-only: it runs the same commands router_inputs()
+  * already runs and writes only into the directory it was handed. */
+@@ -2729,30 +2804,39 @@ static int dump_inputs(const char *dir)
+ 	char *ad[] = { "ip", "-o", "addr", NULL };
+ 	char *r4[] = { "ip", "-4", "rule", "show", NULL }, *r6[] = { "ip", "-6", "rule", "show", NULL };
+ 	char *is[] = { "ipset", "list", "-t", NULL };
+-	const char *masks[2]; int nmask = 0;
++	const char *masks[24], *toks[24]; int nmask = 0;
++	static char mstore[24][48];
+ 	char path[300]; FILE *f; int i;
+ 
+ 	if (mkdir(dir, 0700) != 0 && errno != EEXIST) {
+ 		fprintf(stderr, "cannot create %s: %s\n", dir, strerror(errno));
+ 		return 1;
+ 	}
+-	/* the addresses to mask: whatever the WAN interface actually carries */
+-	{
+-		static char m4[48], m6[48];
+-		const struct addr *w4 = own_first(wan_ifname, 4);
+-		const struct addr *w6 = NULL;
+-		for (i = 0; i < nown; i++)
+-			if (own[i].a.fam == 6 && !own[i].scope_link && !strcmp(own[i].ifname, wan_ifname) && own[i].a.a[0] != 0xfe) { w6 = &own[i].a; break; }
+-		if (w4) { addr_str(w4, m4, sizeof(m4)); masks[nmask++] = m4; }
+-		if (w6) { addr_str(w6, m6, sizeof(m6)); masks[nmask++] = m6; }
+-	}
+-
+-	dump_one(dir, "iptables-save", a4, masks, nmask);
+-	dump_one(dir, "ip6tables-save", a6, masks, nmask);
+-	dump_one(dir, "addr", ad, masks, nmask);
+-	dump_one(dir, "iprule4", r4, masks, nmask);
+-	dump_one(dir, "iprule6", r6, masks, nmask);
+-	dump_one(dir, "ipsets.txt", is, masks, nmask);
++	/* the addresses to mask. v1.14 (2026-11-08): every address on every WAN-side device (it was the first IPv4
++	 * and the first global IPv6 of wan_ifname only - a second WAN unit's address travelled), the IPv4 broadcast
++	 * of each (`brd` in the addr file gave the WAN /24 away) and nvram wan0_ipaddr / wan1_ipaddr */
++	for (i = 0; i < nown; i++) {
++		char s[48];
++		if (!dump_wan_if(own[i].ifname) || own[i].scope_link) continue;
++		if (own[i].a.fam == 6 && own[i].a.a[0] == 0xfe) continue;
++		addr_str(&own[i].a, s, sizeof(s));
++		dump_mask_add(s, "[WAN-IP]", mstore, masks, toks, &nmask, 24);
++		if (own[i].a.fam == 4 && own[i].a.plen > 0 && own[i].a.plen < 31) {
++			struct addr b = own[i].a; unsigned h; uint32_t v;
++			memcpy(&v, b.a, 4); h = 0xffffffffu >> own[i].a.plen; v = htonl(ntohl(v) | h); memcpy(b.a, &v, 4);
++			addr_str(&b, s, sizeof(s));
++			dump_mask_add(s, "[WAN-BRD]", mstore, masks, toks, &nmask, 24);
++		}
++	}
++	dump_mask_add(nv_get("wan0_ipaddr"), "[WAN-IP]", mstore, masks, toks, &nmask, 24);
++	dump_mask_add(nv_get("wan1_ipaddr"), "[WAN-IP]", mstore, masks, toks, &nmask, 24);
++
++	dump_one(dir, "iptables-save", a4, masks, toks, nmask);
++	dump_one(dir, "ip6tables-save", a6, masks, toks, nmask);
++	dump_one(dir, "addr", ad, masks, toks, nmask);
++	dump_one(dir, "iprule4", r4, masks, toks, nmask);
++	dump_one(dir, "iprule6", r6, masks, toks, nmask);
++	dump_one(dir, "ipsets.txt", is, masks, toks, nmask);
+ 
+ 	/* the listening sockets, copied verbatim: /proc/net/{tcp,udp} carry no
+ 	 * addresses worth masking beyond the WAN one handled above */
+@@ -2760,7 +2844,7 @@ static int dump_inputs(const char *dir)
+ 	  const char *ln[4] = { "listeners-tcp", "listeners-tcp6", "listeners-udp", "listeners-udp6" };
+ 	  for (i = 0; i < 4; i++) {
+ 		snprintf(path, sizeof(path), "%s/%s", dir, ln[i]);
+-		mask_copy(lp[i], path, masks, nmask);
++		mask_copy(lp[i], path, masks, toks, nmask);
+ 	  } }
+ 
+ 	snprintf(path, sizeof(path), "%s/nv", dir);
+@@ -2771,14 +2855,8 @@ static int dump_inputs(const char *dir)
+ 			int j;
+ 			char buf2[1024];
+ 			snprintf(buf2, sizeof(buf2), "%s", v ? v : "");
+-			for (j = 0; j < nmask; j++) {
+-				char *at; size_t ml = strlen(masks[j]);
+-				char t2[1024];
+-				while ((at = strstr(buf2, masks[j])) != NULL) {
+-					snprintf(t2, sizeof(t2), "%.*s[WAN-IP]%s", (int)(at - buf2), buf2, at + ml);
+-					snprintf(buf2, sizeof(buf2), "%s", t2);
+-				}
+-			}
++			(void)j;
++			mask_line(buf2, sizeof(buf2), masks, toks, nmask);
+ 			/* a newline in a value would break the key=value fixture format */
+ 			if (strchr(buf2, '\n')) continue;
+ 			fprintf(f, "%s=%s\n", dump_keys[i], buf2);
+@@ -2791,9 +2869,11 @@ static int dump_inputs(const char *dir)
+ 	if (f) {
+ 		fprintf(f, "# reaper_fwsim %s fixture\n# model %s / firmware %s\n# lan %s wan %s\n",
+ 			FWSIM_VER, nv_get("productid"), nv_get("buildno"), lan_ifname, wan_ifname);
+-		fprintf(f, "# the WAN addresses are masked as [WAN-IP]\n");
++		fprintf(f, "# every address on a WAN interface is masked as [WAN-IP], its IPv4 broadcast as [WAN-BRD]\n");
+ 		for (i = 0; i < nown; i++) {
+-			char s[48]; addr_str(&own[i].a, s, sizeof(s));
++			/* v1.14: through the same masks - this list printed the WAN addresses in clear */
++			char s[64]; addr_str(&own[i].a, s, sizeof(s));
++			mask_line(s, sizeof(s), masks, toks, nmask);
+ 			fprintf(f, "%s %s/%d%s\n", own[i].ifname, s, own[i].a.plen, own[i].scope_link ? " (link)" : "");
+ 		}
+ 		fclose(f);
+-- 
+2.25.1
+

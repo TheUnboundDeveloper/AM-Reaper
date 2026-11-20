@@ -1,0 +1,64 @@
+From 86625aa9d25a89b26fa1e0f6fe436d38565dbc90 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Sat, 14 Nov 2026 12:41:11 -0500
+Subject: [PATCH] System Log > IPv6: device names come from the Devices list
+ (102.8 line)
+
+- The IPv6 clients table took its names from the DHCPv6 lease only, so a device with a static
+  address or no lease name showed as unknown while the Devices page knew it. Names are now looked
+  up by MAC the way the Devices page does (the name set there, then the live name, then the lease
+  name).
+
+Co-Authored-By: Claude Fable 5.2 <noreply@anthropic.com>
+---
+ release/src/router/www/Reaper_IPv6.asp | 16 +++++++++++++---
+ 1 file changed, 13 insertions(+), 3 deletions(-)
+
+diff --git a/release/src/router/www/Reaper_IPv6.asp b/release/src/router/www/Reaper_IPv6.asp
+index e15e565220..50ac5d17ec 100644
+--- a/release/src/router/www/Reaper_IPv6.asp
++++ b/release/src/router/www/Reaper_IPv6.asp
+@@ -10,12 +10,18 @@
+ <title>REAPER &mdash; IPv6</title>
+ <!-- Reaper_IPv6.asp - System Log > IPv6 (Reaper-native UI, System Log wave, 2026-10-23).
+      Replaces Main_IPV6Status_Content.asp. Data: httpd ej_lan_ipv6_network_array (data_arrays.c: the WAN/LAN IPv6
+-     configuration, then the LAN's IPv6 neighbours with their lease/networkmap names; SIGUSR2 to dnsmasq + an
++     configuration, then the LAN's IPv6 neighbours with their DHCP lease hostname; SIGUSR2 to dnsmasq + an
+      `ip neigh` fork per load) and, on IGD2 builds, ej_ipv6_pinhole_array (/tmp/upnp.leases6 after SIGUSR2 to
+      miniupnpd, ~1 s). Rows: [hostname, MAC, "addr, addr"]; pinholes [proto, remote ip, remote port, local ip,
+      local port, timestamp, description]. Stock bug not carried over: it popped the [] sentinel and then tested
+      length > 1, so exactly one client showed as "No IPv6 clients". The emitter now escapes hostnames and
+-     descriptions and always closes its arrays (2026-10-23). No polling. -->
++     descriptions and always closes its arrays (2026-10-23). No polling.
++     Device names (2026-11-14, field report): the emitter knows only the DHCP lease hostname, so a device with a
++     static address ("<unknown>") or one that sent no hostname ("*") had no name here while the Devices page named
++     it. Rows now ask ReaperNames (reaper_util.js: networkmap's live name, else the user's own name from
++     custom_clientlist) by MAC, the same source as the Leases / Connections / DNS pages; the lease hostname is the
++     fallback, then "-". The user's own names are there on the first draw; the table draws again when the live
++     list arrives. -->
+ <link rel="stylesheet" href="/reaper/rp.css">
+ <style>
+ .kv{display:grid;grid-template-columns:minmax(200px,320px) 1fr;gap:6px 22px;font-size:13px}
+@@ -81,7 +87,10 @@ function drawCfg(){
+ }
+ var SORT = {k: 'host', dir: 1};
+ function drawCli(){
+-  var list = rows(ipv6clientarray).map(function(r){ return {host: r[0] === '*' ? '' : r[0], mac: r[1], addr: r[2]}; });
++  var list = rows(ipv6clientarray).map(function(r){
++    var lease = (r[0] === '*' || r[0] === '<unknown>') ? '' : r[0];
++    return {host: ReaperNames.byMac(r[1], lease), mac: r[1], addr: r[2]};
++  });
+   if (!list.length){ q('cli').innerHTML = '<div class="empty">' + hx(`<#RLOG_60#>`) + '</div>'; return; }
+   var cmp = rp.cmp('text'); list.sort(function(a, b){ return SORT.dir * cmp(a[SORT.k], b[SORT.k]); });
+   var heads = [['host', `<#RLOG_50#>`], ['mac', `<#RLOG_52#>`], ['addr', `<#RLOG_61#>`]];
+@@ -113,6 +122,7 @@ q('cli').addEventListener('click', function(e){
+ });
+ q('b_refresh').addEventListener('click', function(){ location.reload(); });
+ try { drawCfg(); } catch (e) { q('cfg').innerHTML = '<div class="empty">' + hx(`<#RADM_78#>`) + '</div>'; }
++try { ReaperNames.refresh('<% nvram_char_to_ascii("", "custom_clientlist"); %>', function(){ try { drawCli(); } catch (e) {} }); } catch (e) {}
+ try { drawCli(); } catch (e) { q('cli').innerHTML = '<div class="empty">' + hx(`<#RADM_78#>`) + '</div>'; }
+ try { drawPin(); } catch (e) {}
+ })();
+-- 
+2.25.1
+

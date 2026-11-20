@@ -1,0 +1,860 @@
+From 7086c7c0da4428614643ea340d7be7e74ee1c57c Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Wed, 18 Nov 2026 17:05:25 -0500
+Subject: [PATCH] Rules engine, Policy Routing and guest isolation load their
+ rules in one step (102.8 line)
+
+- The rules engine queues its iptables lines and loads each table with one iptables-restore
+  --noflush, and its literal objects with one ipset restore. A refused load re-runs the
+  rule-by-rule path with its failure count; a refused set restore replays entry by entry and names
+  the rejected entry.
+- Policy Routing loads its staging chain with one restore per family before the jump moves.
+- Guest isolation replaces each family's filter chains in one commit, with no part-filled window;
+  the flow purge runs only when the rules, the live chains or the jumps differ from the last
+  complete load.
+- A domain list's saved addresses are replayed only into an empty set, so a firewall restart no
+  longer gives every saved address a fresh hour. The resolver's comparison copy is built in /tmp;
+  /jffs is written only on a change.
+- The settings these scripts and the self-monitor read are fetched in one batch (new
+  rc/reaper_nv.h helper); a failed batch falls back to single reads.
+- The rules-engine revert script takes its arm marker first, rebuilds under the shared lock and is
+  mode 0700.
+- New rc/reaper_cc.h: the commit-confirm window and the deadline watcher, one copy for both
+  engines.
+- The firewall log settings file is written atomically.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ release/src/router/rc/reaper_cc.h    |  55 ++++++++
+ release/src/router/rc/reaper_fw.c    | 179 ++++++++++++++++++++-------
+ release/src/router/rc/reaper_fwlog.c |  17 +--
+ release/src/router/rc/reaper_guest.c |  57 ++++++++-
+ release/src/router/rc/reaper_nv.h    |  21 ++++
+ release/src/router/rc/reaper_pbr.c   |  66 ++++++----
+ release/src/router/rc/rwatch.c       |  60 +++++----
+ 7 files changed, 349 insertions(+), 106 deletions(-)
+ create mode 100644 release/src/router/rc/reaper_cc.h
+
+diff --git a/release/src/router/rc/reaper_cc.h b/release/src/router/rc/reaper_cc.h
+new file mode 100644
+index 0000000000..e48278012e
+--- /dev/null
++++ b/release/src/router/rc/reaper_cc.h
+@@ -0,0 +1,55 @@
++/*
++ * reaper_cc.h - reaper 2026-11-18 (review 2026-11-17, C-D2): the two parts of commit-confirm that the rules engine
++ * (rc/reaper_fw.c) and Policy Routing (rc/reaper_pbr.c) each carried as an identical copy.
++ *
++ *   reaper_cc_secs()  the confirm window in seconds. ONE setting, reaper_fw_confirm, times both engines; the floor
++ *                     is never 0 (an apply that can cut the admin off must always revert on its own).
++ *   reaper_cc_gen()   the deadline watcher cron runs every minute: nothing armed, no readable deadline, or the
++ *                     deadline not reached -> exit; otherwise run the engine's pre-generated revert script. It needs
++ *                     neither httpd nor rc alive, which is the case it exists for.
++ *
++ * NOT here, on purpose: arm / confirm / revert themselves. The two engines differ in substance there (what a
++ * snapshot holds, the object sets, the token order, what runs under reaper_lockrun), and each copy carries fixes
++ * the other needed in its own form. Folding them is a change of behaviour, not of layout.
++ *
++ * The four paths are compile-time strings of the caller, never operator text.
++ */
++#ifndef REAPER_CC_H
++#define REAPER_CC_H
++#include <stdio.h>
++#include <sys/stat.h>
++#include "reaper_nv.h"
++
++#define REAPER_CC_MIN	15	/* floor, seconds (never 0) */
++#define REAPER_CC_DEF	60
++#define REAPER_CC_MAX	3600
++
++static inline int reaper_cc_secs(void)
++{
++	int n = nvram_get_int("reaper_fw_confirm");
++
++	if (n < REAPER_CC_MIN)
++		n = (n <= 0) ? REAPER_CC_DEF : REAPER_CC_MIN;
++	if (n > REAPER_CC_MAX)
++		n = REAPER_CC_MAX;
++	return n;
++}
++
++static inline void reaper_cc_gen(const char *cc, const char *armed, const char *deadline, const char *rollback)
++{
++	FILE *f = fopen(cc, "w");
++
++	if (!f)
++		return;
++	fputs("#!/bin/sh\n" REAPER_NV_HELPER, f);
++	fprintf(f,
++	  "[ -d %s ] || exit 0\n"
++	  "D=\"$(cat %s 2>/dev/null)\"\n"
++	  "case \"$D\" in ''|*[!0-9]*) exit 0;; esac\n"
++	  "N=\"$(date +%%s)\"\n"
++	  "[ \"$N\" -lt \"$D\" ] && exit 0\n"
++	  "sh %s\n", armed, deadline, rollback);
++	fclose(f);
++	chmod(cc, 0700);
++}
++#endif
+diff --git a/release/src/router/rc/reaper_fw.c b/release/src/router/rc/reaper_fw.c
+index 1120a9617e..6c2d480bf2 100644
+--- a/release/src/router/rc/reaper_fw.c
++++ b/release/src/router/rc/reaper_fw.c
+@@ -105,6 +105,7 @@
+ #include <reaper_fwlog.h>	/* 2026-11-08: the firewall log target (NFLOG group 43 / limited LOG) */
+ #include <arpa/inet.h>
+ #include "reaper_nv.h"	/* _nv: nvram get with a 5 s ceiling (security review 2026-08-22 F2) */
++#include "reaper_cc.h"	/* 2026-11-18 (review C-D2): the confirm window and the deadline watcher, shared with reaper_pbr.c */
+ 
+ #define RFW_DIR      "/tmp/reaper_fw"
+ #define RFW_APPLY    RFW_DIR "/apply.sh"          /* idempotent teardown+build (committed set) */
+@@ -777,9 +778,12 @@ static void rfw_emit_one_set(FILE *f, const char *type, const char *name,
+ 		const char *s[2]; int i;
+ 		s[0] = RFW_SET4; s[1] = RFW_SET6;
+ 		for (i = 0; i < 2; i++) {
++			/* reaper 2026-11-18 (review C-E2) REAPER-FW-SETHDR: the set header is read ONCE into a shell variable
++			 * and judged there (it was `ipset list | grep` per test); the same text answers "is it empty" below. */
+ 			fprintf(f,
+-			  "ipset list -t %s%s 2>/dev/null | grep -q '^Header:.*timeout' || "
+-			  "ipset destroy %s%s 2>/dev/null\n", s[i], name, s[i], name);
++			  "_h=\"$(ipset list -t %s%s 2>/dev/null)\"\n"
++			  "case \"$_h\" in ''|*Header:*timeout*) ;; *) ipset destroy %s%s 2>/dev/null; _h='';; esac\n",
++			  s[i], name, s[i], name);
+ 			fprintf(f, "ipset create %s%s %s%s timeout %d -exist\n",
+ 			        s[i], name, stype, i ? " family inet6" : "", RFW_FQDN_TTL);
+ 			/* 2026-08-21: sets are kernel-resident and come back EMPTY after a
+@@ -788,7 +792,15 @@ static void rfw_emit_one_set(FILE *f, const char *type, const char *name,
+ 			 * saves each fqdn set's members to /jffs after every pass (timeouts
+ 			 * stripped, so a restored member gets a full TTL); replay them here,
+ 			 * add-lines only, so a stale cache line can never abort the script. */
+-			fprintf(f, "[ -f " RFW_SETCACHE "/%s%s ] && grep '^add ' " RFW_SETCACHE "/%s%s | ipset restore -exist 2>/dev/null\n",
++			/* reaper 2026-11-18 (Policy Routing field report) REAPER-FW-REPLAY-EMPTY: replay ONLY into an empty set.
++			 * This script runs on every firewall restart, and a replay with -exist gave every saved address a
++			 * fresh hour each time - an address the list had stopped resolving to outlived its expiry for as
++			 * long as restarts kept coming, and a list matches by ADDRESS: a CDN address that has moved on to
++			 * another site kept routing that site by this list. A set with members is live and is left to its
++			 * own timers. A header without a count (older ipset) reads as empty: replayed, as before. */
++			fprintf(f,
++			  "_n=\"${_h##*Number of entries: }\"; [ \"$_n\" = \"$_h\" ] && _n=''; _n=\"${_n%%%%[!0-9]*}\"\n"
++			  "[ \"${_n:-0}\" = 0 ] && [ -f " RFW_SETCACHE "/%s%s ] && grep '^add ' " RFW_SETCACHE "/%s%s | ipset restore -exist 2>/dev/null\n",
+ 			        s[i], name, s[i], name);
+ 			strlcat(keep, " ", keeplen);
+ 			strlcat(keep, s[i], keeplen);
+@@ -806,17 +818,22 @@ static void rfw_emit_one_set(FILE *f, const char *type, const char *name,
+ 	 * fqdn branch above already destroys-on-mismatch; do the same here. The
+ 	 * chains were torn down at the top of this script, so nothing references
+ 	 * the set and the destroy is safe. */
+-	fprintf(f, "if ipset list -t %s%s 2>/dev/null | grep -q '^Type: ' && "
+-	           "! ipset list -t %s%s 2>/dev/null | grep -qx 'Type: %s'; then ipset destroy %s%s 2>/dev/null; fi\n",
+-	        RFW_SET4, name, RFW_SET4, name, stype, RFW_SET4, name);
+-	fprintf(f, "ipset create %s%s %s -exist\n", RFW_SET4, name, stype);
+-	fprintf(f, "ipset flush %s%s\n", RFW_SET4, name);
++	/* reaper 2026-11-18 (review C-E2) REAPER-FW-SETBATCH: a literal object used to cost two `ipset list | grep`
++	 * pairs, a create and a flush per family, then one `ipset add` PROCESS per member. The type test now reads
++	 * the header once into a shell variable, and create / flush / add are queued through RFWS for the single
++	 * `ipset restore` at the end of rfw_emit_sets() (which also replays them one by one if that is refused).
++	 * The pattern holds a real newline: "Type: hash:ip" must not accept "Type: hash:ip,port". */
++	fprintf(f, "_h=\"$(ipset list -t %s%s 2>/dev/null)\"\n"
++	           "case \"$_h\" in ''|*\"Type: %s\n\"*) ;; *) ipset destroy %s%s 2>/dev/null;; esac\n",
++	        RFW_SET4, name, stype, RFW_SET4, name);
++	fprintf(f, "RFWS create %s%s %s\n", RFW_SET4, name, stype);
++	fprintf(f, "RFWS flush %s%s\n", RFW_SET4, name);
+ 	if (strcmp(type, "mac") != 0) {
+-		fprintf(f, "if ipset list -t %s%s 2>/dev/null | grep -q '^Type: ' && "
+-		           "! ipset list -t %s%s 2>/dev/null | grep -qx 'Type: %s'; then ipset destroy %s%s 2>/dev/null; fi\n",
+-		        RFW_SET6, name, RFW_SET6, name, stype, RFW_SET6, name);
+-		fprintf(f, "ipset create %s%s %s family inet6 -exist\n", RFW_SET6, name, stype);
+-		fprintf(f, "ipset flush %s%s\n", RFW_SET6, name);
++		fprintf(f, "_h=\"$(ipset list -t %s%s 2>/dev/null)\"\n"
++		           "case \"$_h\" in ''|*\"Type: %s\n\"*) ;; *) ipset destroy %s%s 2>/dev/null;; esac\n",
++		        RFW_SET6, name, stype, RFW_SET6, name);
++		fprintf(f, "RFWS create %s%s %s family inet6\n", RFW_SET6, name, stype);
++		fprintf(f, "RFWS flush %s%s\n", RFW_SET6, name);
+ 	}
+ 	strlcat(keep, " ", keeplen); strlcat(keep, RFW_SET4, keeplen); strlcat(keep, name, keeplen);
+ 	if (strcmp(type, "mac") != 0) {
+@@ -836,9 +853,8 @@ static void rfw_emit_one_set(FILE *f, const char *type, const char *name,
+ 		if (!ok) { bad++; continue; }
+ 		/* S2: only tokens that passed a structural validator ever reach the
+ 		 * generated shell, and their charsets cannot break out of the line. */
+-		fprintf(f, "ipset add %s%s %s -exist || logger -t reaper_fw "
+-		           "'object %s: entry rejected by ipset: %s'\n",
+-		        (v6 && strcmp(type, "mac")) ? RFW_SET6 : RFW_SET4, name, tok, name, tok);
++		fprintf(f, "RFWS add %s%s %s\n",
++		        (v6 && strcmp(type, "mac")) ? RFW_SET6 : RFW_SET4, name, tok);
+ 	}
+ 	free(dup);
+ 	if (bad)
+@@ -852,6 +868,11 @@ static void rfw_emit_sets(FILE *f, const rfw_cfg_t *c, char *keep, size_t keeple
+ 	int n = 0;
+ 	if (!c->obj || !*c->obj) return;
+ 	if (!(dup = strdup(c->obj))) return;
++	/* reaper 2026-11-18 (review C-E2) REAPER-FW-SETBATCH: the literal objects' create / flush / add lines are
++	 * queued in a file (RFW_DIR is root-only, 0700; the pid keeps a sets-only run and a full apply apart) and
++	 * loaded by ONE `ipset restore` after the loop. */
++	fprintf(f, "RFWSB=" RFW_DIR "/sets.batch.$$; : > \"$RFWSB\"\n"
++	           "RFWS() { echo \"$*\" >> \"$RFWSB\"; }\n");
+ 	for (tok = strtok_r(dup, "<", &save); tok; tok = strtok_r(NULL, "<", &save)) {
+ 		char name[RFW_NAME_MAX + 2], type[16], val[RFW_VAL_MAX];
+ 		if (++n > RFW_MAX_OBJ) {
+@@ -875,6 +896,23 @@ static void rfw_emit_sets(FILE *f, const rfw_cfg_t *c, char *keep, size_t keeple
+ 		rfw_emit_one_set(f, type, name, val, keep, keeplen);
+ 	}
+ 	free(dup);
++	/* one load for every literal object. `ipset restore` stops at the first line it refuses, so on a refusal the
++	 * same lines are run one by one, exactly as this script did before: every good entry still loads and each
++	 * rejected one is named in the log (create and flush are repeatable, add carries -exist). The words come
++	 * from the validators above - set names, set types and address / MAC / range tokens only. */
++	fprintf(f,
++	  "if [ -s \"$RFWSB\" ] && ! ipset restore -exist < \"$RFWSB\" 2>/dev/null; then\n"
++	  "  logger -t reaper_fw 'batched object load refused - loading entry by entry'\n"
++	  "  while read -r _c _s _r; do\n"
++	  "    case \"$_c\" in\n"
++	  "      create) ipset create \"$_s\" $_r -exist;;\n"
++	  "      flush) ipset flush \"$_s\";;\n"
++	  "      add) _o=\"${_s#" RFW_SET6 "}\"; _o=\"${_o#" RFW_SET4 "}\"\n"
++	  "           ipset add \"$_s\" $_r -exist || logger -t reaper_fw \"object $_o: entry rejected by ipset: $_r\";;\n"
++	  "    esac\n"
++	  "  done < \"$RFWSB\"\n"
++	  "fi\n"
++	  "rm -f \"$RFWSB\"\n");
+ }
+ 
+ /* ---------------------------------------------------------------------------
+@@ -1127,9 +1165,14 @@ static void rfw_gen_resolve(const rfw_cfg_t *c)
+ 	  "    [ \"$N\" -gt 0 ] || continue\n"
+ 	  /* 2026-10-03 (perf audit P14): rewrite only when the members changed - a
+ 	   * static list was hitting /jffs 144 times a day per set. */
+-	  "    ipset save $s 2>/dev/null | sed -n 's/ timeout [0-9]*$//; /^add /p' > " RFW_SETCACHE "/$s.tmp\n"
++	  /* reaper 2026-11-18 (review C-E3) REAPER-FW-SAVE-RAM: the comparison copy is built in RAM (RFW_DIR, root-only).
++	   * It was built on /jffs and deleted again when nothing had changed - a create, a write and an unlink on
++	   * flash per set, 144 times a day, for a list that stays the same. /jffs is written only on a change
++	   * (temp + rename, so a power cut never leaves half a list). */
++	  "    ipset save $s 2>/dev/null | sed -n 's/ timeout [0-9]*$//; /^add /p' > " RFW_DIR "/setsave.$$\n"
+ 	  "    # fqdn cache: rewrite only when changed\n"
+-	  "    if cmp -s " RFW_SETCACHE "/$s.tmp " RFW_SETCACHE "/$s 2>/dev/null; then rm -f " RFW_SETCACHE "/$s.tmp; else mv " RFW_SETCACHE "/$s.tmp " RFW_SETCACHE "/$s; fi\n"
++	  "    cmp -s " RFW_DIR "/setsave.$$ " RFW_SETCACHE "/$s 2>/dev/null || { cp " RFW_DIR "/setsave.$$ " RFW_SETCACHE "/$s.tmp && mv " RFW_SETCACHE "/$s.tmp " RFW_SETCACHE "/$s; }\n"
++	  "    rm -f " RFW_DIR "/setsave.$$\n"
+ 	  "  done\n"
+ 	  "  for fpath in " RFW_SETCACHE "/" RFW_SET4 "* " RFW_SETCACHE "/" RFW_SET6 "*; do\n"
+ 	  "    [ -f \"$fpath\" ] || continue; b=${fpath##*/}; case \" $SAVE \" in *\" $b \"*) ;; *) rm -f \"$fpath\";; esac\n"
+@@ -2107,9 +2150,15 @@ static int rfw_gen_apply(const char *path, const rfw_cfg_t *c, int teardown_only
+ 	fprintf(f,
+ 	  "#!/bin/sh\n" REAPER_NV_HELPER
+ 	  "# generated by reaper_fw - do not edit; idempotent (teardown then rebuild)\n"
+-	  "LANIF=\"$(_nv lan_ifname)\"\n"
+-	  "LANIP=\"$(_nv lan_ipaddr)\"\n"
+-	  "LANMASK=\"$(_nv lan_netmask)\"\n"
++	  /* reaper 2026-11-18 (review C-E1) REAPER-FW-NVC: the ten settings this script reads come from ONE guarded
++	   * `nvram show`. They were ten `_nv` calls - a subshell, two rm, a create, a background nvram, a 20 ms
++	   * sleep and a cat each - on every firewall restart, in PID 1, under the firewall lock. All ten are read
++	   * at the same moment, when the script starts, so one snapshot is exactly as current as ten reads were. */
++	  REAPER_NVS_HELPER
++	  REAPER_NVC_HELPER_FMT("lan_ifname lan_ipaddr lan_netmask wan0_ifname wan_ifname https_lanport http_enable http_lanport sshd_enable sshd_port")
++	  "LANIF=\"$(_nvc lan_ifname)\"\n"
++	  "LANIP=\"$(_nvc lan_ipaddr)\"\n"
++	  "LANMASK=\"$(_nvc lan_netmask)\"\n"
+ 	  /* S2: these run-time values are spliced into root iptables commands.
+ 	   * Reject anything outside the expected charset before use. */
+ 	  "case \"$LANIF\" in ''|*[!A-Za-z0-9._-]*) logger -t reaper_fw 'bad lan_ifname'; exit 1;; esac\n"
+@@ -2143,19 +2192,19 @@ static int rfw_gen_apply(const char *path, const rfw_cfg_t *c, int teardown_only
+ 	   * guarded with [ -n "$WANIF" ], so a box whose WAN is not up simply emits
+ 	   * no egress/forward lines rather than emitting unanchored ones - an
+ 	   * unanchored "-o ''" would match LAN-to-LAN traffic too. */
+-	  "WANIF=\"$(_nv wan0_ifname)\"\n"
+-	  "[ -z \"$WANIF\" ] && WANIF=\"$(_nv wan_ifname)\"\n"
++	  "WANIF=\"$(_nvc wan0_ifname)\"\n"
++	  "[ -z \"$WANIF\" ] && WANIF=\"$(_nvc wan_ifname)\"\n"
+ 	  "case \"$WANIF\" in *[!A-Za-z0-9._-]*) WANIF=\"\";; esac\n"
+ 	  /* the arming session's address, written by the CGI (S1/S3) */
+ 	  "ADM=\"\"; ADMV6=0\n"
+ 	  "[ -f " RFW_ADMIN " ] && ADM=\"$(cat " RFW_ADMIN " 2>/dev/null)\"\n"
+ 	  "case \"$ADM\" in *[!0-9a-fA-F.:]*) ADM=\"\";; esac\n"
+ 	  "case \"$ADM\" in *:*) ADMV6=1;; esac\n"
+-	  "MGMT=\"$(_nv https_lanport)\"\n"
+-	  "[ \"$(_nv http_enable)\" = \"0\" ] && MGMT=\"$(_nv http_lanport)\"\n"
++	  "MGMT=\"$(_nvc https_lanport)\"\n"
++	  "[ \"$(_nvc http_enable)\" = \"0\" ] && MGMT=\"$(_nvc http_lanport)\"\n"
+ 	  "case \"$MGMT\" in ''|0|*[!0-9]*) MGMT=443;; esac\n"
+-	  "SSHEN=\"$(_nv sshd_enable)\"\n"
+-	  "SSHP=\"$(_nv sshd_port)\"\n"
++	  "SSHEN=\"$(_nvc sshd_enable)\"\n"
++	  "SSHP=\"$(_nvc sshd_port)\"\n"
+ 	  "case \"$SSHP\" in ''|0|*[!0-9]*) SSHP=22;; esac\n"
+ 	  "\n");
+ 
+@@ -2255,11 +2304,30 @@ static int rfw_gen_apply(const char *path, const rfw_cfg_t *c, int teardown_only
+ 	 * tidier, but busybox ash on this image is built without the `command`
+ 	 * builtin (CONFIG_ASH_CMDCMD unset), so it could not call through to the
+ 	 * real tool without hardcoding its path. */
++	/* reaper 2026-11-18 (review C-E2) REAPER-FW-BATCH: every `-A` / `-I` that reaches RFWR or RFWH is QUEUED,
++	 * one file per tool and table, and loaded by one `iptables-restore --noflush` per file further down
++	 * (REAPER-FW-BATCH-COMMIT). It was one iptables process per rule, and each of them fetches and replaces
++	 * the whole table: about 110 processes for an empty ruleset, growing with the square of the rule count,
++	 * all under the firewall lock. The emitters are unchanged and the shell still decides what is emitted
++	 * (the admin exemption, the rate-limit probe, the log target), so the queued lines are the same rules in
++	 * the same order. Everything that is not an append or an insert - the chain create and flush, every
++	 * test - still runs at once. A queue is all-or-nothing per table: if one is refused, or an argument holds
++	 * a character the restore format cannot carry, this script runs itself again with RFW_NOBATCH=1 and
++	 * loads rule by rule exactly as before, which keeps the per-rule failure count and its log lines. */
+ 	fprintf(f,
+ 	  "RFW_FAIL=0\n"
+-	  "RFWR() { \"$@\" || { RFW_FAIL=$((RFW_FAIL+1)); logger -t reaper_fw \"rule failed: $*\"; }; }\n"
+ 	  "RFW_HARD=0\n"
+-	  "RFWH() { \"$@\" || { RFW_HARD=$((RFW_HARD+1)); logger -t reaper_fw \"structural step failed: $*\"; }; }\n"
++	  "RFWB=1; [ -n \"$RFW_NOBATCH\" ] && RFWB=0\n"
++	  "RFWBD=" RFW_DIR "/batch.$$; rm -f \"$RFWBD\".*\n"
++	  "_rfwq() { _qf=$1; shift; _ql=''\n"
++	  "  for _qa in \"$@\"; do\n"
++	  "    case \"$_qa\" in *[\\\"\\\\]*) : > \"$RFWBD.bad\";; esac\n"
++	  "    case \"$_qa\" in ''|*[!A-Za-z0-9_./:,+=@!-]*) _ql=\"$_ql \\\"$_qa\\\"\";; *) _ql=\"$_ql $_qa\";; esac\n"
++	  "  done; echo \"${_ql# }\" >> \"$_qf\"; }\n"
++	  "_rfwb() { [ \"$RFWB\" != 0 ] || return 1; _qb=$1; shift; _qt=filter; if [ \"$1\" = -t ]; then _qt=$2; shift 2; fi\n"
++	  "  case \"$1\" in -A|-I) _rfwq \"$RFWBD.$_qb.$_qt\" \"$@\"; return 0;; esac; return 1; }\n"
++	  "RFWR() { _rfwb \"$@\" && return 0; \"$@\" || { RFW_FAIL=$((RFW_FAIL+1)); logger -t reaper_fw \"rule failed: $*\"; }; }\n"
++	  "RFWH() { _rfwb \"$@\" && return 0; \"$@\" || { RFW_HARD=$((RFW_HARD+1)); logger -t reaper_fw \"structural step failed: $*\"; }; }\n"
+ 	  /* 2026-11-08: a log rule picks NFLOG (rflogd running) or the limited LOG when this script RUNS - it is
+ 	   * re-run by every restart_firewall, so a log-path change never needs this script (or the armed candidate,
+ 	   * or the rollback) regenerated. RFLR <group> '<prefix>' '<LOG-path limit>' <iptables command...> */
+@@ -2348,6 +2416,27 @@ static int rfw_gen_apply(const char *path, const rfw_cfg_t *c, int teardown_only
+ 		           "{ [ -e " RFW_HC_STATE " ] || [ -e " RFW_HC_DOWN4 " ]; } && iptables -t nat -nL " RFW_CHAIN_HC " >/dev/null 2>&1 && RFWR iptables -t nat -I " RFW_CHAIN_HC " 1 -j RETURN\n"
+ 		           "{ [ -e " RFW_HC_STATE " ] || [ -e " RFW_HC_DOWN6 " ]; } && ip6tables -t nat -nL " RFW_CHAIN_HC " >/dev/null 2>&1 && RFWR ip6tables -t nat -I " RFW_CHAIN_HC " 1 -j RETURN\n\n");
+ 
++	/* reaper 2026-11-18 (review C-E2) REAPER-FW-BATCH-COMMIT: load what RFWR / RFWH queued - one commit per
++	 * tool and table, so a chain goes from empty to complete in one step instead of filling rule by rule.
++	 * Before the set sweep (the rules are in when unused sets go) and before hook.sh points the base chains
++	 * here. A refusal re-runs this script rule by rule; the teardown at its top clears whatever a first
++	 * commit had already loaded. */
++	fprintf(f,
++	  "if [ \"$RFWB\" != 0 ]; then\n"
++	  "  _qok=1; _qe='an argument the restore format cannot carry'; [ -e \"$RFWBD.bad\" ] && _qok=0\n"
++	  "  for _qk in iptables.filter ip6tables.filter iptables.nat ip6tables.nat; do\n"
++	  "    [ \"$_qok\" = 1 ] && [ -s \"$RFWBD.$_qk\" ] || continue\n"
++	  "    case \"$_qk\" in ip6tables.*) _qb=ip6tables;; *) _qb=iptables;; esac\n"
++	  "    _qe=\"$({ echo \"*${_qk#*.}\"; cat \"$RFWBD.$_qk\"; echo COMMIT; } | $_qb-restore --noflush 2>&1)\" || _qok=0\n"
++	  "  done\n"
++	  "  rm -f \"$RFWBD\".*\n"
++	  "  if [ \"$_qok\" != 1 ]; then\n"
++	  "    logger -t reaper_fw \"batched rule load refused ($_qe) - loading rule by rule\"\n"
++	  "    if [ -f \"$0\" ]; then export RFW_NOBATCH=1; exec sh \"$0\" \"$@\"; fi\n"
++	  "    RFW_HARD=$((RFW_HARD+1)); logger -t reaper_fw 'this script could not be run again rule by rule'\n"
++	  "  fi\n"
++	  "fi\n\n");
++
+ 	/* ---- sweep sets belonging to objects that no longer exist ----
+ 	 * after the chains are rebuilt, so nothing still in use is destroyed. */
+ 	fprintf(f,
+@@ -2478,10 +2567,7 @@ static void rfw_write_admin(void)
+ 
+ static int rfw_confirm_secs(void)
+ {
+-	int n = nvram_get_int("reaper_fw_confirm");
+-	if (n < RFW_CONFIRM_MIN) n = (n <= 0) ? RFW_CONFIRM_DEF : RFW_CONFIRM_MIN;
+-	if (n > RFW_CONFIRM_MAX) n = RFW_CONFIRM_MAX;
+-	return n;
++	return reaper_cc_secs();	/* reaper 2026-11-18 (review C-D2): one copy, rc/reaper_cc.h */
+ }
+ 
+ /* persist the CONFIRMED config as the rollback source. One file per key so a
+@@ -2647,9 +2733,18 @@ static void rfw_gen_rollback(void)
+ 	 * config rollback (the confirmed lists never left /jffs). The old
+ 	 * per-key `nvram set` could not have restored a list over 1 KB anyway. */
+ 	(void)i;
++	/* reaper 2026-11-17 (review C-2): the two guards Policy Routing's revert got in v3.0.5 (rc/reaper_pbr.c).
++	 * 1. The arm marker is the single-arm token and this script removed it LAST, after the rebuild: a Keep
++	 *    landing inside that time succeeded (reaper_fw_confirm() test-and-clears the same marker), so the
++	 *    candidate became the boot ruleset while this script was installing the previous one. Taking the
++	 *    token FIRST makes Keep and revert mutually exclusive: whichever wins goes on, the other is a logged
++	 *    no-op.
++	 * 2. The rebuild runs under the firewall lock (reaper_lockrun lists this path), like every other writer
++	 *    of these chains; the cron watcher used to run it beside a firewall restart. */
++	fprintf(f, "rmdir " RFW_ARMED " 2>/dev/null || { logger -t reaper_fw 'commit-confirm: nothing is awaiting confirmation - revert skipped'; exit 0; }\n");
+ 	fprintf(f, "rm -rf " REAPER_FW_DRAFT_DIR "\n");
+ 	fprintf(f,
+-	  "sh " RFW_ROLLBACK ".rules 2>/dev/null || {\n"
++	  "reaper_lockrun " RFW_ROLLBACK ".rules >/dev/null 2>&1 || {\n"
+ 	  /* S3 last resort: if even the known-good ruleset will not build, remove
+ 	   * our jumps so the base firewall alone governs the box. Fail OPEN for our
+ 	   * layer, never leave a half-built chain in the path. */
+@@ -2664,29 +2759,19 @@ static void rfw_gen_rollback(void)
+ 	  "  done\n"
+ 	  "}\n"
+ 	  "rm -f " RFW_DEADLINE "\n"
+-	  "rmdir " RFW_ARMED " 2>/dev/null\n"
+ 	  "cru d reaper_fw_cc 2>/dev/null\n"
+ 	  "nvram set reaper_fw_armed=0\n"
+ 	  "logger -t reaper_fw 'commit-confirm: reverted to the last confirmed ruleset'\n");
+ 	fclose(f);
+ 	chmod(RFW_ROLLBACK, 0700);
++	chmod(RFW_ROLLBACK ".rules", 0700);	/* reaper_lockrun runs only a root-owned file nobody else can write */
+ }
+ 
+ /* the per-minute deadline watcher (R3). */
+ static void rfw_gen_cc(void)
+ {
+-	FILE *f = fopen(RFW_CC, "w");
+-	if (!f) return;
+-	fprintf(f,
+-	  "#!/bin/sh\n" REAPER_NV_HELPER
+-	  "[ -d " RFW_ARMED " ] || exit 0\n"
+-	  "D=\"$(cat " RFW_DEADLINE " 2>/dev/null)\"\n"
+-	  "case \"$D\" in ''|*[!0-9]*) exit 0;; esac\n"
+-	  "N=\"$(date +%%s)\"\n"
+-	  "[ \"$N\" -lt \"$D\" ] && exit 0\n"
+-	  "sh " RFW_ROLLBACK "\n");
+-	fclose(f);
+-	chmod(RFW_CC, 0700);
++	/* reaper 2026-11-18 (review C-D2): the watcher script has one generator, rc/reaper_cc.h */
++	reaper_cc_gen(RFW_CC, RFW_ARMED, RFW_DEADLINE, RFW_ROLLBACK);
+ }
+ 
+ /* S1/S3 preflight. The protective head already keeps the arming operator
+diff --git a/release/src/router/rc/reaper_fwlog.c b/release/src/router/rc/reaper_fwlog.c
+index de655bfdf8..b818e24094 100644
+--- a/release/src/router/rc/reaper_fwlog.c
++++ b/release/src/router/rc/reaper_fwlog.c
+@@ -53,21 +53,12 @@ static int rfl_slurp(const char *path, char *buf, size_t cap)
+ 	return 0;
+ }
+ 
++/* reaper 2026-11-17 (review C-5): through the shared writer (a temporary file created new, written, renamed
++ * into place, closed on every path). The copy that stood here left its descriptor open when the write
++ * failed - in PID 1 and in the watchdog, which never exit. */
+ static int rfl_write(const char *path, const char *text)
+ {
+-	char tmp[96];
+-	int fd;
+-	size_t l = strlen(text);
+-
+-	snprintf(tmp, sizeof(tmp), "%s.%d", path, (int)getpid());
+-	unlink(tmp);
+-	if ((fd = open(tmp, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0600)) < 0)
+-		return -1;
+-	if (write(fd, text, l) != (ssize_t)l || close(fd) != 0 || rename(tmp, path) != 0) {
+-		unlink(tmp);
+-		return -1;
+-	}
+-	return 0;
++	return reaper_write_atomic(path, text, strlen(text), 0600);
+ }
+ 
+ /* the kernel lists NFLOG for IPv4 (and IPv6 while it is on) - built in here, but another model's kernel may not */
+diff --git a/release/src/router/rc/reaper_guest.c b/release/src/router/rc/reaper_guest.c
+index e28ab9908f..cb92386c63 100644
+--- a/release/src/router/rc/reaper_guest.c
++++ b/release/src/router/rc/reaper_guest.c
+@@ -440,8 +440,27 @@ static void rg_write(FILE *f, const struct rg_net *g, int n, char wan4[][IFNAMSI
+ 		fputs("exit 0\n", f);
+ 		return;
+ 	}
+-	fputs("ipset create " REAPER_AIMESH_SET " hash:mac -exist 2>/dev/null\n"
+-	      "for T in iptables ip6tables; do\n"
++	/* reaper 2026-11-18 (review C-6, C-E2) REAPER-GUEST-BATCH: the two filter chains were flushed here and then
++	 * filled one rule at a time while the jumps into them stayed in place - for that long a guest packet met a
++	 * chain without its DROPs, on every firewall restart. The `-A` lines of the filter table are now QUEUED
++	 * (R, below) and each family's two chains are replaced in ONE commit further down (REAPER-GUEST-BATCH-COMMIT):
++	 * a chain named in a --noflush payload is emptied and refilled in the same step, so a packet sees the old
++	 * rules or the new ones, never a part. The nat lines (REAPER_GUN) are not queued: reaper_guest_nat_reassert()
++	 * runs them out of this file on their own. If a commit is refused, or an argument holds a character the
++	 * restore format cannot carry, the script runs itself again with RG_NOBATCH=1 and loads rule by rule as before. */
++	fputs("RGB=1; [ -n \"$RG_NOBATCH\" ] && RGB=0\n"
++	      /* the queue and the signature live beside this script (its folder is root-only, 0700); a script that
++	       * was not started by its full path has no such place and loads rule by rule */
++	      "case \"$0\" in /*) [ -f \"$0\" ] || RGB=0;; *) RGB=0;; esac\n"
++	      "RGBD=\"$0.batch.$$\"; RGSIG=\"$0.sig\"; [ \"$RGB\" = 1 ] && rm -f \"$RGBD\".*\n"
++	      "_rgq() { _qf=\"$RGBD.$1\"; shift; _ql=''\n"
++	      "  for _qa in \"$@\"; do\n"
++	      "    case \"$_qa\" in ''|*[!A-Za-z0-9_./:,+=@!-]*) : > \"$RGBD.bad\";; esac\n"
++	      "    _ql=\"$_ql $_qa\"\n"
++	      "  done; echo \"${_ql# }\" >> \"$_qf\"; }\n"
++	      "R() { if [ \"$RGB\" = 1 ] && [ \"$2\" = -A ]; then _rgq \"$@\"; return 0; fi; \"$@\" 2>/dev/null || RG_FAIL=$((RG_FAIL+1)); }\n"
++	      "ipset create " REAPER_AIMESH_SET " hash:mac -exist 2>/dev/null\n"
++	      "[ \"$RGB\" = 1 ] || for T in iptables ip6tables; do\n"
+ 	      "  for C in REAPER_GUI REAPER_GUF; do $T -N $C 2>/dev/null; $T -F $C; done\n"
+ 	      "done\n"
+ 	      "# 2026-11-13 (owner): a portal guest's DNS goes to the guest network's own resolver, wherever it was sent\n"
+@@ -473,12 +492,44 @@ static void rg_write(FILE *f, const struct rg_net *g, int n, char wan4[][IFNAMSI
+ 				rg_iface(f, &g[i], g[i].brname, v6, g[i].portal != 0, wan4, nw4, wan6);
+ 		}
+ 	}
++	/* reaper 2026-11-18 (review C-6) REAPER-GUEST-BATCH-COMMIT. Two things happen here.
++	 * 1. The queued filter rules are loaded, each family's two chains in one commit.
++	 * 2. The flow purge below used to run on EVERY firewall restart and cut every guest connection each time.
++	 *    It is needed when a flow may have been opened under other rules than these. That cannot be the case
++	 *    when (a) the rules about to load are the ones loaded last time and (b) what is live right now - both
++	 *    chains in both families, and the two jumps into them - is still exactly what that load left behind.
++	 *    Both are compared as checksums against the signature the last complete load wrote; any difference, a
++	 *    missing signature, a refused rule or a rule-by-rule load means purge, as before. A stock firewall
++	 *    restart replaces the filter table, so the chains are gone when this runs and the purge still happens. */
++	fprintf(f,
++	  "rg_live() { for T in iptables ip6tables; do $T -S REAPER_GUI 2>/dev/null; $T -S REAPER_GUF 2>/dev/null\n"
++	  "    $T -C %s -j REAPER_GUI 2>/dev/null && echo \"$T in\"; $T -C %s -j REAPER_GUF 2>/dev/null && echo \"$T fwd\"\n"
++	  "  done | md5sum | cut -d' ' -f1; }\n"
++	  "RG_SAME=0; RG_NEW=''\n"
++	  "if [ \"$RGB\" = 1 ]; then\n"
++	  "  RG_NEW=\"$(cat \"$RGBD.iptables\" \"$RGBD.ip6tables\" 2>/dev/null | md5sum | cut -d' ' -f1)\"\n"
++	  "  [ -n \"$RG_NEW\" ] && [ \"$(cat \"$RGSIG\" 2>/dev/null)\" = \"$RG_NEW $(rg_live)\" ] && RG_SAME=1\n"
++	  "  rm -f \"$RGSIG\"\n"
++	  "  _qok=1; [ -e \"$RGBD.bad\" ] && _qok=0\n"
++	  "  for T in iptables ip6tables; do\n"
++	  "    [ \"$_qok\" = 1 ] || continue\n"
++	  "    { echo '*filter'; echo ':REAPER_GUI - [0:0]'; echo ':REAPER_GUF - [0:0]'; cat \"$RGBD.$T\" 2>/dev/null; echo COMMIT; } | $T-restore --noflush 2>/dev/null || _qok=0\n"
++	  "  done\n"
++	  "  rm -f \"$RGBD\".*\n"
++	  "  if [ \"$_qok\" != 1 ]; then\n"
++	  "    logger -t reaper 'guest isolation: batched rule load refused - loading rule by rule'\n"
++	  "    export RG_NOBATCH=1; exec sh \"$0\" \"$@\"\n"
++	  "  fi\n"
++	  "fi\n", REAPER_HOOK_IN, REAPER_HOOK_FWD);
+ 	fputs(hook_run, f);
+-	fputs("# flows opened before these rules must re-traverse them\n", f);
++	fputs("if [ \"$RG_SAME\" = 1 ] && [ \"$RG_FAIL\" = 0 ]; then :; else\n"
++	      "# flows opened before these rules must re-traverse them\n", f);
+ 	for (i = 0; i < n; i++)
+ 		if (g[i].subnet[0])
+ 			fprintf(f, "conntrack -D -s %s >/dev/null 2>&1; conntrack -D -d %s >/dev/null 2>&1\n", g[i].subnet, g[i].subnet);
+ 	fputs("fc flush 2>/dev/null\n"
++	      "fi\n"
++	      "[ \"$RGB\" = 1 ] && [ \"$RG_FAIL\" = 0 ] && [ -n \"$RG_NEW\" ] && echo \"$RG_NEW $(rg_live)\" > \"$RGSIG\"\n"
+ 	      "[ \"$RG_FAIL\" = 0 ] || logger -t reaper \"guest isolation: $RG_FAIL rule(s) refused\"\n"
+ 	      "exit 0\n", f);
+ }
+diff --git a/release/src/router/rc/reaper_nv.h b/release/src/router/rc/reaper_nv.h
+index 9e6e1e0fb2..2dfc32885c 100644
+--- a/release/src/router/rc/reaper_nv.h
++++ b/release/src/router/rc/reaper_nv.h
+@@ -68,4 +68,25 @@
+ 	"    END { for (i = 1; i <= n; i++) { x = (a[i] in v) ? v[a[i]] : \"\"; gsub(/[\\t\\r]/, \"\", x); print a[i] \"\\t\" x } }' \"$_f\"\n" \
+ 	"  rm -f \"$_f\"\n" \
+ 	"}\n"
++
++/* _nvc (review 2026-11-17 C-E1; here since 2026-11-18): the names in NAMES (one string literal, space separated)
++ * are read ONCE through _nvs when the script starts and served from shell variables: `$(_nvc name)` instead of
++ * `$(_nv name)`. A name that is not in the list, and every name when the batch read failed, falls back to _nv,
++ * so a caller never has to know which is which. A value is assigned through a variable and is never parsed as
++ * shell text. Emit after REAPER_NV_HELPER and REAPER_NVS_HELPER.
++ * THIS FORM IS FOR A printf FORMAT STRING (fprintf): it holds one doubled percent sign. rwatch.c carries the
++ * fputs form of the same lines. */
++#define REAPER_NVC_HELPER_FMT(NAMES) \
++	"NVC_LIST=''; _nvany=''\n" \
++	"_nvq=\"$(_nvs " NAMES ")\" || _nvq=''\n" \
++	"_nvt=\"$(printf '\\t')\"\n" \
++	"while IFS=\"$_nvt\" read -r _nvk _nvv; do\n" \
++	"  case \"$_nvk\" in ''|*[!a-z0-9_]*) continue ;; esac\n" \
++	"  eval \"NVC_$_nvk=\\\"\\$_nvv\\\"\"; NVC_LIST=\"$NVC_LIST $_nvk\"; [ -n \"$_nvv\" ] && _nvany=1\n" \
++	"done <<NVCEOF\n" \
++	"$_nvq\n" \
++	"NVCEOF\n" \
++	/* a batch in which EVERY value is empty is a dump that printed nothing, not a box without settings */ \
++	"[ -n \"$_nvany\" ] || NVC_LIST=''\n" \
++	"_nvc() { case \" $NVC_LIST \" in *\" $1 \"*) eval \"printf '%%s\\\\n' \\\"\\$NVC_$1\\\"\" ;; *) _nv \"$1\" ;; esac; }\n"
+ #endif
+diff --git a/release/src/router/rc/reaper_pbr.c b/release/src/router/rc/reaper_pbr.c
+index fefd98c8bc..b3bb3aacbe 100644
+--- a/release/src/router/rc/reaper_pbr.c
++++ b/release/src/router/rc/reaper_pbr.c
+@@ -130,6 +130,7 @@
+ #include "rc.h"
+ #include <shared.h>
+ #include "reaper_nv.h"	/* _nv: nvram get with a 5 s ceiling (security review 2026-08-22 F2) */
++#include "reaper_cc.h"	/* 2026-11-18 (review C-D2): the confirm window and the deadline watcher, shared with reaper_fw.c */
+ #include <openvpn_control.h>	/* ovpn_is_client_enabled(): the Killswitch counts only for an enabled client (P3, v3.1.5) */
+ 
+ #define PPBR_DIR        "/tmp/reaper_pbr"
+@@ -361,7 +362,22 @@ static void ppbr_emit_skip_helpers(FILE *f)
+ 	  "NEXPECT=0; NFAIL=0; NROUTE4=0; NROUTE6=0; SKIPFAIL=0\n"
+ 	  /* v2.7.6: name the rule that failed - the aggregate count alone could not
+ 	   * tell a missing set from an xtables-lock collision in the field. */
+-	  "pbr_rule() { NEXPECT=$((NEXPECT+1)); \"$@\" || { NFAIL=$((NFAIL+1)); logger -t reaper_pbr \"rule failed: $*\"; }; }\n"
++	  /* reaper 2026-11-18 (review C-E2) REAPER-PBR-BATCH: the rules of the staging chain are QUEUED (one file
++	   * per tool) and loaded by one `iptables-restore --noflush` per family (REAPER-PBR-BATCH-COMMIT) before
++	   * the PREROUTING jump moves - it was one iptables process per rule, each fetching and replacing the
++	   * whole mangle table. pbr_add carries the chain's own header and save-mark lines (never counted, as
++	   * before); pbr_rule counts what was meant to load, as before. A queue is all-or-nothing: if it is
++	   * refused, or an argument holds a character the restore format cannot carry, the script runs itself
++	   * again with PBR_NOBATCH=1 and loads rule by rule, which keeps the per-rule failure count. */
++	  "PBRB=1; [ -n \"$PBR_NOBATCH\" ] && PBRB=0\n"
++	  "PBRBD=" PPBR_DIR "/batch.$$; rm -f \"$PBRBD\".*\n"
++	  "_pbrq() { _qf=\"$PBRBD.$1\"; shift 3; _ql=''\n"
++	  "  for _qa in \"$@\"; do\n"
++	  "    case \"$_qa\" in *[\\\"\\\\]*) : > \"$PBRBD.bad\";; esac\n"
++	  "    case \"$_qa\" in ''|*[!A-Za-z0-9_./:,+=@!-]*) _ql=\"$_ql \\\"$_qa\\\"\";; *) _ql=\"$_ql $_qa\";; esac\n"
++	  "  done; echo \"${_ql# }\" >> \"$_qf\"; }\n"
++	  "pbr_add() { if [ \"$PBRB\" = 1 ]; then _pbrq \"$@\"; else \"$@\"; fi; }\n"
++	  "pbr_rule() { NEXPECT=$((NEXPECT+1)); if [ \"$PBRB\" = 1 ]; then _pbrq \"$@\"; return 0; fi; \"$@\" || { NFAIL=$((NFAIL+1)); logger -t reaper_pbr \"rule failed: $*\"; }; }\n"
+ 	  /* v3.1.5 (review R07): the `ip rule` lines were the one thing this script
+ 	   * never checked, and expect_rules was a COUNT OF WHAT SURVIVED (`ip rule
+ 	   * show | grep -c`), so a routing rule that failed to install matched its
+@@ -729,14 +745,14 @@ static int ppbr_gen(const char *path, int teardown_only, const ppbr_cfg_t *cfg)
+ 	  "  C=\"$(pbr_chain $T)\"\n"
+ 	  "  $T -t mangle -N $C 2>/dev/null\n"
+ 	  "  $T -t mangle -F $C\n"
+-	  "  $T -t mangle -A $C -m conntrack --ctdir REPLY -j RETURN\n"
+-	  "  $T -t mangle -A $C -m set --match-set " REAPER_AIMESH_SET " src -j RETURN\n");
++	  "  pbr_add $T -t mangle -A $C -m conntrack --ctdir REPLY -j RETURN\n"
++	  "  pbr_add $T -t mangle -A $C -m set --match-set " REAPER_AIMESH_SET " src -j RETURN\n");
+ 	for (i = 1; i < 16; i++)
+ 		if (used[i])
+-			fprintf(f, "  $T -t mangle -A $C -m connmark --mark 0x%X0000/$MASK -j CONNMARK --restore-mark --nfmask $MASK --ctmask $MASK\n", i);
++			fprintf(f, "  pbr_add $T -t mangle -A $C -m connmark --mark 0x%X0000/$MASK -j CONNMARK --restore-mark --nfmask $MASK --ctmask $MASK\n", i);
+ 	fprintf(f,
+ 	  /* a restored (live) verdict: only the first packet of a flow is matched */
+-	  "  $T -t mangle -A $C -m mark ! --mark 0x0/$MASK -j RETURN\n"
++	  "  pbr_add $T -t mangle -A $C -m mark ! --mark 0x0/$MASK -j RETURN\n"
+ 	  "done\n");
+ 	/* the bypass list: what the new config wants is known here (the rule loop
+ 	 * collected the static nets; the LAN-wide net is read at run time), so the
+@@ -763,9 +779,28 @@ static int ppbr_gen(const char *path, int teardown_only, const ppbr_cfg_t *cfg)
+ 
+ 	fprintf(f,
+ 	  "for T in iptables ip6tables; do\n"
+-	  "  C=\"$(pbr_chain $T)\"; $T -t mangle -A $C -j CONNMARK --save-mark --nfmask $MASK --ctmask $MASK\n"
++	  "  C=\"$(pbr_chain $T)\"; pbr_add $T -t mangle -A $C -j CONNMARK --save-mark --nfmask $MASK --ctmask $MASK\n"
+ 	  "done\n");
+ 
++	/* reaper 2026-11-18 (review C-E2) REAPER-PBR-BATCH-COMMIT: the staging chain is complete in the queue -
++	 * load it, one commit per family, before the jump below moves to it. Running the script again on a
++	 * refusal is the same as two applies in a row: the staging chain is flushed and rebuilt, the bypass
++	 * list is pruned and re-owned, and the object sets are not rebuilt a second time (PBR_SETS_DONE). */
++	fprintf(f,
++	  "if [ \"$PBRB\" = 1 ]; then\n"
++	  "  _qok=1; _qe='an argument the restore format cannot carry'; [ -e \"$PBRBD.bad\" ] && _qok=0\n"
++	  "  for _qb in iptables ip6tables; do\n"
++	  "    [ \"$_qok\" = 1 ] && [ -s \"$PBRBD.$_qb\" ] || continue\n"
++	  "    _qe=\"$({ echo '*mangle'; cat \"$PBRBD.$_qb\"; echo COMMIT; } | $_qb-restore --noflush 2>&1)\" || _qok=0\n"
++	  "  done\n"
++	  "  rm -f \"$PBRBD\".*\n"
++	  "  if [ \"$_qok\" != 1 ]; then\n"
++	  "    logger -t reaper_pbr \"batched rule load refused ($_qe) - loading rule by rule\"\n"
++	  "    if [ -f \"$0\" ]; then export PBR_NOBATCH=1 PBR_SETS_DONE=1; exec sh \"$0\" \"$@\"; fi\n"
++	  "    NFAIL=$((NFAIL+1)); logger -t reaper_pbr 'this script could not be run again rule by rule'\n"
++	  "  fi\n"
++	  "fi\n");
++
+ 	fprintf(f,
+ 	  "for T in iptables ip6tables; do\n"
+ 	  "  C=\"$(pbr_chain $T)\"; [ \"$C\" = " PPBR_CHAIN " ] && O=" PPBR_CHAIN_N " || O=" PPBR_CHAIN "\n"
+@@ -944,10 +979,7 @@ static int ppbr_write_lastgood(const char *rulelist)
+ 
+ static int ppbr_confirm_secs(void)
+ {
+-	int n = nvram_get_int("reaper_fw_confirm");       /* one timer for both engines */
+-	if (n < PPBR_CONFIRM_MIN) n = (n <= 0) ? PPBR_CONFIRM_DEF : PPBR_CONFIRM_MIN;
+-	if (n > PPBR_CONFIRM_MAX) n = PPBR_CONFIRM_MAX;
+-	return n;
++	return reaper_cc_secs();	/* one timer for both engines; reaper 2026-11-18 (review C-D2): one copy, rc/reaper_cc.h */
+ }
+ 
+ /* the pre-generated recovery script: restore lastgood into nvram (RAM),
+@@ -1006,18 +1038,8 @@ static int ppbr_gen_rollback(void)
+ /* the per-minute deadline watcher */
+ static void ppbr_gen_cc(void)
+ {
+-	FILE *f = fopen(PPBR_CC, "w");
+-	if (!f) return;
+-	fprintf(f,
+-	  "#!/bin/sh\n" REAPER_NV_HELPER
+-	  "[ -d " PPBR_ARMED " ] || exit 0\n"
+-	  "D=\"$(cat " PPBR_DEADLINE " 2>/dev/null)\"\n"
+-	  "case \"$D\" in ''|*[!0-9]*) exit 0;; esac\n"
+-	  "N=\"$(date +%%s)\"\n"
+-	  "[ \"$N\" -lt \"$D\" ] && exit 0\n"
+-	  "sh " PPBR_ROLLBACK "\n");
+-	fclose(f);
+-	chmod(PPBR_CC, 0700);
++	/* reaper 2026-11-18 (review C-D2): the watcher script has one generator, rc/reaper_cc.h */
++	reaper_cc_gen(PPBR_CC, PPBR_ARMED, PPBR_DEADLINE, PPBR_ROLLBACK);
+ }
+ 
+ static void ppbr_disarm_files(void)
+diff --git a/release/src/router/rc/rwatch.c b/release/src/router/rc/rwatch.c
+index a77b411da5..19ecec95cb 100644
+--- a/release/src/router/rc/rwatch.c
++++ b/release/src/router/rc/rwatch.c
+@@ -87,6 +87,23 @@ static void rwatch_gen(void)
+ 	  "[ -f /tmp/upgrade ] && exit 0\n"
+ 	  REAPER_NV_HELPER
+ 	  REAPER_NVS_HELPER
++	  /* reaper 2026-11-17 (review C-E1) REAPER-RWATCH-NVC: the settings this script reads (switches, modes, the store
++	   * choice - only an Apply changes them) come from ONE guarded `nvram show` instead of one `_nv` call each (a
++	   * subshell, two rm, a create, a background nvram, a 20 ms sleep and a cat per call: about 150 process starts
++	   * a tick for these alone). States - wanN_state_t, wlready, reaper_pbr_active, addresses, per-radio keys -
++	   * stay on `_nv`: several are read again after a wait. A failed batch read leaves the list empty and every
++	   * `_nvc` falls back to `_nv`. The names are fixed identifiers; a value is assigned through a variable and is
++	   * never parsed as shell text. */
++	  "NVC_LIST=''\n"
++	  "_nvq=\"$(_nvs rwatch_review rwarden_enable rwarden_stats_save rwarden_log rwarden_dir reaper_dot_srv reaper_doh_srv reaper_dot_block reaper_doh_block wallguard_enable sw_mode rwatch_gdx reaper_wanbounce_enable reaper_store reaper_store_ds reaper_store_vid lan_ipaddr ipv6_service amas_chanfit wan_proto wandog_target)\" || _nvq=''\n"
++	  "_nvt=\"$(printf '\\t')\"\n"
++	  "while IFS=\"$_nvt\" read -r _nvk _nvv; do\n"
++	  "  case \"$_nvk\" in ''|*[!a-z0-9_]*) continue ;; esac\n"
++	  "  eval \"NVC_$_nvk=\\\"\\$_nvv\\\"\"; NVC_LIST=\"$NVC_LIST $_nvk\"\n"
++	  "done <<NVCEOF\n"
++	  "$_nvq\n"
++	  "NVCEOF\n"
++	  "_nvc() { case \" $NVC_LIST \" in *\" $1 \"*) eval \"printf '%s\\\\n' \\\"\\$NVC_$1\\\"\" ;; *) _nv \"$1\" ;; esac; }\n"
+ 	  "STATE=" RWATCH_STATE "\n"
+ 	  /* 2026-11-01: the shared AiMesh node set (rc/reaper_aimesh.c) follows the registry even with
+ 	   * Gatekeeper off - gkd, the registry watcher, runs only with Gatekeeper on */
+@@ -101,14 +118,14 @@ static void rwatch_gen(void)
+ 	  "# 2026-10-18: usb = ONLY the volume whose .reaper/store.id matches nvram\n"
+ 	  "# reaper_store_vid (shared/reaper_store.h); nothing is created here.\n"
+ 	  "rstore_base() {\n"
+-	  "  M=\"$(_nv reaper_store)\"\n"
++	  "  M=\"$(_nvc reaper_store)\"\n"
+ 	  "  case \"$M\" in\n"
+ 	  "    jffs) mkdir -p /jffs/reaper 2>/dev/null; [ -d /jffs/reaper ] && [ -w /jffs/reaper ] && { echo /jffs/reaper; return; } ;;\n"
+-	  "    usb)  V=\"$(_nv reaper_store_vid)\"; [ -n \"$V\" ] && for d in /tmp/mnt/*/; do [ -d \"$d\" ] || continue; m=\"${d%/}\"; grep -qF \" $m \" /proc/mounts 2>/dev/null || continue; b=\"${d}.reaper\"; [ -d \"$b\" ] && [ ! -L \"$b\" ] && [ -f \"$b/store.id\" ] && [ ! -L \"$b/store.id\" ] && [ -w \"$b\" ] || continue; [ \"$(head -c 40 \"$b/store.id\" 2>/dev/null)\" = \"$V\" ] && { echo \"$b\"; return; }; done ;;\n"
++	  "    usb)  V=\"$(_nvc reaper_store_vid)\"; [ -n \"$V\" ] && for d in /tmp/mnt/*/; do [ -d \"$d\" ] || continue; m=\"${d%/}\"; grep -qF \" $m \" /proc/mounts 2>/dev/null || continue; b=\"${d}.reaper\"; [ -d \"$b\" ] && [ ! -L \"$b\" ] && [ -f \"$b/store.id\" ] && [ ! -L \"$b/store.id\" ] && [ -w \"$b\" ] || continue; [ \"$(head -c 40 \"$b/store.id\" 2>/dev/null)\" = \"$V\" ] && { echo \"$b\"; return; }; done ;;\n"
+ 	  "  esac\n"
+ 	  "  mkdir -p /tmp/reaper 2>/dev/null; echo /tmp/reaper\n"
+ 	  "}\n"
+-	  "DS=\",$(_nv reaper_store_ds),\"\n"
++	  "DS=\",$(_nvc reaper_store_ds),\"\n"
+ 	  "BASE=\"$(rstore_base)\"\n"
+ 	  "VOLATILE=0; [ \"$BASE\" = /tmp/reaper ] && VOLATILE=1\n"
+ 	  "\n"
+@@ -398,7 +415,7 @@ static void rwatch_gen(void)
+ 	  "  return 0\n"
+ 	  "}\n"
+ 	  "_rv_run() {\n"
+-	  "  if [ \"$(_nv rwatch_review)\" != 1 ]; then rm -f $RV_TMP/review.json $RV_TMP/review.last $RV_TMP/review.inv $RV_TMP/review.diff $RV_TMP/review.auth $RV_TMP/auth.cur $RV_TMP/auth.seen $RV_TMP/review.wwfs $RV_TMP/wwfs.said $RV_TMP/review.wwt $RV_TMP/wwt.said $RV_TMP/review.ww $RV_TMP/ww.said 2>/dev/null; return 0; fi\n"
++	  "  if [ \"$(_nvc rwatch_review)\" != 1 ]; then rm -f $RV_TMP/review.json $RV_TMP/review.last $RV_TMP/review.inv $RV_TMP/review.diff $RV_TMP/review.auth $RV_TMP/auth.cur $RV_TMP/auth.seen $RV_TMP/review.wwfs $RV_TMP/wwfs.said $RV_TMP/review.wwt $RV_TMP/wwt.said $RV_TMP/review.ww $RV_TMP/ww.said 2>/dev/null; return 0; fi\n"
+ 	  "  _rv_inv > $RV_TMP/review.inv.tmp 2>/dev/null && mv -f $RV_TMP/review.inv.tmp $RV_TMP/review.inv || return 0\n"
+ 	  "  _rv_auth\n"
+ 	  "  _rv_ww\n"
+@@ -579,7 +596,7 @@ static void rwatch_gen(void)
+ 	   * HEALGRACE - 5 to 10 min by tick alignment. The first tick inside the grace arms ONE detached run at
+ 	   * boot + HEALGRACE: same grace, same checks, same add-on settle time; the ticks go on as before. The mark
+ 	   * is in /tmp, so every boot arms it once; a rules candidate armed at that moment skips it like a tick would. */
+-	  "if [ \"$UP\" -lt \"$HEALGRACE\" ] && [ \"$(_nv rwatch_review)\" = 1 ] && [ ! -f $RV_TMP/review.boot ]; then\n"
++	  "if [ \"$UP\" -lt \"$HEALGRACE\" ] && [ \"$(_nvc rwatch_review)\" = 1 ] && [ ! -f $RV_TMP/review.boot ]; then\n"
+ 	  "  : > $RV_TMP/review.boot\n"
+ 	  "  ( sleep $((HEALGRACE - UP + 2)); [ -f /tmp/reaper_fw/armed ] || sh " RWATCH_SH " review ) </dev/null >/dev/null 2>&1 &\n"
+ 	  "fi\n"
+@@ -588,8 +605,8 @@ static void rwatch_gen(void)
+ 	  "\n"
+ 	  "GW=\"$(_nv wan0_gateway)\"\n"
+ 	  "{ [ -n \"$GW\" ] && [ \"$GW\" != \"0.0.0.0\" ]; } || GW=\"$(_nv wan_gateway)\"\n"
+-	  "LANIP=\"$(_nv lan_ipaddr)\"\n"
+-	  "GDX=\"$(_nv rwatch_gdx)\"\n"
++	  "LANIP=\"$(_nvc lan_ipaddr)\"\n"
++	  "GDX=\"$(_nvc rwatch_gdx)\"\n"
+ 	  "FAIL=\"\"; CRIT=\"\"\n"
+ 	  "\n"
+ 	  "# 1) first-hop reachability (by IP, two tries). A failed ping is NOT proof\n"
+@@ -626,7 +643,7 @@ static void rwatch_gen(void)
+ 	  "#     is a static one over v6tunN that exists whether or not the far end forwards - so a\n"
+ 	  "#     silent hop is the tunnel being down (on 2026-10-08 the broker still held an old\n"
+ 	  "#     client IPv4), not a filter. Say that, once; 1c carries the FAILURE.\n"
+-	  "V6S=\"$(_nv ipv6_service)\"; V6R=\"$(_nv ipv6_rtr_addr)\"\n"
++	  "V6S=\"$(_nvc ipv6_service)\"; V6R=\"$(_nv ipv6_rtr_addr)\"\n"
+ 	  "if [ -n \"$V6S\" ] && [ \"$V6S\" != disabled ] && [ -n \"$V6R\" ]; then\n"
+ 	  "  GW6=\"$(ip -6 route show default 2>/dev/null | sed -n 's/.* via \\([^ ]*\\).*/\\1/p' | head -1)\"\n"
+ 	  "  ICMP6MARK=/tmp/reaper/rwatch_gw6_icmp_filtered\n"
+@@ -701,7 +718,7 @@ static void rwatch_gen(void)
+ 	   * gone; (3) a heal that finds the chain back is not a failure - FAIL, and
+ 	   * the incident dump, only when the chain is still missing AFTER it. */
+ 	  "# 3c) Warden chain missing while Warden is enabled: confirm on a second tick, re-check under the lock, then re-apply (once per 10 min)\n"
+-	  "if [ \"$(_nv rwarden_enable)\" = 1 ] && [ -f /tmp/rwarden/apply.sh ] && [ \"$UP\" -ge \"$HEALGRACE\" ]; then\n"
++	  "if [ \"$(_nvc rwarden_enable)\" = 1 ] && [ -f /tmp/rwarden/apply.sh ] && [ \"$UP\" -ge \"$HEALGRACE\" ]; then\n"
+ 	  "  if iptables -nL REAPER_WARDEN >/dev/null 2>&1; then\n"
+ 	  "    rm -f /tmp/rwarden/miss.at 2>/dev/null\n"
+ 	  "  else\n"
+@@ -987,8 +1004,8 @@ static void rwatch_gen(void)
+ 	   * box that is blocking would log every tick). */
+ 	  "# 3e) Warden outbound: which of the four reasons the syslog is quiet\n"
+ 	  "WOKEY=''; WOMSG=''\n"
+-	  "if [ \"$(_nv rwarden_enable)\" = 1 ]; then\n"
+-	  "  case \"$(_nv rwarden_dir)\" in\n"
++	  "if [ \"$(_nvc rwarden_enable)\" = 1 ]; then\n"
++	  "  case \"$(_nvc rwarden_dir)\" in\n"
+ 	  "    out|both)\n"
+ 	  "      if iptables -nL RW_ODROP >/dev/null 2>&1; then\n"
+ 	  /* 2026-09-13 (the first real capture of this line found two defects in it):
+@@ -999,10 +1016,10 @@ static void rwatch_gen(void)
+ 	   * (b) an nvram read that hit _nv's 5 s ceiling came back EMPTY and took
+ 	   *     the same branch as 0, telling the operator to switch on logging that
+ 	   *     was already on. Empty is now its own state and says so. */
+-	  "        _ob=''; [ \"$(_nv rwarden_stats_save)\" != 0 ] && _ob=$(awk '$1==\"OUT\"{print $2+0; exit}' /jffs/rwarden/counters 2>/dev/null)\n"
++	  "        _ob=''; [ \"$(_nvc rwarden_stats_save)\" != 0 ] && _ob=$(awk '$1==\"OUT\"{print $2+0; exit}' /jffs/rwarden/counters 2>/dev/null)\n"
+ 	  "        _od=$( { echo \"$_ob\"; iptables -nvxL RW_ODROP 2>/dev/null; ip6tables -nvxL RW_ODROP 2>/dev/null; } "
+ 	  "| awk '/^[0-9]+$/{s+=$1} / DROP /{s+=$1} END{print s+0}')\n"
+-	  "        _rl=$(_nv rwarden_log)\n"
++	  "        _rl=$(_nvc rwarden_log)\n"
+ 	  "        if [ \"$_rl\" = 1 ]; then\n"
+ 	  "          WOKEY=armed; WOMSG=\"armed and logging (prefix REAPER-WARDEN-OUT); blocked in this statistics window: $_od\"\n"
+ 	  "        elif [ -z \"$_rl\" ]; then\n"
+@@ -1035,7 +1052,7 @@ static void rwatch_gen(void)
+ 	   * still policy-DROP - what is missing is everything the operator asked
+ 	   * the firewall to let through. */
+ 	  "# 3f) the filter table is still the boot skeleton: the full ruleset never loaded\n"
+-	  "if [ \"$UP\" -ge \"$HEALGRACE\" ] && [ \"$(_nv sw_mode)\" = 1 ] \\\n"
++	  "if [ \"$UP\" -ge \"$HEALGRACE\" ] && [ \"$(_nvc sw_mode)\" = 1 ] \\\n"
+ 	  "   && ! iptables -nL INPUT_ICMP >/dev/null 2>&1 && ! iptables -nL SECURITY >/dev/null 2>&1; then\n"
+ 	  "  FAIL=\"$FAIL filter-skeleton\"\n"
+ 	  "  if [ ! -f /tmp/reaper/rwatch_skel ]; then\n"
+@@ -1233,14 +1250,14 @@ static void rwatch_gen(void)
+   "# probe (not the gateway ping above, which cannot tell a stale session from a\n"
+   "# first hop that merely ICMP-filters).\n"
+   "BOUNCE_MARK=/tmp/reaper/reaper_wan_bounced\n"
+-  "if [ \"$(_nv reaper_wanbounce_enable)\" != 0 ] && [ ! -f \"$BOUNCE_MARK\" ]; then\n"
++  "if [ \"$(_nvc reaper_wanbounce_enable)\" != 0 ] && [ ! -f \"$BOUNCE_MARK\" ]; then\n"
+   "  BU=\"$(_nv wan_primary)\"; case \"$BU\" in ''|*[!0-9]*) BU=0 ;; esac\n"
+-  "  BPROTO=\"$(_nv wan${BU}_proto)\"; [ -n \"$BPROTO\" ] || BPROTO=\"$(_nv wan_proto)\"\n"
++  "  BPROTO=\"$(_nv wan${BU}_proto)\"; [ -n \"$BPROTO\" ] || BPROTO=\"$(_nvc wan_proto)\"\n"
+   "  BWS=\"$(_nv wan${BU}_state_t)\"; [ -n \"$BWS\" ] || BWS=\"$(_nv wan_state_t)\"\n"
+   "  if [ \"$BPROTO\" = pppoe ] && [ \"$BWS\" = 2 ]; then\n"
+   "    # real-internet reachability: only a bounce if EVERY target is unreachable,\n"
+   "    # so a single host being down or ICMP-filtered cannot trigger a false redial.\n"
+-  "    BT=\"$(_nv wandog_target)\"; case \"$BT\" in ''|0.0.0.0) BT=1.1.1.1 ;; esac\n"
++  "    BT=\"$(_nvc wandog_target)\"; case \"$BT\" in ''|0.0.0.0) BT=1.1.1.1 ;; esac\n"
+   "    if ! ping -c1 -W3 \"$BT\" >/dev/null 2>&1 && \\\n"
+   "       ! ping -c1 -W3 1.1.1.1 >/dev/null 2>&1 && \\\n"
+   "       ! ping -c1 -W3 8.8.8.8 >/dev/null 2>&1; then\n"
+@@ -1276,7 +1293,7 @@ static void rwatch_gen(void)
+   "BF=\n"
+   "for _u in 0 1 2 3; do [ \"$(_nv wl${_u}_bwfloor)\" = 1 ] && BF=1; done\n"
+   "# reaper v3.4.6: the node fit rides the same daemon (on by default; it idles without a node)\n"
+-  "[ \"$(_nv amas_chanfit)\" = 1 ] && BF=1\n"
++  "[ \"$(_nvc amas_chanfit)\" = 1 ] && BF=1\n"
+   "if [ -n \"$BF\" ] && [ \"$(_nv wlready)\" = 1 ]; then\n"
+   "  pidof reaper_bwfloor >/dev/null 2>&1 || { logger -t rwatch \"reaper_bwfloor is not running with a minimum width configured - starting it\"; (/sbin/reaper_bwfloor >/dev/null 2>&1 &); }\n"
+   "fi\n"
+@@ -1284,7 +1301,7 @@ static void rwatch_gen(void)
+   "# (not after a certificate or bind error: rednsd records it and exits, the page shows it, and a\n"
+   "#  restart every tick would only repeat it)\n"
+   "_rsj=/tmp/rednsd/run/status.json; [ -f \"$_rsj\" ] && [ ! -L \"$_rsj\" ] || _rsj=/dev/null	# rednsd's own folder: never through a link or a FIFO (review 2026-10-24 S-A-5)\n"
+-  "if { [ \"$(_nv reaper_dot_srv)\" = 1 ] || [ \"$(_nv reaper_doh_srv)\" = 1 ]; } && [ -s /tmp/rednsd/rednsd.conf ] && ! pidof rednsd >/dev/null 2>&1 &&\n"
++  "if { [ \"$(_nvc reaper_dot_srv)\" = 1 ] || [ \"$(_nvc reaper_doh_srv)\" = 1 ]; } && [ -s /tmp/rednsd/rednsd.conf ] && ! pidof rednsd >/dev/null 2>&1 &&\n"
+   "   ! grep -qE '\"state\":\"(cert|bind)_error\"' \"$_rsj\" 2>/dev/null; then\n"
+   "  logger -t rwatch \"rednsd is not running with Encrypted DNS on - starting it\"; service restart_rednsd >/dev/null 2>&1\n"
+   "fi\n"
+@@ -1295,7 +1312,7 @@ static void rwatch_gen(void)
+   "# failed (wallguard.sh's pending mark - a boot before the WAN was up). 2026-11-07: the mark holds the epoch\n"
+   "# of the next try (0 = as soon as the WAN is up, else wallguard.sh's 10 min - 6 h backoff); retry fetches\n"
+   "# only the lists still owed\n"
+-  "if [ \"$(_nv wallguard_enable)\" = 1 ] && { [ ! -s /tmp/wallguard/db ] || [ -f /tmp/wallguard/pending ]; }; then\n"
++  "if [ \"$(_nvc wallguard_enable)\" = 1 ] && { [ ! -s /tmp/wallguard/db ] || [ -f /tmp/wallguard/pending ]; }; then\n"
+   "  [ -s /tmp/wallguard/db ] || sh /usr/sbin/wallguard.sh restore >/dev/null 2>&1\n"
+   "  if [ ! -s /tmp/wallguard/db ] && [ \"$(_nv wan0_state_t)\" = 2 ] &&\n"
+   "     { [ ! -f /tmp/wallguard/state ] || [ $(( $(date +%s) - $(date -r /tmp/wallguard/state +%s) )) -ge 600 ]; }; then\n"
+@@ -1349,7 +1366,7 @@ static void rwatch_gen(void)
+ 	  "# 2b) Encrypted DNS activity (2026-10-21): one line per tick while Encrypted DNS for devices or the\n"
+ 	  "#     block is on - rednsd's counters (it never logs a lookup), the block's refusals, the list size\n"
+ 	  "case \"$DS\" in *,edns,*)\n"
+-	  "  if [ \"$VOLATILE\" = 0 ] && { [ \"$(_nv reaper_dot_srv)\" = 1 ] || [ \"$(_nv reaper_doh_srv)\" = 1 ] || [ \"$(_nv reaper_doh_block)\" = 1 ] || [ \"$(_nv reaper_dot_block)\" = 1 ]; }; then\n"
++	  "  if [ \"$VOLATILE\" = 0 ] && { [ \"$(_nvc reaper_dot_srv)\" = 1 ] || [ \"$(_nvc reaper_doh_srv)\" = 1 ] || [ \"$(_nvc reaper_doh_block)\" = 1 ] || [ \"$(_nvc reaper_dot_block)\" = 1 ]; }; then\n"
+ 	  "    _sj=/tmp/rednsd/run/status.json; [ -f $_sj ] && [ ! -L $_sj ] || _sj=/dev/null	# rednsd's own folder: never through a link\n"
+ 	  "    _ec=$(tr ',{}' '\\n\\n\\n' < $_sj 2>/dev/null | awk -F: '$1 == \"\\\"conns\\\"\" {c = $2} $1 == \"\\\"queries\\\"\" {q = $2} $1 ~ /^\"refused_/ {r += $2} END {printf \"conn=%d ans=%d ref=%d\", c, q, r}')\n"
+ 	  "    _er=$( { iptables -nvxL REAPER_EDNS; ip6tables -nvxL REAPER_EDNS; } 2>/dev/null | awk '/REJECT/ && /dpt:853/ {t += $1} /REJECT/ && /dpt:443/ {h += $1} END {printf \"dot_refused=%d doh_refused=%d\", t, h}')\n"
+@@ -1455,6 +1472,7 @@ int reaper_lockrun_main(int argc, char *argv[])
+ 		 * idempotent teardown+build, runs hook.sh directly (no nested lock) and
+ 		 * is exactly what start_firewall()'s tail runs under the same lock. */
+ 		"/tmp/reaper_fw/apply.sh",
++		"/tmp/reaper_fw/rollback.sh.rules",	/* 2026-11-17 (review C-2): the rules engine's commit-confirm revert takes the lock too */
+ 		NULL
+ 	};
+ 	int i, lock, rv;
+-- 
+2.25.1
+

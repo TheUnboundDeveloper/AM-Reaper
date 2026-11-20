@@ -84,9 +84,13 @@ ok("rwatch: IPv6 block ordered after the IPv4 first-hop check and before the DNS
 
 # ---- A9 SNMP ----
 s = read("rc/snmpd.c")
-has(s, "agentAddress udp:%s:161,udp6:[%s]:161", "snmpd: dual agentAddress when the LAN has a global IPv6 address")
+# 2026-11-16: the address list is built once (LAN IPv4, then the LAN's IPv6 address when it has one, then - only with
+# "Allow access from WAN" on - each WAN address that is up) and written as one agentAddress line
+has(s, 'if (lan_ip[0] && have6 && n < sizeof(aa))', "snmpd: the LAN's global IPv6 address is added when the router holds one")
+has(s, 'n += snprintf(aa + n, sizeof(aa) - n, ",udp6:[%s]:161", lan_ip6);', "snmpd: dual agentAddress when the LAN has a global IPv6 address")
 has(s, 'ipv6_nvname("ipv6_rtr_addr")', "snmpd: the v6 address comes from the WAN-unit-aware nvram name")
-has(s, 'fprintf(fp, "agentAddress udp:%s:161\\n", lan_ip);', "snmpd: the IPv4-only form is kept for a box without IPv6")
+has(s, 'n += snprintf(aa + n, sizeof(aa) - n, "udp:%s:161", lan_ip);', "snmpd: the IPv4 LAN address always leads the list")
+has(s, 'fprintf(fp, "agentAddress %s\\n", aa[0] ? aa : "udp:161");', "snmpd: one agentAddress line; the plain form only when there is no LAN address")
 fw = read("rc/firewall.c")
 pair(fw, '-A INPUT -i %s -p udp --dport 161 -j %s\\n", wan_if', '-A INPUT -i %s -p udp --dport 161 -j %s\\n", wan6face', "firewall: snmpd_wan INPUT allow")
 

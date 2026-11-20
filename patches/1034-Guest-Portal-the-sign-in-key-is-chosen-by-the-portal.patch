@@ -1,0 +1,74 @@
+From 9b556990ad6b8186f1b9bbb35d849d80accf9bc3 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Sun, 15 Nov 2026 17:48:30 -0500
+Subject: [PATCH] Guest Portal: the sign-in key is chosen by the portal's
+ subnet (102.8 line)
+
+- The portal web server picked the sign-in key by comparing the first 11 characters of the
+  client's address with the portal network's, which fails on a short subnet; the account portal's
+  key was then used, so a correct passcode (and the terms page) was refused. The portal network is
+  now matched by subnet; the stock test is kept.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ .../lighttpd-1.4.39/src/nvram_control.c       | 37 ++++++++++++++++++-
+ 1 file changed, 36 insertions(+), 1 deletion(-)
+
+diff --git a/release/src/router/lighttpd-1.4.39/src/nvram_control.c b/release/src/router/lighttpd-1.4.39/src/nvram_control.c
+index b06a5fb693..1bc6dcaec9 100755
+--- a/release/src/router/lighttpd-1.4.39/src/nvram_control.c
++++ b/release/src/router/lighttpd-1.4.39/src/nvram_control.c
+@@ -1750,6 +1750,33 @@ char *nvram_get_value(const char *key)
+ #endif
+ }
+ 
++#ifndef USE_TCAPI
++/* reaper 2026-11-15: is the portal address ip inside net ("a.b.c.d/bits")? 1 yes, 0 no, -1 cannot tell */
++static int reaper_uam_in_net(const char *ip, const char *net)
++{
++	unsigned int a[4], n[4], bits = 0, i;
++	unsigned long ia = 0, in = 0, mask;
++	char tail;
++
++	if (!ip || !net)
++		return -1;
++	if (sscanf(ip, "%u.%u.%u.%u%c", &a[0], &a[1], &a[2], &a[3], &tail) != 4)
++		return -1;
++	if (sscanf(net, "%u.%u.%u.%u/%u%c", &n[0], &n[1], &n[2], &n[3], &bits, &tail) != 5)
++		return -1;
++	if (bits < 1 || bits > 32)
++		return -1;
++	for (i = 0; i < 4; i++) {
++		if (a[i] > 255 || n[i] > 255)
++			return -1;
++		ia = (ia << 8) | a[i];
++		in = (in << 8) | n[i];
++	}
++	mask = (0xffffffffUL << (32 - bits)) & 0xffffffffUL;
++	return ((ia & mask) == (in & mask)) ? 1 : 0;
++}
++#endif
++
+ /* for hostspot module */
+ char *nvram_get_uamsecret(const char *str)
+ {
+@@ -1761,7 +1788,15 @@ char *nvram_get_uamsecret(const char *str)
+ 	const char *reaper_net = nvram_get("chilli_net");
+ 	char *reaper_sec;
+ 
+-	if (str && reaper_net && !strncmp(str, reaper_net, 11))
++	/* reaper 2026-11-15 (field, v3.7.9): str is the portal address of the sign-in. Stock tells the Free Wi-Fi
++	 * portal from the account portal by the first 11 characters of chilli_net ("192.168.52." for the default
++	 * 192.168.52.0/24), so a Free Wi-Fi network on a subnet whose "a.b.c." is shorter (192.168.5.x, 10.0.0.x,
++	 * 172.16.10.x ...) was handed the account portal's secret. Stock never noticed - both secrets were the same
++	 * default - but since v3.7.6 each portal has its own random secret (rc reaper_uam_secret_ensure), and such a
++	 * portal then refused every sign-in, the passcode and the terms page alike ("don't match"). The stock test is
++	 * kept; an address inside chilli_net and not inside cp_net now counts as the Free Wi-Fi portal as well. */
++	if (str && reaper_net && (!strncmp(str, reaper_net, 11)
++			|| (reaper_uam_in_net(str, reaper_net) == 1 && reaper_uam_in_net(str, nvram_get("cp_net")) != 1)))
+ 		reaper_sec = nvram_get("chilli_uamsecret");
+ 	else
+ 		reaper_sec = nvram_get("cp_uamsecret");
+-- 
+2.25.1
+

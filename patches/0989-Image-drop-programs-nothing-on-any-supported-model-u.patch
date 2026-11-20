@@ -1,0 +1,65 @@
+From 35eb80bb6114e2903c9a082724dc85ef8de9c521 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Mon, 9 Nov 2026 20:28:03 -0500
+Subject: [PATCH] Image: drop programs nothing on any supported model uses
+ (102.8 line)
+
+From the closed-program review: each was checked against every supported model's build options and
+the RT-BE96U image - no starter, no caller, no linker, no page.
+- dnsqd (its two switches are set only by stock pages that do not ship), qosmgmtd and qm_cli
+  (built only with options no model sets), archerctl with its archer alias and libarcher.so
+  (BCM675x only), fsmd and req_fsm (rc no longer starts it; nothing else talked to it), epi_ttcp,
+  rawSocketTest, dnsspoof, vpmstats, urlfilterd, the two protect_srv test clients (protect_srv
+  stays), chpasswd.sh (unused since rc pipes to chpasswd), check_spectrum.sh (DSL only),
+  qdf_cv_lvl.sh, bcmspu.sh, test_disk1, hub-ctrl, uniconv and dry, ivictl, chilli_response;
+- mtd-utils for flash these boards do not have (DiskOnChip, NFTL, FTL, RFD), the OTP writers,
+  destructive flash tests and host-side image tools. The tools scripts and the flash library use,
+  and the recovery kit, stay.
+- memaccess stays: rc writes BQ16 and BQ16 Pro registers at boot through its sw alias.
+Files are dropped in buildFS after the tarball refill, so none can come back; none is edited. rc's
+fsmd start and its dnsqd paths are in the firewall log commit (services.c, watchdog.c).
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ release/src-rt-5.04behnd.4916/targets/buildFS | 28 +++++++++++++++++++
+ 1 file changed, 28 insertions(+)
+
+diff --git a/release/src-rt-5.04behnd.4916/targets/buildFS b/release/src-rt-5.04behnd.4916/targets/buildFS
+index 50e16ae2ebd..b79d2697456 100755
+--- a/release/src-rt-5.04behnd.4916/targets/buildFS
++++ b/release/src-rt-5.04behnd.4916/targets/buildFS
+@@ -865,3 +865,31 @@ rm -f $R_FS/rom/etc/init.d/xserdes_init.sh $R_FS/rom/etc/init.d/x2serdes_init.sh
+ # Wi-Fi settings for boards no supported model has (hndnvram.sh loads only the file named by the board ID)
+ rm -f $R_FS/rom/etc/wlan/nvram/GT-BE96*.nvm $R_FS/rom/etc/wlan/nvram/BT12_*.nvm $R_FS/rom/etc/wlan/nvram/BE12.nvm \
+ 	$R_FS/rom/etc/wlan/nvram/GT-BE19000AI*.nvm
++# ---- Reaper (2026-11-09, owner: review-2026-11-03 F-11 group A): programs nothing on any supported model
++# starts, calls or links. Checked on the RT-BE96U image (every other file searched for each name) and the build
++# options of all nine trees. Notes: asuswrt-merlin.ng docs/backlog/unused-programs-2026-11-09.md
++# DNS query analyser: its two switches are set only by three stock pages that do not ship (Bandwidth tab removed)
++rm -f $R_FS/usr/sbin/dnsqd
++# Wi-Fi QoS manager: started only with BRCM_SMARTHAUL or QOSR1, off on every model
++rm -f $R_FS/usr/sbin/qosmgmtd $R_FS/usr/sbin/qm_cli
++# Archer software accelerator: rc calls it only on BCM675x boards (these use the Runner)
++rm -f $R_FS/bin/archerctl $R_FS/bin/archer; reaper_rm_lib lib/libarcher.so
++# filesystem-usage monitor: rc no longer starts it; the only client of its socket was req_fsm
++rm -f $R_FS/usr/sbin/fsmd $R_FS/usr/sbin/req_fsm
++# test tools, the unused Broadcom URL filter daemon, and the protect_srv test clients (protect_srv stays)
++rm -f $R_FS/bin/epi_ttcp $R_FS/bin/rawSocketTest $R_FS/bin/dnsspoof $R_FS/bin/vpmstats $R_FS/bin/urlfilterd \
++	$R_FS/usr/sbin/Send_Event2ptcsrv $R_FS/usr/sbin/req_ptcsrv
++# scripts nothing runs: chpasswd.sh (rc pipes to chpasswd since D-3), check_spectrum.sh (DSL only),
++# qdf_cv_lvl.sh (another vendor platform), bcmspu.sh (bcm-base-drivers.sh loads bcmspu.ko itself)
++rm -f $R_FS/usr/sbin/chpasswd.sh $R_FS/usr/sbin/check_spectrum.sh $R_FS/bin/qdf_cv_lvl.sh $R_FS/usr/sbin/bcmspu.sh
++# mtd-utils for flash these boards do not have (DiskOnChip, NFTL, FTL, RFD), OTP programming, destructive flash
++# tests and host-side image tools. The tools scripts and libbcm_flashutil use (flash_erase, flash_eraseall,
++# ubiformat, ubiupdatevol, ubiblock, mtdpart) and the recovery kit (nandwrite, nanddump, ...) stay.
++for t in flash_otp_dump flash_otp_erase flash_otp_info flash_otp_lock flash_otp_write doc_loadbios docfdisk \
++	nftldump nftl_format ftl_check ftl_format rfddump rfdformat nandflipbits nandtest fectest serve_image recv_image \
++	ubinize ubicrc32; do rm -f $R_FS/bin/$t; done
++# a libdisk test, USB hub power control, netatalk conversion tools afpd does not use, the IVI control tool,
++# a coova-chilli test helper - no caller for any of them. memaccess STAYS: rc writes BQ16/BQ16 Pro registers at
++# boot through its sw alias (init-broadcom.c init_others)
++rm -f $R_FS/sbin/test_disk1 $R_FS/usr/sbin/hub-ctrl $R_FS/usr/bin/uniconv $R_FS/bin/dry \
++	$R_FS/bin/ivictl $R_FS/usr/sbin/chilli_response
+-- 
+2.25.1
+

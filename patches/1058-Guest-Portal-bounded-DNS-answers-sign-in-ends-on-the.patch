@@ -1,0 +1,242 @@
+From d741c8582be50aa10529b81be23224fee8c8ac59 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Wed, 18 Nov 2026 17:05:23 -0500
+Subject: [PATCH] Guest Portal: bounded DNS answers, sign-in ends on the first
+ address, portal restarted (102.8 line)
+
+- The portal's DNS answers before sign-in: a frame longer than the answer buffer, or a query with
+  no room for the answer record, is not answered. The question is copied label by label within the
+  packet; a compression pointer, a reserved label type, a label or type/class past the payload, or
+  a name longer than the buffer is not answered.
+- The sign-in page always goes on to the first address the device asked for; the probe-address
+  list and the extra reload are gone.
+- Once a portal has been started this boot, the watchdog looks once a minute; after two misses in
+  a row it starts the portal again, at most three times a boot (the helpers are in rc/services.c).
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ release/src/router/coovachilli/src/dhcp.c     | 65 ++++++++++++++-----
+ .../lighttpd-1.4.39/external_file/css/uam.js  | 51 +++------------
+ release/src/router/rc/watchdog.c              | 29 +++++++++
+ 3 files changed, 86 insertions(+), 59 deletions(-)
+
+diff --git a/release/src/router/coovachilli/src/dhcp.c b/release/src/router/coovachilli/src/dhcp.c
+index d44d6e33bf..de649de8ef 100644
+--- a/release/src/router/coovachilli/src/dhcp.c
++++ b/release/src/router/coovachilli/src/dhcp.c
+@@ -1600,6 +1600,10 @@ int dhcp_nakDNS(struct dhcp_conn_t *conn, uint8_t *pack, size_t len) {
+   struct pkt_udphdr_t *answer_udph;
+   struct dns_packet_t *answer_dns;
+ 
++  /* REAPER-D6-NAK reaper 2026-11-17 (review D-6): a frame longer than the answer buffer is dropped, not copied */
++  if (len > sizeof(answer))
++    return 0;
++
+   memcpy(answer, pack, len); 
+ 
+   answer_ethh = pkt_ethhdr(answer);
+@@ -1732,6 +1736,31 @@ static int reaper_dns_qtype(const uint8_t *rec, size_t len)
+     return -1;
+   return (rec[i + 1] << 8) | rec[i + 2];
+ }
++
++/* reaper 2026-11-18 (review P6-5-P1) REAPER-D6-QCOPY: the first question of a DNS payload of len bytes, copied whole
++ * into out (outmax bytes): the labels, the zero byte that ends the name, and the 4 bytes of type and class. Returns
++ * the number of bytes copied, or 0 when the question cannot be copied plainly - a compression pointer, a label or the
++ * type / class running past the payload, or more than outmax bytes. The stock loop copied up to the first zero byte,
++ * bounded by the output buffer only: a question ending in a pointer has no zero byte of its own, so the copy ran on
++ * past the frame into the receive buffer, and the answer sent those bytes - left over from earlier frames, possibly
++ * another device's - back to the asking device, before any sign-in. */
++static size_t reaper_dns_qcopy(const uint8_t *rec, size_t len, uint8_t *out, size_t outmax)
++{
++  size_t i = 0;
++
++  for (;;) {
++    if (i >= len || (rec[i] & 0xc0))
++      return 0;
++    if (!rec[i])
++      break;
++    i += (size_t)rec[i] + 1;
++  }
++  i += 1 + 4;
++  if (i > len || i > outmax)
++    return 0;
++  memcpy(out, rec, i);
++  return i;
++}
+ /* REAPER-PREAUTH-END */
+ 
+ static 
+@@ -2074,24 +2103,23 @@ int dhcp_dns(struct dhcp_conn_t *conn, uint8_t *pack,
+ 	int n;
+ 	
+ 	p = dnsp->records;
+-	
++
+ #if(_debug_)
+ 	log_dbg("It was a matching query!\n");
+ #endif
+-	
+-	do {
+-	  if (query_len < 256)
+-	    query[query_len++] = *p;
+-	  else 
+-	    break;
+-	}
+-	while (*p++ != 0); /* TODO */
+-	
+-	for (n=0; n<4; n++) {
+-	  if (query_len < 256)
+-	    query[query_len++] = *p++;
+-	}
+-	
++
++	/* REAPER-D6-QCOPY reaper 2026-11-18 (review P6-5-P1): the question is copied within the payload, label by
++	 * label; one that cannot be copied whole and plainly is not answered (see reaper_dns_qcopy) */
++	query_len = reaper_dns_qcopy(p, olen, query, sizeof(query));
++	if (!query_len)
++	  return 0;
++	p += query_len;
++	(void)n;
++
++	/* REAPER-D6-QRY reaper 2026-11-17 (review D-6): the answer record below adds 16 bytes to query[]; a name that
++	 * leaves no room for it is dropped (the name loop above already stops at the end of the buffer) */
++	if (query_len + 16 > sizeof(query))
++	  return 0;
+ 	if (!reaper_noans) {	/* reaper 2026-11-12: not an A question - the question alone, no records */
+ 	query[query_len++] = 0xc0;
+ 	query[query_len++] = 0x0c;
+@@ -2109,7 +2137,12 @@ int dhcp_dns(struct dhcp_conn_t *conn, uint8_t *pack,
+ 	query_len += 4;
+ 	}
+ 	
+-	memcpy(answer, pack, *plen); /* TODO */
++	/* REAPER-D6-ANS reaper 2026-11-17 (review D-6): a frame longer than the answer buffer is dropped, not copied
++	 * (since the 2026-11-12 pre-sign-in answers this branch is reached for every lookup of a device that has
++	 * not signed in, not only for the portal's own names) */
++	if (*plen > sizeof(answer))
++	  return 0;
++	memcpy(answer, pack, *plen);
+ 	
+ 	answer_ethh = pkt_ethhdr(answer);
+ 	answer_iph = pkt_iphdr(answer);
+diff --git a/release/src/router/lighttpd-1.4.39/external_file/css/uam.js b/release/src/router/lighttpd-1.4.39/external_file/css/uam.js
+index 3a96bbee94..ca4bfa7d59 100755
+--- a/release/src/router/lighttpd-1.4.39/external_file/css/uam.js
++++ b/release/src/router/lighttpd-1.4.39/external_file/css/uam.js
+@@ -107,49 +107,14 @@ var REAPER_TRY_MS = 4000;
+ var REAPER_TRY_GAP_MS = 1000;
+ var REAPER_TRY_MAX = 12;
+ 
+-/* Reaper 2026-11-14 (owner): no second "Success" page. On a phone the first address is the system's own connection
+- * test (captive.apple.com/hotspot-detect.html, .../generate_204 ...); being sent on to it showed a second, bare
+- * success page after this one. For such an address THIS success page is loaded once more instead (marked
+- * reaper_done=1): a phone's sign-in sheet tests the connection again after a page load, so it finishes from the page
+- * the visitor is already looking at. Any other first address - a site typed into a computer's browser - is still
+- * gone on to, as before. */
+-var REAPER_PROBE_HOSTS = ["captive.apple.com", "captive.g.aaplimg.com", "connectivitycheck.gstatic.com",
+-	"connectivitycheck.android.com", "clients3.google.com", "play.googleapis.com", "www.msftconnecttest.com",
+-	"www.msftncsi.com", "detectportal.firefox.com", "nmcheck.gnome.org", "connectivity-check.ubuntu.com",
+-	"network-test.debian.org", "connectivitycheck.platform.hicloud.com", "connect.rom.miui.com"];
+-var REAPER_PROBE_PATHS = ["/hotspot-detect.html", "/library/test/success.html", "/generate_204", "/gen_204",
+-	"/connecttest.txt", "/ncsi.txt", "/success.txt", "/canonical.html", "/check_network_status.txt"];
+-
+-function reaperIsProbe(u) {
+-	var p = null, h = "", i = 0;
+-
+-	try {
+-		p = new URL(u);
+-	} catch (e) {
+-		return false;
+-	}
+-	h = String(p.hostname || "").toLowerCase();
+-	for (i = 0; i < REAPER_PROBE_HOSTS.length; i++)
+-		if (h == REAPER_PROBE_HOSTS[i])
+-			return true;
+-	for (i = 0; i < REAPER_PROBE_PATHS.length; i++)
+-		if (p.pathname == REAPER_PROBE_PATHS[i])
+-			return true;
+-	return false;
+-}
+-
++/* Reaper 2026-11-17 (field report on v3.8.1; the owner's decision): the page goes on to the first address in
++ * every case, a phone's own connection test included. From 2026-11-14 to v3.8.1 a test address was not
++ * navigated to: this page was loaded once more instead, so that no second, bare "Success" page showed. On an
++ * iPhone the sign-in sheet then never finished - it closes only once the sheet itself has loaded the system's
++ * test page, and a background request or a reload of this page is not that. The bare page for a moment is
++ * the price of a sheet that closes. */
+ function reaperFinish(u) {
+-	var me = null;
+-
+-	if (!reaperIsProbe(u)) {
+-		window.location.replace(u);
+-		return;
+-	}
+-	try {
+-		me = new URL(window.location.href);
+-		me.searchParams.set("reaper_done", "1");
+-		window.location.replace(me.href);
+-	} catch (e) {}
++	window.location.replace(u);
+ }
+ 
+ function reaperTryNext(u, n) {
+@@ -205,7 +170,7 @@ function reaperGoNext() {
+ }
+ 
+ $(function() {
+-	if (reaperQuery("auth_status") == "pass" && reaperQuery("reaper_done") != "1")	/* reaper_done: this page was loaded again by reaperFinish */
++	if (reaperQuery("auth_status") == "pass")
+ 		setTimeout(reaperGoNext, REAPER_NEXT_MS);
+ });
+ 
+diff --git a/release/src/router/rc/watchdog.c b/release/src/router/rc/watchdog.c
+index 3b93dff3f0..6c85a48102 100644
+--- a/release/src/router/rc/watchdog.c
++++ b/release/src/router/rc/watchdog.c
+@@ -8599,6 +8599,32 @@ void roamast_check()
+ #endif
+ 
+ #if ! (defined(RTCONFIG_QCA) || defined(RTCONFIG_RALINK))
++#if defined(RTCONFIG_COOVACHILLI) && defined(RTCONFIG_MULTILAN_CFG)
++/* reaper 2026-11-17 (review D-6) REAPER-PORTAL-LOOK: see reaper_portal_down() in services.c. Cheap when no portal
++ * was started this boot (two file tests); otherwise one look a minute. */
++extern int reaper_portal_down(void);
++static void reaper_portal_look(void)
++{
++	static long last;
++	static int miss, heals;
++	long now = uptime();
++
++	if (now - last < 60)
++		return;
++	last = now;
++	if (heals >= 3 || (!f_exists("/tmp/chilli.conf") && !f_exists("/tmp/chilli-cp.conf")) || !reaper_portal_down()) {
++		miss = 0;
++		return;
++	}
++	if (++miss < 2)
++		return;		/* once may be a restart in progress */
++	miss = 0;
++	heals++;
++	logmessage("watchdog", "a Guest Portal network is on and its portal is not running - starting it (%d of 3 this boot)", heals);
++	notify_rc("start_reaper_portal_heal");
++}
++#endif
++
+ void watchdog_check()
+ {
+ #if defined(RTCONFIG_RALINK) || defined(RTCONFIG_QCA) || defined(RTCONFIG_BCM_7114)
+@@ -12165,6 +12191,9 @@ wdp:
+ #if defined(RTCONFIG_HND_ROUTER_BE_4916)
+ 	check_mtd_data();
+ #endif
++#if defined(RTCONFIG_COOVACHILLI) && defined(RTCONFIG_MULTILAN_CFG)
++	reaper_portal_look();	/* review 2026-11-17 (D-6) */
++#endif
+ #if RTCONFIG_NTPD
+ 	if (++ntpd_timer >= DAY_PERIOD) {
+ 		ntpd_timer = 0;
+-- 
+2.25.1
+

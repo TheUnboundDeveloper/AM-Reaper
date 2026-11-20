@@ -1,0 +1,386 @@
+From ace6abf111d63e55e8083b85adcbc34682e519dd Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Wed, 11 Nov 2026 20:17:21 -0500
+Subject: [PATCH] dnsmasq: DHCP without the network lock per packet; Wallguard
+ regex guard (102.8 line)
+
+- For every DHCP packet dnsmasq dumped the kernel's IPv4 address list and asked for the interface
+  address with an ioctl; both wait for the kernel's network configuration lock, and dnsmasq is one
+  thread, so DNS waited too. The IPv4 list is now kept between packets and read again only after
+  an IPv4 address event (the socket is subscribed) or an event that may have been lost; the
+  interface address comes from it. rc writes dhcp-broadcast, so a client without an address is
+  answered by broadcast instead of an ARP table write.
+- Wallguard Advanced rules: a regular expression with a back-reference is refused, by the compiler
+  and by the engine, and each rule is timed against long probe names when the list is built.
+- A /re/ rule with $client=<CIDR> was refused: the CIDR's slash was taken for the end of the
+  regex.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ release/src/router/dnsmasq/src/dhcp.c         |   7 +
+ release/src/router/dnsmasq/src/dnsmasq.h      |   3 +
+ release/src/router/dnsmasq/src/netlink.c      | 123 +++++++++++++++++-
+ .../src/router/dnsmasq/src/wallguard_adv.h    |  40 +++++-
+ release/src/router/wallguard/wallguardc.c     |  71 ++++++++++
+ 5 files changed, 242 insertions(+), 2 deletions(-)
+
+diff --git a/release/src/router/dnsmasq/src/dhcp.c b/release/src/router/dnsmasq/src/dhcp.c
+index 65467411672..30e8cec73cd 100644
+--- a/release/src/router/dnsmasq/src/dhcp.c
++++ b/release/src/router/dnsmasq/src/dhcp.c
+@@ -317,6 +317,13 @@ void dhcp_packet(time_t now, int pxe_fd)
+   else
+     {
+       ifr.ifr_addr.sa_family = AF_INET;
++#ifdef HAVE_LINUX_NETWORK
++      /* reaper (review 2026-11-11, D-6): from the kept address list - SIOCGIFADDR waits for the kernel's
++	 network configuration lock, once per DHCP packet */
++      if (reaper_ifa4_primary(iface_index, ifr.ifr_name, &iface_addr))
++	;
++      else
++#endif
+       if (ioctl(daemon->dhcpfd, SIOCGIFADDR, &ifr) != -1 )
+ 	iface_addr = ((struct sockaddr_in *) &ifr.ifr_addr)->sin_addr;
+       else
+diff --git a/release/src/router/dnsmasq/src/dnsmasq.h b/release/src/router/dnsmasq/src/dnsmasq.h
+index e90ec5aff32..927b32fbd2d 100644
+--- a/release/src/router/dnsmasq/src/dnsmasq.h
++++ b/release/src/router/dnsmasq/src/dnsmasq.h
+@@ -1752,6 +1752,9 @@ typedef union {
+ 	int (*af_local)(int index, unsigned int type, char *mac, size_t maclen, void *parm);
+ } callback_t;
+ int iface_enumerate(int family, void *parm, callback_t callback);
++#ifdef HAVE_LINUX_NETWORK
++int reaper_ifa4_primary(int if_index, const char *name, struct in_addr *addr);	/* reaper (review 2026-11-11, D-6) */
++#endif
+ 
+ /* dbus.c */
+ #ifdef HAVE_DBUS
+diff --git a/release/src/router/dnsmasq/src/netlink.c b/release/src/router/dnsmasq/src/netlink.c
+index 385d4200c74..0c8bd5e3c0a 100644
+--- a/release/src/router/dnsmasq/src/netlink.c
++++ b/release/src/router/dnsmasq/src/netlink.c
+@@ -57,6 +57,51 @@ static u32 netlink_pid;
+ static unsigned nl_async(struct nlmsghdr *h, unsigned state);
+ static void nl_multicast_state(unsigned state);
+ 
++/* reaper (review 2026-11-11, D-6). Every DHCP packet made dnsmasq dump the kernel's IPv4 address list and ask
++   for the interface's address with an ioctl. Both wait for the kernel's network configuration lock (rtnl),
++   so anything that held that lock for seconds stopped DHCP - and DNS with it, since this is one thread. The IPv4 list is now kept between packets. It is read again only after the kernel has
++   said an address was added or removed (this socket is subscribed to those events, and the main loop reads
++   them before it looks at DHCP), or after an event may have been lost. Without the subscription nothing is
++   kept. */
++struct reaper_ifa4 {
++  struct in_addr addr, netmask, broadcast;
++  int index, has_label;
++  char label[IF_NAMESIZE];
++};
++static struct reaper_ifa4 *reaper_ifa4;
++static int reaper_ifa4_n, reaper_ifa4_cap, reaper_ifa4_valid, reaper_nl_events;
++
++static int reaper_ifa4_collect(struct in_addr local, int if_index, char *label,
++			       struct in_addr netmask, struct in_addr broadcast, void *vparam)
++{
++  struct reaper_ifa4 *e;
++
++  (void)vparam;
++  if (reaper_ifa4_n == reaper_ifa4_cap)
++    {
++      int cap = reaper_ifa4_cap ? reaper_ifa4_cap * 2 : 16;
++      struct reaper_ifa4 *n = realloc(reaper_ifa4, cap * sizeof(*n));
++
++      if (!n)
++	return 0;
++      reaper_ifa4 = n;
++      reaper_ifa4_cap = cap;
++    }
++  e = &reaper_ifa4[reaper_ifa4_n++];
++  e->addr = local;
++  e->netmask = netmask;
++  e->broadcast = broadcast;
++  e->index = if_index;
++  e->has_label = label != NULL;
++  e->label[0] = 0;
++  if (label)
++    {
++      strncpy(e->label, label, IF_NAMESIZE - 1);
++      e->label[IF_NAMESIZE - 1] = 0;
++    }
++  return 1;
++}
++
+ char *netlink_init(void)
+ {
+   struct sockaddr_nl addr;
+@@ -88,6 +133,8 @@ char *netlink_init(void)
+   
+   /* save pid assigned by bind() and retrieved by getsockname() */ 
+   netlink_pid = addr.nl_pid;
++  /* reaper (D-6): the address list is kept only when this socket really hears address events */
++  reaper_nl_events = (addr.nl_groups & RTMGRP_IPV4_IFADDR) != 0;
+   
+   iov.iov_len = 100;
+   iov.iov_base = safe_malloc(iov.iov_len);
+@@ -142,6 +189,10 @@ static ssize_t netlink_recv(int flags)
+       rc = -1;
+       errno = ENOMEM;
+     }
++
++  /* reaper (D-6): a failed read (the kernel's ENOBUFS above all) may have been an address event */
++  if (rc == -1 && errno != EAGAIN && errno != EWOULDBLOCK)
++    reaper_ifa4_valid = 0;
+   
+   return rc;
+ }
+@@ -151,7 +202,7 @@ static ssize_t netlink_recv(int flags)
+    family = AF_LOCAL finds MAC addresses.
+    returns 0 on failure, 1 on success, -1 when restart is required
+ */
+-int iface_enumerate(int family, void *parm, callback_t callback)
++static int iface_enumerate_kernel(int family, void *parm, callback_t callback)
+ {
+   struct sockaddr_nl addr;
+   struct nlmsghdr *h;
+@@ -356,6 +407,69 @@ int iface_enumerate(int family, void *parm, callback_t callback)
+     }
+ }
+ 
++/* reaper (review 2026-11-11, D-6): the IPv4 list from memory while it is good, every other family from the
++   kernel as before. Same results for the caller: each address in the kernel's order, 0 as soon as a callback
++   says no, and the kernel's own failure codes when the list had to be read and could not be. */
++int iface_enumerate(int family, void *parm, callback_t callback)
++{
++  int i;
++
++  if (family != AF_INET || !reaper_nl_events || daemon->pipe_to_parent != -1)
++    return iface_enumerate_kernel(family, parm, callback);
++
++  if (!reaper_ifa4_valid)
++    {
++      int rc;
++
++      reaper_ifa4_n = 0;
++      /* set BEFORE the dump: an address event read while the dump comes in clears it again (nl_async), and
++	 the next caller reads the list once more */
++      reaper_ifa4_valid = 1;
++      rc = iface_enumerate_kernel(AF_INET, NULL, (callback_t){.af_inet=reaper_ifa4_collect});
++      if (rc != 1)
++	{
++	  reaper_ifa4_valid = 0;
++	  return rc;
++	}
++    }
++
++  for (i = 0; i < reaper_ifa4_n; i++)
++    {
++      struct reaper_ifa4 *e = &reaper_ifa4[i];
++
++      if (!callback.af_inet(e->addr, e->index, e->has_label ? e->label : NULL, e->netmask, e->broadcast, parm))
++	return 0;
++    }
++  return 1;
++}
++
++static int reaper_ifa4_nop(struct in_addr local, int if_index, char *label,
++			   struct in_addr netmask, struct in_addr broadcast, void *vparam)
++{
++  (void)local; (void)if_index; (void)label; (void)netmask; (void)broadcast; (void)vparam;
++  return 1;
++}
++
++/* reaper (D-6): what SIOCGIFADDR answers - the first address of the interface whose label is the interface's
++   own name - from the kept list. 0 = not known here, ask the kernel. */
++int reaper_ifa4_primary(int if_index, const char *name, struct in_addr *addr)
++{
++  int i;
++
++  if (!reaper_nl_events || daemon->pipe_to_parent != -1)
++    return 0;
++  if (!reaper_ifa4_valid && iface_enumerate(AF_INET, NULL, (callback_t){.af_inet=reaper_ifa4_nop}) != 1)
++    return 0;
++  for (i = 0; i < reaper_ifa4_n; i++)
++    if (reaper_ifa4[i].index == if_index &&
++	(!reaper_ifa4[i].has_label || !name || strcmp(reaper_ifa4[i].label, name) == 0))
++      {
++	*addr = reaper_ifa4[i].addr;
++	return 1;
++      }
++  return 0;
++}
++
+ static void nl_multicast_state(unsigned state)
+ {
+   ssize_t len;
+@@ -379,6 +493,13 @@ void netlink_multicast(void)
+ 
+ static unsigned nl_async(struct nlmsghdr *h, unsigned state)
+ {
++  /* reaper (D-6): an IPv4 address was added or removed - the kept IPv4 list is read again when it is next
++     needed. IPv6 address events (every router advertisement refreshes lifetimes) do not touch it. */
++  if ((h->nlmsg_type == RTM_NEWADDR || h->nlmsg_type == RTM_DELADDR) &&
++      h->nlmsg_len >= NLMSG_LENGTH(sizeof(struct ifaddrmsg)) &&
++      ((struct ifaddrmsg *)NLMSG_DATA(h))->ifa_family == AF_INET)
++    reaper_ifa4_valid = 0;
++
+   if (h->nlmsg_type == NLMSG_ERROR)
+     {
+       struct nlmsgerr *err = NLMSG_DATA(h);
+diff --git a/release/src/router/dnsmasq/src/wallguard_adv.h b/release/src/router/dnsmasq/src/wallguard_adv.h
+index 1a8ad819fc4..b0df8c0569d 100644
+--- a/release/src/router/dnsmasq/src/wallguard_adv.h
++++ b/release/src/router/dnsmasq/src/wallguard_adv.h
+@@ -125,6 +125,43 @@ static inline int wga_mac_parse(const char *s, uint8_t *m)
+ }
+ 
+ /* 0 = loaded (possibly empty); the previous content of a is freed first */
++/* review 2026-11-11 (D-1): does this POSIX extended regex use a back-reference (\1 .. \9, a glibc extension)?
++ * That is the one construct glibc matches by back-tracking: a long name that does not match takes seconds, and
++ * dnsmasq answers every query from one thread. Inside a bracket expression a backslash is a plain character. */
++static inline int wga_rx_backref(const char *s)
++{
++	for (; *s; s++) {
++		if (*s == '\\') {
++			if (s[1] >= '1' && s[1] <= '9')
++				return 1;
++			if (s[1])
++				s++;
++		} else if (*s == '[') {
++			s++;
++			if (*s == '^')
++				s++;
++			if (*s == ']')
++				s++;
++			while (*s && *s != ']') {
++				if (*s == '[' && (s[1] == ':' || s[1] == '.' || s[1] == '=')) {
++					char c = s[1];
++
++					s += 2;
++					while (*s && !(*s == c && s[1] == ']'))
++						s++;
++					if (*s)
++						s++;
++				}
++				if (*s)
++					s++;
++			}
++			if (!*s)
++				break;
++		}
++	}
++	return 0;
++}
++
+ static inline int wga_load(struct wga *a, FILE *f)
+ {
+ 	char line[600];
+@@ -220,7 +257,8 @@ static inline int wga_load(struct wga *a, FILE *f)
+ 				if (r.kind == 'r') {
+ 					if (nre >= WGA_MAX_RE || !(r.re = (regex_t *)malloc(sizeof(regex_t))))
+ 						continue;
+-					if (regcomp(r.re, pat, REG_EXTENDED | REG_ICASE | REG_NOSUB)) {
++					/* review 2026-11-11 (D-1): the compiler refuses these; a file written by an older one may hold some */
++					if (wga_rx_backref(pat) || regcomp(r.re, pat, REG_EXTENDED | REG_ICASE | REG_NOSUB)) {
+ 						free(r.re);
+ 						continue;
+ 					}
+diff --git a/release/src/router/wallguard/wallguardc.c b/release/src/router/wallguard/wallguardc.c
+index fb907f7fc8c..f4560d23e53 100644
+--- a/release/src/router/wallguard/wallguardc.c
++++ b/release/src/router/wallguard/wallguardc.c
+@@ -1077,6 +1077,43 @@ static int adv_types_of(char *val, char *out, size_t osz, int *neg)
+ 
+ #define ADV_SKIP(w)	do { adv_report(o, ln, raw, (w), 0); return; } while (0)
+ #define ADV_WARN(w)	do { adv_report(o, ln, raw, (w), 1); return; } while (0)
++/* review 2026-11-11 (D-1): does this POSIX extended regex use a back-reference (\1 .. \9, a glibc extension)?
++ * That is the one construct glibc matches by back-tracking: a long name that does not match takes seconds, and
++ * dnsmasq answers every query from one thread. Inside a bracket expression a backslash is a plain character. */
++static int adv_rx_backref(const char *s)
++{
++	for (; *s; s++) {
++		if (*s == '\\') {
++			if (s[1] >= '1' && s[1] <= '9')
++				return 1;
++			if (s[1])
++				s++;
++		} else if (*s == '[') {
++			s++;
++			if (*s == '^')
++				s++;
++			if (*s == ']')
++				s++;
++			while (*s && *s != ']') {
++				if (*s == '[' && (s[1] == ':' || s[1] == '.' || s[1] == '=')) {
++					char c = s[1];
++
++					s += 2;
++					while (*s && !(*s == c && s[1] == ']'))
++						s++;
++					if (*s)
++						s++;
++				}
++				if (*s)
++					s++;
++			}
++			if (!*s)
++				break;
++		}
++	}
++	return 0;
++}
++
+ static void adv_line(struct adv_out *o, char *raw, unsigned long ln, char **safe, size_t nsafe)
+ {
+ 	char line[LINE_MAX_], rxbuf[260], *p, *e, *mods = NULL, *pat, kind = 'n', flags[8] = "", scope[16] = "-",
+@@ -1122,6 +1159,15 @@ static void adv_line(struct adv_out *o, char *raw, unsigned long ln, char **safe
+ 	/* split the modifiers off: after the regex's closing slash, else at the first $ */
+ 	if (*p == '/') {
+ 		char *c = strrchr(p, '/');
++		/* review 2026-11-11: with text after the last slash, the regex ends at the last "/$" (its modifiers follow):
++		 * /re/$client=192.0.2.0/24 was refused because the CIDR's slash was taken for the regex's end */
++		if (c && c[1]) {
++			char *q, *m = NULL;
++			for (q = p + 1; (q = strstr(q, "/$")) != NULL; q++)
++				m = q;
++			if (m)
++				c = m;
++		}
+ 		if (c == p)
+ 			ADV_SKIP("a regex needs a closing /");
+ 		if (c[1] == '$')
+@@ -1246,8 +1292,33 @@ static void adv_line(struct adv_out *o, char *raw, unsigned long ln, char **safe
+ 		rx[n - 2] = 0;
+ 		if (strpbrk(rx, " \t"))
+ 			ADV_SKIP("a space in a regex");
++		if (adv_rx_backref(rx))	/* review 2026-11-11 (D-1) */
++			ADV_SKIP("a back-reference (\\1 to \\9) in a regex: it can stall DNS on a long name");
+ 		if (regcomp(&re, rx, REG_EXTENDED | REG_ICASE | REG_NOSUB))
+ 			ADV_SKIP("regex does not compile (POSIX extended syntax)");
++		{	/* review 2026-11-11 (D-1): and it has to answer quickly for the longest names a device can ask -
++			   three 253-character names, 200 ms of CPU time for all of them (a sound regex takes microseconds) */
++			static char probe[3][254];
++			struct timespec t0, t1;
++			int k;
++
++			if (!probe[0][0]) {
++				for (k = 0; k < 253; k++) {
++					probe[0][k] = 'a';
++					probe[1][k] = (k % 2) ? 'b' : 'a';
++					probe[2][k] = (k % 8 == 7) ? '.' : (char)('a' + k % 3);
++				}
++				probe[1][252] = 'x';
++			}
++			clock_gettime(CLOCK_PROCESS_CPUTIME_ID, &t0);
++			for (k = 0; k < 3; k++)
++				regexec(&re, probe[k], 0, NULL, 0);
++			clock_gettime(CLOCK_PROCESS_CPUTIME_ID, &t1);
++			if ((t1.tv_sec - t0.tv_sec) * 1000 + (t1.tv_nsec - t0.tv_nsec) / 1000000 > 200) {
++				regfree(&re);
++				ADV_SKIP("regex too slow on a long name: it would stall DNS");
++			}
++		}
+ 		regfree(&re);
+ 		pat = rx;
+ 	}
+-- 
+2.25.1
+

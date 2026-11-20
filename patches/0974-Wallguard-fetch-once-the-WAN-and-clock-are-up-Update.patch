@@ -1,0 +1,526 @@
+From aa12587cc574c8c29c2c108cb368533775d06dd9 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Sat, 7 Nov 2026 14:16:48 -0500
+Subject: [PATCH] Wallguard: fetch once the WAN and clock are up; Update per
+ list; AdGuard sinkhole rules (102.8 line)
+
+- Boot: a router rebooting at 03:00 showed ads until the 05:15 run. The boot-time update ran
+  before the WAN (nvram's WAN state is stale until start_wan) and before the clock (TLS refuses
+  every list host on the boot clock), every fetch failed, and a list that failed beside one that
+  came down was never owed. Now nothing is fetched until a default route exists and the clock is
+  set; the pending mark holds the epoch of the next try (0 = at WAN up, else 10 min doubling to 6
+  h while any subscribed list has no usable copy); rc's firewall hook, the first NTP sync (ntpd.c,
+  the hook this firmware runs; ntp.c for the other client) and the self-monitor call `retry`,
+  which fetches only the owed lists; the lists on a USB volume are used under the mark as soon as
+  the store attaches (restore_build, wallguard_store_attached).
+- update takes a subset: $D/only from httpd (a row's Update button, CGI
+  action=update&id=<subscribed feed>) or ONLY from sync and retry; the other lists' state lines
+  are carried over and nothing else is fetched. A save that adds a list fetches that list alone.
+  The page shows an Update button on every subscribed row (RSHD_183); the safe-search refresh
+  stays with the full update.
+- wallguardc: `$dnsrewrite=` to one of the five sinkhole targets AdGuard DNS uses is a block (its
+  Popup Hosts list is written that way throughout and had read as 0 names); one bar is an exact
+  entry, `@@|name^` an exact allow; the 2026-11-03 download gate counts a list's allows, so a
+  source made only of exception lines is taken (the Names column reads "N allowed", RSHD_184). The
+  host test says `[ -x /bin/nvram ]`: the router's ash had no `command` builtin, and `command -v`
+  said "the host" on the router.
+httpd/web.c also carries the 64-bit partition sizes of get_usb_info (the USB commit) and
+reaper_node_of_sta for the Wireless Log (that commit).
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ release/src/router/httpd/web.c              | 75 ++++++++++++++--
+ release/src/router/rc/ntp.c                 |  3 +
+ release/src/router/rc/ntpd.c                |  4 +
+ release/src/router/rc/wallguard.c           | 29 +++++--
+ release/src/router/wallguard/wallguard.sh   | 94 ++++++++++++++++++---
+ release/src/router/wallguard/wallguardc.c   | 54 ++++++++++--
+ release/src/router/www/Reaper_Wallguard.asp |  4 +-
+ 7 files changed, 227 insertions(+), 36 deletions(-)
+
+diff --git a/release/src/router/httpd/web.c b/release/src/router/httpd/web.c
+index 15c0ac03c2a..c9d2129cde1 100644
+--- a/release/src/router/httpd/web.c
++++ b/release/src/router/httpd/web.c
+@@ -12149,13 +12149,15 @@ static int ej_get_usb_info(int eid, webs_t wp, int argc, char_t **argv){
+ 			memset(part_disk_size, 0, 16);
+ 			snprintf(part_disk_size, sizeof(part_disk_size), "%llu", follow_partition->size_in_kilobytes);
+ 			json_object_object_add(part_item,"size", json_object_new_string(part_disk_size));
+-			json_object_object_add(part_item,"size_int", json_object_new_int(follow_partition->size_in_kilobytes));
++			/* reaper 2026-11-07 (field, ZenWiFi BQ16 + a 4 TB Seagate): new_int is 32-bit - a partition past 2 TB of
++			   kilobytes came out negative, the USB Disks tab said 0 B and the dashboard "not mounted" */
++			json_object_object_add(part_item,"size_int", json_object_new_int64((int64_t)follow_partition->size_in_kilobytes));
+ 
+ 			/* tmpParts.used */
+ 			memset(part_disk_use, 0, 16);
+ 			snprintf(part_disk_use, sizeof(part_disk_use), "%llu", follow_partition->used_kilobytes);
+ 			json_object_object_add(part_item,"used", json_object_new_string(part_disk_use));
+-			json_object_object_add(part_item,"used_int", json_object_new_int(follow_partition->used_kilobytes));
++			json_object_object_add(part_item,"used_int", json_object_new_int64((int64_t)follow_partition->used_kilobytes));
+ 
+ 			/* tmpParts.fsck */
+ #define MAX_ERROR_CODE 3
+@@ -12190,19 +12192,20 @@ static int ej_get_usb_info(int eid, webs_t wp, int argc, char_t **argv){
+ 		json_object_object_add(item,"partition", part_jarray);	//add Partition to item
+ 
+ 		/* tmpdisk.totalSize tmpdisk.totalUsed */
+-		int i, arraylen = 0, total_size = 0, total_use = 0;
++		int i, arraylen = 0;
++		long long total_size = 0, total_use = 0;	/* reaper 2026-11-07: summed as 64-bit too */
+ 		arraylen = json_object_array_length(part_jarray);
+ 		for (i = 0; i < arraylen; i++){
+ 			part_array_obj = json_object_array_get_idx(part_jarray, i);
+ 			json_object_object_get_ex(part_array_obj, "size_int", &part_array_obj_size);
+ 			json_object_object_get_ex(part_array_obj, "used_int", &part_array_obj_use);
+-			total_size += json_object_get_int(part_array_obj_size);
+-			total_use += json_object_get_int(part_array_obj_use);
++			total_size += json_object_get_int64(part_array_obj_size);
++			total_use += json_object_get_int64(part_array_obj_use);
+ 		}
+ 		memset(disk_size, 0, 16);
+-		snprintf(disk_size, sizeof(disk_size), "%d", total_size);
++		snprintf(disk_size, sizeof(disk_size), "%lld", total_size);
+ 		memset(disk_use, 0, 16);
+-		snprintf(disk_use, sizeof(disk_use), "%d", total_use);
++		snprintf(disk_use, sizeof(disk_use), "%lld", total_use);
+ 		json_object_object_add(item,"totalSize", json_object_new_string(disk_size));
+ 		json_object_object_add(item,"totalUsed", json_object_new_string(disk_use));
+ 
+@@ -27252,8 +27255,31 @@ do_reaper_wallguard_cgi(char *url, FILE *stream)
+ 		return;
+ 	}
+ 	if (!strcmp(action, "update")) {
++		/* 2026-11-07 (field): id = one list row's Update button - that list alone is fetched (wallguard.sh reads
++		   $D/only). The id must be a subscribed feed's, so nothing is ever invented here. */
++		char *id = get_cgi("id");
++		if (id && *id) {
++			char *feeds, *l, *save, buf[40];
++			int found = 0;
++			if (strlen(id) > 24 || strspn(id, "abcdefghijklmnopqrstuvwxyz0123456789_") != strlen(id)) {
++				websWrite(stream, "{\"ok\":0,\"ek\":\"RSHD_E2\"}");
++				return;
++			}
++			feeds = read_whole_file(SH_DIR "/feeds");
++			for (l = feeds ? strtok_r(feeds, "\n", &save) : NULL; l && !found; l = strtok_r(NULL, "\n", &save)) {
++				char fid[32];
++				if (sscanf(l, "%*d %31s", fid) == 1 && !strcmp(fid, id))
++					found = 1;
++			}
++			free(feeds);
++			snprintf(buf, sizeof(buf), "%s\n", id);
++			if (!found || f_write_string(SH_DIR "/only", buf, 0, 0) < 0) {
++				websWrite(stream, "{\"ok\":0,\"ek\":\"RSHD_E2\"}");
++				return;
++			}
++		}
+ 		notify_rc("start_wallguard_update");
+-		reaper_audit("wallguard", "update", "lists");
++		reaper_audit("wallguard", "update", id && *id ? id : "lists");
+ 		websWrite(stream, "{\"ok\":1}");
+ 		return;
+ 	}
+@@ -31661,8 +31687,41 @@ static void rdev_node_classify(struct rdev *v, int n)
+ 	}
+ 	shmdt(shm);
+ }
++/* reaper 2026-11-07 (field: the Wireless Log named an AiMesh node "-"): the node's LAN MAC for one of its
++ * backhaul station MACs (the same shared table), "" when the MAC is no node's station. get_wl_status puts it
++ * on the station's row, so the Wireless Log names the row as the Devices page names the node. */
++int reaper_node_of_sta(const char *mac, char *out, size_t n)
++{
++	int shm_id, i;
++	P_CM_CLIENT_TABLE tbl;
++	void *shm;
++	unsigned char mb[6] = {0};
++
++	if (n)
++		out[0] = '\0';
++	if (!mac || !n || !ether_atoe(mac, mb))
++		return 0;
++	shm_id = shmget((key_t)KEY_SHM_CFG, sizeof(CM_CLIENT_TABLE), 0666|IPC_CREAT);
++	if (shm_id == -1)
++		return 0;
++	shm = shmat(shm_id, (void *)0, 0);
++	if (shm == (void *)-1)
++		return 0;
++	tbl = (P_CM_CLIENT_TABLE)shm;
++	for (i = 1; i < tbl->count; i++) {		/* index 0 = this router (the CAP) */
++		if (memcmp(tbl->sta2g[i], mb, 6) == 0 || memcmp(tbl->sta5g[i], mb, 6) == 0 ||
++		    memcmp(tbl->sta6g[i], mb, 6) == 0) {
++			snprintf(out, n, "%02X:%02X:%02X:%02X:%02X:%02X", tbl->realMacAddr[i][0], tbl->realMacAddr[i][1],
++				 tbl->realMacAddr[i][2], tbl->realMacAddr[i][3], tbl->realMacAddr[i][4], tbl->realMacAddr[i][5]);
++			break;
++		}
++	}
++	shmdt(shm);
++	return out[0] != '\0';
++}
+ #else
+ static void rdev_node_classify(struct rdev *v, int n) { (void)v; (void)n; }
++int reaper_node_of_sta(const char *mac, char *out, size_t n) { (void)mac; if (n) out[0] = '\0'; return 0; }
+ #endif
+ 
+ /* the 2nd hex nibble x2 bit => locally-administered (randomized) MAC */
+diff --git a/release/src/router/rc/ntp.c b/release/src/router/rc/ntp.c
+index 3ae98fcbb91..810b6a58540 100644
+--- a/release/src/router/rc/ntp.c
++++ b/release/src/router/rc/ntp.c
+@@ -84,6 +84,9 @@ static void ntp_service()
+ #ifdef RTCONFIG_DISK_MONITOR
+ 		notify_rc("restart_diskmon");
+ #endif
++		/* reaper 2026-11-07 (metal _r1): Wallguard fetches nothing on an unset clock (TLS would refuse every list
++		   host) and the WAN-up hook ran before this first sync - the lists still owed are fetched now */
++		wallguard_on_firewall();
+ #ifdef RTCONFIG_UUPLUGIN
+ 		exec_uu();
+ #endif
+diff --git a/release/src/router/rc/ntpd.c b/release/src/router/rc/ntpd.c
+index 5c5888b14d6..df6f70d6c84 100644
+--- a/release/src/router/rc/ntpd.c
++++ b/release/src/router/rc/ntpd.c
+@@ -147,6 +147,10 @@ int ntpd_synced_main(int argc, char *argv[])
+ #ifdef RTCONFIG_DISK_MONITOR
+ 		notify_rc("restart_diskmon");
+ #endif
++		/* reaper 2026-11-07 (metal _r2): this hook, not rc/ntp.c, is the first sync on this firmware. Wallguard
++		   fetches nothing on an unset clock (TLS would refuse every list host) and the WAN-up hook ran before the
++		   clock was set - the lists still owed are fetched now */
++		wallguard_on_firewall();
+ #ifdef RTCONFIG_UUPLUGIN
+ 		exec_uu();
+ #endif
+diff --git a/release/src/router/rc/wallguard.c b/release/src/router/rc/wallguard.c
+index 22ea1f44822..c32fb58c2a8 100644
+--- a/release/src/router/rc/wallguard.c
++++ b/release/src/router/rc/wallguard.c
+@@ -985,26 +985,37 @@ void wallguard_update(void)
+ /* start_firewall (WAN up): a router that booted without internet has no table yet -
+    fetch the lists now. wallguard.sh's own lock turns a second trigger into a no-op.
+    2026-10-25 (release review W-1): nor does a table that holds My rules alone because every
+-   download failed (wallguard.sh writes "pending"); a firewall restart within two minutes of
+-   the last attempt does not start another. */
+-void wallguard_on_firewall(void)
++   download failed (wallguard.sh writes "pending").
++   2026-11-07 (field): the mark holds the epoch of the next try - 0 while the WAN was down (a reboot at
++   03:00 fetches at WAN up, not at the 05:15 run), else wallguard.sh's 10 min - 6 h backoff while any list
++   is still owed; a retry fetches only the owed lists, so the lists already down are never fetched again. */
++static int sh_pending_due(void)
+ {
+-	struct stat st;
++	char b[32] = "";
++
++	if (!f_exists(SH_DIR "/pending"))
++		return 0;
++	f_read_string(SH_DIR "/pending", b, sizeof(b));
++	return atol(b) <= (long)time(NULL);
++}
+ 
++void wallguard_on_firewall(void)
++{
+ 	if (!wallguard_enabled() || !f_exists(SH_DIR "/feeds"))
+ 		return;
+ 	if (!f_exists(SH_DIR "/db"))
+ 		sh_run_bg("update");
+-	else if (f_exists(SH_DIR "/pending") &&
+-		 (stat(SH_DIR "/state", &st) != 0 || time(NULL) - st.st_mtime >= 120))
+-		sh_run_bg("update");
++	else if (sh_pending_due())
++		sh_run_bg("retry");
+ }
+ 
+ /* the watchdog found the pinned USB store mounted (rc/reaper_usbmon.c, 2026-10-21): Wallguard's lists
+-   may be on it - a router with no table yet builds from them at once, no internet needed */
++   may be on it - a router with no table yet builds from them at once, no internet needed.
++   2026-11-07 (metal _r1): or with a rules-only table under the pending mark - the store mounted 7 s after
++   the boot table was built, and nothing rebuilt from it until the 05:15 run. */
+ void wallguard_store_attached(void)
+ {
+-	if (wallguard_enabled() && !f_exists(SH_DIR "/db") && f_exists(SH_DIR "/feeds"))
++	if (wallguard_enabled() && (!f_exists(SH_DIR "/db") || f_exists(SH_DIR "/pending")) && f_exists(SH_DIR "/feeds"))
+ 		sh_run_bg("restore");
+ }
+ 
+diff --git a/release/src/router/wallguard/wallguard.sh b/release/src/router/wallguard/wallguard.sh
+index 5a3ac26aab3..4dc5226d5ac 100644
+--- a/release/src/router/wallguard/wallguard.sh
++++ b/release/src/router/wallguard/wallguard.sh
+@@ -18,7 +18,10 @@
+ #   $J/block    My rules: names to block (with subdomains)
+ #   $J/allow    names never blocked;  $J/allow24 = "<expiry> <name>" temporary allows
+ #
+-#   update   fetch every list (keeping the previous copy of one that fails), then build
++#   update   fetch every list (keeping the previous copy of one that fails), then build. 2026-11-07: $D/only
++#            (ids, written by httpd for a list row's Update button) or ONLY in the environment (sync, retry)
++#            restricts it to those lists; the other lists' state lines are carried over, nothing else is fetched
++#   retry    update restricted to the subscribed lists with no usable copy (rc at WAN up, rwatch each tick)
+ #   build    compile the table from what is on disk (after a rule change - no downloads)
+ #   fold     move dnsmasq's blocked-lookup records into the counters
+ #   stats    fold, then print the status JSON for the page
+@@ -209,6 +212,41 @@ lock_wait() {
+   return 0
+ }
+ 
++# 2026-11-07 (field): a reboot at 03:00 left the lists owed until the 05:15 run - the boot attempt ran before the
++# WAN was up, and a list that failed while another came down was not owed by the pending mark. Now: nothing is
++# fetched until the WAN is up (a default route, and the clock set; no nvram on the host = up); $D/pending holds
++# the epoch of the next try - 0 while the WAN is down (rc retries at WAN up), else 10 min doubling to 6 h while
++# any subscribed list has no usable copy (rwatch checks each tick); a retry fetches only the lists still owed.
++wan_up() {
++  [ -n "${WALLGUARD_WAN+x}" ] && { [ "$WALLGUARD_WAN" = 1 ]; return; }
++  # metal _r2: the router's ash had no `command` builtin (CONFIG_ASH_CMDCMD off) - `command -v nvram` was 127 and
++  # this line said "the host" on the router. An absolute path decides it.
++  [ -x /bin/nvram ] || return 0
++  # metal _r1 (2026-11-07): nvram's wanN_state_t held a stale 2 from before the reboot (start_wan runs after
++  # start_services), so the boot fetch ran before any route existed; and on the unset clock (2023 at boot) a
++  # retry time means nothing and TLS refuses every list host. A default route and a set clock, then.
++  { ip -4 route show default 2>/dev/null; ip -6 route show default 2>/dev/null; } | grep -q '^default' || return 1
++  [ "$(date +%Y)" -ge 2024 ]
++}
++# the subscribed lists with no usable copy, space separated
++owed() {
++  while read -r bit id url kind opt; do
++    feed_ok "$bit" "$id" "$url" "$kind" "$opt" || continue
++    [ "$kind" = s ] && continue
++    list_path "$id" >/dev/null || printf '%s ' "$id"
++  done < "$D/feeds"
++}
++# pending_set 0: at WAN up; pending_set 1: the backoff step (prints the minutes)
++pending_set() {
++  if [ "$1" = 0 ]; then echo 0 > "$D/pending"; return 0; fi
++  _t=$(tr -dc 0-9 < "$D/tries" 2>/dev/null); _t=$(( ${_t:-0} + 1 )); echo "$_t" > "$D/tries"
++  _m=10; _i=1; while [ "$_i" -lt "$_t" ] && [ "$_m" -lt 360 ]; do _m=$(( _m * 2 )); _i=$(( _i + 1 )); done
++  [ "$_m" -gt 360 ] && _m=360
++  echo $(( $(date +%s) + _m * 60 )) > "$D/pending"
++  echo "$_m"
++}
++pending_clear() { rm -f "$D/pending" "$D/tries"; }
++
+ # review 2026-11-03 (D-1): an HTTP 200 answer is not yet a list. The download is parsed alone, by the same
+ # parser the table uses, and refused (the previous copy stays) when it holds no names, or when most of its
+ # lines are not list lines AND it carries under a quarter of the names the copy in use gave - an error or
+@@ -225,8 +263,9 @@ list_gate() {
+     FNR == 1 { f++ }
+     { n = split($0, part, /\{"bit":/)
+       for (j = 2; j <= n; j++) if (index(part[j], "\"id\":\"" id "\"")) {
+-        if (f == 1) { nm = num(part[j], "names"); bad = num(part[j], "unsupported") + num(part[j], "invalid") }
+-        else old = num(part[j], "names") } }
++        # 2026-11-07: a list of @@ lines alone (the AdGuard DNS exceptions list) carries allows, not names - a list still
++        if (f == 1) { nm = num(part[j], "names") + num(part[j], "allows"); bad = num(part[j], "unsupported") + num(part[j], "invalid") }
++        else old = num(part[j], "names") + num(part[j], "allows") } }
+     END { printf "%d %d %d\n", nm, bad, old }' "$_gj" $( [ -f "$D/build.json" ] && echo "$D/build.json") 2>/dev/null)
+   rm -f "$_gj" "$_gd"
+   # shellcheck disable=SC2086
+@@ -395,7 +434,7 @@ sync() {
+   done < "$D/feeds"
+   if [ -n "$_new" ]; then
+     log "list(s)$_new not downloaded yet - downloading now"
+-    update
++    ONLY=$_new update		# 2026-11-07: those alone - the lists already down are not fetched again
+   else
+     build
+   fi
+@@ -407,10 +446,22 @@ update() {
+   mkdir -p "$L"
+   S=$(st_lists)
+   restore_build		# no table yet: block from the stored lists while the downloads run
++  # 2026-11-07: a subset - $D/only from httpd (a row's Update button), or ONLY from sync / retry
++  if [ -z "${ONLY+x}" ] && [ -f "$D/only" ] && [ ! -L "$D/only" ]; then ONLY=$(tr -c 'a-z0-9_\n' ' ' < "$D/only" | tr '\n' ' '); fi
++  rm -f "$D/only"
++  if ! wan_up; then
++    pending_set 0
++    log "the internet is not up yet - the lists are fetched when it is"
++    [ -s "$D/db" ] || build
++    return 0
++  fi
+   : > "$D/state.new"
+   while read -r bit id url kind opt; do
+     feed_ok "$bit" "$id" "$url" "$kind" "$opt" || { [ -n "$id" ] && log "feed line for $id is not valid - skipped"; continue; }
+     [ "$kind" = s ] && continue		# rc wrote it; nothing to fetch
++    if [ -n "${ONLY+x}" ]; then
++      case " $ONLY " in *" $id "*) ;; *) awk -v i="$id" '$1 == i' "$D/state" 2>/dev/null >> "$D/state.new"; continue ;; esac
++    fi
+     c=$CURL; [ "$kind" = c ] && c=$CURLC
+     prev=$(awk -v i="$id" '$1 == i {print $3}' "$D/state" 2>/dev/null)
+     now=$(date +%s)
+@@ -457,19 +508,24 @@ update() {
+   # a boot that runs before the WAN or the clock is up. The table below still carries My rules, so the
+   # "no table yet" retries would never fire again and nothing on the lists would be blocked until 05:15.
+   # $D/pending says the lists are still owed: rc fetches again when the WAN comes up, rwatch every 10 min.
+-  nf=0; nu=0
++  # 2026-11-07: any list still owed keeps the mark, with the epoch of the next try (rc / rwatch call retry then)
++  nf=0; nu=0; ow=
+   while read -r bit id url kind opt; do
+     feed_ok "$bit" "$id" "$url" "$kind" "$opt" || continue
+     [ "$kind" = s ] && continue
+-    nf=$((nf + 1)); list_path "$id" >/dev/null && nu=$((nu + 1))
++    nf=$((nf + 1)); if list_path "$id" >/dev/null; then nu=$((nu + 1)); else ow="$ow $id"; fi
+   done < "$D/feeds"
+   if [ "$nf" -gt 0 ] && [ "$nu" = 0 ]; then
+-    : > "$D/pending"
+-    log "no block list could be downloaded - only My rules are blocked until the lists come down (retried when the internet is up)"
++    m=$(pending_set 1)
++    log "no block list could be downloaded - only My rules are blocked until the lists come down (tried again in $m min, or when the internet comes up)"
++  elif [ -n "$ow" ]; then
++    m=$(pending_set 1)
++    log "list(s)$ow still owed - tried again in $m min"
+   else
+-    rm -f "$D/pending"
++    pending_clear
+   fi
+-  safesearch
++  # the safe-search file: on a full update, or when a reboot took it
++  { [ -z "${ONLY+x}" ] || [ ! -f "$D/safesearch" ]; } && safesearch
+   # lists no longer subscribed leave the RAM disk and the USB volume (rstore prune: removed inside
+   # the folder by name, never through a link)
+   for f in "$L"/*; do
+@@ -486,7 +542,8 @@ update() {
+ # least one stored list is usable, so the "no table, fetch" paths are never fooled by a table
+ # holding My rules alone
+ restore_build() {
+-  [ -s "$D/db" ] && return 0
++  # metal _r1 (2026-11-07): a rules-only table under the pending mark is no table - the USB store came up 7 s after it
++  [ -s "$D/db" ] && [ ! -f "$D/pending" ] && return 0
+   [ -n "$S" ] && [ -f "$D/feeds" ] || return 1
+   n=0
+   while read -r bit id url kind opt; do
+@@ -504,6 +561,18 @@ restore() {
+   S=$(st_lists)
+   restore_build
+ }
++# 2026-11-07: the lists still owed, nothing else (rc at WAN up, rwatch while the pending mark stands)
++retry() {
++  S=$(st_lists)
++  ow=$(owed)
++  if [ -z "$ow" ]; then
++    pending_clear
++    # metal _r1: the copies became usable after the table was built (the USB store mounted later) - build from them
++    grep -q ' missing ' "$D/state" 2>/dev/null && build
++    return 0
++  fi
++  ONLY=$ow update
++}
+ 
+ # Safe search (phase 2, 2026-10-21): which names the engine answers and with what. Google's
+ # country domains come from Google's own list; the enforcement addresses are resolved through
+@@ -710,7 +779,8 @@ case "$1" in
+   reset) reset ;;
+   safe) safesearch ;;
+   restore) restore ;;
++  retry) retry ;;
+   # 2026-10-27: Dreadwatch's own sources fetch through here (rc/rwarden.c rw_dsrc) - one code path for both tools
+   fetch) case "$6" in custom[1-8]) ;; *) exit 2 ;; esac; [ $# -eq 6 ] || exit 2; FKEYS=$5; fetch "$2" "$3" "$CURLC" "$4" "$6"; exit $? ;;
+-  *) echo "usage: $0 update|build|sync|fold|stats|unbreak <dev> <min>|live|reset|safe|restore|fetch <out> <url> <options> <keyfile> custom<n>" >&2; exit 2 ;;
++  *) echo "usage: $0 update|build|sync|fold|stats|unbreak <dev> <min>|live|reset|safe|restore|retry|fetch <out> <url> <options> <keyfile> custom<n>" >&2; exit 2 ;;
+ esac
+diff --git a/release/src/router/wallguard/wallguardc.c b/release/src/router/wallguard/wallguardc.c
+index 5a92a4f0ddb..fb907f7fc8c 100644
+--- a/release/src/router/wallguard/wallguardc.c
++++ b/release/src/router/wallguard/wallguardc.c
+@@ -21,7 +21,11 @@
+  *   plain           name                                                     exact
+  *   wildcard        *.name                                                   name + subdomains
+  *   AdGuard/ABP     ||name^   ||name^$important                              name + subdomains
+- *                   @@||name^                                                allow, + subdomains
++ *                   ||name^$dnsrewrite=<sinkhole>   (2026-11-07: AdGuard DNS's Popup Hosts list writes every
++ *                   rule so; ad-block.dns.adguard.com, 0.0.0.0, ::, NXDOMAIN, REFUSED - a real address is not a block)
++ *                   |name^   (one bar)                                       that name only
++ *                   @@||name^   @@|name^                                     allow, + subdomains / exact
++ *                   a trailing | after the ^ (EasyList's end anchor) is accepted on all of these
+  *   dnsmasq         address=/a/b/[0.0.0.0|::|#]  server=/a/  local=/a/       name + subdomains
+  * Comments (# ! [) and blank lines are skipped. --rules lines are names (+ subdomains) in any
+  * of the forms above; --allow lines likewise become allow entries.
+@@ -142,6 +146,42 @@ static int is_ip(const char *t)
+ 
+ enum { L_SKIP, L_NAMES, L_UNSUP };
+ 
++/* What may follow the ^ of an AdGuard rule for it to stay a plain block / allow: EasyList's end anchor (|),
++   then $-modifiers, comma separated: important; on a block, dnsrewrite= to a sinkhole (2026-11-07, field: AdGuard
++   DNS's Popup Hosts list is ||name^$dnsrewrite=ad-block.dns.adguard.com throughout, and came out as 0 names).
++   A rewrite to a real address or another name is not a block; $client, $dnstype, $denyallow ... are not guessed at. */
++static int mods_ok(const char *s, int allow)
++{
++	static const char *const sink[] = { "ad-block.dns.adguard.com", "0.0.0.0", "::", "NXDOMAIN", "REFUSED", NULL };
++	int i;
++
++	if (*s == '|')
++		s++;
++	if (!*s)
++		return 1;
++	if (*s++ != '$')
++		return 0;
++	while (*s) {
++		const char *e = strchr(s, ',');
++		size_t n = e ? (size_t)(e - s) : strlen(s);
++
++		if (n == 9 && !strncmp(s, "important", 9))
++			;
++		else if (!allow && n > 11 && !strncmp(s, "dnsrewrite=", 11)) {
++			for (i = 0; sink[i]; i++)
++				if (strlen(sink[i]) == n - 11 && !strncmp(s + 11, sink[i], n - 11))
++					break;
++			if (!sink[i])
++				return 0;
++		} else
++			return 0;
++		s += n + (e ? 1 : 0);
++		if (e && !*s)
++			return 0;		/* a trailing comma */
++	}
++	return 1;
++}
++
+ /* Parse one line into up to 64 names. *subtree / *allow describe all of them. */
+ static int parse_line(char *line, char **names, int *nn, int *subtree, int *allow)
+ {
+@@ -159,18 +199,20 @@ static int parse_line(char *line, char **names, int *nn, int *subtree, int *allo
+ 	if (!*p || *p == '#' || *p == '!' || *p == '[')
+ 		return L_SKIP;
+ 
+-	if (!strncmp(p, "@@||", 4) || !strncmp(p, "||", 2)) {
++	if (p[0] == '|' || !strncmp(p, "@@|", 3)) {
+ 		char *caret;
+ 		*allow = p[0] == '@';
+-		p += *allow ? 4 : 2;
++		p += *allow ? 3 : 1;
++		*subtree = p[0] == '|';		/* || = the name and its subdomains; one bar = that name only (2026-11-07) */
++		if (*subtree)
++			p++;
+ 		if (!(caret = strchr(p, '^')))
+ 			return L_UNSUP;
+ 		*caret = 0;
+-		if (caret[1] && strcmp(caret + 1, "$important") && strcmp(caret + 1, "|"))
++		if (!mods_ok(caret + 1, *allow))
+ 			return L_UNSUP;		/* $client, $dnstype, paths ... not ours to guess */
+-		if (strpbrk(p, "*/|$"))
++		if (!*p || strpbrk(p, "*/|$"))
+ 			return L_UNSUP;
+-		*subtree = 1;
+ 		names[(*nn)++] = p;
+ 		return L_NAMES;
+ 	}
+diff --git a/release/src/router/www/Reaper_Wallguard.asp b/release/src/router/www/Reaper_Wallguard.asp
+index 63a64a8ba36..d29ffff2710 100644
+--- a/release/src/router/www/Reaper_Wallguard.asp
++++ b/release/src/router/www/Reaper_Wallguard.asp
+@@ -658,7 +658,8 @@ function shPaintLists(){
+     var tc = document.createElement('td');
+     if(r.preset) tc.appendChild(shCk(cfg.sel[r.id], false, function(e){ cfg.sel[r.id] = e.target.checked ? 1 : 0; shPaintProfiles(); }));
+     tr.appendChild(tc);
+-    shCell(tr, s ? shNum(s.unique) : DASH, 'num');
++    /* 2026-11-07 (field): an allow-only source (AdGuard DNS's exceptions list) shows what it allows, not 0 */
++    shCell(tr, s ? (s.unique || !s.allows ? shNum(s.unique) : `<#RSHD_184#>`.replace('%1', shNum(s.allows))) : DASH, 'num');
+     shCell(tr, f ? shNum(f.blocked) : DASH, 'num');
+     shCell(tr, f ? shWhen(f.ok) : DASH, 'dim');
+     /* 2026-10-26: a download Warden's router-traffic filter dropped names Warden, not a bare failure */
+@@ -666,6 +667,7 @@ function shPaintLists(){
+     var stc = shCell(tr, f ? (wn ? `<#RSHD_134#>`.replace('%1', wn) : (ST[f.st] || f.st)) : DASH); stc.className = f ? 'st-' + f.st : '';
+     if(wn) stc.title = `<#RSHD_135#>`.replace(/%1/g, f.wip || '');
+     var ac = shCell(tr, '', 'acts');
++    if(f) ac.appendChild(shBtn(`<#RSHD_183#>`, function(){ shAct('update&id=' + encodeURIComponent(r.id)); }, 1));	/* 2026-11-07 (field): this list alone */
+     if(r.preset) ac.appendChild(shBtn(`<#CTL_del#>`, function(){ if(!confirm(`<#RSHD_160#>`)) return; cfg.hidden[r.id] = 1; cfg.sel[r.id] = 0; shPaintLists(); shPaintProfiles(); }, 1));
+     else {
+       ac.appendChild(shBtn(`<#CTL_modify#>`, function(){ shSrcOpen(r.src); }, 1));
+-- 
+2.25.1
+

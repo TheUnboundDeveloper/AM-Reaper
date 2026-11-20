@@ -111,8 +111,10 @@ check("main instance: VLAN lines written before dnsmasq.conf.add", 0 < i_main_em
 check("start_dnsmasq records the signature after writing the main config",
       svc.find('use_custom_config("dnsmasq.conf","/etc/dnsmasq.conf");') < svc.find("revshare_sig_save();"))
 n_restart = svc.count('if ((action & RC_SERVICE_START) && revshare_sig_changed()) {') + svc.count('if (revshare_sig_changed()) {')
+# 2026-11-18 (review P6-3-S2): through reaper_sdn_dnsmasq_restart() - a notify_rc from inside rc's handler was skipped
 check("restart_sdn and sdn_del restart dnsmasq once when the network set changed",
-      n_restart == 2 and svc.count('notify_rc("restart_dnsmasq");') >= 2)
+      n_restart == 2 and svc.count("reaper_sdn_dnsmasq_restart();\t/* 2026-11-18 (review P6-3-S2)") == 2
+      and "static void reaper_sdn_dnsmasq_restart(void)" in svc)
 check("off at factory in defaults.c (owner 2026-10-12; was on)", '{ "reaper_dns_revshare", "0", CKN_STR1' in read("shared/defaults.c"))
 pg = read("www/Reaper_Failover.asp")
 check("DNS Failover page has the switch, saves it, and restarts dnsmasq when it changes",

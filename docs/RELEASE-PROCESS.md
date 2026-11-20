@@ -1,6 +1,6 @@
 # Release Process — from source rung to published firmware
 
-> **Doc status:** current as of **v3.4.8** · 2026-10-20 <!--@stamp-->
+> **Doc status:** current as of **v3.6.5** · 2026-11-02 <!--@stamp-->
 
 End-to-end path for a Reaper release, and what each workflow checks along the
 way. **Read "Cutting a rung" first** — every release problem we have actually
@@ -80,8 +80,9 @@ One command does all five, plus the sibling fan-out:
 marked claims against the repo and aborts on a mismatch — milliseconds, and it
 runs before anything is exported, so a stale doc is a five-second fix rather than
 something noticed after the rung is pinned. It then runs `cut_rung.sh` (the five
-artifacts above), then ports the rung onto the seven sibling branches (RT-BE86U,
-RT-BE88U, GT-BE98, GT-BE98 Pro, GT-BE19000, BQ16 and BQ16 Pro), then handles the
+artifacts above), then ports the rung onto the line's sibling branches (RT-BE86U,
+RT-BE88U and GT-BE98 Pro from `be96u-only`; GT-BE98, GT-BE19000, BQ16 and BQ16 Pro
+from `be96u-102.8`), then handles the
 overlays — **in that order.** Regenerating an overlay before the port produces a
 patch that *reverts* the rung on every sibling, and it applies cleanly, so
 nothing downstream catches it. That is the 2026-08-10 regression, and the order
@@ -153,7 +154,7 @@ the rung is not shippable.
 2. PROSE              provenance summary + models_note, CHANGELOG section
                       (release notes are extracted from the changelog)
 
-3. COMMIT + HUB       commit the lean repo; push canon AND the seven ported
+3. COMMIT + HUB       commit the lean repo; push canon AND the line's ported
                       branches to the bare hub -- skipped, the next cut keeps
                       the unpushed local tips (with a NOTE) and the hub lags
 
@@ -190,9 +191,9 @@ the rung is not shippable.
                       rotation = ship firmware with the new public key first.
 ```
 
-Publishing is gated **twice**: the branch must be `main` or `Dev`
-(`github.ref == 'refs/heads/main' || github.ref == 'refs/heads/Dev'`) *and* the
-`publish` input must be ticked; it defaults to off. A dispatch with the box clear
+Publishing is gated **twice**: the branch must be `main` or `Dev` (the 3006.102.8
+line's workflow also accepts `main-102.8` and `Dev-102.8`, matched on `github.ref`)
+*and* the `publish` input must be ticked; it defaults to off. A dispatch with the box clear
 builds and verifies without shipping, on either branch.
 
 ### What a push to `Dev` runs
@@ -285,6 +286,8 @@ as the repository owner. First applied 2026-09-12: 166 releases (28 versions,
   only behind the Firmware page's Beta Channel switch, and only when the beta's
   number is higher than the stable line's; the refresh retires a beta line the
   moment the stable line reaches its number. `latest.json` never records a beta.
-- The base pin (`3006.102.8-beta2`, `a7ebfa133a`) never moves. Upstream
-  carry-forwards are cherry-picked, not rebased, so the reproduction recipe
-  stays stable across releases.
+- The base pin moves only at a deliberate rebase onto a new upstream release
+  (`docs/GPL-MERGE.md`), whose cut regenerates the whole series: v3.6.0 moved the
+  3006.102.10 line from `a7ebfa133a` to `ca72a61f8bc` (Asuswrt-Merlin 3006.102.10); the
+  3006.102.8 line stays on `a7ebfa133a` (3006.102.8-beta2). Between rebases upstream
+  carry-forwards are cherry-picked and the recipe stays stable.

@@ -1,0 +1,68 @@
+From 27cca1bfdbcd9649b3fee956a535ded1796453c6 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Sat, 14 Nov 2026 12:41:12 -0500
+Subject: [PATCH] Rule Status: the walker reads addrtype --limit-iface-in
+ (102.8 line)
+
+- Guest isolation lets a guest's DNS through only to its own gateway with that option; the walker
+  did not know it, judged the rule undecidable, and three "Guest network: DNS at its gateway" rows
+  read inconclusive on v3.7.7 with nothing wrong on the router. The option is modelled (the
+  address must be on the arrival interface); --limit-iface-out is still reported as undecidable.
+
+Co-Authored-By: Claude Fable 5.2 <noreply@anthropic.com>
+---
+ release/src/router/reaper_fwsim/reaper_fwsim.c | 17 +++++++++++++++++
+ 1 file changed, 17 insertions(+)
+
+diff --git a/release/src/router/reaper_fwsim/reaper_fwsim.c b/release/src/router/reaper_fwsim/reaper_fwsim.c
+index 885296b340..9378e44cc3 100644
+--- a/release/src/router/reaper_fwsim/reaper_fwsim.c
++++ b/release/src/router/reaper_fwsim/reaper_fwsim.c
+@@ -198,6 +198,15 @@ static int is_local_dst(const struct addr *d)
+ 	return 0;
+ }
+ 
++/* is d one of the router's own addresses ON interface ifn (addrtype --limit-iface-in) */
++static int is_own_on(const struct addr *d, const char *ifn)
++{
++	int i;
++	for (i = 0; i < nown; i++)
++		if (own[i].a.fam == d->fam && !strcmp(own[i].ifname, ifn) && memcmp(own[i].a.a, d->a, d->fam == 4 ? 4 : 16) == 0) return 1;
++	return 0;
++}
++
+ static const char *wan_ifname = "eth0";
+ static const char *lan_ifname = "br0";
+ /* v1.9 (2026-10-08): the IPv6 WAN face is not always the IPv4 one. A tunnel
+@@ -674,6 +683,7 @@ struct rule {
+ 	int has_icmp, icmp_neg, icmp_type;
+ 	int has_dscp, dscp_neg, dscp;
+ 	int has_addrtype_local;
++	int addrtype_limit_in;		/* --limit-iface-in: the address must sit on the interface the packet came in by */
+ 	/* recorded, deliberately NOT part of rule_match() or r_isplain(): a rate
+ 	 * limit always passes the first packet, which is the packet we walk. It is
+ 	 * here so a shape predicate can assert that a guard chain HAS one (H1). */
+@@ -888,6 +898,12 @@ static int parse_rule(struct fw *fw, struct table *t, char *line)
+ 		else if (!strcmp(o, "--dscp-class")) { (void)NEXT(); set_depends(r, "dscp-class"); }
+ 		else if (!strcmp(o, "--dst-type")) { const char *v = NEXT(); if (!strcmp(v, "LOCAL") && !neg) r->has_addrtype_local = 1; else set_depends(r, "addrtype"); }
+ 		else if (!strcmp(o, "--src-type")) { (void)NEXT(); set_depends(r, "addrtype"); }
++		/* 2026-11-14 (field report, v3.7.7): guest isolation (rc/reaper_guest.c, 2026-11-12) lets a guest's DNS through
++		 * only to its OWN gateway with `--dst-type LOCAL --limit-iface-in`. The option was unknown here, so the rule read
++		 * as undecidable and every "Guest network brNN: DNS at its gateway" row turned inconclusive on a router where
++		 * nothing was wrong. It takes no argument. --limit-iface-out is not used by any rule we write: still flagged. */
++		else if (!strcmp(o, "--limit-iface-in")) { if (neg) set_depends(r, "addrtype"); else r->addrtype_limit_in = 1; }
++		else if (!strcmp(o, "--limit-iface-out")) set_depends(r, "addrtype");
+ 		else if (!strcmp(o, "--comment")) { (void)NEXT(); }
+ 		else if (!strcmp(o, "--limit") || !strcmp(o, "--limit-burst")) { (void)NEXT(); r->has_limit = 1; }	/* first packet always passes a limit */
+ 		else if (!strcmp(o, "-j") || !strcmp(o, "-g")) {
+@@ -1023,6 +1039,7 @@ static int rule_match(const struct rule *r, const struct pkt *p)
+ 	if (r->has_icmp) { m = (p->proto == 1 || p->proto == 58) && p->icmp_type == r->icmp_type; if (r->icmp_neg ? m : !m) return 0; }
+ 	if (r->has_dscp) { m = (p->dscp == r->dscp); if (r->dscp_neg ? m : !m) return 0; }
+ 	if (r->has_addrtype_local) { if (!is_local_dst(&p->dst)) return 0; }
++	if (r->addrtype_limit_in) { if (!is_own_on(&p->dst, p->in)) return 0; }
+ 	return 1;
+ }
+ 
+-- 
+2.25.1
+

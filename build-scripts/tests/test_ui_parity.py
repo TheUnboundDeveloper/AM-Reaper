@@ -68,7 +68,9 @@ for f in files:
         if v is None:
             fails.append("%s: stock field %s is not accounted for" % (tag, n))
         elif v == "covered":
-            if n not in rt:
+            # Q-C1-11 (2026-11-05, no hidden key lists): a key built as '<prefix>' + k from a quoted suffix counts too
+            built = any(("'%s' + " % n[:i]) in rt and ("'%s'" % n[i:]) in rt for i in range(2, len(n) - 1))
+            if n not in rt and not built:
                 fails.append("%s: %s is marked covered but %s never mentions it" % (tag, n, rep))
         elif not str(v).startswith("dropped:"):
             fails.append("%s: %s must be 'covered' or 'dropped: <reason>'" % (tag, n))

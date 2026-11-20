@@ -1,0 +1,75 @@
+From 77d6439dce52d31904504a807698f22571ec4584 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Mon, 16 Nov 2026 16:23:25 -0500
+Subject: [PATCH] Wi-Fi restart: the pause that lets a radio measurement finish
+ is no longer cut short (102.8 line)
+
+- Before the radios go down, rc stops its radio readers and waits out a measurement that may be
+  running. The wait used usleep, which returns early on any signal, and rc gets one for each child
+  that exits. A restart could then run inside the measurement, after which the 5 GHz and 6 GHz
+  radios stayed down until a reboot (seen after three Network-page saves within five minutes). The
+  wait now goes on for the time left after an interruption.
+- Also in services.c: the SNMP agent is restarted when the login name changes, since it signs in
+  with that name.
+
+Co-Authored-By: Claude Fable 5.2 <noreply@anthropic.com>
+---
+ release/src/router/rc/services.c | 28 +++++++++++++++++++++++++++-
+ 1 file changed, 27 insertions(+), 1 deletion(-)
+
+diff --git a/release/src/router/rc/services.c b/release/src/router/rc/services.c
+index 9a4a94f633..eafc980a9f 100644
+--- a/release/src/router/rc/services.c
++++ b/release/src/router/rc/services.c
+@@ -8192,6 +8192,24 @@ start_rpunctd(void)
+  * Called right before stop_acsd() and right after start_acsd(): acsd is the
+  * stock daemon of the same class, and stock already sequences it against
+  * every teardown, so pairing with it keeps a future branch honest. */
++/* reaper 2026-11-16 (field, owner RT-BE96U): wait the WHOLE time, whatever signals arrive. usleep() returns early
++ * on any signal, and rc gets one for every child that exits. On 2026-11-16 the third wireless restart in five
++ * minutes (three Network-page saves) began its teardown about 1 s after "radio readers stopped ... (waiting out
++ * an armed measurement window)" where the two restarts before it had waited their 5 s: the measurement window was
++ * still open in the firmware and both dongles trapped 3 s later (dhdpcie_checkdied, TRAP type 0x4, far 0x28001160,
++ * wl1 and wl2 alike) - "wl driver adapter not found" until the reboot, 2.4 GHz only. nanosleep() hands back the
++ * time that is left when a signal interrupts it, so the loop sleeps exactly ms in total. */
++static void
++reaper_wl_window_wait(int ms)
++{
++	struct timespec ts;
++
++	ts.tv_sec = ms / 1000;
++	ts.tv_nsec = (long)(ms % 1000) * 1000000L;
++	while (nanosleep(&ts, &ts) == -1 && errno == EINTR)
++		;
++}
++
+ void
+ reaper_wl_readers_stop(void)
+ {
+@@ -8205,7 +8223,7 @@ reaper_wl_readers_stop(void)
+ 		/* a window rpunctd armed just before the kill runs on in the firmware
+ 		 * for up to REAPER_WL_WINDOW_MS: let it close before the teardown */
+ 		logmessage("reaper", "radio readers stopped for a wireless teardown (waiting out an armed measurement window)");
+-		usleep((REAPER_WL_WINDOW_MS + 600) * 1000);
++		reaper_wl_window_wait(REAPER_WL_WINDOW_MS + 600);
+ 	} else
+ 		logmessage("reaper", "radio readers stopped for a wireless teardown");
+ }
+@@ -22530,6 +22548,14 @@ retry_wps_enr:
+ 	}
+ 	else if (strcmp(script, "chpass") == 0) {
+ 			setup_passwd();
++#ifdef RTCONFIG_SNMPD
++			/* reaper 2026-11-16 (review): the SNMPv3 user is the router login name (rc/snmpd.c); it was written into
++			 * the agent's config only at its start, so SNMP kept the OLD name after a rename until a reboot */
++			if (nvram_match("snmpd_enable", "1")) {
++				stop_snmpd();
++				start_snmpd();
++			}
++#endif
+ 	}
+ #ifdef RTCONFIG_SPEEDTEST
+ 	else if (strcmp(script, "speedtest") == 0) {
+-- 
+2.25.1
+

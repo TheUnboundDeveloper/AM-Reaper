@@ -1,0 +1,233 @@
+From 23be82878a729ae3c3d6b0358389c13524dd6f28 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Mon, 16 Nov 2026 16:23:24 -0500
+Subject: [PATCH] OpenVPN Killswitch only for a full-tunnel client; VPN pages
+ name the real state (102.8 line)
+
+- Policy Routing closed a device's traffic for a client with a stored Killswitch even when the
+  client was set to Redirect Internet traffic: No, or was a TAP client - cases where the
+  Killswitch row is hidden and nothing is meant to be forced into the tunnel. The fail-closed rule
+  now needs Redirect = All or VPN Director, and a TUN client.
+- VPN Director shows the effective Killswitch. The client page asks before a stored Killswitch
+  comes back into force when Redirect leaves No, and restarts routing when the interface type
+  changes.
+- VPN Director and Policy Routing name the state of a target: client off, not in VPN Director
+  mode, pushed routes only, TAP. The warnings for a switched-off client no longer say its
+  Killswitch blocks traffic: that traffic uses the WAN, except on a guest network bound to the
+  client with its own Kill Switch on.
+
+Co-Authored-By: Claude Fable 5.2 <noreply@anthropic.com>
+---
+ release/src/router/rc/reaper_pbr.c            | 13 +++++++
+ release/src/router/www/Reaper_VPNClient.asp   |  5 +--
+ release/src/router/www/Reaper_VPNDirector.asp | 34 ++++++++++++++-----
+ release/src/router/www/Reaper_VPNRouting.asp  | 30 ++++++++++++----
+ 4 files changed, 65 insertions(+), 17 deletions(-)
+
+diff --git a/release/src/router/rc/reaper_pbr.c b/release/src/router/rc/reaper_pbr.c
+index 368d167673..fefd98c8bc 100644
+--- a/release/src/router/rc/reaper_pbr.c
++++ b/release/src/router/rc/reaper_pbr.c
+@@ -184,6 +184,19 @@ static int ppbr_target(const char *t, int *code, const char **table, int *failcl
+ 		/* P3: the client's Killswitch, the same key VPN Director reads */
+ 		snprintf(nv, sizeof(nv), "vpn_client%c_enforce", t[4]);
+ 		*failclosed = (nvram_get_int(nv) && ovpn_is_client_enabled(t[4] - '0')) ? 1 : 0;
++		/* reaper 2026-11-16: only where the tunnel carries the default route - Redirect "all" (1) or "VPN Director"
++		 * (2) on a TUN client. With Redirect "No", or TAP, the client's table holds pushed routes only: the prohibit
++		 * under the lookup then refused Internet traffic WHILE THE TUNNEL WAS UP, and the client page hides the switch
++		 * in that mode. Merlin's own Killswitch paths skip it there too (libovpn/amvpn_routing.c). Nothing stored is
++		 * changed. */
++		if (*failclosed) {
++			int rgw;
++			snprintf(nv, sizeof(nv), "vpn_client%c_rgw", t[4]);
++			rgw = nvram_get_int(nv);
++			snprintf(nv, sizeof(nv), "vpn_client%c_if", t[4]);
++			if ((rgw != 1 && rgw != 2) || !strncmp(nvram_safe_get(nv), "tap", 3))
++				*failclosed = 0;
++		}
+ 		return 1;
+ 	}
+ 	if (!strncmp(t, "WGC", 3) && t[3] >= '1' && t[3] <= '5' && t[4] == '\0') {
+diff --git a/release/src/router/www/Reaper_VPNClient.asp b/release/src/router/www/Reaper_VPNClient.asp
+index 5e1fd43301..b24144fbc0 100644
+--- a/release/src/router/www/Reaper_VPNClient.asp
++++ b/release/src/router/www/Reaper_VPNClient.asp
+@@ -818,10 +818,11 @@ function applyAll(){
+     var cfg = any('vpn_client_', ['vpn_client_desc', 'vpn_client_enforce', 'vpn_client_unit']) || any('vpn_crt_client_');
+     if (onNow && (cfg || !onWas)){ S.push('restart_vpnclient' + OU); wait = Math.max(wait, 15); if (onWas) ask.push(`<#RVCL_145#>`); }
+     else if (!onNow && onWas){ S.push('stop_vpnclient' + OU); wait = Math.max(wait, 10); ask.push(`<#RVCL_146#>`); }
+-    if (has('vpn_clientx_eas', 'vpn_client_rgw', 'vpn_client_enforce')) S.push('start_vpnrouting' + OU);
++    if (has('vpn_clientx_eas', 'vpn_client_rgw', 'vpn_client_enforce', 'vpn_client_if')) S.push('start_vpnrouting' + OU);
+     if (has('vpn_client_adns') && onNow) S.push('restart_dnsmasq');
+     if (changed.vpn_client_rgw === '1') ask.push(`<#RVCL_147#>`);
+-    if (changed.vpn_client_enforce === '1') ask.push(`<#RVCL_148#>`);
++    /* reaper 2026-11-16: also when Redirect leaves "No" with a Killswitch still stored on - it starts to count then */
++    if (changed.vpn_client_enforce === '1' || (NV.vpn_client_rgw === '0' && changed.vpn_client_rgw && changed.vpn_client_rgw !== '0' && q('t_ov_enforce').checked)) ask.push(`<#RVCL_148#>`);
+   }
+   /* --- WireGuard client WU: rc/services.c:23768 restart_wgc N / stop_wgc N (start_wgc ignores wgcN_enable, so a client
+          turned off is stopped explicitly); :22263 start_vpnrouting0 re-applies every WG killswitch (wgcN_enforce) --- */
+diff --git a/release/src/router/www/Reaper_VPNDirector.asp b/release/src/router/www/Reaper_VPNDirector.asp
+index fc9187a6d5..abcc98e053 100644
+--- a/release/src/router/www/Reaper_VPNDirector.asp
++++ b/release/src/router/www/Reaper_VPNDirector.asp
+@@ -23,8 +23,9 @@
+        (httpApi.nvramSet + rc_service) from a rules page. Each client's state is shown read-only with a link to the VPN
+        Client page, which owns those keys.
+      - a duplicate rule (same interface, local and remote) is refused; a rule matching every address asks first (it also
+-       catches the router's own traffic); a rule to a client that is switched off asks first (its Killswitch decides
+-       whether matched devices are blocked or use the WAN).
++       catches the router's own traffic); a rule to a client that is switched off or not in VPN Director mode asks first
++       (it does nothing; a switched-off client's devices use the WAN, its Killswitch counts only while it is on;
++       reaper 2026-11-16).
+      - the stored order is kept (stock re-sorted the list by interface on every Apply); the table groups by interface for
+        display only. Priority inside one table does not depend on order (every rule of a group routes to the same table).
+      - descriptions and addresses are escaped; a record rc would skip (not five fields) is shown dimmed and can be deleted.
+@@ -164,11 +165,19 @@ function ifaceName(t){
+   if ((m = /^WGC([1-5])$/.exec(t))) return 'WireGuard ' + m[1] + (WG[+m[1]].desc ? ': ' + WG[+m[1]].desc : '');
+   return t;
+ }
+-/* '' = the client is on; otherwise why a rule to it does nothing right now */
++/* '' = a rule to this client is in use; otherwise why it does nothing right now.
++   reaper 2026-11-16: a switched-off client never blocks, whatever its Killswitch says - the traffic of its rules uses
++   the WAN (libovpn/amvpn_routing.c amvpn_set_killswitch_rules returns for a disabled client), so the old "Killswitch
++   blocks" reason is gone. An OpenVPN client that is on but not in VPN Director mode (Redirect Internet traffic = No or
++   All) has no VPN Director rule installed at all (amvpn_set_routing_rules writes them in that mode only): it has its
++   own reason, in the reused key RVDR_15. */
+ function ifaceOff(t){
+   var m;
+-  if ((m = /^OVPN([1-5])$/.exec(t))) return ovEnabled(+m[1]) ? '' : (OV[+m[1]].ks === '1' ? `<#RVDR_15#>` : `<#RVDR_16#>`);
+-  if ((m = /^WGC([1-5])$/.exec(t))) return WG[+m[1]].en === '1' ? '' : (WG[+m[1]].ks === '1' ? `<#RVDR_15#>` : `<#RVDR_16#>`);
++  if ((m = /^OVPN([1-5])$/.exec(t))){
++    if (!ovEnabled(+m[1])) return `<#RVDR_16#>`;
++    return (OV[+m[1]].rgw === '2' || OV[+m[1]].rgw === '3') ? '' : `<#RVDR_15#>`;
++  }
++  if ((m = /^WGC([1-5])$/.exec(t))) return WG[+m[1]].en === '1' ? '' : `<#RVDR_16#>`;
+   return '';
+ }
+ var GROUP_ORDER = ['WAN', 'OVPN1', 'OVPN2', 'OVPN3', 'OVPN4', 'OVPN5', 'WGC1', 'WGC2', 'WGC3', 'WGC4', 'WGC5'];
+@@ -185,6 +194,10 @@ var RULES = [], EDITED = false, editIdx = -1;
+ var SECTIONS = [], BROKEN = {};
+ function section(panel, init, collect){ SECTIONS.push({panel: panel, init: init, collect: collect}); }
+ 
++/* reaper 2026-11-16: an OpenVPN client's Killswitch counts only while it carries the default route (Redirect all = 1,
++   VPN Director = 2); with Redirect No the stored switch does nothing (rc/reaper_pbr.c, libovpn/amvpn_routing.c) */
++function ovKs(n){ return OV[n].ks === '1' && (OV[n].rgw === '1' || OV[n].rgw === '2'); }
++
+ section('p_clients', function(){
+   var h = '', n, st;
+   if (sup('openvpnd')) for (n = 1; n <= 5; n++){
+@@ -192,7 +205,7 @@ section('p_clients', function(){
+     h += '<div class="c"><div class="t"><span class="n">OpenVPN ' + n + '</span><span class="d" title="' + hx(OV[n].desc) + '">' + hx(OV[n].desc || ('Client ' + n)) + '</span></div><div class="g">' +
+       (ovEnabled(n) ? '<span class="tag good">' + hx(st === '2' ? `<#Connected#>` : (st === '1' ? `<#Connecting_str#>` : (st === '-1' ? `<#RVDR_17#>` : `<#CTL_Enabled#>`))) + '</span>' : '<span class="tag">' + hx(`<#RVDR_18#>`) + '</span>') +
+       (OV[n].rgw === '2' || OV[n].rgw === '3' ? '<span class="tag">' + hx(`<#Reaper_c_vpn_director#>`) + '</span>' : (OV[n].rgw === '1' ? '<span class="tag warn">' + hx(`<#RVDR_19#>`) + '</span>' : '')) +
+-      (OV[n].ks === '1' ? '<span class="tag warn">' + hx(`<#RVDR_20#>`) + '</span>' : '') + '</div></div>';
++      (ovKs(n) ? '<span class="tag warn">' + hx(`<#RVDR_20#>`) + '</span>' : '') + '</div></div>';
+   }
+   if (WIREGUARD) for (n = 1; n <= 5; n++){
+     h += '<div class="c"><div class="t"><span class="n">WireGuard ' + n + '</span><span class="d" title="' + hx(WG[n].desc) + '">' + hx(WG[n].desc || ('Client ' + n)) + '</span></div><div class="g">' +
+@@ -299,9 +312,12 @@ function applyAll(){
+   msg('');
+   var changed = diff(collect());
+   if (!count(changed)){ msg(`<#RADM_63#>`); return; }
+-  /* rule 14: a rule to a client that is off blocks or bypasses its devices depending on that client's Killswitch */
+-  var offs = [];
+-  RULES.forEach(function(r){ var f = r.f; if (f.length === 5 && f[0] === '1' && ifaceOff(f[4]) && offs.indexOf(ifaceName(f[4])) < 0) offs.push(ifaceName(f[4]) + ' (' + ifaceOff(f[4]) + ')'); });
++  /* rule 14 (reaper 2026-11-16): a rule to a client that is switched off or not in VPN Director mode asks first (it does
++     nothing; a switched-off client's devices use the WAN, its Killswitch counts only while it is on). One line per
++     client: the clients already listed are kept in their own list (the old test looked a bare name up among
++     "name (reason)" strings, so every further rule of the same client added its line again). */
++  var offs = [], offSeen = [];
++  RULES.forEach(function(r){ var f = r.f; if (f.length === 5 && f[0] === '1' && ifaceOff(f[4]) && offSeen.indexOf(f[4]) < 0){ offSeen.push(f[4]); offs.push(ifaceName(f[4]) + ' (' + ifaceOff(f[4]) + ')'); } });
+   if (offs.length && !confirm(`<#RVDR_32#>` + '\n- ' + offs.join('\n- '))) return;
+   rp.applying(`<#Reaper_c_applying#>`, `<#RVDR_14#>`);
+   /* rc/services.c vpnrouting dispatch, unit 0: WAN rules, every WireGuard and OpenVPN client's rules, killswitches,
+diff --git a/release/src/router/www/Reaper_VPNRouting.asp b/release/src/router/www/Reaper_VPNRouting.asp
+index 39af5bac2d..0824c93be7 100644
+--- a/release/src/router/www/Reaper_VPNRouting.asp
++++ b/release/src/router/www/Reaper_VPNRouting.asp
+@@ -131,6 +131,8 @@ td.doms{font-family:ui-monospace,Consolas,monospace;font-size:11.5px;color:var(-
+   </div>
+   <ul class="tnotes">
+     <li id="ksnote"><#RVR_64#></li>
++    <!-- reaper 2026-11-16: what "pushed routes only" and TAP in the Status column mean -->
++    <li><#RVR_76#></li>
+     <li id="wgnoteall" style="display:none"><#RVR_66#></li>
+     <li id="wannoteall" style="display:none"><#RVR_70#></li>
+   </ul>
+@@ -173,6 +175,7 @@ td.doms{font-family:ui-monospace,Consolas,monospace;font-size:11.5px;color:var(-
+   <div class="hint" id="objhint" style="display:none"><#RVR_37#></div>
+   <div class="hint" id="devhint" style="display:none"><#RVR_38#></div>
+   <div class="hint" id="wghint" style="display:none"><#RVR_54#></div>
++  <div class="hint" id="ovhint" style="display:none"><#RVR_76#></div>
+   <div class="hint" id="wanhint" style="display:none"><#RVR_70#></div>
+   <div class="hint"><#RVR_58#></div>
+ </div>
+@@ -247,14 +250,19 @@ var TGTLBL = { OVPN1:'OpenVPN 1',OVPN2:'OpenVPN 2',OVPN3:'OpenVPN 3',OVPN4:'Open
+ var WGON=[0,0,0,0,0];   /* wgcN_enable, from reaper_pbr.cgi?action=cfg */
+ var OVON=[0,0,0,0,0];   /* OpenVPN clients ENABLED (ovpn_is_client_enabled), from cfg - v3.1.5, was "configured" */
+ var WKS=[0,0,0,0,0], OKS=[0,0,0,0,0];   /* v3.1.3: each client's Killswitch (wgcN_enforce / vpn_clientN_enforce) */
+-function cfgArrays(j){ if(j.wg)WGON=j.wg; if(j.ov)OVON=j.ov; if(j.wks)WKS=j.wks; if(j.oks)OKS=j.oks; }
++/* reaper 2026-11-16: what each OpenVPN client's tunnel carries, from cfg "omode": 0 = the default route (Redirect all
++   or VPN Director), 1 = only the routes its server pushes (Redirect No), 2 = TAP (its routing table is never filled,
++   so a rule to it has no effect). Since the same day "oks" is the EFFECTIVE Killswitch (0 in modes 1 and 2). */
++var OMODE=[0,0,0,0,0];
++function cfgArrays(j){ if(j.wg)WGON=j.wg; if(j.ov)OVON=j.ov; if(j.wks)WKS=j.wks; if(j.oks)OKS=j.oks; if(j.omode)OMODE=j.omode; }
+ function renderTargets(){
+   var sel=document.getElementById('e_target'); if(!sel) return;
+   for(var i=0;i<sel.options.length;i++){ var o=sel.options[i], v=o.value, m, show=true;
+-    if((m=/^OVPN([1-5])$/.exec(v))) show=!!OVON[+m[1]-1];
++    if((m=/^OVPN([1-5])$/.exec(v))) show=!!OVON[+m[1]-1] && +OMODE[+m[1]-1]!==2;   /* reaper 2026-11-16: a TAP client is not offered for a new rule (the rule would have no effect) */
+     else if((m=/^WGC([1-5])$/.exec(v))) show=!!WGON[+m[1]-1];
+     o.hidden=!show; o.disabled=!show;   /* hidden: not offered for a new rule; an existing rule's value still displays */
+   }
++  pbrTargetChange();   /* reaper 2026-11-16: the editor hints follow the client modes just read */
+ }
+ 
+ function selText(r){
+@@ -273,13 +281,20 @@ function tgtClass(t){ return t==='WAN'?'wan':(t==='BLOCK'?'block':(/^WGC[1-5]$/.
+    bypass, what a WAN target means - is a note under the table, once. */
+ function tgtLabel(t){ return esc(TGTLBL[t]||t); }
+ function tgtStatus(r){
+-  var t=r.target, m, on, ks;
++  var t=r.target, m, on, ks, md=0, off;
+   if(t==='BLOCK') return '<span class="st off"><span class="dash">&mdash;</span></span>';
+   if(t==='WAN') return '<span class="st"><span class="dot"></span>'+esc(`<#RVR_72#>`)+'</span>';
+   if((m=/^WGC([1-5])$/.exec(t))){ on=WGON[+m[1]-1]; ks=WKS[+m[1]-1]; }
+-  else if((m=/^OVPN([1-5])$/.exec(t))){ on=OVON[+m[1]-1]; ks=OKS[+m[1]-1]; }
++  else if((m=/^OVPN([1-5])$/.exec(t))){ on=OVON[+m[1]-1]; ks=OKS[+m[1]-1]; md=+OMODE[+m[1]-1]||0; }
+   else return '';
+-  if(!on) return '<span class="st off"><span class="dot off"></span>'+esc(`<#RVR_73#>`)+' <span class="dash">&middot;</span> <span class="via">WAN</span></span>';
++  off='<span class="st off"><span class="dot off"></span>'+esc(`<#RVR_73#>`)+' <span class="dash">&middot;</span> <span class="via">WAN</span>';
++  if(!on) return off+'</span>';
++  /* reaper 2026-11-16: an OpenVPN client that is on but does not carry the default route. Mode 1 (Redirect No): only
++     the networks its server pushes use the tunnel, the rest of the selected traffic uses the WAN and its Killswitch
++     does nothing - Active, with that said, and no Killswitch text. Mode 2 (TAP): the rule has no effect and the
++     traffic uses the WAN - the Inactive / WAN status, marked TAP. */
++  if(md===2) return off+' <span class="dash">&middot;</span> TAP</span>';
++  if(md===1) return '<span class="st"><span class="dot"></span>'+esc(`<#RVR_72#>`)+' <span class="dash">&middot;</span> '+esc(`<#RVR_75#>`)+'</span>';
+   return '<span class="st"><span class="dot'+(ks?' ks':'')+'"></span>'+esc(`<#RVR_72#>`)+(ks?' <span class="dash">&middot;</span> '+esc(`<#RVR_74#>`):'')+'</span>';
+ }
+ 
+@@ -322,6 +337,7 @@ function ruleEdit(i){
+   else if(r.seltype==='mac') document.getElementById('e_val').value=r.selval||'';
+   else { var sel=document.getElementById('e_obj'); sel.value=r.selval||''; if(sel.value!==r.selval){ var op=document.createElement('option'); op.value=r.selval; op.textContent=r.selval; sel.appendChild(op); sel.value=r.selval; } }
+   document.getElementById('e_target').value=r.target||'OVPN1';
++  pbrTargetChange();   /* reaper 2026-11-16: the target hints follow the rule being edited */
+   document.getElementById('e_add').textContent=`<#CTL_onlysave#>`;
+   document.getElementById('editor').classList.add('editing');
+   render();
+@@ -376,8 +392,10 @@ function pbrAdd(){
+   render();
+ }
+ 
+-function pbrTargetChange(){ var t=document.getElementById('e_target').value;
++function pbrTargetChange(){ var t=document.getElementById('e_target').value, om=/^OVPN([1-5])$/.exec(t);
+   document.getElementById('wghint').style.display=/^WGC/.test(t)?'':'none';
++  /* reaper 2026-11-16: an OpenVPN target that does not carry the default route (pushed routes only, or TAP) says so */
++  document.getElementById('ovhint').style.display=(om && +OMODE[+om[1]-1])?'':'none';
+   document.getElementById('wanhint').style.display=(t==='WAN')?'':'none'; }
+ function pbrToggle(){ masterOn=!masterOn; syncMaster(); }
+ function syncMaster(){
+-- 
+2.25.1
+

@@ -1,6 +1,6 @@
 # Source Availability & Written Offer (GPL v2 & v3)
 
-> **Doc status:** current as of **v3.4.8** · 2026-10-20 <!--@stamp-->
+> **Doc status:** current as of **v3.6.5** · 2026-11-02 <!--@stamp-->
 
 This document is how **Reaper** satisfies the "complete corresponding source"
 obligation of the GNU General Public License — **version 2** for the base and the
@@ -21,7 +21,7 @@ ASUS's GPL firmware release. The **complete corresponding source** for the
 GPL-covered portions of any Reaper build is, deterministically:
 
 1. **The upstream Asuswrt-Merlin source**, at the exact pinned base:
-   - Repository: <https://github.com/RMerl/asuswrt-merlin.ng>
+   - Repository: <https://github.com/Asuswrt-Merlin/asuswrt-merlin.ng>
    - Tag: `3006.102.8-beta2`
    - Commit: **`a7ebfa133a`**
    - From v3.6.0 the RT-BE96U, RT-BE86U, RT-BE88U and GT-BE98 Pro build from the `Dev` branch on
@@ -43,13 +43,14 @@ Applying the patch series to the pinned upstream commit reproduces the Reaper
 source tree byte-for-byte under `release/src/router` (verified with
 `git am --keep-cr`, plus the hash-pinned `overlays/openssl-3.5-source.tar.gz` for the
 OpenSSL 3.5 source tree; see [`../patches/README.md`](../patches/README.md)). The
-vendor's own `libnvram.so`/`libwlcsm.so` pair (a closed Broadcom component, taken
-unmodified from ASUS's public 9.0.0.6.102_42015 firmware) ships beside it as
-`overlays/wlcsm-42015-blobs.tar.gz`, hash-pinned, for every model's platform tree. That
+vendor's own `libnvram.so`/`libwlcsm.so` pair (a closed Broadcom component) is carried
+unmodified: ASUS's 102_40585 pair, which the 3006.102.10 base carries, or, for a model whose
+platform tree comes from an older ASUS GPL (every 3006.102.8 model), the pair from ASUS's
+public 9.0.0.6.102_42015 firmware, shipped as `overlays/wlcsm-42015-blobs.tar.gz`, hash-pinned. That
 reconstructed tree, built per `DEV-SETUP.md`, is the complete corresponding
 source for the GPL portions of the RT-BE96U image.
 
-**The sibling models** are that same tree plus up to three more inputs from
+**The sibling models** are that same tree plus up to four more inputs from
 [`../overlays/`](../overlays/), each SHA-256 pinned beside it and applied by the
 clean-room build ([`../build-scripts/ci/container_build.sh`](../build-scripts/ci/container_build.sh)):
 
@@ -66,6 +67,9 @@ clean-room build ([`../build-scripts/ci/container_build.sh`](../build-scripts/ci
   RTL8372 switch (RT-BE86U, GT-BE98, GT-BE98 Pro, GT-BE19000). One prebuilt object,
   `RTL_OBJS.o`, linked into u-boot. ASUS distributes it as an object file in its
   boot-loader release, and Reaper has no source for it; it is carried unmodified.
+- **`hndnvram-40585.sh`** — the 3006.102.8 line only (v3.6.3). The Wi-Fi start-up script
+  from ASUS GPL 102_40585 (Asuswrt-Merlin `d7c6a53e440`), carried as published and swapped in over the
+  known older copy in those models' platform trees.
 
 The RT-BE96U, RT-BE88U and both BQ16 models take no u-boot archive. With these
 applied, the reconstructed tree for a sibling is the complete corresponding source
@@ -221,3 +225,27 @@ path Reaper itself is installed. Reaper neither requires nor withholds any signi
 key. (The stock ASUS bootloader's own signature handling is a vendor property of
 the hardware, unchanged by Reaper — Reaper adds no cryptographic restriction on
 user-built firmware.)
+
+## 6. Third-party components Reaper modifies
+
+GPL v2 §2(a) asks that a modified file carry a notice saying it was changed and when. Every file Reaper changes
+carries a comment naming Reaper and the date of the change beside the changed lines, and every change is a
+commit in the patch series ([`../patches/`](../patches/)). This table is the overview: which third-party
+programs Reaper ships modified, the upstream release each is based on, and what kind of change Reaper makes.
+Per-change detail is in [`CHANGELOG.md`](CHANGELOG.md) and [`REAPER-FIXES.md`](REAPER-FIXES.md).
+
+| Component | Upstream base in the image | Reaper's changes |
+|---|---|---|
+| Linux kernel | 4.19.294 (Broadcom BSP 5.04) | Security fixes backported from later 4.19.y stable releases (the 4.19 branch is end-of-life), privilege checks on Broadcom netlink and `/proc` interfaces, and build-configuration changes (unused protocols and modules off) |
+| dnsmasq | 2.93 | Reaper's Wallguard and Dreadwatch lookup engines, an EDNS option that carries the asking device's address from Encrypted DNS, and hardening of the files it writes |
+| strongSwan | 6.0.4 | Fixes backported from strongSwan 6.0.5-era releases: EAP-PEAP/TTLS, rekey collisions, PKCS#5/#7 parsing, RADIUS and SIM/AKA length checks, constant-time RSA, X.509 NameConstraints |
+| inadyn | 2.10.0 (as ASUS ships it) | Log lines redact credentials and tokens (`log_redact()`) |
+| miniupnpd | 2.3.11 | Logs the User-Agent a UPnP client sends (bounded, cut at the first control character), to diagnose clients that fail to map a port |
+| net-snmp | 5.9.4 | A SET with an empty (NULL) value no longer crashes the agent |
+| libcodb | as ASUS ships it | SQL built with `%Q` quoting throughout |
+| Tor | 0.4.9.13 | No source change: updated to the upstream release that carries its security fixes (Tor is off unless switched on) |
+| vsftpd | 3.x as ASUS ships it | Not modified (the FTP server is off unless switched on) |
+
+The table lists the components a full code review on 2026-11-03 identified with their bases; it records what
+Reaper changed, not a hunk-by-hunk comparison with each upstream release. Components that ship unmodified apart
+from ASUS's own changes are covered by section 1 and the ASUS GPL source.

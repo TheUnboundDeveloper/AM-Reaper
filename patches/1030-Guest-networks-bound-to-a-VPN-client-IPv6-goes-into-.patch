@@ -1,0 +1,70 @@
+From 1bfa22fedc56ae8fded6bc3332c43244d1e84f9b Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Sat, 14 Nov 2026 17:05:26 -0500
+Subject: [PATCH] Guest networks bound to a VPN client: IPv6 goes into the
+ tunnel (102.8 line)
+
+- The IPv6 rule that sends a bound network's IPv6 into its VPN client (and the main network's,
+  with a default VPN client) asked a profile list that Reaper's VPN Client page never writes, so
+  the rule was never added and IPv6 left by the WAN. The protocol now comes from the fixed client
+  numbering every Reaper page uses (1-5 WireGuard, 6-10 OpenVPN). A tunnel with no IPv6 route lets
+  the lookup fall through as before.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ release/src/router/rc/sdn.c | 25 +++++++++++++++++++++----
+ 1 file changed, 21 insertions(+), 4 deletions(-)
+
+diff --git a/release/src/router/rc/sdn.c b/release/src/router/rc/sdn.c
+index 1291e81e41..2e57f8e4d1 100644
+--- a/release/src/router/rc/sdn.c
++++ b/release/src/router/rc/sdn.c
+@@ -1661,6 +1661,25 @@ static void _handle_sdn_ms_wan(const MTLAN_T *pmtl)
+ }
+ #endif
+ 
++#if defined(RTCONFIG_IPV6) && defined(RTCONFIG_VPN_FUSION)
++/* reaper 2026-11-14 (guest VPN binding B5): the protocol of VPN client vpnc_idx by the fixed numbering every Reaper
++ * page and rc path uses (1-5 WireGuard, 6-10 OpenVPN: shared/mtlan_utils.c get_vpnx_by_vpnc_idx). The stock lookup
++ * used here read the profile list vpnc_clientlist, which Reaper's VPN Client page never writes, so a network bound
++ * to a VPN client never got its IPv6 rule into the tunnel. */
++static VPNC_PROTO reaper_vpnc_proto(int vpnc_idx)
++{
++	VPN_VPNX_T vpnx;
++
++	if (vpnc_idx < 1 || vpnc_idx > 10 || !get_vpnx_by_vpnc_idx(&vpnx, vpnc_idx))
++		return VPNC_PROTO_UNDEF;
++	if (vpnx.proto == VPN_PROTO_WG)
++		return VPNC_PROTO_WG;
++	if (vpnx.proto == VPN_PROTO_OVPN)
++		return VPNC_PROTO_OVPN;
++	return VPNC_PROTO_UNDEF;
++}
++#endif
++
+ static int _handle_sdn_wan(const MTLAN_T *pmtl, const char *logdrop, const char *logaccept)
+ {
+ 	int vpnc_default_wan, assigned_wan = 0;
+@@ -1699,8 +1718,7 @@ static int _handle_sdn_wan(const MTLAN_T *pmtl, const char *logdrop, const char
+ 		if(ipv6_enabled() && pmtl->nw_t.v6_enable)
+ 		{
+ 			VPNC_PROTO proto;
+-			vpnc_init();
+-			proto = vpnc_get_proto_in_profile_by_vpnc_id(pmtl->sdn_t.vpnc_idx);
++			proto = reaper_vpnc_proto(pmtl->sdn_t.vpnc_idx);	/* reaper 2026-11-14 (B5) */
+ 			if (proto == VPNC_PROTO_OVPN || proto == VPNC_PROTO_WG)
+ 				eval("ip", "-6", "rule", "add", "iif", (char*)pmtl->nw_t.ifname, "table", table, "pref", pref);
+ 		}
+@@ -1782,8 +1800,7 @@ static int _handle_sdn_wan(const MTLAN_T *pmtl, const char *logdrop, const char
+ 			if(ipv6_enabled() && pmtl->nw_t.v6_enable)
+ 			{
+ 				VPNC_PROTO proto;
+-				vpnc_init();
+-				proto = vpnc_get_proto_in_profile_by_vpnc_id(vpnc_default_wan);
++				proto = reaper_vpnc_proto(vpnc_default_wan);	/* reaper 2026-11-14 (B5) */
+ 				if (proto == VPNC_PROTO_OVPN || proto == VPNC_PROTO_WG)
+ 					eval("ip", "-6", "rule", "add", "iif", (char*)pmtl->nw_t.ifname, "table", table, "pref", pref);
+ 			}
+-- 
+2.25.1
+

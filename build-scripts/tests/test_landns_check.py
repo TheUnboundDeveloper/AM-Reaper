@@ -230,10 +230,24 @@ def fn_body(src, name):
             if depth == 0: break
         k += 1
     return "\n".join(l.strip() for l in src[i:k + 1].splitlines())
-SHARED = ("v6Up", "landnsGet", "landnsBad", "durTxt", "tipRow", "tipB", "tipFill", "tipPlace", "tipShow", "tipHide", "tipBind")
+SHARED = ("v6Up", "wanVerdict", "netWord", "landnsGet", "landnsBad", "durTxt", "tipRow", "tipB", "tipFill", "tipPlace", "tipShow", "tipHide", "tipBind")
 differ = [n for n in SHARED if fn_body(db, n) is None or fn_body(db, n) != fn_body(sh, n)]
 check("shell: the readings, their colours and the open/close rules are the dashboard's functions verbatim (%d shared)" % len(SHARED),
       not differ, differ)
+# 2026-11-12 field report: the word and colour follow rc/wanduck.c's verdict (wanN_auxstate_t, the
+# check that drives the WAN LED), not the lease alone; IPv6 counts only with a default route.
+check("wanVerdict: no link (aux 1) and a failed check over a lease (aux 2) are not connected; IPv6 needs a route",
+      "if(aux==='1') return {any:false, v4:false, v6:false, why:'nolink'};" in db
+      and "if(v4 && aux==='2') return {any:false, v4:false, v6:false, why:'noinet'};" in db
+      and "return !!String((WAN6.IPv6_Gateway)||'');" in db and "return !!(a || gw);" not in db)
+check("dashboard reads wanN_auxstate_t at render and in the live poll, and both paints go through wanVerdict",
+      'aux0:     <% nvram_get_js("wan0_auxstate_t"); %>,' in db and 'aux1:     <% nvram_get_js("wan1_auxstate_t"); %>,' in db
+      and "['state_t','ipaddr','gateway','dns','auxstate_t']" in db and "up=apply(p.st, p.ip, p.gw, p.dns, p.aux);" in db
+      and db.count("wanVerdict(") >= 3 and "any?`<#Connected#>`:`<#Disconnected#>`" not in db)
+check("shell reads wanN_auxstate_t at render and in the live poll, and paintWan goes through wanVerdict",
+      'wan0_auxstate_t:<% nvram_get_js("wan0_auxstate_t"); %>, wan1_auxstate_t:<% nvram_get_js("wan1_auxstate_t"); %>}' in sh
+      and "%3bnvram_get(wan0_auxstate_t)%3bnvram_get(wan1_auxstate_t)%3b" in sh
+      and "var vd=wanVerdict(p.up, p.aux, v6Up()), any=vd.any;" in sh and "any?`<#Connected#>`:`<#Disconnected#>`" not in sh)
 check("shell: tooltip text goes in as text nodes, never as HTML",
       "innerHTML" not in sh[sh.find("var NET={v4:false"):sh.find("function tipPlace(a){")])
 
@@ -249,9 +263,9 @@ check("DNS Failover validates the domain the way the daemon does (empty, or 1-63
 
 # ---------------------------------------------------------------- packs
 packs = [x for x in glob.glob(os.path.join(SRC, "www", "*.dict")) if not x.endswith("temp.dict")]
-need = ["RDSH_%d=" % k for k in range(91, 104)] + ["RDHC_%d=" % k for k in range(59, 65)]
+need = ["RDSH_%d=" % k for k in list(range(91, 104)) + [121, 122, 123]] + ["RDHC_%d=" % k for k in range(59, 65)]
 miss = [os.path.basename(x) for x in packs if any(t not in open(x, encoding="utf-8", errors="replace").read() for t in need)]
-check("RDSH_91..103 and RDHC_59..64 exist in all 25 language packs", len(packs) == 25 and not miss, miss)
+check("RDSH_91..103, RDSH_121..123 and RDHC_59..64 exist in all 25 language packs", len(packs) == 25 and not miss, miss)
 counts = {sum(1 for _ in open(x, "rb")) for x in packs}
 check("the 25 packs stay in lockstep", len(counts) == 1, counts)
 

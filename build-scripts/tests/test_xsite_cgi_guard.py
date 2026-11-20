@@ -16,7 +16,8 @@ kept: the AiMesh node wizard's GET to the CAP's cfg_onboarding.cgi (no re_mac in
 Review 2026-10-24 (S-B-1, S-B-2): over plain HTTP a browser sends NEITHER header to a private
 address, so "no header passes" left the HTTP listener (the shipped default serves both) open;
 the guard now treats a header-less request from a browser (Mozilla/ User-Agent) on the plain-HTTP
-listener as cross-site, curl and HTTPS unchanged. And the onboarding exemption read the raw query
+listener as cross-site, curl and HTTPS unchanged (review 2026-11-03 A-1: HTTPS too - a same-origin
+request always carries Sec-Fetch-Site or a Referer). And the onboarding exemption read the raw query
 text, so a percent-encoded key (%72e_mac) slipped past it while init_cgi() decoded it; it now
 decides on the query decoded the same way.
 
@@ -86,8 +87,21 @@ if os.path.isfile(hj):
     check("the AiMesh node wizard's cross-device navigation is still the GET the exemption is cut for",
           '"http://<#Web_DOMAIN_NAME#>/cfg_onboarding.cgi?flag=AMesh&id=" +' in open(hj, encoding="utf-8", errors="replace").read())
 
+# review 2026-11-17 (P6-2-1): the gate is told about the row, and the two renewing download rows are gone
+so = hr.find("reaper_xsite_own_out = handler->output && handler->output != do_ej && handler->output != do_file;")
+check("P6-2-1: handle_request tells the guard when the row has an output function of its own, before the guard runs",
+      0 <= so < g and hc.count("static int reaper_xsite_own_out;") == 1)
+check("P6-2-1: the guard then looks at the request unless the name is a page (.asp / .htm)",
+      "if (!hit && reaper_xsite_own_out) {" in helpers and '!strncasecmp(ext, ".asp", 4) || !strncasecmp(ext, ".htm", 4)' in helpers)
+wc = open(os.path.join(SRC, "httpd", "web.c"), encoding="utf-8", errors="surrogateescape").read()
+check("P6-2-1: the unused download rows that renewed the IKEv2 certificate on a GET are gone; the page's own paths stay",
+      '"renew_ikev2_cert_mobile.pem"' not in wc and '"renew_ikev2_cert_windows.der"' not in wc
+      and "do_renew_ikev2_cert_pem" not in wc and "do_renew_ikev2_cert_der" not in wc
+      and '"renew_ikev2_cert_key.cgi*"' in wc and '"ikev2_cert_mobile.pem"' in wc and '"ikev2_cert_windows.der"' in wc)
+
 harness = r'''
 #include <stdio.h>
+#include <stdlib.h>
 #include <stdarg.h>
 #include <string.h>
 #include <strings.h>
@@ -137,6 +151,17 @@ int main(void)
 	C("xsite_no_ref",         "set_iperf3_cli.cgi", "set_iperf3_cli.cgi?x=1", "get", "cross-site", L, "");
 	CX("curl_no_headers",     "netool.cgi", "netool.cgi", "post", "", L, "", "curl/8.4.0", 0);
 	C("typed_url_none",       "netool.cgi", "netool.cgi", "get", "none", L, "");
+	/* review 2026-11-17 (P6-2-1): a row with an output function of its own is looked at whatever its name is */
+	reaper_xsite_own_out = 1;
+	C("ownout_cert_xsite",    "ikev2_cert_mobile.pem", "ikev2_cert_mobile.pem", "get", "cross-site", L, "https://evil.example/\r\n");
+	CX("ownout_http_nav",     "Settings_RT-BE96U.CFG", "Settings_RT-BE96U.CFG", "get", "", L, "", MOZ, 0);
+	C("ownout_same_click",    "Settings_RT-BE96U.CFG", "Settings_RT-BE96U.CFG", "get", "same-origin", L, "https://192.168.50.1/Reaper_Admin.asp\r\n");
+	CX("ownout_http_click",   "syslog.txt", "syslog.txt", "get", "", L, "http://192.168.50.1/Reaper_Logs.asp\r\n", MOZ, 0);
+	C("ownout_typed",         "syslog.txt", "syslog.txt", "get", "none", L, "");
+	CX("ownout_script",       "client1.ovpn", "client1.ovpn", "get", "", L, "", "curl/8.4.0", 1);
+	C("ownout_page_stays",    "AiProtection_WebProtector.asp", "AiProtection_WebProtector.asp", "get", "cross-site", L, "https://evil.example/\r\n");
+	reaper_xsite_own_out = 0;
+	C("plainfile_xsite",      "ikev2_cert_mobile.pem", "ikev2_cert_mobile.pem", "get", "cross-site", L, "https://evil.example/\r\n");
 	/* review 2026-10-24 S-B-1: the plain-HTTP listener */
 	CX("http_browser_no_headers",      "netool.cgi", "netool.cgi?x=1", "get", "", L, "", MOZ, 0);
 	CX("http_browser_no_headers_post", "wl_apply.cgi", "wl_apply.cgi", "post", "", L, "", MOZ, 0);
@@ -176,6 +201,29 @@ int main(void)
 	C("aimesh_conncap_noref", "cfg_onboarding.cgi", "cfg_onboarding.cgi?flag=AMesh&id=AABBCCDDEEFF", "get", "cross-site", "www.asusrouter.com", "");
 	C("aimesh_lock_refused",  "cfg_onboarding.cgi", "cfg_onboarding.cgi?re_mac=AA&new_re_mac=BB", "get", "cross-site", "www.asusrouter.com", "http://192.168.50.77/\r\n");
 	C("aimesh_post_refused",  "cfg_onboarding.cgi", "cfg_onboarding.cgi", "post", "cross-site", "www.asusrouter.com", "http://192.168.50.77/\r\n");
+	/* review 2026-11-11 (B-4): the port is part of the origin; "same-site" is not this page */
+	C("otherport_portal",     "netool.cgi", "netool.cgi", "get", "same-site", "192.168.50.1:8443", "http://192.168.50.1:8083/Uam\r\n");
+	C("otherport_no_sfs",     "netool.cgi", "netool.cgi", "get", "", "192.168.50.1:8443", "http://192.168.50.1:8083/Uam\r\n");
+	C("otherport_alias",      "netool.cgi", "netool.cgi", "get", "cross-site", "192.168.50.1:8443", "http://www.asusrouter.com:8083/x\r\n");
+	C("otherport_default_gui","netool.cgi", "netool.cgi", "get", "", L, "http://192.168.50.1:8083/Uam\r\n");
+	C("otherport_ipv6",       "netool.cgi", "netool.cgi", "get", "", "[fd00::1]:8443", "http://[fd00::1]:8083/\r\n");
+	C("sameport_explicit",    "netool.cgi", "netool.cgi", "post", "", "192.168.50.1:8443", "https://192.168.50.1:8443/a.asp\r\n");
+	C("sameport_ipv6",        "netool.cgi", "netool.cgi", "post", "same-origin", "[fd00::1]:8443", "https://[fd00::1]:8443/x.asp\r\n");
+	C("wan_default_https",    "netool.cgi", "netool.cgi", "post", "same-origin", "ddns.example", "https://ddns.example/x.asp\r\n");
+	CX("tls_ending_proxy",    "netool.cgi", "netool.cgi", "post", "same-origin", "router.example", "https://router.example/x.asp\r\n", MOZ, 0);
+	C("noref_same_site",      "netool.cgi", "netool.cgi", "get", "same-site", L, "");
+	C("samehost_browser_says_cross", "netool.cgi", "netool.cgi", "get", "cross-site", L, "http://192.168.50.1/x.asp\r\n");
+	/* review 2026-11-11 (B-2): pages whose ej call acts, by file name whatever the path spelling */
+	C("share_mode_xsite",     "aidisk/switch_share_mode.asp", "aidisk/switch_share_mode.asp?protocol=cifs&mode=share", "get", "cross-site", L, "https://evil.example/\r\n");
+	C("share_mode_noref",     "aidisk/switch_share_mode.asp", "aidisk/switch_share_mode.asp?protocol=cifs&mode=share", "get", "cross-site", L, "");
+	C("share_mode_same",      "aidisk/switch_share_mode.asp", "aidisk/switch_share_mode.asp", "post", "same-origin", L, "http://192.168.50.1/Reaper_Samba.asp\r\n");
+	C("share_app_root_xsite", "switch_AiDisk_app.asp", "switch_AiDisk_app.asp?protocol=cifs&flag=on", "get", "cross-site", L, "https://evil.example/\r\n");
+	C("wan_action_xsite",     "device-map/wan_action.asp", "device-map/wan_action.asp?wanaction=Disconnect", "get", "cross-site", L, "https://evil.example/\r\n");
+	C("wan_action_dblslash",  "device-map//wan_action.asp", "device-map//wan_action.asp?wanaction=Disconnect", "get", "cross-site", L, "https://evil.example/\r\n");
+	C("wan_action_same",      "device-map/wan_action.asp", "device-map/wan_action.asp?wanaction=Connect", "get", "same-origin", L, "http://192.168.50.1/device-map/internet.asp\r\n");
+	C("apscan_dot_path",      "./apscan.asp", "./apscan.asp", "get", "cross-site", L, "https://evil.example/\r\n");
+	C("eject_xsite",          "device-map/safely_remove_disk.asp", "device-map/safely_remove_disk.asp?disk=1", "get", "cross-site", L, "https://evil.example/\r\n");
+	C("typed_share_page",     "aidisk/getsharearray.asp", "aidisk/getsharearray.asp", "get", "none", L, "");
 	/* log: one line per 10 s window, the CGI name stripped to [A-Za-z0-9._/-] */
 	nlog = 0; now_t = 50000;
 	snprintf(host_name, sizeof(host_name), "%s", L); referer_url[0] = 0;
@@ -195,14 +243,27 @@ EXPECT = {
     "same_origin_xhr": 0, "xsite_foreign_ref": 1, "xsite_no_ref": 1, "curl_no_headers": 0,
     "typed_url_none": 0, "old_browser_foreign": 1, "old_browser_same": 0, "page_not_cgi": 0,
     "same_site_foreign": 1, "self_ip_to_domain": 0, "self_old_domain": 0, "self_hostname": 0,
-    "self_hostname_fq": 0, "port_both": 0, "cross_scheme_same_host": 0, "ref_no_path_crlf": 0,
+    # review 2026-11-11 (B-4): cross_scheme_same_host was 0 - an http page on port 80 calling the https interface on
+    # 8443 is another origin on the same box, and the browser said so (cross-site). Refused now.
+    "self_hostname_fq": 0, "port_both": 0, "cross_scheme_same_host": 1, "ref_no_path_crlf": 0,
+    "otherport_portal": 1, "otherport_no_sfs": 1, "otherport_alias": 1, "otherport_default_gui": 1, "otherport_ipv6": 1,
+    "sameport_explicit": 0, "sameport_ipv6": 0, "wan_default_https": 0, "tls_ending_proxy": 0,
+    "noref_same_site": 1, "samehost_browser_says_cross": 1,
+    # review 2026-11-11 (B-2)
+    "share_mode_xsite": 1, "share_mode_noref": 1, "share_mode_same": 0, "share_app_root_xsite": 1,
+    "wan_action_xsite": 1, "wan_action_dblslash": 1, "wan_action_same": 0, "apscan_dot_path": 1, "eject_xsite": 1,
+    "typed_share_page": 0,
     "ref_host_prefix": 1, "ref_host_in_query": 1, "ref_userinfo": 1, "ipv6_same": 0,
     "ipv6_other": 1, "host_case": 0, "sfs_case": 1, "aimesh_conncap": 0, "aimesh_conncap_noref": 0,
     "aimesh_lock_refused": 1, "aimesh_post_refused": 1,
-    # review 2026-10-24 S-B-1: plain HTTP, a browser with neither header is cross-site; scripts and HTTPS as before
-    "http_browser_no_headers": 1, "http_browser_no_headers_post": 1, "https_browser_no_headers": 0,
+    # review 2026-10-24 S-B-1: plain HTTP, a browser with neither header is cross-site; scripts as before
+    # review 2026-11-03 A-1: and on HTTPS too (a browser without Fetch Metadata whose Referer a page suppressed)
+    "http_browser_no_headers": 1, "http_browser_no_headers_post": 1, "https_browser_no_headers": 1,
     "http_browser_same_ref": 0, "http_browser_self_ref": 0, "http_browser_sfs_same_origin": 0,
     "http_no_ua_no_headers": 0, "http_script_no_headers": 0, "http_browser_page_not_cgi": 0,
+    # review 2026-11-17 (P6-2-1): rows with an output function of their own, whatever the name; pages stay out
+    "ownout_cert_xsite": 1, "ownout_http_nav": 1, "ownout_same_click": 0, "ownout_http_click": 0, "ownout_typed": 0,
+    "ownout_script": 0, "ownout_page_stays": 0, "plainfile_xsite": 0,
     # review 2026-10-24 S-B-2: the exemption sees what init_cgi() sees
     "aimesh_lock_encoded_key": 1, "aimesh_lock_encoded_underscore": 1, "aimesh_lock_encoded_all": 1,
     "aimesh_other_case_not_lock": 0, "aimesh_conncap_http_browser": 0, "aimesh_long_query_refused": 1,

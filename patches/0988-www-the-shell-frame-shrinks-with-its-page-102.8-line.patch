@@ -1,0 +1,90 @@
+From cc9a44fa5241a00f6445fd73ce7f94965d587c3f Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Mon, 9 Nov 2026 20:28:02 -0500
+Subject: [PATCH] www: the shell frame shrinks with its page (102.8 line)
+
+The frame was sized from the framed page's scrollHeight, which never decreases, so a page that got
+shorter (the Wallguard page after a list closed) kept a trailing blank. The frame now follows
+where the page's own content ends (its body's displayed children), so it can shrink as well as
+grow.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ release/src/router/www/reaper_shell.asp | 47 +++++++++++++++++++++++--
+ 1 file changed, 44 insertions(+), 3 deletions(-)
+
+diff --git a/release/src/router/www/reaper_shell.asp b/release/src/router/www/reaper_shell.asp
+index e2aaac7feae..863bc20ed94 100644
+--- a/release/src/router/www/reaper_shell.asp
++++ b/release/src/router/www/reaper_shell.asp
+@@ -854,7 +854,27 @@ var RV_CSS_NATIVE = RV_CSS
+ (function(){
+   var f=$id('page_frame');
+   if(!f) return;
+-  var ro=null;
++  var ro=null, lastEst=-1;
++  /* reaper 2026-11-08: where the framed page's own content ends - its body's displayed children (fixed
++     ones float over the page) with their bottom margins, plus the bottom padding, border and margin of
++     the body and the padding and border of the root. 0 when it cannot be read (fit() then measures). */
++  function frameContentBottom(d){
++    try{
++      var w=d.defaultView, b=d.body, k, i, s, r, m=0, bs, hs, px=function(v){ return parseFloat(v)||0; };
++      if(!w||!b) return 0;
++      k=b.children;
++      for(i=0;i<k.length;i++){
++        s=w.getComputedStyle(k[i]);
++        if(s.display==='none'||s.position==='fixed') continue;
++        r=k[i].getBoundingClientRect();
++        if(!r.height&&!r.width) continue;
++        m=Math.max(m, r.bottom+px(s.marginBottom));
++      }
++      bs=w.getComputedStyle(b); hs=w.getComputedStyle(d.documentElement);
++      return m+w.pageYOffset+px(bs.paddingBottom)+px(bs.borderBottomWidth)+px(bs.marginBottom)
++        +px(hs.paddingBottom)+px(hs.borderBottomWidth);
++    }catch(e){ return 0; }
++  }
+   function fit(){
+     try{
+       var d=f.contentDocument;
+@@ -875,8 +895,28 @@ var RV_CSS_NATIVE = RV_CSS
+           }
+         }
+       }catch(e){}
+-      var h=Math.max(d.documentElement.scrollHeight, d.body?d.body.scrollHeight:0);
+-      if(h>40 && Math.abs(h-f.offsetHeight)>4) f.style.height=h+'px';
++      /* reaper 2026-11-08 (Wallguard trailing space): let the frame shrink too. A framed page's scrollHeight
++         is never less than the frame's own height, so a frame measured only at its grown height could only
++         ever grow: open a long panel (Wallguard's live view, a rules report), close it, and the frame kept
++         the tall height as empty scroll below the last card until the next page load. When the page's own
++         content ends above the frame bottom, measure from the cleared (flex fallback) height instead, as the
++         width below is, and put the window scroll back if the brief clear moved it. The clear and the set
++         run in one task, so nothing paints in between. Each clear is a resize event inside the page, so
++         lastEst keeps a page whose content is shorter than its document (a short page) from being cleared
++         again on every fit while its content stays the same. */
++      var est=frameContentBottom(d), h;
++      if(f.style.height && est<f.offsetHeight-4 && est!==lastEst){
++        var oh=f.style.height, y=window.pageYOffset, ch;
++        f.style.height='';
++        ch=f.offsetHeight;
++        h=Math.max(d.documentElement.scrollHeight, d.body?d.body.scrollHeight:0);
++        f.style.height=h>ch+4?h+'px':(h>40?'':oh);
++        if(window.pageYOffset!==y) window.scrollTo(window.pageXOffset, y);
++        lastEst=est;
++      }else{
++        h=Math.max(d.documentElement.scrollHeight, d.body?d.body.scrollHeight:0);
++        if(h>40 && Math.abs(h-f.offsetHeight)>4){ f.style.height=h+'px'; lastEst=-1; }
++      }
+       /* v1.6.4 tablet: also grow WIDTH when the framed page cannot shrink to
+          the column (fixed 760px stock tables on a narrow viewport) - the .stage
+          then pans on its own scrollbar instead of clipping (scrolling=no
+@@ -894,6 +934,7 @@ var RV_CSS_NATIVE = RV_CSS
+   }
+   f.addEventListener('load', function(){
+     f.style.height=''; f.style.width='';   /* reset before measuring the new page */
++    lastEst=-1;
+     try{
+       if(ro){ ro.disconnect(); ro=null; }
+       var d=f.contentDocument;
+-- 
+2.25.1
+

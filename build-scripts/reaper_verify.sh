@@ -164,15 +164,15 @@ fi
 # Post-v1.8.6: each model has its own banner filename (clobber-proof). Verify
 # the right file, right content, and NO stale REAPER1.png / foreign banner.
 case "$MODEL" in
-  RT-BE96U)    want_ban=f2607d4fd490041bebde08fd526d28704083332eef97417e2d67cafd7bd68c7d; ban_file=RT-96U_REAPER_Header.png;;
-  RT-BE86U)    want_ban=643036d89ca249311eec964035d973a6eeaaec38d5c9ec1ecd47f33298c28ece; ban_file=RT-BE86U_REAPER_Header.png;;
-  RT-BE88U)    want_ban=a46320ea1abf53eb4212eb02b1682ed80a91a129f0c7d1ced6a836d832817f27; ban_file=RT-BE88U_REAPER_Header.png;;
-  GT-BE98)     want_ban=0df4d8c19c9f044a1c2eb8334d2b23d085ff8f090348177251d1518b49572108; ban_file=GT-BE98_REAPER_Header.png;;
-  GT-BE98_PRO) want_ban=277f468046f99abda5d15181700ee150cd56ab0d258e7495090b8128d08fc08b; ban_file=GT-BE98P_REAPER_Header.png;;
-  RT-BE92U)    want_ban=032fc64c249e10391c12041cde1dd6f1d9d9bf8349495f79a09ba36e77d6db72; ban_file=RT-BE92U_REAPER_Header.png;;
-  GT-BE19000)  want_ban=f6acf9cbae479656ae6fa4fd37d401f1df583b275ca7d036bec761152b78f9f0; ban_file=GT-BE19000_REAPER_Header.png;;
-  BQ16)        want_ban=4ab6570ef27ae641c356fd078087af0fec4bc6e587d6f1564045f3812c5cd0f1; ban_file=BE25000_REAPER_Header.png;;   # the ZenWiFi BQ16's art is named by its class, BE25000 (owner, 2026-10-01)
-  BQ16_PRO)    want_ban=4ab6570ef27ae641c356fd078087af0fec4bc6e587d6f1564045f3812c5cd0f1; ban_file=BE30000_REAPER_Header.png;;   # PLACEHOLDER = the BQ16's art under the Pro's stem (2026-10-04); re-checksum when the owner's Pro art lands
+  RT-BE96U)    want_ban=15323d929359dea616802a5fa078f916f0f917e04ee0599a1dd214592edaf19b; ban_file=RT-96U_REAPER_Header.webp;;
+  RT-BE86U)    want_ban=d9759e7076710ebe4a73f5c49c4252763767283faad563020a3b5850de186612; ban_file=RT-BE86U_REAPER_Header.webp;;
+  RT-BE88U)    want_ban=fe25ef15f13a380144c30ece332433f98f898faecfe304cfd7478d22c2ed96de; ban_file=RT-BE88U_REAPER_Header.webp;;
+  GT-BE98)     want_ban=7686cf255d5afb5e0555a5b1a3138cd9c7a2c9435569f005ded86f3b543f5442; ban_file=GT-BE98_REAPER_Header.webp;;
+  GT-BE98_PRO) want_ban=2dc8e92d1e784d9245a22f9b9a6acc95f48dcba8168cc6747127385dfd9ac3c4; ban_file=GT-BE98P_REAPER_Header.webp;;
+  RT-BE92U)    want_ban=d93c4c446a211813496423703a2e1ee0c4c793f00c529a64ee408d4b626028c7; ban_file=RT-BE92U_REAPER_Header.webp;;
+  GT-BE19000)  want_ban=958786b2aa6c69dd7e6dc152a7febadd4ba95d10b1f1eb549565b70c72888e24; ban_file=GT-BE19000_REAPER_Header.webp;;
+  BQ16)        want_ban=787c16dd53be58891bd0cd5685a7214f79094b1c1dcb8d0151ba5d391bb3c9e6; ban_file=BE25000_REAPER_Header.webp;;   # the ZenWiFi BQ16's art is named by its class, BE25000 (owner, 2026-10-01)
+  BQ16_PRO)    want_ban=787c16dd53be58891bd0cd5685a7214f79094b1c1dcb8d0151ba5d391bb3c9e6; ban_file=BE30000_REAPER_Header.webp;;   # PLACEHOLDER = the BQ16's art under the Pro's stem (2026-10-04); re-checksum when the owner's Pro art lands
   *)           want_ban=""; ban_file="";;
 esac
 BAN="$FS/www/images/$ban_file"
@@ -184,7 +184,9 @@ elif [ -n "$ban_file" ]; then fail "header-banner" "model banner $ban_file NOT s
 else warn "header-banner" "no expected banner registered for $MODEL"; fi
 # guard: no legacy shared-name file, no foreign model banner
 if [ -f "$FS/www/images/REAPER1.png" ]; then fail "banner-stale" "legacy REAPER1.png still staged (rename regression)"; fi
-foreign=$(ls "$FS"/www/images/*_REAPER_Header.png 2>/dev/null | grep -v "/${ban_file}\$")
+# 2026-11-17: the headers are WebP; a header of either format under another name is foreign, and so is this
+# model's own old .png (it would ship beside the new file)
+foreign=$(ls "$FS"/www/images/*_REAPER_Header.png "$FS"/www/images/*_REAPER_Header.webp 2>/dev/null | grep -v "/${ban_file}\$")
 if [ -n "$foreign" ]; then fail "banner-foreign" "foreign banner staged: $(echo "$foreign" | xargs -n1 basename 2>/dev/null | tr '\n' ' ')"
 else pass "banner-solo" "only $MODEL banner present (no foreign/legacy)"; fi
 
@@ -200,7 +202,7 @@ else pass "banner-solo" "only $MODEL banner present (no foreign/legacy)"; fi
 # while onboarding the GT-BE19000. This check needs no list: it reads the
 # references out of the staged pages themselves, so a new page cannot be
 # missed the way the seventh one was.
-_brefs=$(grep -rhoE '[A-Za-z0-9-]+_REAPER_Header(_anim)?\.png' "$FS"/www/*.asp "$FS"/www/*.js 2>/dev/null | sort -u)
+_brefs=$(grep -rhoE '[A-Za-z0-9-]+_REAPER_Header(_anim)?\.(png|webp)' "$FS"/www/*.asp "$FS"/www/*.js 2>/dev/null | sort -u)
 _bmiss=""
 for _b in $_brefs; do [ -f "$FS/www/images/$_b" ] || _bmiss="$_bmiss $_b"; done
 if [ -z "$_brefs" ]; then warn "banner-refs" "no staged page references a banner file - unexpected, check the www staging"
@@ -218,22 +220,38 @@ else pass "banner-refs" "$(printf '%s\n' "$_brefs" | wc -l) referenced banner fi
 # drop) ships none. The expected chip set is per model, read from the pinned
 # base's own sysdeps/ layout; a model not listed here gets a WARN, not a pass.
 #
-# GT-BE19000: 6717a0 + 6726b0 - and the RETRACTION behind that line matters.
-# On 2026-09-12 this was briefly changed to "6726b0" only, on the strength of
-# decomposing the vendor GT-BE19000**AI** image (102_40717), whose rootfs has a
-# single chip dir. Hours later the vendor **non-AI** image (102_39393) - the
-# SKU this build actually targets - was decomposed and carries BOTH
-# rom/etc/wlan/dhd/6717a0/ and 6726b0/. The two SKUs differ in radio hardware,
-# not only in storage. The "6726b0 only" line would have PASSED an image with
-# no 6717a0 firmware, i.e. a dead radio - the exact failure this check exists
-# to catch. Rule, stated twice because it was violated twice in one day: read
-# the chip set off the vendor image FOR THE EXACT SKU, never off a sibling and
-# never off the other SKU of the same model.
+# Where the chip set comes from (2026-11-18, review 2026-11-17 phase 7): the
+# BOARD FILES, not the folders a vendor image happens to carry. The router loads
+# /rom/etc/wlan/nvram/<boardid>.nvm, and that file lists every radio with its
+# device id (N:devid=); bcmdevs.h maps 0x6025-27 to BCM6717 (dongle 6717a0) and
+# 0x602c-e to BCM6726 (6726b0). Read that way:
+#   RT-BE96U   RT-BE96U.nvm = 3 x BCM6717 (early units), RT-BE96U_B0.nvm =
+#              3 x BCM6726 (B0 units) -> BOTH folders, always.
+#   GT-BE98 / GT-BE98_PRO / BQ16 / BQ16_PRO (4 radios each) and GT-BE19000
+#              (3 radios): every radio of every board file is a BCM6726 ->
+#              6726b0 only. src-rt/Makefile (REAPER-NO-6717A0) no longer
+#              installs their 6717a0; an image that still carries it FAILS here.
+#   RT-BE86U   BCM6726 5 GHz + BCM6711 2.4 GHz (run by wl.ko, no firmware file)
+#   RT-BE88U   2 x BCM6726 -> 6726b0.
+# History: ASUS ships 6717a0 in most vendor images, so reading folders said
+# "both" for five models that have no BCM6717. On 2026-09-12 the GT-BE19000
+# non-AI image's two folders against the AI image's one were read as two radio
+# designs; the board files of both SKUs name the same three BCM6726 radios. The
+# rule that holds: read the chip set off the EXACT SKU's board files, and never
+# take a folder away from a model whose board files name its chip.
 case "$MODEL" in
-  RT-BE96U|GT-BE98|GT-BE98_PRO|GT-BE19000|BQ16|BQ16_PRO)  want_dhd="6717a0 6726b0";;   # BQ16 / BQ16_PRO: read off each one's own stock 102_39256 image
-  RT-BE86U|RT-BE88U)                        want_dhd="6726b0";;
-  *)                                        want_dhd="";;
+  RT-BE96U)                                       want_dhd="6717a0 6726b0"; nowant_dhd="";;
+  GT-BE98|GT-BE98_PRO|GT-BE19000|BQ16|BQ16_PRO)   want_dhd="6726b0"; nowant_dhd="6717a0";;
+  RT-BE86U|RT-BE88U)                              want_dhd="6726b0"; nowant_dhd="";;
+  *)                                              want_dhd=""; nowant_dhd="";;
 esac
+for _c in $nowant_dhd; do
+  if [ -e "$FS/rom/etc/wlan/dhd/$_c" ]; then
+    fail "dongle-fw-unused" "rom/etc/wlan/dhd/$_c is staged for $MODEL, whose board files name no radio of that chip (REAPER-NO-6717A0 in src-rt/Makefile not applied, or a stale dongle/bin/$_c)"
+  else
+    pass "dongle-fw-unused" "no $_c firmware staged for $MODEL (its board files name no radio of that chip)"
+  fi
+done
 if [ -n "$want_dhd" ]; then
   _dmiss=""
   for _c in $want_dhd; do
@@ -299,17 +317,32 @@ else warn "shared-parity" "_port_protect.sh not deployed -- parity unchecked"; f
 # ---- 10. rung-critical patch markers in the STAGED image -------------------
 # verify_markers.txt lines: <staged-path>|<literal>|<min>  or  <staged-path>|!<literal>
 # with an optional 4th field naming the only variant the line applies to
-# (<staged-path>|<literal>|<min>|MCP) - an MCP-only artifact is absent from noMCP by design.
+# (<staged-path>|<literal>|<min>|MCP) - an MCP-only artifact is absent from noMCP by design,
+# and an optional 5th field naming the build flag the line needs
+# (<staged-path>|<literal>|<min>||RTCONFIG_COOVACHILLI) - the line is checked only when the
+# build .config has that flag =y. A model whose stock target.mak leaves a feature out (BQ16 and
+# BQ16 Pro have no CAPTIVE_PORTAL) has no binary or code to check (v3.7.6 CI, 2026-11-12).
 # One line per field-critical fix -> every model/variant image PROVES it ships.
 MARKF=/home/reaper/reaper_build/verify_markers.txt
 if [ -f "$MARKF" ]; then
-  mfail=0; mnum=0
-  while IFS='|' read -r mpath mpat mmin mvar; do
+  mfail=0; mnum=0; mskip=0
+  while IFS='|' read -r mpath mpat mmin mvar mcfg; do
     case "$mpath" in ''|'#'*) continue;; esac
     case "$mvar" in
       ''|"$VARIANT") ;;
       MCP|noMCP) continue;;
       *) fail "patch-marker" "$mpath: unknown variant field '$mvar'"; mfail=1; continue;;
+    esac
+    case "$mcfg" in
+      '') ;;
+      RTCONFIG_*[!A-Z0-9_]*|RTCONFIG_)
+         fail "patch-marker" "$mpath: bad build-flag field '$mcfg'"; mfail=1; continue;;
+      RTCONFIG_*)
+         if [ ! -r "$RCONF" ]; then
+           fail "patch-marker" "$mpath: needs $mcfg but the build config $RCONF is unreadable"; mfail=1; continue
+         fi
+         grep -q "^$mcfg=y\$" "$RCONF" || { mskip=$((mskip+1)); continue; };;
+      *) fail "patch-marker" "$mpath: bad build-flag field '$mcfg'"; mfail=1; continue;;
     esac
     mnum=$((mnum+1))
     tgt="$FS/$mpath"
@@ -321,7 +354,7 @@ if [ -f "$MARKF" ]; then
             [ "$c" -ge "${mmin:-1}" ] || { fail "patch-marker" "$mpath: '$mpat' x$c < ${mmin:-1}"; mfail=1; };;
     esac
   done < "$MARKF"
-  [ "$mfail" = 0 ] && pass "patch-markers" "$mnum marker rules hold in the staged fs"
+  [ "$mfail" = 0 ] && pass "patch-markers" "$mnum marker rules hold in the staged fs ($mskip not built for this model)"
 else
   warn "patch-markers" "verify_markers.txt missing -- no rung markers checked"
 fi
@@ -465,6 +498,42 @@ else
   warn "ossl-consumers" "check_ossl_consumers.sh absent -- 1.1-SONAME consumers not checked"
 fi
 
+# ---- 22b. every program names the OpenSSL release the image ships (2026-11-14) ---
+# REAPER-OSSL-TEXT-BEGIN
+# A program compiled under one OpenSSL 3 release and never recompiled after the tree moved to the next still
+# carries the old release text (wpa_supplicant said 3.5.8 in local images for six weeks after the tree went to
+# 3.5.9: its makefiles do not depend on the OpenSSL headers, and a clean CI tree never shows it). Each staged file
+# that carries an "OpenSSL 3.x.y <date>" text must carry the one libcrypto.so.3 does. FAIL for the programs this
+# tree compiles itself; WARN for anything else (a closed object built elsewhere may legitimately differ).
+_olc="$FS/usr/lib/libcrypto.so.3"
+if [ -f "$_olc" ]; then
+  _ore='OpenSSL 3\.[0-9]+\.[0-9]+ [0-9]+ [A-Z][a-z]{2} [0-9]{4}'
+  _owant=$(grep -a -o -E "$_ore" "$_olc" 2>/dev/null | sort -u | head -1)
+  if [ -z "$_owant" ]; then
+    warn "ossl-version-text" "libcrypto.so.3 carries no release text -- not checked"
+  else
+    _on=0; _obad=""; _oodd=""
+    for _of in $(grep -rl -a -E "$_ore" "$FS/bin" "$FS/sbin" "$FS/usr/bin" "$FS/usr/sbin" "$FS/usr/lib" "$FS/lib" 2>/dev/null); do
+      _on=$((_on+1))
+      _ot=$(grep -a -o -E "$_ore" "$_of" | sort -u | grep -vxF -- "$_owant" | head -1)
+      [ -z "$_ot" ] && continue
+      case "${_of##*/}" in
+        wpa_supplicant*|wpa_cli*|hostapd*|Tor|openssl|openvpn|stubby|curl|wget|lighttpd|httpd|rc|libssl.so*|libcrypto.so*)
+          _obad="$_obad ${_of#$FS/}($_ot)";;
+        *) _oodd="$_oodd ${_of#$FS/}($_ot)";;
+      esac
+    done
+    if [ -n "$_obad" ]; then
+      fail "ossl-version-text" "compiled under another OpenSSL release than the image ships ($_owant):$_obad -- stale objects, rebuild them"
+    elif [ -n "$_oodd" ]; then
+      warn "ossl-version-text" "$_on staged file(s) name an OpenSSL 3 release; not $_owant:$_oodd"
+    else
+      pass "ossl-version-text" "$_on staged file(s) name an OpenSSL 3 release, all $_owant"
+    fi
+  fi
+fi
+# REAPER-OSSL-TEXT-END
+
 # ---- 23. the OpenVPN PKI chain on the staged binaries (check_ovpn_pki.sh) ---
 # Two silent breaks after the OpenSSL 3.5 move, both found on routers: the
 # [server] extensions on a CSR (v3.1.4) and RANDFILE=$HOME/.rnd with HOME=/
@@ -560,6 +629,48 @@ if [ -z "$_hostelf" ]; then
 else
   fail "host-arch" "host-architecture ELF in the image: $_hostelf"
 fi
+
+# ---- symshadow: a C-library function replaced by a vendor library ----------
+# 2026-11-11 (test image _r14): libshared.so exports its own timer_create()/timer_settime(), which every program
+# that loads libshared first gets instead of the C library's; that timer_create() exits on CLOCK_MONOTONIC, so httpd
+# quit on its first connection. Host tests cannot see this (they link the real C library). reaper_symshadow.py
+# resolves each program's imports in load order and lists every C-library name another library answers first.
+# Known stock cases are in reaper_symshadow.allow. FAIL for the timer family (the _r14 class); WARN for anything else
+# new, so a stock overlap first seen on a sibling model is looked at before it can block a build.
+_ssdir="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
+if [ -f "$_ssdir/reaper_symshadow.py" ] && command -v python3 >/dev/null 2>&1; then
+  _ssout="$(REAPER_READELF="$READELF" python3 "$_ssdir/reaper_symshadow.py" "$FS" --allow "$_ssdir/reaper_symshadow.allow" 2>&1)"
+  _ssnew="$(printf '%s\n' "$_ssout" | grep '^NEW ' | sed 's/  */ /g')"
+  _sssum="$(printf '%s\n' "$_ssout" | tail -1)"
+  if [ -z "$_ssnew" ]; then
+    pass "symshadow" "$_sssum"
+  elif printf '%s\n' "$_ssnew" | grep -qE '^NEW (timer_[a-z]+|clock_[a-z]+|setitimer|alarm) '; then
+    printf '%s\n' "$_ssnew" | sed 's/^/          /'
+    fail "symshadow" "a program calls a timer function that a vendor library replaces (see above; the _r14 httpd failure)"
+  else
+    printf '%s\n' "$_ssnew" | sed 's/^/          /'
+    warn "symshadow" "new C-library name answered by a vendor library (see above) - check it, then add it to reaper_symshadow.allow if it is stock"
+  fi
+else
+  warn "symshadow" "reaper_symshadow.py or python3 missing - check skipped"
+fi
+
+# ---- httpd-smoke: the image's own web server serves and survives connections ----
+# 2026-11-11: _r14's httpd exited on its first connection and only the router showed it. reaper_httpd_smoke.sh runs
+# the STAGED httpd with the staged libraries under qemu-user (private namespace, the staged fs as root, an in-memory
+# nvram) and requests the login page, an empty connection and 5 requests in a row. Proven: _r14's httpd fails it
+# (exit status 1), _r15's passes. Hosts without qemu-arm binfmt or user namespaces skip it (WARN).
+if [ -f "$_ssdir/reaper_httpd_smoke.sh" ]; then
+  _hsout="$(bash "$_ssdir/reaper_httpd_smoke.sh" "$FS" 2>&1)"; _hsrc=$?
+  case $_hsrc in
+    0)  pass "httpd-smoke" "staged httpd under qemu: login page 200, survives an empty connection and 5 requests" ;;
+    77) warn "httpd-smoke" "skipped on this host: $(printf '%s\n' "$_hsout" | grep '^SKIP' | head -1)" ;;
+    *)  printf '%s\n' "$_hsout" | grep -E '^(FAIL|ok  |     )' | sed 's/^/          /'
+        fail "httpd-smoke" "the staged httpd does not serve or does not survive a connection (see above)" ;;
+  esac
+else
+  warn "httpd-smoke" "reaper_httpd_smoke.sh missing - check skipped"
+fi
 if [ -s "$FS/usr/share/reaper/witness.static" ]; then
   _nw=$(grep -c '^[A-Z][A-Za-z0-9]*|' "$FS/usr/share/reaper/witness.static")
   if [ "$_nw" -ge 12 ] && grep -q '^A1|' "$FS/usr/share/reaper/witness.static" && grep -q '^A4|' "$FS/usr/share/reaper/witness.static"; then
@@ -589,6 +700,21 @@ elif [ "$_dgs" = "$_dgp" ]; then
   pass "diag-version" "Diagnostics page and script agree ($_dgs)"
 else
   fail "diag-version" "the Diagnostics page says '$_dgp' but the script it runs is '$_dgs' -- the page and its own report would contradict each other; re-pin the literal in www/Reaper_Diag.asp"
+fi
+
+# ---- 28b. the kernel banner names no build machine (review 2026-11-03, E-10) ----
+# /proc/version and the first dmesg line read "Linux version X (user@host)" from KBUILD_BUILD_USER/HOST; unset,
+# the kernel takes the build host's own user and machine name. The build library exports reaper@reaper; this
+# checks the vmlinux built in this pass. The banner itself is never printed here.
+_kbv="$P/kernel/linux-4.19/vmlinux"
+if [ ! -f "$_kbv" ]; then
+  warn "kernel-banner" "no vmlinux at $_kbv -- the kernel banner could not be checked"
+else
+  _kb=$(grep -ao 'Linux version [^ ]* ([^)]*)' "$_kbv" | head -1)
+  case "$_kb" in
+    *"(reaper@reaper)") pass "kernel-banner" "vmlinux banner names reaper@reaper (no build machine)" ;;
+    *) fail "kernel-banner" "vmlinux banner does not name reaper@reaper -- KBUILD_BUILD_USER/HOST did not reach the kernel build (banner not printed)" ;;
+  esac
 fi
 
 # ---- 28. the Runner 4-frag transmit cap is in the kernel that was built ----

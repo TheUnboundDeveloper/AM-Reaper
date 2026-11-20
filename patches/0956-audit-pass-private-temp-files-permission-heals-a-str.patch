@@ -1,0 +1,493 @@
+From 1a736fd277ba91883c87fcc2f2c2573250ecc648 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Thu, 5 Nov 2026 20:37:50 -0500
+Subject: [PATCH] audit pass: private temp files, permission heals, a strlcpy,
+ three removals (102.8 line)
+
+From the 2026-11-05 Audit Findings pass:
+- httpd: login_url is copied with strlcpy.
+- WireGuard writes its route and script temp files in root's 0700 /tmp/reaper, not the shared
+  /tmp.
+- rwatch takes write-for-everyone off nt_center.pid, netool.pid and the diag databases on each
+  tick (closed programs write them 0666), and the Security Review scans a USB long-term store as
+  well as /jffs.
+- A USB long-term store gets the same no-follow permission sweep /jffs gets at boot when it
+  appears; the walk is handed the store's base path alone.
+- wallguardc reads at most 2 MiB of a list. lighttpd links with full RELRO.
+- Removed: the wlcsm_bindfix shim (each model's own libnvram.so and libwlcsm.so already carry the
+  socket-leak fix), lld2d / lld2c (never started), and the AFP DHX1 login module (DHX2 stays).
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ release/src/router/Makefile                   |  20 +-
+ release/src/router/httpd/httpd.c              |   8 +-
+ .../lighttpd-1.4.39/preconfigure-script-hnd   |   4 +-
+ release/src/router/rc/reaper_usbmon.c         |  11 +-
+ release/src/router/rc/rwatch.c                |   9 +-
+ release/src/router/rc/wireguard.c             |   6 +-
+ release/src/router/wallguard/wallguardc.c     |   3 +-
+ release/src/router/wlcsm_bindfix/.gitignore   |   3 -
+ release/src/router/wlcsm_bindfix/Makefile     |  43 ----
+ .../src/router/wlcsm_bindfix/wlcsm_bindfix.c  | 197 ------------------
+ 10 files changed, 33 insertions(+), 271 deletions(-)
+ delete mode 100644 release/src/router/wlcsm_bindfix/.gitignore
+ delete mode 100644 release/src/router/wlcsm_bindfix/Makefile
+ delete mode 100644 release/src/router/wlcsm_bindfix/wlcsm_bindfix.c
+
+diff --git a/release/src/router/Makefile b/release/src/router/Makefile
+index e77cbc71019..8c95a12a971 100644
+--- a/release/src/router/Makefile
++++ b/release/src/router/Makefile
+@@ -1721,7 +1721,7 @@ endif
+ obj-y += udpxy
+ ifeq ($(CONFIG_BCMWL5),y)
+ ifeq ($(RTCONFIG_BCMARM),y)
+-obj-y += lltd.arm
++# obj-y += lltd.arm	# reaper 2026-11-05 (audit F-1): lld2d is never started (start_lltd returns) - not shipped
+ obj-y += taskset
+ obj-$(RTCONFIG_COMA) += comad
+ else
+@@ -1730,7 +1730,7 @@ endif
+ else
+ obj-y += lldt
+ endif
+-obj-$(RTCONFIG_JFFS2USERICON) += lltdc
++# obj-$(RTCONFIG_JFFS2USERICON) += lltdc	# reaper 2026-11-05 (audit F-1): lld2c never started - not shipped
+ 
+ obj-$(RTCONFIG_TOAD) += toad
+ ifeq ($(RTCONFIG_BCMARM),y)
+@@ -6501,17 +6501,8 @@ rtrafd: nvram$(BCMEX)$(EX7) shared $(if $(BCM_502L07P2),ethctl_lib)
+ rtrafd-install:
+ 	$(MAKE) -C rtrafd INSTALLDIR=$(INSTALLDIR)/rtrafd install
+ 
+-# reaper: the bind() shim. No package deps - it must NOT link libnvram/libshared,
+-# since it is preloaded into every process and those call the very path it wraps.
+-wlcsm_bindfix:
+-	@$(SEP)
+-	$(MAKE) -C wlcsm_bindfix
+-
+-wlcsm_bindfix-install:
+-	$(MAKE) -C wlcsm_bindfix INSTALLDIR=$(INSTALLDIR)/wlcsm_bindfix install
+-
+-wlcsm_bindfix-clean:
+-	-@$(MAKE) -C wlcsm_bindfix clean
++# reaper 2026-11-05 (audit D-8): the wlcsm_bindfix shim is gone - the ASUS 42015-layer libnvram.so/libwlcsm.so
++# ship the socket-leak fix (wlcsm_agent 36 B, wlcsm_nvram_getall 360 B in the staged libs, checked 2026-11-05)
+ 
+ gkd: nvram$(BCMEX)$(EX7) shared
+ 
+@@ -8729,7 +8720,6 @@ netatalk-3.0.5-install:
+ 		install -D netatalk-3.0.5/etc/uams/.libs/uams_randnum.so $(INSTALLDIR)/netatalk-3.0.5/usr/lib/netatalk/uams_randnum.so ; \
+ 		install -D netatalk-3.0.5/etc/uams/.libs/uams_passwd.so $(INSTALLDIR)/netatalk-3.0.5/usr/lib/netatalk/uams_passwd.so ; \
+ 		install -D netatalk-3.0.5/etc/uams/.libs/uams_guest.so $(INSTALLDIR)/netatalk-3.0.5/usr/lib/netatalk/uams_guest.so ; \
+-		install -D netatalk-3.0.5/etc/uams/.libs/uams_dhx_passwd.so $(INSTALLDIR)/netatalk-3.0.5/usr/lib/netatalk/uams_dhx_passwd.so ; \
+ 		install -D netatalk-3.0.5/etc/uams/.libs/uams_dhx2_passwd.so $(INSTALLDIR)/netatalk-3.0.5/usr/lib/netatalk/uams_dhx2_passwd.so ; \
+ 		$(STRIP) $(INSTALLDIR)/netatalk-3.0.5/usr/sbin/afpd ; \
+ 		$(STRIP) $(INSTALLDIR)/netatalk-3.0.5/usr/sbin/cnid_dbd ; \
+@@ -8744,11 +8734,9 @@ netatalk-3.0.5-install:
+ 		$(STRIP) $(INSTALLDIR)/netatalk-3.0.5/usr/lib/netatalk/uams_randnum.so ; \
+ 		$(STRIP) $(INSTALLDIR)/netatalk-3.0.5/usr/lib/netatalk/uams_passwd.so ; \
+ 		$(STRIP) $(INSTALLDIR)/netatalk-3.0.5/usr/lib/netatalk/uams_guest.so ; \
+-		$(STRIP) $(INSTALLDIR)/netatalk-3.0.5/usr/lib/netatalk/uams_dhx_passwd.so ; \
+ 		$(STRIP) $(INSTALLDIR)/netatalk-3.0.5/usr/lib/netatalk/uams_dhx2_passwd.so ; \
+ 		cd $(INSTALLDIR)/netatalk-3.0.5/usr/lib && ln -sf libatalk.so.6.0.0 libatalk.so.6 ; \
+ 		cd $(INSTALLDIR)/netatalk-3.0.5/usr/lib/netatalk && ln -sf uams_passwd.so uams_clrtxt.so ; \
+-		cd $(INSTALLDIR)/netatalk-3.0.5/usr/lib/netatalk && ln -sf uams_dhx_passwd.so uams_dhx.so ; \
+ 		cd $(INSTALLDIR)/netatalk-3.0.5/usr/lib/netatalk && ln -sf uams_dhx2_passwd.so uams_dhx2.so ; \
+ 	fi
+ 
+diff --git a/release/src/router/httpd/httpd.c b/release/src/router/httpd/httpd.c
+index 9ca11e43585..8982323647f 100644
+--- a/release/src/router/httpd/httpd.c
++++ b/release/src/router/httpd/httpd.c
+@@ -590,11 +590,11 @@ page_default_redirect(int fromapp_flag, char* url)
+ 	char inviteCode[256]={0};
+ 
+ 	if(check_xss_blacklist(url, 1)){
+-		strncpy(login_url, indexpage, sizeof(login_url));
++		strlcpy(login_url, indexpage, sizeof(login_url));
+ 		url = indexpage;
+ 	}
+ 	else
+-		strncpy(login_url, url, sizeof(login_url));
++		strlcpy(login_url, url, sizeof(login_url));
+ 
+ 	if(fromapp_flag == 0){
+ 		snprintf(inviteCode, sizeof(inviteCode), "<script>top.location.href='/page_default.cgi?url=%s';</script>", url);
+@@ -651,10 +651,10 @@ send_login_page(int fromapp_flag, int error_status, char* url, char* file, int l
+ 	}
+ 
+ 	if(url == NULL || !reaper_login_landing(url)) {	/* reaper: a background request is not a landing page */
+-		strncpy(login_url, indexpage, sizeof(login_url));
++		strlcpy(login_url, indexpage, sizeof(login_url));
+ 		file = NULL;
+ 	} else
+-		strncpy(login_url, url, sizeof(login_url));
++		strlcpy(login_url, url, sizeof(login_url));
+ 
+ 	login_dt = lock_time;
+ 
+diff --git a/release/src/router/lighttpd-1.4.39/preconfigure-script-hnd b/release/src/router/lighttpd-1.4.39/preconfigure-script-hnd
+index 91ac2b22970..f5587fef63e 100755
+--- a/release/src/router/lighttpd-1.4.39/preconfigure-script-hnd
++++ b/release/src/router/lighttpd-1.4.39/preconfigure-script-hnd
+@@ -18,7 +18,9 @@ PCRE_VER=8.31
+ export CFLAGS="-I$cur_dir/../pcre-$PCRE_VER -I$uclib_inc -I$srcbase_dir/include -I$srcbase_dir/shared/bcmwifi/include -I$cur_dir/../sqlite -I$cur_dir/../curl-7.21.7/include -I$router_sysdep_dir/nvram${BCMEX}${EX7} -I$router_dir/shared -I$router_dir/libpasswd -DHAVE_OPENSSL_SSL_H=1 -DHAVE_LIBSSL=1 -DEMBEDDED_EANBLE=1"
+ export LIBS="-L$uclib -L$router_dir/shared -lshared -L$router_sysdep_dir/nvram${BCMEX}${EX7} -lnvram -L$router_sysdep_dir/wlcsm${EXHND} -lwlcsm -L$router_dir/libpasswd -lpasswd -lpthread  -L$router_dir/openssl -lcrypto -lssl -L$router_dir/curl-7.21.7/lib/.libs -lcurl -L$router_dir/libxml2/.libs -lxml2 -lpthread -dl"
+ #export LDFLAGS="-L$uclib -ldl -L$cur_dir/../pcre-$PCRE_VER/.libs -lpcre -L$cur_dir/../libxml2/.libs -lxml2 -lm -L$router_dir/openssl -L$cur_dir/../curl-7.21.7/lib/.libs"
+-export LDFLAGS="              -L$cur_dir/../pcre-$PCRE_VER/.libs -lpcre -L$cur_dir/../libxml2/.libs -lxml2 -lm -L$router_dir/openssl -L$cur_dir/../curl-7.21.7/lib/.libs"
++# reaper 2026-11-05 (audit F-4): full RELRO for the binary and its modules (PIE/FORTIFY not taken: libtool links
++# the modules -shared from the same flags, and the configure CFLAGS carry no -O for FORTIFY)
++export LDFLAGS="-Wl,-z,relro,-z,now -L$cur_dir/../pcre-$PCRE_VER/.libs -lpcre -L$cur_dir/../libxml2/.libs -lxml2 -lm -L$router_dir/openssl -L$cur_dir/../curl-7.21.7/lib/.libs"
+ 
+ USB=`cat ../.config |grep "RTCONFIG_USB=y"`
+ if [ -n "$USB" ]; then
+diff --git a/release/src/router/rc/reaper_usbmon.c b/release/src/router/rc/reaper_usbmon.c
+index ae25b34ca95..a7839672072 100644
+--- a/release/src/router/rc/reaper_usbmon.c
++++ b/release/src/router/rc/reaper_usbmon.c
+@@ -548,8 +548,17 @@ static void rstore_publish(void)
+ 		strlcpy(last, txt, sizeof(last));
+ 	}
+ 	usb = !strncmp(txt, RSTORE_MNT "/", sizeof(RSTORE_MNT));
+-	if (usb && !had_usb)
++	if (usb && !had_usb) {
++		/* reaper 2026-11-05 (audit C-8): entries older writers left 0666/0777 in the store lose write-for-everyone,
++		   with the same no-follow walk /jffs gets at boot (the store on /jffs is already in that). txt is the
++		   published <base> NL ,<datasets>, NL text (rstore_pub_text): the walk gets the base line alone - handed
++		   the whole text it found no such folder and changed nothing (2026-11-05, _r11 metal) */
++		char sb[sizeof(txt)];
++		strlcpy(sb, txt, sizeof(sb));
++		sb[strcspn(sb, "\n")] = '\0';
++		reaper_jffs_perm_sweep(sb);
+ 		wallguard_store_attached();
++	}
+ 	had_usb = usb;
+ }
+ 
+diff --git a/release/src/router/rc/rwatch.c b/release/src/router/rc/rwatch.c
+index 9ee6d57f3a0..bf81015d7f3 100644
+--- a/release/src/router/rc/rwatch.c
++++ b/release/src/router/rc/rwatch.c
+@@ -297,12 +297,17 @@ static void rwatch_gen(void)
+ 	   * first version read 0 with a 0666 file planted); -a includes the hidden files,
+ 	   * the 9th mode character is the other-write bit, a trailing t/T is sticky. */
+ 	  "_rv_ww() {\n"
+-	  "  ls -lanR /jffs 2>/dev/null | awk '/^\\/.*:$/ { d=substr($0, 1, length($0)-1); next } ($1 ~ /^-.......w/ || ($1 ~ /^d.......w/ && $1 !~ /[tT]$/)) { n=$0; for (i=1;i<=8;i++) sub(/^[^ ]+ +/, \"\", n); if (n==\".\" || n==\"..\") next; print d \"/\" n }' | head -n 1000 > $RV_TMP/ww.lst\n"
++	  /* 2026-11-05 (audit): closed programs write these 0666 (nt_center's pid file, the diag databases); nothing
++	   * but root (their owner) reads them - other-write comes off on every tick. And the long-term store base
++	   * on a USB volume is checked like /jffs (one on /jffs is already in it). */
++	  "  chmod o-w /var/run/nt_center.pid /var/run/netool.pid 2>/dev/null; for _f in /tmp/.diag/*.db; do [ -f \"$_f\" ] && [ ! -L \"$_f\" ] && chmod o-w \"$_f\"; done\n"
++	  "  _wr=/jffs; case \"$BASE\" in /jffs*|\"\") ;; *) [ -d \"$BASE\" ] && _wr=\"$_wr $BASE\" ;; esac\n"
++	  "  ls -lanR $_wr 2>/dev/null | awk '/^\\/.*:$/ { d=substr($0, 1, length($0)-1); next } ($1 ~ /^-.......w/ || ($1 ~ /^d.......w/ && $1 !~ /[tT]$/)) { n=$0; for (i=1;i<=8;i++) sub(/^[^ ]+ +/, \"\", n); if (n==\".\" || n==\"..\") next; print d \"/\" n }' | head -n 1000 > $RV_TMP/ww.lst\n"
+ 	  "  _wn=$(wc -l < $RV_TMP/ww.lst | tr -d ' ')\n"
+ 	  "  if [ \"${_wn:-0}\" -gt 0 ]; then\n"
+ 	  "    _wp=$(head -n 1 $RV_TMP/ww.lst | tr -d '\\000-\\037\\177')\n"
+ 	  "    printf 'ww %s %s\\n' \"$_wn\" \"$_wp\" > $RV_TMP/review.ww\n"
+-	  "    [ \"$_wn\" = \"$(cat $RV_TMP/ww.said 2>/dev/null)\" ] || logger -t rwatch \"security review: $_wn file(s) or folder(s) under /jffs are writable by any user (first: $_wp) - the next reboot removes that permission; until then a compromised non-root service could change them\"\n"
++	  "    [ \"$_wn\" = \"$(cat $RV_TMP/ww.said 2>/dev/null)\" ] || logger -t rwatch \"security review: $_wn file(s) or folder(s) under /jffs or the long-term store are writable by any user (first: $_wp) - the next reboot removes that permission; until then a compromised non-root service could change them\"\n"
+ 	  "    echo \"$_wn\" > $RV_TMP/ww.said\n"
+ 	  "  else\n"
+ 	  "    rm -f $RV_TMP/review.ww $RV_TMP/ww.said\n"
+diff --git a/release/src/router/rc/wireguard.c b/release/src/router/rc/wireguard.c
+index 06d6cffca1a..d9a709c2f2e 100644
+--- a/release/src/router/rc/wireguard.c
++++ b/release/src/router/rc/wireguard.c
+@@ -237,8 +237,8 @@ static void _wg_config_route(char* prefix, char* ifname, int table)
+ 	if (table > 0)
+ 	{// copy from main
+ 		eval("ip", "route", "flush", "table", table_str);
+-		system("ip route show table main > /tmp/route_tmp");
+-		fp = fopen("/tmp/route_tmp", "r");
++		system("ip route show table main > /tmp/reaper/route_tmp");	/* reaper 2026-11-05: root's private dir */
++		fp = fopen("/tmp/reaper/route_tmp", "r");
+ 		if(fp)
+ 		{
+ 			while(fgets(buf, sizeof(buf), fp))
+@@ -255,7 +255,7 @@ static void _wg_config_route(char* prefix, char* ifname, int table)
+ 			}
+ 			fclose(fp);
+ 		}
+-		unlink("/tmp/route_tmp");
++		unlink("/tmp/reaper/route_tmp");
+ 	}
+ #endif
+ 
+diff --git a/release/src/router/wallguard/wallguardc.c b/release/src/router/wallguard/wallguardc.c
+index eaf317c9256..5c837c0aad6 100644
+--- a/release/src/router/wallguard/wallguardc.c
++++ b/release/src/router/wallguard/wallguardc.c
+@@ -47,7 +47,8 @@
+ 
+ #include "wallguard_db.h"
+ 
+-#define RAW_MAX		4000000u	/* entries read before reading stops (memory bound) */
++#define RAW_MAX		2000000u	/* entries read before reading stops (memory bound) - 2026-11-05 (audit D-7): was 4 M,
++				   ~128 MB transient on a hostile 32 MB list of 4-byte lines; 2 M is twice the table */
+ #define LINE_MAX_	4096
+ 
+ struct ent {
+diff --git a/release/src/router/wlcsm_bindfix/.gitignore b/release/src/router/wlcsm_bindfix/.gitignore
+deleted file mode 100644
+index 291f2843fd4..00000000000
+--- a/release/src/router/wlcsm_bindfix/.gitignore
++++ /dev/null
+@@ -1,3 +0,0 @@
+-*.o
+-*.so
+-.*.depend
+diff --git a/release/src/router/wlcsm_bindfix/Makefile b/release/src/router/wlcsm_bindfix/Makefile
+deleted file mode 100644
+index 278cc31d94b..00000000000
+--- a/release/src/router/wlcsm_bindfix/Makefile
++++ /dev/null
+@@ -1,43 +0,0 @@
+-# SPDX-License-Identifier: GPL-2.0-only
+-# Copyright (C) 2026 the Reaper project maintainer
+-# Part of the Reaper hardened Asuswrt-Merlin build. See LICENSE / LICENSE.reaper.
+-#
+-# wlcsm_bindfix.so - LD_PRELOAD workaround for the Broadcom WLCSM netlink
+-# port-allocation defect in the closed libnvram.so. See wlcsm_bindfix.c for the
+-# full disassembly-backed analysis.
+-#
+-# Deliberately minimal link: ONLY -ldl. This object is preloaded into every
+-# process on the box, so it must not drag in libnvram/libshared - both of which
+-# call into the very code path being wrapped.
+-include ../common.mak
+-
+-CFLAGS  += -Os -Wall -Wextra $(EXTRACFLAGS)
+-# Same exploit-mitigation set the other Reaper packages use (the BCM base ships
+-# no canaries and only partial RELRO). -fPIC not -fPIE: this is a shared object.
+-CFLAGS  += -D_FORTIFY_SOURCE=2 -fstack-protector-strong -Wformat -Wformat-security -fPIC
+-LDFLAGS += -shared -Wl,-z,relro,-z,now -ldl
+-
+-OBJS = wlcsm_bindfix.o
+-LIB  = wlcsm_bindfix.so
+-
+-all: $(LIB)
+-
+-$(LIB): $(OBJS)
+-	@echo " [wlcsm_bindfix] CC -o $@"
+-	$(CC) $(CFLAGS) -o $@ $(OBJS) $(LDFLAGS)
+-	$(SIZECHECK)
+-	$(CPTMP)
+-
+-clean:
+-	rm -f $(LIB) *.o .*.depend
+-
+-install: all
+-	@echo " [wlcsm_bindfix] Installing..."
+-	install -D $(LIB) $(INSTALLDIR)/lib/$(LIB)
+-	$(STRIP) $(INSTALLDIR)/lib/$(LIB)
+-
+-%.o: %.c
+-	@echo " [wlcsm_bindfix] CC $@"
+-	@$(CC) $(CFLAGS) -c $<
+-
+-.PHONY: all clean install
+diff --git a/release/src/router/wlcsm_bindfix/wlcsm_bindfix.c b/release/src/router/wlcsm_bindfix/wlcsm_bindfix.c
+deleted file mode 100644
+index 92e0a46199e..00000000000
+--- a/release/src/router/wlcsm_bindfix/wlcsm_bindfix.c
++++ /dev/null
+@@ -1,197 +0,0 @@
+-/* SPDX-License-Identifier: GPL-2.0-only
+- * wlcsm_bindfix.c - LD_PRELOAD workaround for the Broadcom WLCSM netlink
+- *                  port-allocation defect in libnvram.so.
+- *
+- * THE BUG (BCM4916 / libnvram.so, disassembly-confirmed)
+- *   _wlcsm_init() stores getpid() into wlcsm_agent+0x18 and then passes the
+- *   ADDRESS OF THAT SAME FIELD to the internal socket allocator (+0x3930) as the
+- *   port-candidate out-parameter:
+- *       3bbc:  str r0, [r1, #24]!      ; saved_pid = getpid(); r1 = &saved_pid
+- *       3bc4:  bl  3930                ; alloc(&agent, &saved_pid, 0)
+- *   The allocator bind()s NETLINK protocol 31 with nl_pid = *candidate and, on
+- *   EADDRINUSE, walks up to 10 candidates - writing each one BACK through that
+- *   pointer:
+- *       39b8:  add r6, r6, #1
+- *       39bc:  str r6, [r5]            ; <-- mutates the caller's saved_pid
+- *   So after any collision, saved_pid != getpid(). The next entry to
+- *   _wlcsm_init() tests exactly that:
+- *       3c30:  cmp r4, r0              ; saved_pid vs getpid()
+- *       3c34:  bne 3ba8                ; "the PID changed" -> re-init
+- *   and the re-init path never close()s the previous fd. Each pass leaks one
+- *   netlink socket and drifts the candidate further, until all ten are burned
+- *   and _wlcsm_init() fails permanently. wlcsm_nvram_getall() then retries the
+- *   failing send forever (5b2c: bne 5b0c) WHILE HOLDING g_WLCSM_NVRAM_MUTEX, so
+- *   that process's nvram is wedged for good. Router stays up; the process does
+- *   not. Trigger in the field: PID reuse landing on a netlink port a long-lived
+- *   process (e.g. debug_monitor) already owns.
+- *
+- * THE FIX HERE
+- *   The whole chain is gated on the FIRST bind failing. If it succeeds, the
+- *   allocator never increments, saved_pid stays == getpid(), the false
+- *   "PID changed" branch never fires, nothing leaks, nothing spins.
+- *   So: on EADDRINUSE for a netlink socket, retry ONCE with nl_pid = 0, which
+- *   asks the kernel to autobind a free port - what this code should have done.
+- *   The caller's saved_pid is left alone (we copy the sockaddr), so its own
+- *   consistency check keeps passing.
+- *
+- * SCOPE / SAFETY
+- *   - Only AF_NETLINK, only when the real bind() already failed EADDRINUSE, and
+- *     only when the requested nl_pid was non-zero. Everything else is passed
+- *     straight through, untouched.
+- *   - Restricted to NETLINK protocol 31 when SO_PROTOCOL is readable, so other
+- *     netlink users (rtnetlink &c.) are never touched.
+- *   - Kill switch: WLCSM_BINDFIX=0 keeps the logging but stops the rewrite, so
+- *     you can A/B on a live box without pulling the preload.
+- *   - Touches no ASUS/Broadcom binary. This is our own code loaded beside it.
+- *
+- * RESIDUAL RISK (bench this before trusting it)
+- *   After autobind the socket's real port != getpid(). Nothing in the kernel
+- *   cares. The open question is whether the wlcsm daemon ever addresses this
+- *   process by a port it ASSUMES equals the PID. wlcsm_register_process()
+- *   exists, which suggests the daemon is told rather than assuming - but that is
+- *   inference. Watch for wlcsm unicast replies going missing after a rewrite
+- *   fires (the log line below tells you exactly when that happened).
+- *
+- * BUILD (target is 32-bit ARM EABI - libnvram.so is ELF32 ARM):
+- *   arm-buildroot-linux-gnueabi-gcc -shared -fPIC -O2 -Wall -Wextra \
+- *       -o wlcsm_bindfix.so wlcsm_bindfix.c -ldl
+- *
+- * USE
+- *   LD_PRELOAD=/jffs/wlcsm_bindfix.so <command>
+- *   ...or export it for a service before it starts. LD_PRELOAD is ignored for
+- *   setuid binaries, and a daemon that does not inherit the env will not pick it
+- *   up - check coverage per process.
+- */
+-
+-#define _GNU_SOURCE
+-#include <dlfcn.h>
+-#include <errno.h>
+-#include <stdlib.h>
+-#include <string.h>
+-#include <sys/socket.h>
+-#include <syslog.h>
+-#include <unistd.h>
+-#include <linux/netlink.h>
+-
+-#ifndef SO_PROTOCOL
+-#define SO_PROTOCOL 38
+-#endif
+-
+-#define WLCSM_NETLINK_PROTO 31
+-
+-static int (*real_bind)(int, const struct sockaddr *, socklen_t);
+-static unsigned long rewrites, passthru;
+-
+-static void resolve(void)
+-{
+-	if (!real_bind)
+-		real_bind = dlsym(RTLD_NEXT, "bind");
+-}
+-
+-/* Rewriting is on unless explicitly disabled. Read every call: cheap, and it
+- * lets you flip behaviour on a running box by restarting just one service. */
+-static int rewrite_enabled(void)
+-{
+-	const char *e = getenv("WLCSM_BINDFIX");
+-	return !(e && e[0] == '0');
+-}
+-
+-/* Which netlink protocol to guard. Defaults to WLCSM's 31; overridable so the
+- * logic can be exercised on a bench kernel (protocol 31 only exists where
+- * wlcsm.ko is loaded), and so scope can be widened in the field without a
+- * rebuild if WLCSM ever moves. */
+-static int target_proto(void)
+-{
+-	const char *e = getenv("WLCSM_BINDFIX_PROTO");
+-	return (e && *e) ? atoi(e) : WLCSM_NETLINK_PROTO;
+-}
+-
+-/* If SO_PROTOCOL is unreadable we proceed anyway - an EADDRINUSE on a netlink
+- * bind is this bug's signature regardless - but we say so in the log so it is
+- * never a silent assumption. */
+-static int is_wlcsm_socket(int fd, int *proto_out)
+-{
+-	int proto = -1;
+-	socklen_t len = sizeof(proto);
+-
+-	if (getsockopt(fd, SOL_SOCKET, SO_PROTOCOL, &proto, &len) != 0) {
+-		*proto_out = -1;
+-		return 1;
+-	}
+-	*proto_out = proto;
+-	return proto == target_proto();
+-}
+-
+-int bind(int sockfd, const struct sockaddr *addr, socklen_t addrlen)
+-{
+-	const struct sockaddr_nl *nl;
+-	struct sockaddr_nl retry;
+-	int rc, saved_errno, proto = -1;
+-
+-	resolve();
+-	if (!real_bind) {              /* cannot happen in practice; fail safe */
+-		errno = ENOSYS;
+-		return -1;
+-	}
+-
+-	rc = real_bind(sockfd, addr, addrlen);
+-	if (rc == 0)
+-		return 0;
+-	saved_errno = errno;
+-
+-	/* Only the exact failure this bug produces. */
+-	if (saved_errno != EADDRINUSE ||
+-	    addr == NULL || addrlen < (socklen_t)sizeof(struct sockaddr_nl) ||
+-	    addr->sa_family != AF_NETLINK) {
+-		errno = saved_errno;
+-		return rc;
+-	}
+-
+-	nl = (const struct sockaddr_nl *)addr;
+-	if (nl->nl_pid == 0) {         /* already autobind - nothing to rescue */
+-		errno = saved_errno;
+-		return rc;
+-	}
+-
+-	if (!is_wlcsm_socket(sockfd, &proto)) {
+-		passthru++;
+-		errno = saved_errno;
+-		return rc;
+-	}
+-
+-	if (!rewrite_enabled()) {
+-		syslog(LOG_DAEMON | LOG_WARNING,
+-		       "wlcsm_bindfix: EADDRINUSE nl_pid=%u proto=%d pid=%d "
+-		       "(rewrite DISABLED by WLCSM_BINDFIX=0)",
+-		       (unsigned)nl->nl_pid, proto, (int)getpid());
+-		errno = saved_errno;
+-		return rc;
+-	}
+-
+-	/* Copy - never mutate the caller's sockaddr. libnvram passes a pointer
+-	 * into its own agent struct, and that storage doubles as its saved PID. */
+-	memset(&retry, 0, sizeof(retry));
+-	retry.nl_family = AF_NETLINK;
+-	retry.nl_groups = nl->nl_groups;
+-	retry.nl_pid    = 0;                   /* kernel picks a free port */
+-
+-	rc = real_bind(sockfd, (const struct sockaddr *)&retry, sizeof(retry));
+-	if (rc == 0) {
+-		rewrites++;
+-		syslog(LOG_DAEMON | LOG_WARNING,
+-		       "wlcsm_bindfix: nl_pid=%u was EADDRINUSE (proto=%d%s), "
+-		       "rebound via kernel autobind - pid=%d, rewrites=%lu. "
+-		       "Broadcom WLCSM would have leaked a socket here.",
+-		       (unsigned)nl->nl_pid, proto,
+-		       proto < 0 ? ", SO_PROTOCOL unreadable" : "",
+-		       (int)getpid(), rewrites);
+-		return 0;
+-	}
+-
+-	syslog(LOG_DAEMON | LOG_ERR,
+-	       "wlcsm_bindfix: autobind retry ALSO failed (%s) for nl_pid=%u "
+-	       "pid=%d - passing the original EADDRINUSE back",
+-	       strerror(errno), (unsigned)nl->nl_pid, (int)getpid());
+-	errno = saved_errno;
+-	return -1;
+-}
+-- 
+2.25.1
+

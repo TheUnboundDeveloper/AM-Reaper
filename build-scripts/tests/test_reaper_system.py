@@ -33,8 +33,8 @@ check("on the kit: rp.css + rp.js, reaper-native meta, no jQuery / httpApi / sta
 # every covered field of the parity file is a hidden input, disabled (changed-fields-only pattern)
 par = json.load(open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "ui_parity", "Advanced_System_Content.json"), encoding="utf-8"))
 covered = [k for k, v in par["fields"].items() if v == "covered"]
-missing = [k for k in covered if '<input type="hidden" name="%s" value="" disabled>' % k not in t]
-check("every covered setting is a disabled hidden input (%d)" % len(covered), not missing, missing)
+missing = [k for k in covered if not re.search(r"(?<![A-Za-z0-9_])%s(?![A-Za-z0-9_])" % re.escape(k), t[t.rfind("<script>"):])]
+check("every covered setting is named in the page script, rp.changed posts it (%d)" % len(covered), not missing, missing)
 check("the form posts to start_apply.htm with its own page name", 'name="current_page" value="Reaper_System.asp"' in t and 'name="next_page" value="Reaper_System.asp"' in t)
 check("only changed settings are posted (rp.post with the diff) and the script is built per change",
       "rp.post(document.form, changed, script, wait, false)" in t and "if (has('ntpd_enable')) S.push('restart_dnsmasq');" in t
@@ -127,7 +127,71 @@ check("rp.js carries rp.md5 and rp.chpass (hexMD5 current, base64 new, http_id, 
 check("rp.esc delegates to reaper_util.js's ReaperEsc and never to window.esc (a page global could point that back at rp.esc)",
       "var f = window.ReaperEsc; return (typeof f === 'function' && f !== rp.esc) ? f(s)" in rpjs and "window.esc(s)" not in rpjs)
 
+# ---------------------------------------------------------------------------------------------------------------------
+# reaper 2026-11-16 (bug review A2 item 1): with Access Restrictions on, the firewall drops EVERY IPv6 client from the
+# web interface and SSH (stock behaviour, and the safe one: the list takes IPv4 only, and an open IPv6 side would let
+# any client walk round it). The page now says so, and asks before it cuts off a page that is open over IPv6.
+packs25 = sorted(f for f in os.listdir(www) if f.endswith(".dict") and f != "temp.dict")
+pv = {}
+for p in packs25:
+    d = open(os.path.join(www, p), encoding="utf-8").read()
+    for k in ("RADM_23", "RADM_81"):
+        m = re.findall(r"^%s=(.*)$" % k, d, re.M)
+        if len(m) == 1 and m[0].strip() and not any(c in m[0] for c in ('"', "`", "${", "<", ">")): pv[(p, k)] = m[0]
+e23, e81 = pv.get(("EN.dict", "RADM_23"), ""), pv.get(("EN.dict", "RADM_81"), "")
+check("EN RADM_23 says that IPv6 access is blocked while the restriction is on (and keeps the lock-out warning)",
+      e23.endswith(" IPv6 access to the web interface and SSH is blocked while this is on.") and "or you lock yourself out." in e23, e23)
+check("EN RADM_81 is the confirm; both EN strings plain ASCII",
+      e81 == "You are connected over IPv6 and will lose this page when this is applied. Continue?" and all(31 < ord(c) < 127 for c in e23 + e81), e81)
+check("RADM_23 and RADM_81 once in all %d packs, every pack names IPv6 in both" % len(packs25),
+      len(packs25) == 25 and len(pv) == 50 and all("IPv6" in v for v in pv.values()),
+      sorted(set((p, k) for p in packs25 for k in ("RADM_23", "RADM_81")) - set(k for k, v in pv.items() if "IPv6" in v))[:6])
+check("RADM_81 has no ASCII apostrophe and is translated in every other pack",
+      not [p for p in packs25 if "'" in pv.get((p, "RADM_81"), "") or (p != "EN.dict" and pv.get((p, "RADM_81")) == e81)])
+ACLQ = ("  if (ROUTER && c.enable_acc_restriction === '1' && (c.enable_acc_restriction !== NV.enable_acc_restriction || c.restrict_rulelist !== NV.restrict_rulelist)\n"
+        "      && String(location.hostname).indexOf(':') >= 0 && !confirm(`<#RADM_81#>`)) return NOPOST;\n")
+v0 = t.find("function validate(c){\n"); v1 = t.find("\n}\n", v0)
+VAL = t[v0:v1 + 3] if v0 > 0 else ""
+check("validate(): a page open over IPv6 (':' in location.hostname) asks RADM_81 before the restriction is turned on or its list changes",
+      ACLQ in VAL and VAL.rstrip().endswith(ACLQ.rstrip() + "\n  return '';\n}"), VAL[-500:])
+check("Cancel posts nothing and shows no error",
+      "var NOPOST = '\\x01';" in t and "  var c = collect(), err = validate(c), changed, n, k;\n  if (err){ if (err !== NOPOST) msg(err); return; }\n" in t
+      and t.count("NOPOST") == 3)
+fwc = rd(os.path.join(SRC, "rc", "firewall.c"))
+f0 = fwc.find("void write_access_restriction(FILE *fp_ipv4, FILE *fp_ipv6)\n{"); f1 = fwc.find("\n}\n", f0)
+FWA = fwc[f0:f1] if f0 > 0 else ""
+check("firewall.c unchanged in substance: ONE count shared by both families gates the IPv6 DROP (an IPv4-only list still closes IPv6)",
+      FWA.count("int  cnt = 0;") == 1 and FWA.count("cnt++;") == 1 and len(re.findall(r"\bint\s+cnt\w*\b", FWA)) == 1
+      and 'if(cnt && fp_ipv6) {\n\t\t\tfprintf(fp_ipv6, "-A ACCESS_RESTRICTION -j DROP\\n");' in FWA
+      and 'if(cnt && fp_ipv4) {\n\t\t\tfprintf(fp_ipv4, "-A ACCESS_RESTRICTION -j DROP\\n");' in FWA
+      and FWA.index("cnt++;") > FWA.index("if (strchr(srcip, ':')) {") and "reaper 2026-11-16" not in FWA)
+
 node = shutil.which("node")
+if node and ACLQ in VAL:
+    # the confirm statement itself, run with a stand-in page state
+    stmt = ACLQ.replace("`<#RADM_81#>`", "'RADM_81'")
+    hj = ("var NOPOST = '\\x01', ROUTER = true, NV, location, ASKED, ANSWER;\nfunction confirm(m){ ASKED.push(m); return ANSWER; }\n"
+          "function v(c){\n" + stmt + "  return '';\n}\n"
+          "function run(host, nvOn, nvList, cOn, cList, answer, router){ ASKED = []; ANSWER = answer; ROUTER = router !== false; location = {hostname: host};\n"
+          "  NV = {enable_acc_restriction: nvOn, restrict_rulelist: nvList};\n"
+          "  var r = v({enable_acc_restriction: cOn, restrict_rulelist: cList}); return [r === NOPOST ? 'stop' : r === '' ? 'go' : '?', ASKED.length]; }\n"
+          "var L1 = '<1>192.0.2.10>3', L2 = '<1>192.0.2.10>3<1>192.0.2.11>1';\n"
+          "console.log(JSON.stringify({on_v6_cancel: run('[2001:db8::1]', '0', L1, '1', L1, false), on_v6_ok: run('[2001:db8::1]', '0', L1, '1', L1, true),\n"
+          "  bare_v6: run('2001:db8::1', '', '', '1', L1, false), list_v6: run('[2001:db8::1]', '1', L1, '1', L2, false), same_v6: run('[2001:db8::1]', '1', L1, '1', L1, false),\n"
+          "  off_v6: run('[2001:db8::1]', '1', L1, '0', L1, false), on_v4: run('192.0.2.1', '0', L1, '1', L1, false), on_name: run('router.example', '0', L1, '1', L1, false),\n"
+          "  apmode: run('[2001:db8::1]', '0', L1, '1', L1, false, false)}));\n")
+    with tempfile.NamedTemporaryFile("w", suffix=".js", delete=False, encoding="utf-8") as f:
+        f.write(hj); jp = f.name
+    r = subprocess.run([node, jp], capture_output=True, text=True); os.unlink(jp)
+    try: o = json.loads(r.stdout.strip().splitlines()[-1])
+    except Exception: o = {}
+    check("node: over IPv6, turning it on asks once - Cancel stops (nothing posted), OK goes on",
+          o.get("on_v6_cancel") == ["stop", 1] and o.get("on_v6_ok") == ["go", 1] and o.get("bare_v6") == ["stop", 1], (r.stderr[-300:], o))
+    check("node: over IPv6, a changed list while on asks; an unchanged one, or turning it off, does not",
+          o.get("list_v6") == ["stop", 1] and o.get("same_v6") == ["go", 0] and o.get("off_v6") == ["go", 0], o)
+    check("node: over IPv4 or a host name nothing is asked; outside router mode nothing is asked",
+          o.get("on_v4") == ["go", 0] and o.get("on_name") == ["go", 0] and o.get("apmode") == ["go", 0], o)
+
 if node:
     s = re.findall(r"<script>(.*?)</script>", t, re.S)[-1]
     s = re.sub(r"<%.*?%>", "0", re.sub(r"<%\s*nvram_get_js\([^%]*%>", '""', s)); s = re.sub(r"<#[A-Za-z0-9_-]+#>", "X", s)

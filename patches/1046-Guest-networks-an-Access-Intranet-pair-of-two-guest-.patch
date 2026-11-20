@@ -1,0 +1,514 @@
+From 2721f7b82d16aba72dc293107a1f1ca85d3dbbf1 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Mon, 16 Nov 2026 16:23:23 -0500
+Subject: [PATCH] Guest networks: an Access Intranet pair of two guest networks
+ joins only those two (102.8 line)
+
+- A network named on either side of ANY Access Intranet pair was treated as allowed onto the main
+  network: it reached the router's pages, the main network's names and mDNS. Only a pair with the
+  main network means that now.
+- Two guest networks paired with each other forward to each other, both ways, IPv4 and IPv6; the
+  router and the main network stay closed to both. A portal network gets main-network access only
+  from a pair with the main network.
+- Rule Status judges such a pair, and the Network page says what a pair does.
+- reaper_fwsim.c also carries the walker's side of the OpenVPN Killswitch change of this rung.
+
+Co-Authored-By: Claude Fable 5.2 <noreply@anthropic.com>
+---
+ release/src/router/rc/reaper_guest.c          | 200 ++++++++++++++++--
+ .../src/router/reaper_fwsim/reaper_fwsim.c    | 101 ++++++++-
+ .../router/www/sysdep/FUNCTION/SDN/SDN/sdn.js |   5 +
+ 3 files changed, 283 insertions(+), 23 deletions(-)
+
+diff --git a/release/src/router/rc/reaper_guest.c b/release/src/router/rc/reaper_guest.c
+index 4f13c97e14..e28ab9908f 100644
+--- a/release/src/router/rc/reaper_guest.c
++++ b/release/src/router/rc/reaper_guest.c
+@@ -1,8 +1,9 @@
+ /*
+  * reaper_guest.c - guest isolation (owner hard rule, 2026-11-12).
+  *
+- * A guest - every device on a Guest Portal network, and on any other guest network whose "Access Intranet" is off
+- * (no pair in sdn_access_rl) - must never see or reach non-guest devices or router features, on ANY path: through its
++ * A guest - every device on a Guest Portal network, and on any other guest network whose "Access Intranet" does not
++ * name the Main Network (reaper 2026-11-16: a pair with another guest network links only those two - "guest pairs"
++ * below) - must never see or reach non-guest devices or router features, on ANY path: through its
+  * bound VPN client, in WAN fallback while that tunnel is down, kill switch on or off. Stock left it open: each guest
+  * network reached every router service on any router address except lan_ipaddr (firewall_sdn.c SDN_FI); signed-in
+  * portal guests were accepted to anywhere, the main LAN included (firewall.c `-I FORWARD -i tun22 NEW ACCEPT`, which
+@@ -29,8 +30,11 @@
+  *                   answer it - never open a connection to it. Not into a portal, not with the kill switch on
+  *   portal bridge   chilli reads it raw: nothing for the kernel to route there - INPUT neighbour discovery only,
+  *                   FORWARD nothing; a portal's IPv6 gets nothing at all
++ *   guest pairs     reaper 2026-11-16: an Access Intranet pair between two guest networks = forwarding between those
++ *                   two only, as the stock pair rule grants it; both stay closed to the router and to the main LAN.
++ *                   Never for a portal, never with a network that is itself paired with the Main Network
+  * Hooked by hook.sh (rc/reaper_hook.c) right after Warden; re-applied at every firewall build's tail and after every
+- * guest-network change. The main LAN (br0) and networks with intranet access are never touched.
++ * guest-network change. The main LAN (br0) and networks paired with the Main Network are never touched.
+  */
+ #include <stdio.h>
+ #include <stdlib.h>
+@@ -50,6 +54,7 @@
+ #define RG_PR_MAX	24	/* 2026-11-15: policy-routing exits of one network */
+ #define RG_PR_EXACT	(RG_PR_MAX - 10)	/* past this many, one whole-client exit each (10 clients at most) */
+ #define RG_PBR_MASK	"0xf0000"	/* rc/reaper_pbr.c PPBR_MASK: codes 1-5 OVPN1-5, 6-10 WGC1-5 */
++#define RG_PEER_MAX	16	/* reaper 2026-11-16: guest networks one network can be paired with */
+ struct rg_pr {
+ 	char ifname[IFNAMSIZ];	/* the VPN client's interface (tun1N, wgcN) */
+ 	char src[20];		/* "a.b.c.d[/n]" as the rule names it, "" = any */
+@@ -70,26 +75,108 @@ struct rg_net {
+ 	int nsrv;
+ 	struct rg_pr pr[RG_PR_MAX];	/* 2026-11-15: IPv4 exits VPN Director / redirect-all route this network to */
+ 	int npr;
++	char peer[RG_PEER_MAX][IFNAMSIZ];	/* reaper 2026-11-16: the guest networks it is paired with (rg_peers) */
++	int npeer;
+ };
+ 
+-/* sdn_access_rl is "<access_sdn_idx>sdn_idx" pairs (sdn.js parse_StrToJSON_sdn_access_rl_list): intranet access is
+- * on for a network named on either side of any pair */
+-static int rg_access_on(const char *rl, int idx)
++/* REAPER-GUEST-PAIR-BEGIN (also compiled on the host by test_mdns_reflector.py) */
++/* reaper 2026-11-16 (bug review A1, owner-approved): what an Access Intranet pair means to this layer.
++ * sdn_access_rl is "<a>b" pairs of sdn_idx (sdn.js parse_StrToJSON_sdn_access_rl_list). A pair has no direction, and
++ * the stock firewall turns it into forwarding, both ways, between exactly those two networks (rc/firewall_sdn.c
++ * handle_SDN_internal_access); index 0 is the Main Network. The test used here before read "named in ANY pair" as
++ * "may reach the main network": two guest networks paired with each other both dropped out of guest isolation
++ * (router services, main-LAN names, mDNS and the VPN-down protection all open again), and a Guest Portal named in
++ * any pair let its guests open connections to the main LAN although Main Network was never ticked. Now:
++ *   rg_main_access  true only when the OTHER end of one of the network's pairs is the main network - sdn_idx 0, or
++ *                   an enabled network that sits on the LAN bridge
++ *   rg_peers        the other ends that are isolated guest networks themselves: the two may forward to each other
++ *                   (rg_iface) and nothing else changes for either
++ * A pair end that names no enabled network (deleted, switched off) is ignored, as the stock firewall ignores it. */
++struct rg_ref {
++	int idx;		/* sdn_idx */
++	char ifname[IFNAMSIZ];	/* the interface the FORWARD chain sees: tun22 / tun23 for a portal, else the bridge */
++	char br[IFNAMSIZ];	/* the bridge */
++	int portal;		/* a Guest Portal network */
++};
++
++/* the k-th well-formed pair of the list, k from 0; 0 when there is no such pair */
++static int rg_pair(const char *rl, int k, int *a, int *b)
+ {
+ 	const char *p = rl;
+-	int a, b;
+ 
+ 	while (p && *p) {
+ 		if (*p == '<')
+ 			p++;
+-		a = b = -1;
+-		if (sscanf(p, "%d>%d", &a, &b) == 2 && (a == idx || b == idx))
++		*a = *b = -1;
++		if (sscanf(p, "%d>%d", a, b) == 2 && k-- == 0)
+ 			return 1;
+ 		p = strchr(p, '<');
+ 	}
+ 	return 0;
+ }
+ 
++static const struct rg_ref *rg_ref_of(const struct rg_ref *refs, int n, int idx)
++{
++	int i;
++
++	for (i = 0; i < n; i++)
++		if (refs[i].idx == idx)
++			return &refs[i];
++	return NULL;
++}
++
++/* is this pair end the main network: index 0, or an enabled network on the LAN bridge */
++static int rg_is_main(int idx, const struct rg_ref *refs, int n, const char *lanif)
++{
++	const struct rg_ref *r;
++
++	if (idx == 0)
++		return 1;
++	r = idx > 0 ? rg_ref_of(refs, n, idx) : NULL;
++	return r && !strcmp(r->br, (lanif && *lanif) ? lanif : "br0");
++}
++
++/* has network idx main-network access: one of its pairs has the main network at the other end */
++static int rg_main_access(const char *rl, int idx, const struct rg_ref *refs, int n, const char *lanif)
++{
++	int k, a, b;
++
++	for (k = 0; rg_pair(rl, k, &a, &b); k++)
++		if (a != b && ((a == idx && rg_is_main(b, refs, n, lanif)) || (b == idx && rg_is_main(a, refs, n, lanif))))
++			return 1;
++	return 0;
++}
++
++/* the interfaces of the guest networks paired with network idx, into out[0..max-1]; returns how many.
++ * A peer is enabled, not the main network, not a portal, and has no main-network access itself: a network with
++ * main-network access holds the admin's own devices, which a guest must never reach. A portal has no peers (owner
++ * rule 2026-11-13: a portal never reaches another guest network), and neither has a network outside this layer. */
++static int rg_peers(const char *rl, int idx, const struct rg_ref *refs, int n, const char *lanif,
++		    char out[][IFNAMSIZ], int max)
++{
++	const struct rg_ref *x = idx > 0 ? rg_ref_of(refs, n, idx) : NULL, *p;
++	int k, a, b, o, i, np = 0;
++
++	if (!x || x->portal || rg_is_main(idx, refs, n, lanif) || rg_main_access(rl, idx, refs, n, lanif))
++		return 0;
++	for (k = 0; rg_pair(rl, k, &a, &b); k++) {
++		if (a == b || (a != idx && b != idx))
++			continue;
++		o = (a == idx) ? b : a;
++		p = o > 0 ? rg_ref_of(refs, n, o) : NULL;
++		if (!p || p->portal || !p->ifname[0] || rg_is_main(o, refs, n, lanif) || rg_main_access(rl, o, refs, n, lanif))
++			continue;
++		if (!strcmp(p->ifname, x->ifname))
++			continue;	/* one interface: its own traffic already passes */
++		for (i = 0; i < np && strcmp(out[i], p->ifname); i++)
++			;
++		if (i == np && np < max)
++			snprintf(out[np++], IFNAMSIZ, "%s", p->ifname);
++	}
++	return np;
++}
++/* REAPER-GUEST-PAIR-END */
++
+ /* Merlin's vpnc_idx: 1..5 WireGuard client N (wgcN), 6..10 OpenVPN client idx-5 (tun1N) - shared/mtlan_utils.c
+  * get_vpnx_by_vpnc_idx; the static mapping, not vpncN_ifname, which exists only while the tunnel is up */
+ static void rg_vpnif(int vpnc_idx, char *out, size_t n)
+@@ -289,6 +376,16 @@ static void rg_iface(FILE *f, const struct rg_net *g, const char *X, int v6, int
+ 		 * the router itself (REAPER_GUI above is unchanged); nothing opens from the main LAN into the portal */
+ 		if (!v6 && g->portal && g->lan_ok && g->lanif[0])
+ 			fprintf(f, "%s -A REAPER_GUF -i %s -o %s -j RETURN\n", T, X, g->lanif);
++		/* reaper 2026-11-16 (bug review A1, owner): an Access Intranet pair between two guest networks. The stock pair
++		 * rule forwards between exactly those two; before this, a pair took both networks out of this layer altogether.
++		 * Now both stay in it - closed to the router (REAPER_GUI above) and to the main LAN - and only the way to the
++		 * paired network is left open. RETURN, never ACCEPT: the stock pair rule, Gatekeeper and the firewall still
++		 * decide. Kept with the kill switch on: the pair is not a way out to the Internet. The peer's name is the
++		 * bridge the FORWARD chain sees (a portal's tunnel interface never gets here: a portal has no peers and is
++		 * nobody's peer - rg_peers). */
++		if (!g->portal)
++			for (k = 0; k < g->npeer && k < RG_PEER_MAX; k++)
++				fprintf(f, "%s -A REAPER_GUF -i %s -o %s -j RETURN\n", T, X, g->peer[k]);
+ 		/* 2026-11-14 (field report, v3.7.7): WireGuard server clients lost a Guest Network Pro VLAN they could reach on
+ 		 * v3.7.6. A client of the router's own VPN server may open a connection into this network (below) and the
+ 		 * network may ANSWER it - replies only, a guest still cannot open a connection to a VPN client. */
+@@ -314,6 +411,10 @@ static void rg_iface(FILE *f, const struct rg_net *g, const char *X, int v6, int
+ 				for (k = 0; k < g->nsrv && k < RG_SRV_MAX; k++)
+ 					fprintf(f, "%s -A REAPER_GUF -o %s -i %s -j RETURN\n", T, X, g->srvif[k]);
+ 		}
++		/* reaper 2026-11-16: and new connections in from a paired guest network - the other half of the pair */
++		if (!g->portal)
++			for (k = 0; k < g->npeer && k < RG_PEER_MAX; k++)
++				fprintf(f, "%s -A REAPER_GUF -o %s -i %s -j RETURN\n", T, X, g->peer[k]);
+ 	}
+ 	fprintf(f, "%s -A REAPER_GUF -o %s -j DROP\n", T, X);
+ }
+@@ -356,6 +457,12 @@ static void rg_write(FILE *f, const struct rg_net *g, int n, char wan4[][IFNAMSI
+ 		for (k = 0; !g[i].portal && !(g[i].killsw && g[i].vpnif[0]) && k < g[i].npr && k < RG_PR_MAX; k++)
+ 			fprintf(f, "#   VPN Director / redirect-all routes it to %s (from %s to %s)\n", g[i].pr[k].ifname,
+ 				g[i].pr[k].src[0] ? g[i].pr[k].src : "any", g[i].pr[k].dst[0] ? g[i].pr[k].dst : "any");
++		if (!g[i].portal && g[i].npeer > 0) {	/* reaper 2026-11-16: the guest networks it is paired with */
++			fputs("#   paired with", f);
++			for (k = 0; k < g[i].npeer && k < RG_PEER_MAX; k++)
++				fprintf(f, " %s", g[i].peer[k]);
++			fputs(" (Access Intranet): devices of these networks reach each other; the router and the main network stay closed\n", f);
++		}
+ 		if (g[i].portal) {	/* 2026-11-13: to the address of the tunnel it arrived on = the guest resolver */
+ 			fprintf(f, "R iptables -t nat -A REAPER_GUN -i %s -p udp --dport 53 -j REDIRECT --to-ports 53\n", g[i].ifname);
+ 			fprintf(f, "R iptables -t nat -A REAPER_GUN -i %s -p tcp --dport 53 -j REDIRECT --to-ports 53\n", g[i].ifname);
+@@ -377,11 +484,52 @@ static void rg_write(FILE *f, const struct rg_net *g, int n, char wan4[][IFNAMSI
+ }
+ /* REAPER-GUEST-PURE-END */
+ 
++/* reaper 2026-11-16: the enabled networks, for the pair tests above (rg_main_access, rg_peers). One table for the
++ * firewall, the resolver's hosts and mDNS, so the three cannot disagree about what a pair means. */
++static int rg_refs_load(struct rg_ref *refs, int max)
++{
++	MTLAN_T *pmtl = (MTLAN_T *)INIT_MTLAN(sizeof(MTLAN_T));
++	CP_TYPE_RL cpt;
++	char lan[IFNAMSIZ];
++	size_t sz = 0, i;
++	int n = 0;
++
++	if (!pmtl)
++		return 0;
++	strlcpy(lan, nvram_safe_get("lan_ifname"), sizeof(lan));
++	if (!lan[0])
++		strlcpy(lan, "br0", sizeof(lan));
++	if (get_mtlan(pmtl, &sz)) {
++		for (i = 0; i < sz && n < max; i++) {
++			const MTLAN_T *m = &pmtl[i];
++
++			if (m->enable != 1)
++				continue;
++			memset(&refs[n], 0, sizeof(refs[n]));
++			refs[n].idx = m->sdn_t.sdn_idx;
++			/* no bridge of its own: it rides the main LAN */
++			strlcpy(refs[n].br, m->nw_t.br_ifname[0] ? m->nw_t.br_ifname : lan, sizeof(refs[n].br));
++			strlcpy(refs[n].ifname, m->nw_t.ifname[0] ? m->nw_t.ifname : refs[n].br, sizeof(refs[n].ifname));
++			if (m->sdn_t.cp_idx > 0) {
++				memset(&cpt, 0, sizeof(cpt));
++				if (get_cp_type_byidx(m->sdn_t.cp_idx, &cpt))
++					refs[n].portal = (cpt.cp_type == 1 || cpt.cp_type == 2 || cpt.cp_type == 4);
++			}
++			n++;
++		}
++	}
++	FREE_MTLAN((void *)pmtl);
++	return n;
++}
++
+ void reaper_guest_gen(void)
+ {
+ 	MTLAN_T *pmtl = NULL;
+ 	CP_TYPE_RL cpt;
+ 	struct rg_net g[MTLAN_MAXINUM];
++	struct rg_ref refs[MTLAN_MAXINUM];	/* reaper 2026-11-16: the enabled networks, for the pair tests */
++	char lanif[IFNAMSIZ] = "";
++	int nref = 0;
+ 	char wan4[WAN_UNIT_MAX][IFNAMSIZ];
+ 	char wan6[IFNAMSIZ] = "";
+ 	const char *acc, *w;
+@@ -392,6 +540,8 @@ void reaper_guest_gen(void)
+ 	memset(g, 0, sizeof(g));
+ 	if (is_routing_enabled() && (pmtl = (MTLAN_T *)INIT_MTLAN(sizeof(MTLAN_T))) != NULL) {
+ 		acc = nvram_safe_get("sdn_access_rl");
++		strlcpy(lanif, nvram_safe_get("lan_ifname"), sizeof(lanif));
++		nref = rg_refs_load(refs, MTLAN_MAXINUM);
+ 		if (get_mtlan(pmtl, &sz)) {
+ 			for (i = 0; i < sz && n < MTLAN_MAXINUM; i++) {
+ 				const MTLAN_T *m = &pmtl[i];
+@@ -406,8 +556,11 @@ void reaper_guest_gen(void)
+ 					if (get_cp_type_byidx(m->sdn_t.cp_idx, &cpt))
+ 						portal = (cpt.cp_type == 1) ? 2 : ((cpt.cp_type == 2 || cpt.cp_type == 4) ? 1 : 0);
+ 				}
+-				if (!portal && rg_access_on(acc, m->sdn_t.sdn_idx))
+-					continue;	/* the admin gave this network intranet access */
++				/* reaper 2026-11-16 (bug review A1): only a pair with the MAIN network takes a network out of this
++				 * layer. The test used before counted any pair, so two guest networks paired with each other both
++				 * lost their isolation. */
++				if (!portal && rg_main_access(acc, m->sdn_t.sdn_idx, refs, nref, lanif))
++					continue;	/* the admin gave this network access to the main network */
+ 				g[n].sdn_idx = m->sdn_t.sdn_idx;
+ 				strlcpy(g[n].ifname, m->nw_t.ifname[0] ? m->nw_t.ifname : m->nw_t.br_ifname, sizeof(g[n].ifname));
+ 				strlcpy(g[n].brname, m->nw_t.br_ifname, sizeof(g[n].brname));
+@@ -416,10 +569,14 @@ void reaper_guest_gen(void)
+ 				rg_vpnif(m->sdn_t.vpnc_idx, g[n].vpnif, sizeof(g[n].vpnif));
+ 				g[n].portal = portal;
+ 				g[n].killsw = m->sdn_t.killsw_sw ? 1 : 0;
+-				if (portal && rg_access_on(acc, m->sdn_t.sdn_idx)) {	/* 2026-11-13 (owner): main LAN only */
++				/* 2026-11-13 (owner): main LAN only. reaper 2026-11-16: and only when Main Network itself is ticked -
++				 * a portal paired with any other network used to open the main LAN to its guests */
++				if (portal && rg_main_access(acc, m->sdn_t.sdn_idx, refs, nref, lanif)) {
+ 					g[n].lan_ok = 1;
+ 					strlcpy(g[n].lanif, nvram_safe_get("lan_ifname"), sizeof(g[n].lanif));
+ 				}
++				/* reaper 2026-11-16: the guest networks this one is paired with (none for a portal) */
++				g[n].npeer = rg_peers(acc, m->sdn_t.sdn_idx, refs, nref, lanif, g[n].peer, RG_PEER_MAX);
+ 				n++;
+ 			}
+ 		}
+@@ -485,18 +642,24 @@ void reaper_guest_gen(void)
+ 		unlink(RG_APPLY ".tmp");
+ }
+ 
+-/* 2026-11-13: is intranet access on for this network (sdn.c: may its resolver answer main-LAN names) */
++/* 2026-11-13: is intranet access on for this network (sdn.c: may its resolver answer main-LAN names, is it offered
++ * the router's encrypted DNS). reaper 2026-11-16 (bug review A1): intranet access = a pair with the MAIN network.
++ * A pair between two guest networks no longer counts, so both keep the main-LAN names hidden. */
+ int reaper_guest_intranet(int sdn_idx)
+ {
+-	return rg_access_on(nvram_safe_get("sdn_access_rl"), sdn_idx);
++	struct rg_ref refs[MTLAN_MAXINUM];
++	int nref = rg_refs_load(refs, MTLAN_MAXINUM);
++
++	return rg_main_access(nvram_safe_get("sdn_access_rl"), sdn_idx, refs, nref, nvram_safe_get("lan_ifname"));
+ }
+ 
+ /* 2026-11-14 (owner): mDNS across networks - which networks avahi serves and which the reflector may join
+  * (rc/services.c generate_mdns_config; avahi's reflect-interfaces is a Reaper patch, avahi-core/server.c).
+- *   deny  every network guest isolation closes (Access Intranet off, or a Guest Portal - its bridge and its chilli
++ *   deny  every network guest isolation closes (no Access Intranet pair with the Main Network - reaper 2026-11-16:
++ *         a pair between two guest networks does not count - or a Guest Portal: its bridge and its chilli
+  *         interface): REAPER_GUI already drops their 5353, and avahi no longer announces the router onto them either
+  *         (review 2026-11-11 Appendix A).
+- *   refl  the bridges the reflector may join: the main LAN and every network with Access Intranet on (its devices are
++ *   refl  the bridges the reflector may join: the main LAN and every network paired with the Main Network (its devices are
+  *         main-network devices on another SSID), minus a bridge that carries any network with Set AP Isolated on (the
+  *         Network page switch: apmN_ap_isolate for the Main Network, apgN_ap_isolate for the others; on the main LAN
+  *         also a radio's wlN_ap_isolate) and never a portal. The reflector never sends a packet back onto the network
+@@ -524,6 +687,8 @@ static void rm_add(char *buf, size_t n, const char *s)
+ void reaper_mdns_ifaces(char *deny, size_t dn, char *refl, size_t rn, char *why, size_t wn)
+ {
+ 	struct { char br[IFNAMSIZ]; const char *out; } b[MTLAN_MAXINUM + 1];
++	struct rg_ref refs[MTLAN_MAXINUM];	/* reaper 2026-11-16: for the main-network pair test (rg_main_access) */
++	int nref;
+ 	MTLAN_T *pmtl = NULL;
+ 	CP_TYPE_RL cpt;
+ 	const char *lan = nvram_safe_get("lan_ifname"), *acc = nvram_safe_get("sdn_access_rl");
+@@ -542,6 +707,7 @@ void reaper_mdns_ifaces(char *deny, size_t dn, char *refl, size_t rn, char *why,
+ 		if (nvram_get_int(key) == 1)
+ 			b[0].out = "AP isolated";
+ 	}
++	nref = rg_refs_load(refs, MTLAN_MAXINUM);	/* reaper 2026-11-16 */
+ 	if ((pmtl = (MTLAN_T *)INIT_MTLAN(sizeof(MTLAN_T))) != NULL) {
+ 		if (get_mtlan(pmtl, &sz)) {
+ 			for (i = 0; i < sz; i++) {
+@@ -565,7 +731,7 @@ void reaper_mdns_ifaces(char *deny, size_t dn, char *refl, size_t rn, char *why,
+ 						portal = (cpt.cp_type == 1 || cpt.cp_type == 2 || cpt.cp_type == 4);
+ 				}
+ 				if (!on_lan && (portal || m->sdn_t.sdn_idx == 0 || m->nw_t.idx == 0 ||
+-						!rg_access_on(acc, m->sdn_t.sdn_idx))) {
++						!rg_main_access(acc, m->sdn_t.sdn_idx, refs, nref, lan))) {
+ 					/* the networks guest isolation closes (reaper_guest_gen): avahi stays off them */
+ 					rm_add(deny, dn, br);
+ 					if (portal && m->nw_t.ifname[0])
+diff --git a/release/src/router/reaper_fwsim/reaper_fwsim.c b/release/src/router/reaper_fwsim/reaper_fwsim.c
+index 9378e44cc3..10a52576df 100644
+--- a/release/src/router/reaper_fwsim/reaper_fwsim.c
++++ b/release/src/router/reaper_fwsim/reaper_fwsim.c
+@@ -1902,6 +1902,71 @@ static int vts_forwards_tcp(int port, char *to, size_t tl)
+ 	return hit;
+ }
+ 
++/* reaper 2026-11-16 (bug review A1): Access Intranet pairs, read per network (G1, G3).
++ * sdn_access_rl is "<a>b" pairs of network indexes; a pair is two-way forwarding between exactly those two networks
++ * and index 0 is the main network. An index resolves to its bridge through the saved lists, the way the firewall
++ * build reads them: sdn_rl "<idx>name>enable>vlan>subnet>...", field 11 = its captive portal, and subnet_rl
++ * "<idx>bridge>...". A network with no VLAN / subnet of its own rides the main LAN. Returns 0 for an index that
++ * names no enabled network - such a pair is ignored, as the firewall build ignores it. */
++static int sdn_bridge(int idx, char *out, size_t ol, int *portal)
++{
++	char rec[512], sub[768], key[16], f[24];
++	out[0] = 0; *portal = 0;
++	if (idx == 0) { snprintf(out, ol, "%s", lan_ifname); return 1; }
++	if (idx < 0) return 0;
++	snprintf(key, sizeof(key), "%d", idx);
++	if (!rec_byname(nv_get("sdn_rl"), key, rec, sizeof(rec))) return 0;
++	if (!rec_field(rec, 2, f, sizeof(f)) || atoi(f) != 1) return 0;
++	if (rec_field(rec, 11, f, sizeof(f)) && atoi(f) > 0) *portal = 1;
++	if (!rec_field(rec, 3, f, sizeof(f)) || atoi(f) <= 0 || !rec_field(rec, 4, f, sizeof(f)) || atoi(f) <= 0) {
++		snprintf(out, ol, "%s", lan_ifname);
++		return 1;
++	}
++	snprintf(key, sizeof(key), "%d", atoi(f));
++	if (!rec_byname(nv_get("subnet_rl"), key, sub, sizeof(sub)) || !rec_field(sub, 1, out, ol) || !out[0]) return 0;
++	return 1;
++}
++
++/* the k-th well-formed pair of sdn_access_rl, k from 0 */
++static int sdn_pair(int k, int *a, int *b)
++{
++	const char *p = nv_get("sdn_access_rl");
++	while (p && *p) {
++		if (*p == '<') p++;
++		*a = *b = -1;
++		if (sscanf(p, "%d>%d", a, b) == 2 && k-- == 0) return 1;
++		p = strchr(p, '<');
++	}
++	return 0;
++}
++
++/* a network on bridge br is paired with the main network */
++static int sdn_main_access(const char *br)
++{
++	char ba[20], bb[20]; int k, a, b, pa, pb;
++	for (k = 0; sdn_pair(k, &a, &b); k++) {
++		if (a == b || !sdn_bridge(a, ba, sizeof(ba), &pa) || !sdn_bridge(b, bb, sizeof(bb), &pb)) continue;
++		if ((!strcmp(ba, br) && !strcmp(bb, lan_ifname)) || (!strcmp(bb, br) && !strcmp(ba, lan_ifname))) return 1;
++	}
++	return 0;
++}
++
++/* the guest bridges paired with bridge br, as rc/reaper_guest.c rg_peers picks them: neither end a captive-portal
++ * network, neither end paired with the main network (such a network holds the admin's own devices). Returns how many. */
++static int sdn_peers(const char *br, char out[][20], int max)
++{
++	char ba[20], bb[20]; const char *o; int k, a, b, pa, pb, i, n = 0;
++	if (!strcmp(br, lan_ifname) || sdn_main_access(br)) return 0;
++	for (k = 0; sdn_pair(k, &a, &b); k++) {
++		if (a == b || !sdn_bridge(a, ba, sizeof(ba), &pa) || !sdn_bridge(b, bb, sizeof(bb), &pb) || pa || pb) continue;
++		if (!strcmp(ba, br)) o = bb; else if (!strcmp(bb, br)) o = ba; else continue;
++		if (!strcmp(o, br) || !strcmp(o, lan_ifname) || sdn_main_access(o)) continue;
++		for (i = 0; i < n && strcmp(out[i], o); i++) { }
++		if (i == n && n < max) snprintf(out[n++], 20, "%.19s", o);
++	}
++	return n;
++}
++
+ static void gen_witnesses(void)
+ {
+ 	char lanhost[48], rtr[48], wanip[48], buf[200], id[16], feat[80], lanmac[20];
+@@ -2476,12 +2541,15 @@ static void gen_witnesses(void)
+ 			k++;
+ 			host_free(&own[i].a, 123, gh, sizeof(gh)); addr_str(&own[i].a, gr, sizeof(gr));
+ 			snprintf(id, sizeof(id), "G1.%d", k); snprintf(feat, sizeof(feat), "Guest network %s: isolated from the main LAN", own[i].ifname);
+-			/* sdn_access_rl links networks BY INDEX and only the router build
+-			 * can resolve an index to a bridge (G3, deferred). While any link
+-			 * exists, isolation is a per-pair question this row cannot answer -
+-			 * a linked pair is an intended configuration, not a broken one. */
+-			if (nv_get("sdn_access_rl")[0])
+-				wit_shape(id, feat, 4, "NOTE networks are linked in SDN access; isolation is per pair and not witnessed here (G3)", "OK");
++			/* reaper 2026-11-16 (bug review A1): sdn_access_rl pairs networks BY INDEX. This row used to stand down
++			 * ("not witnessed") while ANY pair existed. A pair is now read for what it is (sdn_bridge): only a pair
++			 * with the MAIN network lifts this promise, and the row then says so. A pair between two guest networks
++			 * leaves it standing - rc/reaper_guest.c keeps both isolated - and G3 below witnesses the pair itself.
++			 * An input without the network list (a replayed fixture) cannot resolve a pair: the row says that. */
++			if (nv_get("sdn_access_rl")[0] && !nv_get("sdn_rl")[0])
++				wit_shape(id, feat, 4, "NOTE networks are paired in Access Intranet and this input does not carry the network list that resolves a pair; isolation is per pair and not witnessed here", "OK");
++			else if (sdn_main_access(own[i].ifname))
++				wit_shape(id, feat, 4, "NOTE this network has Access Intranet to the main network; it reaches the main LAN by design", "OK");
+ 			else
+ 				wit_pkt(id, feat, 4, own[i].ifname, gh, lanhost, "tcp", "445", "NEW", "DROP", "", lanmac);
+ 			snprintf(id, sizeof(id), "G2.%d", k); snprintf(feat, sizeof(feat), "Guest network %s: reaches the WAN", own[i].ifname);
+@@ -2499,6 +2567,20 @@ static void gen_witnesses(void)
+ 				else
+ 					wit_pkt(id, feat, 4, own[i].ifname, gh, wandst, "tcp", "443", "NEW", "ACCEPT", "", lanmac);
+ 			}
++			/* reaper 2026-11-16 - G3, the pair itself: a host on this network to a host on each guest network it is
++			 * paired with must be ACCEPTed (through the guest layer's RETURN, on to the stock pair rule), while G1
++			 * above still expects the main LAN closed. Skipped while the paired bridge has no address. */
++			{
++				char pb[8][20], ph[48]; int np = sdn_peers(own[i].ifname, pb, 8), q;
++				for (q = 0; q < np; q++) {
++					const struct addr *pa = own_first(pb[q], 4);
++					if (!pa) continue;
++					host_free(pa, 124, ph, sizeof(ph));
++					snprintf(id, sizeof(id), "G3.%d.%d", k % 1000, q + 1);
++					snprintf(feat, sizeof(feat), "Guest network %.15s: reaches its paired network %.15s", own[i].ifname, pb[q]);
++					wit_pkt(id, feat, 4, own[i].ifname, gh, ph, "tcp", "445", "NEW", "ACCEPT", "", lanmac);
++				}
++			}
+ 			snprintf(id, sizeof(id), "G4.%d", k); snprintf(feat, sizeof(feat), "Guest network %s: DNS at its gateway", own[i].ifname);
+ 			wit_pkt(id, feat, 4, own[i].ifname, gh, gr, "udp", "53", "NEW", "RESOLVED", "", lanmac);
+ 		}
+@@ -2628,6 +2710,13 @@ static void gen_witnesses(void)
+ 				if (nv_is(nvk, "1")) {
+ 					const char *eas = nv_get("vpn_clientx_eas"); char u = (char)('0' + unit);
+ 					fc = strchr(eas, u) != NULL;		/* ovpn_is_client_enabled() */
++					if (fc) {	/* reaper 2026-11-16, as ppbr_target(): Redirect all / VPN Director on a TUN client only */
++						char rk[32]; const char *rg;
++						snprintf(rk, sizeof(rk), "vpn_client%d_rgw", unit); rg = nv_get(rk);
++						if (strcmp(rg, "1") && strcmp(rg, "2")) fc = 0;
++						snprintf(rk, sizeof(rk), "vpn_client%d_if", unit);
++						if (!strncmp(nv_get(rk), "tap", 3)) fc = 0;
++					}
+ 				}
+ 			} else if (!strncmp(tgt, "WGC", 3) && tgt[3] >= '1' && tgt[3] <= '5' && !tgt[4]) {
+ 				unit = tgt[3] - '0'; code = 5 + unit; what = "WireGuard client";
+diff --git a/release/src/router/www/sysdep/FUNCTION/SDN/SDN/sdn.js b/release/src/router/www/sysdep/FUNCTION/SDN/SDN/sdn.js
+index 30b14fed9f..922bbfd324 100644
+--- a/release/src/router/www/sysdep/FUNCTION/SDN/SDN/sdn.js
++++ b/release/src/router/www/sysdep/FUNCTION/SDN/SDN/sdn.js
+@@ -8156,6 +8156,11 @@ function Update_Setting_Profile(_obj, _profile_data){
+ 			});
+ 		}
+ 
++		/* reaper 2026-11-16: say what a tick means. Main Network joins this network to the admin's own devices; another
++		   network links just the two, and both stay isolated from the main network and the router (rc/reaper_guest.c) */
++		$("<div>").attr({"id":"access_intranet_note"}).css({"font-size":"12px","opacity":"0.75","margin":"6px 0 8px","line-height":"1.4"})
++			.html(`<#RSDN_2#>`).appendTo($access_intranet_cntr);
++
+ 		function Get_Component_SDN_CheckBox(_data){
+ 			let $cb_item_cntr = $("<div>").addClass("cb_item_container").attr({"sdn_idx":_data.sdn_rl.idx});
+ 			let $cb_item_content_cntr = $("<div>").addClass("cb_item_content_container").unbind("click").click(function(e){
+-- 
+2.25.1
+

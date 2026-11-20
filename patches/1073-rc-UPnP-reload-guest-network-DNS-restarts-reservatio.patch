@@ -1,0 +1,335 @@
+From cc713f7f2248bef3e27bb830946db755ff2d7105 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Wed, 18 Nov 2026 17:05:38 -0500
+Subject: [PATCH] rc: UPnP reload, guest-network DNS restarts, reservation
+ MACs, lease-hook file cap (102.8 line)
+
+- In rc, reloading UPnP runs the stop and start in a forked child under its own lock.
+- The guest-network handlers restart dnsmasq with the restart handler's own calls; the UPnP deny
+  list reads every WireGuard server's keys.
+- A DHCP reservation's MAC must be six hex pairs and is written canonical in every line, before
+  anything is written; a bad row is skipped whole (a per-device DNS tag now matches a lower-case
+  MAC).
+- The DHCP vendor-class file is skipped for events that carry none and is started again past 64
+  KB.
+- The portal web server loads only the modules it uses; the iperf3 client copies are bounded;
+  portal health helpers for the watchdog.
+- On the 102.8 line services.c also bounds the DHCP range copies.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ release/src/router/rc/sdn.c      |  25 +++++
+ release/src/router/rc/services.c | 176 ++++++++++++++++++++++++++-----
+ 2 files changed, 177 insertions(+), 24 deletions(-)
+
+diff --git a/release/src/router/rc/sdn.c b/release/src/router/rc/sdn.c
+index 191b610de2..3fc323bf06 100644
+--- a/release/src/router/rc/sdn.c
++++ b/release/src/router/rc/sdn.c
+@@ -284,6 +284,31 @@ static int _write_dhcp_reservation(FILE *fp, const int dhcpres_idx)
+ 		if (!mac)
+ 			continue;
+ 
++		/* reaper 2026-11-18 (review P6-3-D2) REAPER-SDN-RESMAC: the MAC is checked, and written in its canonical form,
++		 * BEFORE anything is written for the row. The Phase 3 check further down came after the per-device DNS lines
++		 * and the DNS-only host line, which wrote the raw field into dnsmasq.conf (a line break in it starts a
++		 * directive of its own), and used the raw text as the tag while the host line used the canonical one - so a
++		 * MAC typed in lower case never got its DNS option. A row whose MAC is not exactly six hex pairs is skipped
++		 * whole: ether_atoe() alone accepts junk ("zz:zz" reads as 00:00:00:00:00:00, text after a MAC is ignored). */
++		{
++			unsigned char rea[6];
++			static char rmac[18];
++			int rk, rbad = (strlen(mac) != 17);
++
++			for (rk = 0; !rbad && rk < 17; rk++) {
++				char rc = mac[rk];
++
++				if (rk % 3 == 2)
++					rbad = (rc != ':' && rc != '-');
++				else
++					rbad = !((rc >= '0' && rc <= '9') || ((rc | 0x20) >= 'a' && (rc | 0x20) <= 'f'));
++			}
++			if (rbad || !ether_atoe(mac, rea))
++				continue;
++			ether_etoa(rea, rmac);
++			mac = rmac;
++		}
++
+ 		// write dns
+ 		if (dns)
+ 		{
+diff --git a/release/src/router/rc/services.c b/release/src/router/rc/services.c
+index eafc980a9f..5c0258e625 100644
+--- a/release/src/router/rc/services.c
++++ b/release/src/router/rc/services.c
+@@ -1829,9 +1829,10 @@ void start_dnsmasq(void)
+ 				/* DHCP range */
+ 				char dhcp_start[16], dhcp_end[16], lan_netmask[16];
+ 
+-				strcpy(dhcp_start, nvram_safe_get("dhcp_start"));
+-				strcpy(dhcp_end, nvram_safe_get("dhcp_end"));
+-				strcpy(lan_netmask, nvram_safe_get("lan_netmask"));
++				/* reaper 2026-11-18 (B4): bounded, as in 40585 */
++				strlcpy(dhcp_start, nvram_safe_get("dhcp_start"), sizeof(dhcp_start));
++				strlcpy(dhcp_end, nvram_safe_get("dhcp_end"), sizeof(dhcp_end));
++				strlcpy(lan_netmask, nvram_safe_get("lan_netmask"), sizeof(lan_netmask));
+ 
+ 				if (!chk_valid_startend(lan_ipaddr, dhcp_start, dhcp_end, lan_netmask)) {
+ 					dbg("reset DHCP range: %s ~ %s\n", dhcp_start, dhcp_end);
+@@ -2751,6 +2752,38 @@ static int reaper_resv_name_is(const char *mac, const char *name)
+ 	return hit;
+ }
+ 
++/* reaper 2026-11-17 (review C-closed-1) REAPER-NMPVC-CAP. The stock lease hook below (nmp_get_vendorclass, no
++ * source) adds every MAC that gets a lease to /jffs/nmp_vc_json.js and never removes one: the file is parsed on
++ * every lease event and rewritten on flash for each new MAC, with no limit. Any device on the LAN or a guest
++ * network could grow it (a new private address per lease does it without intent). From open code: the hook is
++ * skipped for events that carry nothing for it (a released lease, a DHCPv6 event - no MAC, no vendor class),
++ * and a file past the cap is started again under the hook's own lock; devices still on the network come
++ * back into it at their next renewal. 1 = call the hook. */
++#define REAPER_NMPVC_FILE	"/jffs/nmp_vc_json.js"
++#define REAPER_NMPVC_MAX	(64 * 1024)
++static int reaper_nmpvc_ok(int argc, char **argv)
++{
++	struct stat st;
++
++	if (argc < 3 || !argv[1] || !argv[2])
++		return 0;
++	if (strcmp(argv[1], "add") && strcmp(argv[1], "old"))
++		return 0;
++	if (!isValidMacAddress(argv[2]))
++		return 0;
++	if (lstat(REAPER_NMPVC_FILE, &st) == 0 && (!S_ISREG(st.st_mode) || st.st_size > REAPER_NMPVC_MAX)) {
++		int lock = file_lock("nmpvc");
++
++		if (lstat(REAPER_NMPVC_FILE, &st) == 0 && (!S_ISREG(st.st_mode) || st.st_size > REAPER_NMPVC_MAX)) {
++			logmessage("reaper", "the DHCP vendor-class file reached %ld KB (limit %d KB) - started again",
++				   (long)(st.st_size / 1024), REAPER_NMPVC_MAX / 1024);
++			unlink(REAPER_NMPVC_FILE);
++		}
++		file_unlock(lock);
++	}
++	return 1;
++}
++
+ int dnsmasq_script_main(int argc, char **argv)
+ {
+ 	/* reaper v3.1.1: keep the hostname the client ANNOUNCED (option 12). dnsmasq
+@@ -2787,7 +2820,8 @@ int dnsmasq_script_main(int argc, char **argv)
+ #if defined(RTCONFIG_AMAS)
+ 	amaslib_lease_main(argc, argv);
+ #endif
+-	nmp_get_vendorclass(argc, argv);
++	if (reaper_nmpvc_ok(argc, argv))	/* review 2026-11-17 (C-closed-1) */
++		nmp_get_vendorclass(argc, argv);
+ 	return 0;
+ }
+ 
+@@ -8804,9 +8838,30 @@ void start_upnp(void)
+ 				if (!nvram_match("upnp_protect_svc", "0")) {
+ 					char svc[64], *sp, *ssave = NULL;
+ 
+-					if (nvram_get_int("wgs_enable"))
+-						fprintf(f, "deny %d 0.0.0.0/0 0-65535\n",
+-							nvram_get_int("wgs_port") ? : 51820);
++					/* reaper 2026-11-18 (review P6-3-S3) REAPER-UPNP-WGS: each WireGuard server's OWN keys
++					 * (wgsN_enable / wgsN_port, as start_wgs() and Warden read them). The line read
++					 * wgs_enable / wgs_port - the page's template keys, never the running server's - so no
++					 * deny was ever written for it. */
++					{
++#ifdef WG_SERVER_MAX
++						const int wgs_units = WG_SERVER_MAX;
++#else
++						const int wgs_units = 2;	/* shared/vpn_utils.h WG_SERVER_MAX */
++#endif
++						char wk[32];
++						int wu, wp;
++
++						for (wu = 1; wu <= wgs_units; wu++) {
++							snprintf(wk, sizeof(wk), "wgs%d_enable", wu);
++							if (nvram_get_int(wk) != 1)
++								continue;
++							snprintf(wk, sizeof(wk), "wgs%d_port", wu);
++							wp = nvram_get_int(wk);
++							if (wp < 1 || wp > 65535)
++								wp = 51820;
++							fprintf(f, "deny %d 0.0.0.0/0 0-65535\n", wp);
++						}
++					}
+ 
+ 					/* vpn_serverx_start is the list of RUNNING OpenVPN server units;
+ 					   the canonical reader is foreach_44() (rc/dnsfilter.c:194), i.e.
+@@ -9131,7 +9186,52 @@ void reload_upnp(void)
+ 	if (pidof_upnp() < 0)
+ 		return;
+ 
+-	notify_rc("restart_upnp");
++	/* reaper 2026-11-18 (review P6-3-S1) REAPER-UPNP-RELOAD: start_firewall() runs inside rc's own service handlers,
++	 * and a notify_rc() sent from there is not carried out ("skip the event" - see rfw_sync_dnsmasq in
++	 * rc/reaper_fw.c), so the mappings the rebuild had just flushed were never put back. In rc a child does the
++	 * stop / start: start_firewall() still never waits on start_upnp()'s real-IP wait, and one lock keeps a burst
++	 * of rebuilds in order (the last one wins, as before). Outside rc the request still goes through notify_rc(). */
++	if (getpid() == 1) {
++		pid_t pid = fork();
++
++		if (pid == 0) {
++			sigset_t none;
++			int sig, lk;
++
++			for (sig = 1; sig < _NSIG; sig++)
++				signal(sig, SIG_DFL);
++			sigemptyset(&none);
++			sigprocmask(SIG_SETMASK, &none, NULL);
++			lk = file_lock("reaper_upnp");
++			stop_upnp();
++			start_upnp();
++			file_unlock(lk);
++			_exit(0);
++		}
++		if (pid < 0)
++			logmessage("upnp", "could not restart UPnP after a firewall rebuild (fork failed) - its port mappings return at the next UPnP restart");
++	} else
++		notify_rc("restart_upnp");
++}
++
++/* reaper 2026-11-18 (review P6-3-S2) REAPER-SDN-DNSMASQ: every resolver again after the network set changed. The
++ * restart_sdn / sdn_del handlers asked for it with notify_rc("restart_dnsmasq") - from inside rc's own handler,
++ * where the request is not carried out ("skip the event"), so the rev-server lines stayed as they were and the
++ * signature saved at start (revshare_sig_save, start_dnsmasq) was never refreshed: every later network restart
++ * reported "networks changed" again. Do what the restart_dnsmasq handler does, as rfw_sync_dnsmasq does. */
++static void reaper_sdn_dnsmasq_restart(void)
++{
++	if (getpid() != 1) {
++		notify_rc("restart_dnsmasq");
++		return;
++	}
++#ifdef RTCONFIG_MULTILAN_CFG
++	stop_dnsmasq(ALL_SDN);
++	start_dnsmasq(ALL_SDN);
++#else
++	stop_dnsmasq();
++	start_dnsmasq();
++#endif
+ }
+ 
+ int
+@@ -9811,21 +9911,22 @@ start_iperf3_client(void)
+ 	char host[18], port[8], time[8], parallel[8], window[16], omit[8], buf_len[8], interval[8];
+ 	pid_t pid;
+ 
+-	strcpy(host, nvram_safe_get("iperf3_cli_host"));
++	/* reaper 2026-11-17 (review B-4): bounded copies - these were strcpy() into 8-byte buffers in PID 1 */
++	strlcpy(host, nvram_safe_get("iperf3_cli_host"), sizeof(host));
+ 	iperf3_argv[2] = host;
+-	strcpy(port, nvram_safe_get("iperf3_cli_port"));
++	strlcpy(port, nvram_safe_get("iperf3_cli_port"), sizeof(port));
+ 	iperf3_argv[4] = port;
+-	strcpy(time, nvram_safe_get("iperf3_cli_time"));
++	strlcpy(time, nvram_safe_get("iperf3_cli_time"), sizeof(time));
+ 	iperf3_argv[6] = time;
+-	strcpy(parallel, nvram_safe_get("iperf3_cli_parallel"));
++	strlcpy(parallel, nvram_safe_get("iperf3_cli_parallel"), sizeof(parallel));
+ 	iperf3_argv[8] = parallel;
+-	strcpy(window, nvram_safe_get("iperf3_cli_window"));
++	strlcpy(window, nvram_safe_get("iperf3_cli_window"), sizeof(window));
+ 	iperf3_argv[10] = window;
+-	strcpy(omit, nvram_safe_get("iperf3_cli_omit"));
++	strlcpy(omit, nvram_safe_get("iperf3_cli_omit"), sizeof(omit));
+ 	iperf3_argv[12] = omit;
+-	strcpy(buf_len, nvram_safe_get("iperf3_cli_buf_len"));
++	strlcpy(buf_len, nvram_safe_get("iperf3_cli_buf_len"), sizeof(buf_len));
+ 	iperf3_argv[14] = buf_len;
+-	strcpy(interval, nvram_safe_get("iperf3_cli_interval"));
++	strlcpy(interval, nvram_safe_get("iperf3_cli_interval"), sizeof(interval));
+ 	iperf3_argv[16] = interval;
+ 	
+ 	if(nvram_match("iperf3_cli_reverse", "0"))
+@@ -10000,12 +10101,10 @@ int gen_uam_srv_conf()
+ 	if (fp==NULL) return -1;
+ 
+ 	/* Load modules */
++	/* reaper 2026-11-17 (review B-10): only the two modules this file configures. userdir, redirect, rewrite and
++	 * compress were loaded with no settings (their request hooks ran for every guest before sign-in), and
++	 * usertrack, with no cookie name set, gave every guest a TRACKID cookie. The pages are seven aliased files. */
+ 	fprintf(fp, "server.modules+=(\"mod_alias\")\n");
+-	fprintf(fp, "server.modules+=(\"mod_userdir\")\n");
+-	fprintf(fp, "server.modules+=(\"mod_redirect\")\n");
+-	fprintf(fp, "server.modules+=(\"mod_compress\")\n");
+-	fprintf(fp, "server.modules+=(\"mod_usertrack\")\n");
+-	fprintf(fp, "server.modules+=(\"mod_rewrite\")\n");
+ 	fprintf(fp, "server.modules+=(\"mod_captive_portal_uam\")\n");
+ 
+ 	/* Basic setting */
+@@ -10058,7 +10157,7 @@ int gen_uam_srv_conf()
+ 
+ 	// ****
+ 	//fprintf(fp, "compress.cache-dir          = \"/tmp/lighttpd/compress/\"\n");
+-	fprintf(fp, "compress.filetype           = ( \"application/x-javascript\", \"text/css\", \"text/html\", \"text/plain\" )\n");
++	/* reaper 2026-11-17 (review B-10): no compress.filetype line - mod_compress is no longer loaded here */
+ 
+ 	/*** SSL ***/
+ 	/* default : https://192.168.1.1:443/webdav */
+@@ -12655,6 +12754,29 @@ static void reaper_portal_reconcile(const char *rest)
+ 		}
+ 	}
+ }
++
++/* reaper 2026-11-17 (review D-6) REAPER-PORTAL-WATCH. Nothing started a portal daemon again after it died (a
++ * crash, an abort on a bad frame): the guest network stayed up with no sign-in page until the next settings
++ * change. The rc watchdog asks reaper_portal_down() once a minute while a portal has been started this boot
++ * and, when a portal an enabled network asks for has no process on two looks in a row, requests the service
++ * below - at most three times a boot, so a daemon that cannot stay up is not restarted for ever. */
++int reaper_portal_down(void)
++{
++	int want = reaper_portals_wanted();
++
++	if (want <= 0)
++		return 0;
++	if ((want & 1) && reaper_chilli_count("/tmp/chilli.conf", 0) <= 0)
++		return 1;
++	if ((want & 2) && reaper_chilli_count("/tmp/chilli-cp.conf", 0) <= 0)
++		return 1;
++	return 0;
++}
++
++void reaper_portal_heal(void)
++{
++	reaper_portal_reconcile(NULL);
++}
+ #endif
+ 
+ void stop_chilli(void)
+@@ -21229,7 +21351,7 @@ check_ddr_done:
+ 		 * (added, readdressed, retyped, toggled) - every instance needs them again */
+ 		if ((action & RC_SERVICE_START) && revshare_sig_changed()) {
+ 			logmessage("dnsmasq", "networks changed - restarting the resolvers so each one can name the others' devices");
+-			notify_rc("restart_dnsmasq");
++			reaper_sdn_dnsmasq_restart();	/* 2026-11-18 (review P6-3-S2): not notify_rc - see the helper */
+ 		}
+ 	}
+ 	else if(strcmp(script, "sdn_del") == 0)
+@@ -21246,7 +21368,7 @@ check_ddr_done:
+ #endif
+ 		if (revshare_sig_changed()) {	/* 2026-10-08: a removed network leaves stale rev-server lines */
+ 			logmessage("dnsmasq", "networks changed - restarting the resolvers so each one can name the others' devices");
+-			notify_rc("restart_dnsmasq");
++			reaper_sdn_dnsmasq_restart();	/* 2026-11-18 (review P6-3-S2): not notify_rc - see the helper */
+ 		}
+ 	}
+ 	else if(strcmp(script, "sdn_del") == 0)
+@@ -23009,6 +23131,12 @@ retry_wps_enr:
+ 		if((action & RC_SERVICE_START) && !pids("debug_monitor")) start_dhd_monitor();
+ #endif
+ 	}
++#if defined(RTCONFIG_COOVACHILLI) && defined(RTCONFIG_MULTILAN_CFG)
++	else if (strcmp(script, "reaper_portal_heal") == 0)	/* review 2026-11-17 (D-6): the watchdog found a wanted Guest Portal with no process */
++	{
++		if(action & RC_SERVICE_START) reaper_portal_heal();
++	}
++#endif
+ 	else if (strcmp(script, "rflog") == 0)	/* reaper 2026-11-08 the firewall log collector (the watchdog restarts it) */
+ 	{
+ 		if(action & RC_SERVICE_STOP) stop_rflogd();
+-- 
+2.25.1
+

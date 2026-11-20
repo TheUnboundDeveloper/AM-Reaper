@@ -1,0 +1,714 @@
+From 3c62628e5a438599502fd09a86de1bd73d0b52e7 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Wed, 18 Nov 2026 17:05:37 -0500
+Subject: [PATCH] httpd: cross-site gate on every download row, safer handlers,
+ Auto refresh kept (102.8 line)
+
+- The cross-site gate covers every signed-in row with an output function of its own, not only
+  names ending in .cgi; two unused rows that renewed the IKEv2 certificate on a GET are removed.
+- Self-block guards use the client's MAC; the login state needs no shell; the iperf3 client
+  request checks its port and lengths; the rules-engine switch and timer are committed when they
+  change.
+- The Traffic handler stamps the viewer file the traffic daemon reads; the Devices list uses the
+  neighbour reader.
+- Firewall > Status and Rule Status: Auto refresh is a router setting (two new defaults, off), so
+  it survives a reboot, a flash and another browser; a click on its label works the switch.
+- On the 102.8 line web.c also takes the 3006.102.10 hardening it lacked: a format string for
+  every JSON and buffer write, the certificate file-name check before it is stored, the iperf3
+  service whitelist, and bounds plus 64-bit start times in four diagnostic handlers.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ release/src/router/httpd/httpd.c           |  17 +-
+ release/src/router/httpd/web.c             | 324 +++++++++++++--------
+ release/src/router/shared/defaults.c       |   2 +
+ release/src/router/www/Reaper_Firewall.asp |  12 +-
+ 4 files changed, 235 insertions(+), 120 deletions(-)
+
+diff --git a/release/src/router/httpd/httpd.c b/release/src/router/httpd/httpd.c
+index 99537ac734..c4f0ca234b 100644
+--- a/release/src/router/httpd/httpd.c
++++ b/release/src/router/httpd/httpd.c
+@@ -1901,6 +1901,12 @@ static int reaper_query_has(const char *file, const char *key)
+ }
+ 
+ /* ua = the User-Agent (NULL when absent); tls = this listener is the HTTPS one */
++/* REAPER-XSITE-OWNOUT review 2026-11-17 (P6-2-1): set by handle_request for the row being served - 1 when the row
++ * has an output function of its own (not a page through do_ej, not a plain file). Such a row acts, or builds its
++ * answer, whatever its name is: renew_ikev2_cert_mobile.pem rewrote the IKEv2 profile and remade the certificate
++ * on a GET and was not looked at below because its name has no ".cgi". */
++static int reaper_xsite_own_out;
++
+ static int reaper_xsite_cgi_refused(const char *url, const char *file, const char *method, const char *sfs, const char *ua, int tls)
+ {
+ 	static long last_log = 0;
+@@ -1922,6 +1928,11 @@ static int reaper_xsite_cgi_refused(const char *url, const char *file, const cha
+ 		base = base ? base + 1 : url;
+ 		for (i = 0; !hit && acting[i]; i++)
+ 			hit = !strcmp(base, acting[i]);
++		if (!hit && reaper_xsite_own_out) {	/* REAPER-XSITE-OWNOUT: pages (.asp, .htm) stay out, as before */
++			const char *ext = strrchr(base, '.');
++
++			hit = !(ext && (!strncasecmp(ext, ".asp", 4) || !strncasecmp(ext, ".htm", 4)));
++		}
+ 		if (!hit)
+ 			return 0;
+ 	}
+@@ -2478,6 +2489,8 @@ handle_request(void)
+ 				else if((mime_exception&MIME_EXCEPTION_NOAUTH_ALL)) {
+ 				}
+ 				else {
++					/* REAPER-XSITE-OWNOUT (P6-2-1): and for every row with an output function of its own */
++					reaper_xsite_own_out = handler->output && handler->output != do_ej && handler->output != do_file;
+ 					/* reaper 2026-10-23: cross-site refusal for every authenticated CGI */
+ 					if (!fromapp && reaper_xsite_cgi_refused(url, file, method, sec_fetch_site, useragent, do_ssl)) {
+ 						if(strcasecmp(method, "post") == 0 && handler->input)	//response post request
+@@ -2607,8 +2620,8 @@ handle_request(void)
+ 					&& !strstr(file, "captcha.gif")
+ #endif
+ #ifdef RTCONFIG_IPSEC
+-					&& !strstr(file, "renew_ikev2_cert_mobile.pem") && !strstr(file, "ikev2_cert_mobile.pem")
+-					&& !strstr(file, "renew_ikev2_cert_windows.der") && !strstr(file, "ikev2_cert_windows.der")
++					&& !strstr(file, "ikev2_cert_mobile.pem")
++					&& !strstr(file, "ikev2_cert_windows.der")
+ 					&& !strstr(file, "ipsec_s2s.conf")
+ 					&& !strstr(file, "server_ipsec.cert")
+ 					&& !strstr(file, "ipsec.log")
+diff --git a/release/src/router/httpd/web.c b/release/src/router/httpd/web.c
+index 2a6a2b2b75..40e9e9a34a 100644
+--- a/release/src/router/httpd/web.c
++++ b/release/src/router/httpd/web.c
+@@ -1152,7 +1152,7 @@ void websApply(webs_t wp, char_t *url)
+ 
+      while (fgets(buf, sizeof(buf), fp))
+      {
+-	websWrite(wp, buf);
++	websWrite(wp, "%s", buf);
+      }
+ 
+      websDone(wp, 200);
+@@ -8198,32 +8198,12 @@ static int login_state_hook(int eid, webs_t wp, int argc, char_t **argv)
+ 		FILE *fp;
+ 		char line[256];
+ #ifdef RTCONFIG_IPV6
+-		char *p, *save_ptr;
+-		char lan_ifname[128] = {0};
+-
+-		strlcpy(lan_ifname, nvram_safe_get("lan_ifname"), sizeof(lan_ifname));
+-
+-		for (i=0 ; lan_ifname[i] != '\0'; i++){
+-			if (isalnum(lan_ifname[i]) == 0 && lan_ifname[i] != '.' && isspace(lan_ifname[i]) == 0){
+-				return 0;
+-			}
+-		}
+-
+-		snprintf(line, sizeof(line), "ip neigh show to %s dev %s 2>/dev/null", ip_str, lan_ifname);
+-		fp = popen(line, "r");
+-		if (fp != NULL) {
+-			while (fgets(line, sizeof(line), fp) != NULL) {
+-				*strchrnul(line, '\n') = '\0';
+-				p = strstr(line, "lladdr");
+-				if (p != NULL && strcmp(strtok_r(p, " \t", &save_ptr), "lladdr") == 0) {
+-					p = strtok_r(NULL, " \t", &save_ptr);
+-					if (p != NULL && strstr(p, "00:00:00:00:00:00") == NULL)
+-						strlcpy(mac_str, p, sizeof(mac_str));
+-					break;
+-				}
+-			}
+-			pclose(fp);
+-		}
++		/* reaper 2026-11-17 (review B-43): the peer's MAC from reaper_client_mac() (ARP table for IPv4, neighbour
++		 * table for IPv6, a two-second cache). This hook runs on every apply page, every state.js and the
++		 * Internet page; it used to start a shell and `ip neigh` each time. */
++		(void)i; (void)fp; (void)line;
++		if (!reaper_client_mac(mac_str, sizeof(mac_str)))
++			mac_str[0] = '\0';
+ #else
+ 		char buffer[80], addr[16], mac[18], dev[16];
+ 		char *lan_ifname = nvram_safe_get("lan_ifname");
+@@ -13080,7 +13060,7 @@ static int ej_get_simact1_result(int eid, webs_t wp, int argc, char_t **argv){
+ 			if(len > 0){
+ 				if(buf[len] == '\n' || buf[len] == '\r')
+ 					buf[len] = '\0';
+-				websWrite(wp, buf);
++				websWrite(wp, "%s", buf);
+ 				break;
+ 			}
+ 		}
+@@ -18742,6 +18722,18 @@ enum {
+ 	IKEV2CERT_TIMEOUT
+ };
+ 
++static int is_valid_cert_filename(const char *name) {
++	/* reaper 2026-11-18 (B4): from 40585 - a CA upload's file name before it reaches nvram */
++	if (!name || *name == '\0') return 0;
++	if (strlen(name) > 63) return 0;
++	for (const char *p = name; *p; p++) {
++		if (!isalnum((unsigned char)*p) &&
++		    *p != '.' && *p != '-' && *p != '_')
++			return 0;
++	}
++	return 1;
++}
++
+ static void
+ do_caupload_post(char *url, FILE *stream, int len, char *boundary)
+ {
+@@ -18776,7 +18768,7 @@ do_caupload_post(char *url, FILE *stream, int len, char *boundary)
+ 					char *token = strtok(org_file_name, "\"");
+ 					if(token != NULL){
+ 						token = strtok(NULL, "\"");
+-						if(token != NULL)
++						if(token != NULL && is_valid_cert_filename(token))
+ 							nvram_set("ca_manage_file_name_ca", token);
+ 					}
+ 				}
+@@ -18788,7 +18780,7 @@ do_caupload_post(char *url, FILE *stream, int len, char *boundary)
+ 					char *token = strtok(org_file_name, "\"");
+ 					if(token != NULL){
+ 						token = strtok(NULL, "\"");
+-						if(token != NULL)
++						if(token != NULL && is_valid_cert_filename(token))
+ 							nvram_set("ca_manage_file_name_ca", token);
+ 					}
+ 				}
+@@ -18800,7 +18792,7 @@ do_caupload_post(char *url, FILE *stream, int len, char *boundary)
+ 					char *token = strtok(org_file_name, "\"");
+ 					if(token != NULL){
+ 						token = strtok(NULL, "\"");
+-						if(token != NULL)
++						if(token != NULL && is_valid_cert_filename(token))
+ 							nvram_set("ca_manage_file_name_ca", token);
+ 					}
+ 				}
+@@ -19169,24 +19161,12 @@ do_renew_ikev2_cert_key(char *url, FILE *stream)
+ 	gen_ikev2_cert(url, stream, "pem", 1, 0);
+ }
+ 
+-static void
+-do_renew_ikev2_cert_pem(char *url, FILE *stream)
+-{
+-	gen_ikev2_cert(url, stream, "pem", 1, 1);
+-}
+-
+ static void
+ do_ikev2_cert_pem(char *url, FILE *stream)
+ {
+ 	gen_ikev2_cert(url, stream, "pem", 0, 1);
+ }
+ 
+-static void
+-do_renew_ikev2_cert_der(char *url, FILE *stream)
+-{
+-	gen_ikev2_cert(url, stream, "der", 1, 1);
+-}
+-
+ static void
+ do_ikev2_cert_der(char *url, FILE *stream)
+ {
+@@ -20258,7 +20238,7 @@ static void do_get_app_client_stats(char *url, FILE *stream) {
+  FINISH:
+ 
+     if (res==0 && retObj!=NULL) {
+-        websWrite(stream, json_object_to_json_string(retObj), ret);
++        websWrite(stream, "%s", json_object_to_json_string(retObj));
+     }
+     else {
+         websWrite(stream, "{}");
+@@ -20303,7 +20283,7 @@ static void do_dns_block_stats(char *url, FILE *stream) {
+ 
+ FINISH:
+     if (res==0 && retObj!=NULL) {
+-        websWrite(stream, json_object_to_json_string(retObj), ret);
++        websWrite(stream, "%s", json_object_to_json_string(retObj));
+     }
+     else {
+         websWrite(stream, "{}");
+@@ -20353,7 +20333,7 @@ static void do_dns_block_list(char *url, FILE *stream) {
+     res = dns_block_list_json(&retObj);
+ 
+     if (res==0 && retObj!=NULL) {
+-        websWrite(stream, json_object_to_json_string(retObj), ret);
++        websWrite(stream, "%s", json_object_to_json_string(retObj));
+     }
+     else {
+         websWrite(stream, "{}");
+@@ -20394,7 +20374,7 @@ static void do_dns_block_list_insert_or_update(char *url, FILE *stream) {
+ FINISH:
+     /*
+     if (res==0 && retObj!=NULL) {
+-        websWrite(stream, json_object_to_json_string(retObj), ret);
++        websWrite(stream, "%s", json_object_to_json_string(retObj));
+     }
+     else {
+         websWrite(stream, "{}");
+@@ -23706,6 +23686,17 @@ do_reaper_traffic_cgi(char *url, FILE *stream)
+ 			}
+ 		}
+ 	}
++	if (strcmp(want, "live") == 0) {
++		/* reaper 2026-11-17 (review D-20) REAPER-RTRAF-STAMP: tells rtrafd that a page is reading the live window -
++		 * it writes that file on every tick only while this stamp is fresh (rtrafd.c, viewer_active). A fixed
++		 * path in a root-only folder; never created through a link. */
++		int vfd = open("/tmp/rtraf/.viewer", O_WRONLY | O_CREAT | O_NOFOLLOW | O_CLOEXEC, 0600);
++
++		if (vfd >= 0) {
++			futimens(vfd, NULL);
++			close(vfd);
++		}
++	}
+ 	snprintf(path, sizeof(path), "/tmp/rtraf/%s.json", want);
+ 	if ((f = fopen(path, "r")) == NULL) {
+ 		websWrite(stream, "{}");
+@@ -26203,30 +26194,11 @@ gk_baseline_snapshot(void)
+ 	free(out);
+ }
+ 
+-/* MAC of the host that issued this request, from the ARP table. Returns 0 when
+- * the peer cannot be resolved - callers must read that as "unknown", never as
+- * "not the caller", so an unresolvable peer never silently loses the guard. */
+-static int
+-reaper_requester_mac(char *out, size_t n)
+-{
+-	char ip[46], line[256], addr[46], mac[32], dev[32];
+-	FILE *fp;
+-	int got = 0;
+-
+-	if (!out || n < 18) return 0;
+-	out[0] = 0;
+-	if (!safe_uaddr_ntop(&login_uip_tmp, ip, sizeof(ip)) || !ip[0]) return 0;
+-	if ((fp = fopen("/proc/net/arp", "r")) == NULL) return 0;
+-	while (fgets(line, sizeof(line), fp)) {
+-		if (sscanf(line, "%45s %*s %*s %31s %*s %31s", addr, mac, dev) != 3) continue;
+-		if (strcmp(addr, ip) != 0 || !gk_valid_mac(mac)) continue;
+-		strlcpy(out, mac, n);
+-		got = 1;
+-		break;
+-	}
+-	fclose(fp);
+-	return got;
+-}
++/* reaper 2026-11-17 (review B-2): the requester's MAC for the "do not block the device you are using" guards
++ * comes from reaper_client_mac() (httpd.c), which reads the ARP table for an IPv4 session and the neighbour
++ * table for an IPv6 one. The helper that stood here read the ARP table only, so an admin who reached the
++ * pages over IPv6 had no guard. As before: 0 = the peer could not be resolved, which callers read as
++ * "unknown", never as "not the caller". */
+ 
+ static void
+ do_reaper_gk_cgi(char *url, FILE *stream)
+@@ -26405,7 +26377,7 @@ do_reaper_gk_cgi(char *url, FILE *stream)
+ 		 * is the backstop for that case. */
+ 		if (state == 0) {
+ 			char self[18];
+-			if (reaper_requester_mac(self, sizeof(self)) && !strcasecmp(self, umac)) {
++			if (reaper_client_mac(self, sizeof(self)) && !strcasecmp(self, umac)) {	/* review 2026-11-17 B-2: IPv6 sessions too */
+ 				websWrite(stream, "{\"ok\":0,\"error\":\"that is the device you are using - block it from a different device\",\"ek\":\"RDEVE_SELF\"}");
+ 				return;
+ 			}
+@@ -29110,16 +29082,18 @@ do_reaper_fw_cgi(char *url, FILE *stream)
+ 		 * commit-confirm timer, and restarting the engine every time the timer
+ 		 * is edited would rebuild the ruleset for no reason.
+ 		 *
+-		 * Deliberately NO nvram_commit() here. nvram_commit() flushes the WHOLE
+-		 * of nvram, which would persist the six editable lists while they are
+-		 * still an unconfirmed draft held in RAM - that is exactly what S3's
+-		 * commit-confirm design forbids. The flag persists on the next confirm,
+-		 * which is the only path that is supposed to write flash. */
++		 * reaper 2026-11-17 (review C-3): a change IS committed now. This handler used to leave both values in
++		 * nvram RAM because the editable lists were nvram values too and a commit would have stored an
++		 * unconfirmed draft. The lists are files now (drafts under /tmp/reaper_fw/draft, the confirmed set under
++		 * /jffs), so the only things a commit stores here are this switch and the timer - and without it a power
++		 * cut brought back an engine the admin had switched off (or dropped one switched on). */
+ 		if (en && (!strcmp(en, "0") || !strcmp(en, "1"))) {
+ 			int changed = (strcmp(nvram_safe_get("reaper_fw_enable"), en) != 0);
+ 			nvram_set("reaper_fw_enable", en);
+-			if (changed)
++			if (changed) {
++				httpd_nvram_commit();
+ 				notify_rc("restart_reaper_fw");
++			}
+ 		}
+ 		if (cf) {
+ 			int n = atoi(cf);
+@@ -29127,7 +29101,29 @@ do_reaper_fw_cgi(char *url, FILE *stream)
+ 			if (n < RFW_CONFIRM_FLOOR) n = RFW_CONFIRM_FLOOR;
+ 			if (n > RFW_CONFIRM_CEIL)  n = RFW_CONFIRM_CEIL;
+ 			snprintf(b, sizeof(b), "%d", n);
+-			nvram_set("reaper_fw_confirm", b);
++			if (strcmp(nvram_safe_get("reaper_fw_confirm"), b) != 0) {
++				nvram_set("reaper_fw_confirm", b);
++				httpd_nvram_commit();
++			}
++		}
++		/* reaper 2026-11-17 (owner: "not persisting through reflash / reboot") REAPER-FW-AUTOREF: the two Auto
++		 * refresh switches of the Firewall page are kept on the router. They lived in the browser's own storage,
++		 * which belongs to one address: the same router opened under another name, scheme or port - as after a
++		 * reflash - showed them off. Two one-character values, committed only when one changes. */
++		{
++			static const char *const ak[2][2] = { { "st_auto", "reaper_fw_st_auto" }, { "wt_auto", "reaper_fw_wt_auto" } };
++			int ai, adirty = 0;
++
++			for (ai = 0; ai < 2; ai++) {
++				char *av = get_cgi((char *)ak[ai][0]);
++
++				if (av && (!strcmp(av, "0") || !strcmp(av, "1")) && strcmp(nvram_safe_get(ak[ai][1]), av) != 0) {
++					nvram_set(ak[ai][1], av);
++					adirty = 1;
++				}
++			}
++			if (adirty)
++				httpd_nvram_commit();
+ 		}
+ 		websWrite(stream, "{\"ok\":1,\"confirm\":%d}", nvram_get_int("reaper_fw_confirm"));
+ 		return;
+@@ -29979,6 +29975,7 @@ static const struct { const char *sect; const char *nv; size_t max; } rcfg_flags
+ 	{ "gk",     "gk_notify",        2   },
+ 	{ "pbr",    "reaper_pbr_enable", 2  },
+ 	{ "fw",     "reaper_fw_enable", 2   }, { "fw",     "reaper_fw_confirm", 6 },
++	{ "fw",     "reaper_fw_st_auto", 2  }, { "fw",     "reaper_fw_wt_auto", 2 },	/* 2026-11-17: the page's Auto refresh switches */
+ 	{ "warden", "rwarden_enable",   2   }, { "warden", "rwarden_feeds",  512 },
+ 	{ "warden", "rwarden_cfeeds",  4096 }, { "warden", "rwarden_geo",    512 },
+ 	{ "warden", "rwarden_dir",      6   }, { "warden", "rwarden_self",   2   },
+@@ -30052,7 +30049,7 @@ static const struct { const char *sect; const char *nv; size_t max; } rcfg_flags
+ 	{ "cert",   "reaper_ledns_enable", 2 }, { "cert",   "reaper_ledns_provider", 9 },
+ 	{ "cert",   "reaper_ledns_domain", 254 }, { "cert",   "reaper_ledns_token", 201 },
+ 	/* the Advisor's client pin, port and timeout (in force at its next start) */
+-	{ "advisor", "rmcp_client",    33   }, { "advisor", "rmcp_port",      9   },
++	{ "advisor", "rmcp_client",    46   }, { "advisor", "rmcp_port",      9   },
+ 	{ "advisor", "rmcp_timeout",   9    },
+ 	/* beta firmware offers, connection names, the UPnP guard, the channel-quality monitor */
+ 	{ "misc",   "reaper_fwbeta",   2    }, { "misc",   "rconn_names",    2   },
+@@ -33008,34 +33005,51 @@ static void rdev_collect(void)
+ 
+ 	ndn = reaper_nd_load(ndt, RDEV_ND);
+ 
+-	/* 1. DHCP leases: known devices (ip + self-reported host) */
+-	f = fopen("/var/lib/misc/dnsmasq.leases", "r");
+-	if (f) {
+-		while (fgets(line, sizeof(line), f)) {
+-			char mac[64], ip[64], host[64];
+-			int idx;
+-			/* fmt: <expiry> <mac> <ip> <host> <clientid> */
+-			if (sscanf(line, "%*s %63s %63s %63s", mac, ip, host) < 2) continue;
+-			if (strchr(ip, ':')) {
+-				/* IPv6 A3: a DHCPv6 lease - "<expiry> <iaid> <addr> <host> <duid>" - names
+-				 * no MAC; the neighbour cache turns the address into one */
+-				char mac6[18];
+-
+-				if (!reaper_nd_mac_of_str(ndt, ndn, ip, mac6, sizeof(mac6), NULL, 0)) continue;
+-				idx = rdev_find(dev, &n, mac6);
++	/* 1. DHCP leases: known devices (ip + self-reported host).
++	 * reaper 2026-11-17 (review B-3) REAPER-DEV-LEASEFILES: EVERY network's file - dnsmasq.leases and the
++	 * dnsmasq-<n>.leases of each guest / VLAN network with its own DHCP server (rc/sdn.c). Only the main
++	 * file was read, so a device on such a network had no lease address while it was out of the ARP table
++	 * and never its lease name. reaper_leases_name_ok() is the one rule for which files are lease files. */
++	{
++		DIR *ld = opendir("/var/lib/misc");
++		struct dirent *le;
++
++		while (ld && (le = readdir(ld)) != NULL) {
++			char lp[300];
++
++			if (!reaper_leases_name_ok(le->d_name) || strncmp(le->d_name, "dnsmasq", 7) != 0)
++				continue;	/* reaper_hostnames is the announced-name store, not a lease file */
++			snprintf(lp, sizeof(lp), "/var/lib/misc/%s", le->d_name);
++			if ((f = fopen(lp, "r")) == NULL)
++				continue;
++			while (fgets(line, sizeof(line), f)) {
++				char mac[64], ip[64], host[64];
++				int idx;
++				/* fmt: <expiry> <mac> <ip> <host> <clientid> */
++				if (sscanf(line, "%*s %63s %63s %63s", mac, ip, host) < 2) continue;
++				if (strchr(ip, ':')) {
++					/* IPv6 A3: a DHCPv6 lease - "<expiry> <iaid> <addr> <host> <duid>" - names
++					 * no MAC; the neighbour cache turns the address into one */
++					char mac6[18];
++
++					if (!reaper_nd_mac_of_str(ndt, ndn, ip, mac6, sizeof(mac6), NULL, 0)) continue;
++					idx = rdev_find(dev, &n, mac6);
++					if (idx < 0) continue;
++					if (!dev[idx].ip6[0]) snprintf(dev[idx].ip6, sizeof(dev[0].ip6), "%s", ip);
++					if (host[0] && strcmp(host, "*") && !dev[idx].host[0])
++						snprintf(dev[idx].host, sizeof(dev[0].host), "%s", host);
++					continue;
++				}
++				idx = rdev_find(dev, &n, mac);
+ 				if (idx < 0) continue;
+-				if (!dev[idx].ip6[0]) snprintf(dev[idx].ip6, sizeof(dev[0].ip6), "%s", ip);
++				if (!dev[idx].ip[0]) snprintf(dev[idx].ip, sizeof(dev[0].ip), "%s", ip);
+ 				if (host[0] && strcmp(host, "*") && !dev[idx].host[0])
+ 					snprintf(dev[idx].host, sizeof(dev[0].host), "%s", host);
+-				continue;
+ 			}
+-			idx = rdev_find(dev, &n, mac);
+-			if (idx < 0) continue;
+-			if (!dev[idx].ip[0]) snprintf(dev[idx].ip, sizeof(dev[0].ip), "%s", ip);
+-			if (host[0] && strcmp(host, "*") && !dev[idx].host[0])
+-				snprintf(dev[idx].host, sizeof(dev[0].host), "%s", host);
++			fclose(f);
+ 		}
+-		fclose(f);
++		if (ld)
++			closedir(ld);
+ 	}
+ 
+ 	/* 2. ARP: devices with an IPv4 neighbour entry on a LAN bridge - a row and
+@@ -33060,6 +33074,25 @@ static void rdev_collect(void)
+ 		fclose(f);
+ 	}
+ 
++	/* 2a. reaper 2026-11-17 (field report: "a device changed to another static IP keeps showing the old one")
++	 * REAPER-DEV-FRESH4. Steps 1 and 2 fill a blank only, so a lease's address won for as long as the lease
++	 * lived (24 h by default, and the lease file is restored at boot) although the device had been given
++	 * another address by hand. The neighbour table knows better, and netlink says what /proc/net/arp cannot:
++	 * which entries are FRESH. A device whose shown address has no fresh entry, while another address of
++	 * the same MAC has one, is using that other address. Nothing fresh = keep what is shown (an absent
++	 * device keeps its last known address); a STALE entry never overrides. */
++	{
++		static struct reaper_nd4 n4t[RDEV_ND];
++		int n4n = reaper_nd4_load(n4t, RDEV_ND);
++
++		for (i = 0; i < n; i++) {
++			char now4[INET_ADDRSTRLEN];
++
++			if (reaper_nd4_fresh_of(n4t, n4n, dev[i].mac, dev[i].ip, now4, sizeof(now4)))
++				snprintf(dev[i].ip, sizeof(dev[0].ip), "%s", now4);
++		}
++	}
++
+ 	/* 2b. IPv6 A3: the neighbour cache (2026-10-18: STALE entries linger here too,
+ 	 * so it no longer marks a device online) - a device's
+ 	 * first global address is shown (a GUA replaces a ULA when it holds both) */
+@@ -33793,7 +33826,7 @@ static void do_reaper_dev_cgi(char *url, FILE *stream)
+ 		 * is the backstop for that case. */
+ 		if (state == 0) {
+ 			char self[18];
+-			if (reaper_requester_mac(self, sizeof(self)) && !strcasecmp(self, umac)) {
++			if (reaper_client_mac(self, sizeof(self)) && !strcasecmp(self, umac)) {	/* review 2026-11-17 B-2: IPv6 sessions too */
+ 				websWrite(stream, "{\"ok\":0,\"error\":\"that is the device you are using - block it from a different device\",\"ek\":\"RDEVE_SELF\"}");
+ 				return;
+ 			}
+@@ -37407,6 +37440,12 @@ do_set_iperf3_svr_cgi(char *url, FILE *stream)
+ 	rc_service = safe_get_cgi_json("rc_service", root);
+ 	iperf3_svr_port = safe_get_cgi_json("iperf3_svr_port", root);
+ 
++	/* reaper 2026-11-18 (B4): from 40585 - only the two iperf3 server services */
++	if(strcmp(rc_service, "start_iperf3_server") != 0 && strcmp(rc_service, "stop_iperf3_server") != 0){
++		ret = HTTP_INVALID_INPUT;
++		goto FINISH;
++	}
++
+ 	if(!isValid_digit_string(iperf3_svr_port)) {
+ 		ret = HTTP_INVALID_INPUT;
+ 		goto FINISH;
+@@ -37448,11 +37487,25 @@ do_set_iperf3_cli_cgi(char *url, FILE *stream)
+ 	iperf3_cli_interval = safe_get_cgi_json("iperf3_cli_interval", root);
+ 	iperf3_cli_reverse = safe_get_cgi_json("iperf3_cli_reverse", root);
+ 
++	/* reaper 2026-11-18 (B4): from 40585 - only the two iperf3 client services */
++	if(strcmp(rc_service, "start_iperf3_client") != 0 && strcmp(rc_service, "stop_iperf3_client") != 0){
++		ret = HTTP_INVALID_INPUT;
++		goto FINISH;
++	}
++
+ 	if(illegal_ipv4_address(iperf3_cli_host)){
+ 		ret = HTTP_INVALID_IPADDR;
+ 		goto FINISH;
+ 	}
+-	if(!isValid_digit_string(iperf3_cli_port) && atoi(iperf3_cli_port)<0 && atoi(iperf3_cli_port)>65535){
++	/* reaper 2026-11-17 (review B-4): this test joined its three conditions with && and could never fail; and no
++	 * field had a length limit although rc copies each into a small fixed buffer (start_iperf3_client). */
++	if(!isValid_digit_string(iperf3_cli_port) || atoi(iperf3_cli_port)<1 || atoi(iperf3_cli_port)>65535){
++		ret = HTTP_INVALID_INPUT;
++		goto FINISH;
++	}
++	if(strlen(iperf3_cli_host) > 15 || strlen(iperf3_cli_port) > 5 || strlen(iperf3_cli_time) > 6 || strlen(iperf3_cli_parallel) > 3 ||
++	   strlen(iperf3_cli_window) > 12 || strlen(iperf3_cli_omit) > 6 || strlen(iperf3_cli_buf_len) > 7 || strlen(iperf3_cli_interval) > 6 ||
++	   strlen(iperf3_cli_reverse) > 1){
+ 		ret = HTTP_INVALID_INPUT;
+ 		goto FINISH;
+ 	}
+@@ -40020,7 +40073,17 @@ static void do_get_diag_avg_data(char *url, FILE *stream) {
+     int query_duration = atoi(duration);
+     int query_point = atoi(point);
+     int query_end_time = atoi(ts);
+-    int query_start_time = query_end_time - query_point*query_duration;
++    /* reaper 2026-11-18 (B4): from 40585 - bounds, and the start time in 64 bits */
++    if (query_duration<=0 || query_duration>86400 || query_point<0) {
++        ret = HTTP_INVALID_INPUT;
++        goto FINISH;
++    }
++    long long query_start_time_64 = (long long)query_end_time - (long long)query_point*(long long)query_duration;
++    if (query_start_time_64<INT_MIN || query_start_time_64>INT_MAX || query_start_time_64>query_end_time) {
++        ret = HTTP_INVALID_INPUT;
++        goto FINISH;
++    }
++    int query_start_time = (int)query_start_time_64;
+     
+     HTTPD_DBG("do_get_diag_avg_data, db=%s, content=%s, start=%d, end=%d, duration=%d\n", db, content, query_start_time, query_end_time, query_duration);
+ 
+@@ -40028,7 +40091,7 @@ static void do_get_diag_avg_data(char *url, FILE *stream) {
+ 
+ FINISH:
+     if (res==CODB_OK && retObj!=NULL) {
+-        websWrite(stream, json_object_to_json_string(retObj), ret);
++        websWrite(stream, "%s", json_object_to_json_string(retObj));
+     }
+     else {
+         websWrite(stream, "{}");
+@@ -40064,7 +40127,17 @@ static void do_get_diag_active_client(char *url, FILE *stream) {
+     int query_duration = atoi(duration);
+     int query_point = atoi(point);
+     int query_end_time = atoi(ts);
+-    int query_start_time = query_end_time - query_point*query_duration;
++    /* reaper 2026-11-18 (B4): from 40585 - bounds, and the start time in 64 bits */
++    if (query_duration<=0 || query_duration>86400 || query_point<0) {
++        ret = HTTP_INVALID_INPUT;
++        goto FINISH;
++    }
++    long long query_start_time_64 = (long long)query_end_time - (long long)query_point*(long long)query_duration;
++    if (query_start_time_64<INT_MIN || query_start_time_64>INT_MAX || query_start_time_64>query_end_time) {
++        ret = HTTP_INVALID_INPUT;
++        goto FINISH;
++    }
++    int query_start_time = (int)query_start_time_64;
+     
+     HTTPD_DBG("do_get_diag_active_client, start=%d, end=%d, duration=%d\n", query_start_time, query_end_time, query_duration);
+ 
+@@ -40072,7 +40145,7 @@ static void do_get_diag_active_client(char *url, FILE *stream) {
+ 
+ FINISH:
+     if (res==CODB_OK && retObj!=NULL) {
+-        websWrite(stream, json_object_to_json_string(retObj), ret);
++        websWrite(stream, "%s", json_object_to_json_string(retObj));
+     }
+     else {
+         websWrite(stream, "{}");
+@@ -40127,7 +40200,17 @@ static void do_get_diag_content_data(char *url, FILE *stream) {
+         query_end_time = atoi(ts);
+         qyery_limit = atoi(limit);
+         qyery_point = atoi(point);
+-        query_start_time = query_end_time - query_duration*qyery_point;
++        /* reaper 2026-11-18 (B4): from 40585 - bounds, and the start time in 64 bits */
++        if (query_duration<=0 || query_duration>86400 || qyery_point<0) {
++            ret = HTTP_INVALID_INPUT;
++            goto FINISH;
++        }
++        long long query_start_time_64 = (long long)query_end_time - (long long)query_duration*(long long)qyery_point;
++        if (query_start_time_64<INT_MIN || query_start_time_64>INT_MAX) {
++            ret = HTTP_INVALID_INPUT;
++            goto FINISH;
++        }
++        query_start_time = (int)query_start_time_64;
+         
+         if (query_start_time>query_end_time || query_duration>86400) {
+             ret = HTTP_INVALID_INPUT;
+@@ -40169,7 +40252,7 @@ static void do_get_diag_content_data(char *url, FILE *stream) {
+ 
+ FINISH:
+     if (res==CODB_OK && retObj!=NULL) {
+-        websWrite(stream, json_object_to_json_string(retObj), ret);
++        websWrite(stream, "%s", json_object_to_json_string(retObj));
+     }
+     else {
+         websWrite(stream, "{}");
+@@ -40228,7 +40311,7 @@ static void do_get_diag_latest_content_data(char *url, FILE *stream) {
+ 
+ FINISH:
+     if (res==CODB_OK && retObj!=NULL) {
+-        websWrite(stream, json_object_to_json_string(retObj), ret);
++        websWrite(stream, "%s", json_object_to_json_string(retObj));
+     }
+     else {
+         websWrite(stream, "{}");
+@@ -40265,7 +40348,17 @@ static void do_get_diag_eth_traffic_data(char *url, FILE *stream) {
+     int query_duration = atoi(duration);
+     int query_point = atoi(point);
+     int query_end_time = atoi(ts);
+-    int query_start_time = query_end_time - query_point*query_duration;
++    /* reaper 2026-11-18 (B4): from 40585 - bounds, and the start time in 64 bits */
++    if (query_duration<=0 || query_duration>86400 || query_point<0) {
++        ret = HTTP_INVALID_INPUT;
++        goto FINISH;
++    }
++    long long query_start_time_64 = (long long)query_end_time - (long long)query_point*(long long)query_duration;
++    if (query_start_time_64<INT_MIN || query_start_time_64>INT_MAX || query_start_time_64>query_end_time) {
++        ret = HTTP_INVALID_INPUT;
++        goto FINISH;
++    }
++    int query_start_time = (int)query_start_time_64;
+     int is_bh = atoi(bh);
+ 
+     HTTPD_DBG("do_get_diag_eth_traffic_data, start=%d, end=%d, duration=%d, is_bh=%d\n", query_start_time, query_end_time, query_duration, is_bh);
+@@ -40274,7 +40367,7 @@ static void do_get_diag_eth_traffic_data(char *url, FILE *stream) {
+ 
+ FINISH:
+     if (res==CODB_OK && retObj!=NULL) {
+-        websWrite(stream, json_object_to_json_string(retObj), ret);
++        websWrite(stream, "%s", json_object_to_json_string(retObj));
+     }
+     else {
+         websWrite(stream, "{}");
+@@ -42202,8 +42295,7 @@ struct mime_handler mime_handlers[] =
+ 	{ "ipsecupload.cgi*", "text/html", no_cache_IE7, do_ipsecupload_post, do_ipsecupload_cgi, do_auth },
+ 	{ "caupload.cgi*", "text/html", no_cache_IE7, do_caupload_post, NULL, do_auth },
+ 	{ "renew_ikev2_cert_key.cgi*", "text/html", no_cache_IE7, do_html_post_and_get, do_renew_ikev2_cert_key, do_auth },
+-	{ "renew_ikev2_cert_mobile.pem", "application/x-pem-file", NULL, NULL, do_renew_ikev2_cert_pem, do_auth },
+-	{ "renew_ikev2_cert_windows.der", "application/x-x509-ca-cert", NULL, NULL, do_renew_ikev2_cert_der, do_auth },
++	/* REAPER-XSITE-OWNOUT (P6-2-1): the two renew_ikev2_cert_* download rows are gone - a GET that renewed; no page used them */
+ 	{ "ikev2_cert_mobile.pem", "application/x-pem-file", NULL, NULL, do_ikev2_cert_pem, do_auth },
+ 	{ "ikev2_cert_windows.der", "application/x-x509-ca-cert", NULL, NULL, do_ikev2_cert_der, do_auth },
+ 	{ "get_ipsec_clientlist.cgi*", "text/html", no_cache_IE7, do_html_post_and_get, do_get_ipsec_clientlist_cgi, do_auth },
+diff --git a/release/src/router/shared/defaults.c b/release/src/router/shared/defaults.c
+index fb72fd7bec..086062ee54 100644
+--- a/release/src/router/shared/defaults.c
++++ b/release/src/router/shared/defaults.c
+@@ -3262,6 +3262,8 @@ struct nvram_tuple router_defaults[] = {
+ 	 * lists spill to /jffs when nvram-pressured. */
+ 	{ "reaper_fw_enable", "0", CKN_STR1, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* master switch (default off) */
+ 	{ "reaper_fw_confirm", "60", CKN_STR4, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* commit-confirm auto-revert seconds; clamped to 15-3600, 0 is promoted (never off) - the anti-lockout net */
++	{ "reaper_fw_st_auto", "0", CKN_STR1, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* 2026-11-17: Firewall page, Status tab Auto refresh (kept on the router, not in the browser) */
++	{ "reaper_fw_wt_auto", "0", CKN_STR1, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* 2026-11-17: Firewall page, Rule Status tab Auto refresh */
+ 	{ "reaper_fw_obj", "", CKN_STR_MAX, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* address objects: <name>type>value>comment ; type=host|cidr|range|mac|fqdn|geo (geo value=CC ref to Warden) */
+ 	{ "reaper_fw_grp", "", CKN_STR_MAX, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* address groups: <name>member,member,...>comment (members = object names) */
+ 	{ "reaper_fw_svc", "", CKN_STR2048, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* service objects: <name>proto>ports>comment ; proto=tcp|udp|both|icmp, ports=list/range */
+diff --git a/release/src/router/www/Reaper_Firewall.asp b/release/src/router/www/Reaper_Firewall.asp
+index a0568d5000..de3676df6d 100644
+--- a/release/src/router/www/Reaper_Firewall.asp
++++ b/release/src/router/www/Reaper_Firewall.asp
+@@ -769,6 +769,7 @@ table.rt .empty td{color:var(--steel);text-align:center;padding:14px}
+ function $(id){return document.getElementById(id);}
+ 
+ var REAPER_HTTPID=<% nvram_get_js("http_id"); %>;
++var RFW_AUTO_NV={reaper_fw_st_auto:<% nvram_get_js("reaper_fw_st_auto"); %>,reaper_fw_wt_auto:<% nvram_get_js("reaper_fw_wt_auto"); %>};
+ 
+ /* nvram snapshot. Rulelists come through nvram_char_to_ascii (URL-percent) so
+    the raw < > survive; scalars are plain. NVRAM HOLDS RAW < > - never emit &#60. */
+@@ -1411,8 +1412,12 @@ function showTab(t){
+ /* reaper 2026-11-16: the Auto refresh switches (Status tab, Rule Status tab) stay as set. They stored nothing, so
+    every page load showed them off and no timer ran. Kept per browser like the last tab (reaper_fw_tab): '1' / '0'
+    in localStorage - no nvram key, nothing in a backup. Storage refused (private mode) = off, as before. */
+-function autoGet(k){try{return localStorage.getItem(k)==='1';}catch(e){return false;}}
+-function autoSet(k,on){try{localStorage.setItem(k,on?'1':'0');}catch(e){}}
++/* 2026-11-17 (owner: lost at a reflash / reboot): the router keeps them now (nvram, through action=opts). Browser
++   storage belongs to one address - the router opened under another name, scheme or port had none of it. The
++   router's value wins; the browser's copy is read only while the router has none (a setting made before). */
++function autoGet(k){var v=RFW_AUTO_NV[k];if(v==='1'||v==='0')return v==='1';try{return localStorage.getItem(k)==='1';}catch(e){return false;}}
++function autoSet(k,on){RFW_AUTO_NV[k]=on?'1':'0';try{localStorage.setItem(k,on?'1':'0');}catch(e){}
++  fwcgi('action=opts&'+(k==='reaper_fw_st_auto'?'st_auto':'wt_auto')+'='+(on?'1':'0'));}
+ function initTab(){
+   var q=(location.search.match(/[?&]t=([a-z]+)/)||[])[1];
+   if(!q){try{q=localStorage.getItem('reaper_fw_tab');}catch(e){}}
+@@ -2453,6 +2458,9 @@ function boot(){
+   $('rv_rlist').onclick=function(){rvRulesText2List(false);};
+   $('wt_refresh').onclick=function(){try{var _h=$('wt_hint');if(_h)_h.textContent=' ...';}catch(e){}loadWit(true);};
+   $('wt_auto').onclick=function(){this.classList.toggle('on');autoSet('reaper_fw_wt_auto',this.classList.contains('on'));stopWitAuto();startWitAuto();};
++  /* reaper 2026-11-17 (review B-5): the words beside each switch sit in the same label, but a label only passes a
++     click on to a form control, so clicking the words did nothing. REAPER-B5-LABEL */
++  ['st_auto','wt_auto'].forEach(function(id){var sw=$(id),lab=sw&&sw.parentNode;if(lab)lab.addEventListener('click',function(e){if(e.target!==sw)sw.click();});});
+   document.addEventListener('visibilitychange',function(){if(document.hidden){stopAuto();stopWitAuto();}else{if($('tab_status').classList.contains('on'))startAuto();if($('tab_witness').classList.contains('on'))startWitAuto();}});
+   /* reaper 2026-11-16: the stored Auto refresh choices, set before the first tab is shown (showTab starts the
+      timers from these classes; the timers themselves are unchanged) */
+-- 
+2.25.1
+

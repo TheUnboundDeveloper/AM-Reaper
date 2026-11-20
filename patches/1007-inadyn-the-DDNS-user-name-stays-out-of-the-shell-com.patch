@@ -1,0 +1,34 @@
+From 6553ee00b9ad0ca9fe41acddc68cd1a8e8bdf52e Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Wed, 11 Nov 2026 20:17:32 -0500
+Subject: [PATCH] inadyn: the DDNS user name stays out of the shell command
+ (102.8 line)
+
+Carried from the 3006.102.10 line: the update command is passed as "%s", so a user name is never
+part of a shell string.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ release/src/router/inadyn/src/ddns.c | 6 +++---
+ 1 file changed, 3 insertions(+), 3 deletions(-)
+
+diff --git a/release/src/router/inadyn/src/ddns.c b/release/src/router/inadyn/src/ddns.c
+index 337d0f8c94a..5198d7e0bb2 100644
+--- a/release/src/router/inadyn/src/ddns.c
++++ b/release/src/router/inadyn/src/ddns.c
+@@ -88,9 +88,9 @@ static int shell_transaction(ddns_t *ctx, ddns_info_t *info, const char *cmd)
+ 	FILE *pipe;
+ 	int rc = 0;
+ 
+-	snprintf(ctx->request_buf, ctx->request_buflen,
+-		"INADYN_PROVIDER=\"%s\" INADYN_USER=\"%s\" %s",
+-		info->system->name, info->creds.username, cmd);
++	/* review 2026-11-11 (D-8): the command alone, as on the 3006.102.10 line - the account name was pasted into this
++	 * shell string inside double quotes, where $(...) and backticks still run; nothing reads the two variables */
++	snprintf(ctx->request_buf, ctx->request_buflen, "%s", cmd);
+ 
+ 	logit(LOG_DEBUG, "Starting command to get my public IP#: %s", log_redact(ctx->request_buf));
+ 
+-- 
+2.25.1
+

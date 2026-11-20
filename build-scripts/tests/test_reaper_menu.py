@@ -58,6 +58,9 @@ out.rp = vis(Object.assign({}, base, {mode: 'rp'}));
 out.mb = vis(Object.assign({}, base, {mode: 'mb'}));
 out.wisp = vis(Object.assign({}, base, {mode: 'wisp'}));
 out.nodual = vis(Object.assign({}, base, {ui: Object.assign({}, ALL, {dualwan: 0})}));
+out.rtwlc = vis(Object.assign({}, base, {wlc_band: '1'}));   /* 2026-10-29: a router holding a wlc_band */
+out.rtwlcneg = vis(Object.assign({}, base, {wlc_band: '-1'}));   /* the field value (RT-BE88U, set up from scratch) */
+out.wispwlc = vis(Object.assign({}, base, {mode: 'wisp', wlc_band: '1'}));
 out.nomcp = vis(Object.assign({}, base, {ui: Object.assign({}, ALL, {reaper_mcp: 0})}));
 out.usbwan = vis(Object.assign({}, base, {wans_dualwan: 'usb none'}));
 out.novpn = vis(Object.assign({}, base, {ui: Object.assign({}, ALL, {openvpnd: 0, wireguard: 0, ipsec_srv: 0, pptpd: 0, vpnc: 0, tor: 0})}));   /* 2026-10-24 VPN wave */   /* USB primary, dual WAN not enabled (menuTree.js:743) */
@@ -65,7 +68,8 @@ out.novpn = vis(Object.assign({}, base, {ui: Object.assign({}, ALL, {openvpnd: 0
 out.amas = {};
 [[1, 1, 'rt'], [1, 1, 'ap'], [1, 1, 'wisp'], [1, 1, 'rp'], [1, 0, 'rt'], [0, 1, 'rt'], [0, 0, 'rt'], [0, 0, 'rp']].forEach(function(c){
   var v = vis(Object.assign({}, base, {mode: c[2], ui: Object.assign({}, ALL, {amasRouter: c[0], amasNode: c[1]})}));
-  out.amas[c.join('/')] = ('menu_AiMesh' in v ? 'M' : '-') + ((v.menu_Wireless || []).indexOf('Advanced_Roaming_Block_Content.asp') !== -1 ? 'R' : '-');
+  /* 2026-10-31 native wave: the Roaming Block tab is the kit page now (same gate, aimeshRouterUI) */
+  out.amas[c.join('/')] = ('menu_AiMesh' in v ? 'M' : '-') + ((v.menu_Wireless || []).indexOf('Reaper_RoamBlock.asp') !== -1 ? 'R' : '-');
 });
 out.amas['noamas'] = 'menu_AiMesh' in vis(Object.assign({}, base, {ui: Object.assign({}, ALL, {amas: 0})})) ? 'M' : '-';
 out.rail = window.ReaperMenu.rail(base).filter(function(r){ return !r.section; }).map(function(r){ return r.index + ':' + r.page + ':' + (r.icon ? 1 : 0); });
@@ -100,6 +104,11 @@ if r.returncode == 0:
           and all("Reaper_Failover.asp" not in m["menu_Setting"] for m in (ap, rp, mb))
           and all(k in m for m in (ap, rp, mb) for k in ("menu_ReaperDevices", "menu_Sysinfo", "menu_Setting")), [m.get("menu_Setting") for m in (ap, rp, mb)])
     check("WAN Ports only with dual-WAN support", "Reaper_WANPorts.asp" in rt["menu_WAN"] and "Reaper_WANPorts.asp" not in o["nodual"]["menu_WAN"])
+    # 2026-10-29 (field, RT-BE88U): a router read wlc_band=-1, and a set wlc_band hid the tab
+    check("WAN Ports in router mode whatever wlc_band holds; WISP with a wireless uplink still hides it",
+          "Reaper_WANPorts.asp" in o["rtwlc"]["menu_WAN"] and "Reaper_WANPorts.asp" in o["rtwlcneg"]["menu_WAN"]
+          and "Reaper_WANPorts.asp" not in o["wispwlc"].get("menu_WAN", []),
+          [o["rtwlc"].get("menu_WAN"), o["rtwlcneg"].get("menu_WAN"), o["wispwlc"].get("menu_WAN")])
     check("Advisor only on MCP builds", "menu_ReaperAdvisor" in rt and "menu_ReaperAdvisor" not in o["nomcp"])
     # 2026-10-23 LAN/WAN wave: the USB modem view lives inside Reaper_Internet - no stock WAN or modem page is named
     # (this node half never ran before 2026-10-24: no node in WSL, no tree on the CI runner - the old expectation was stale)
@@ -117,14 +126,15 @@ if r.returncode == 0:
             "0/0/rp": "M-", "noamas": "-"}   # 0/0/rp: menuTree has no mode test without amasRouter (Wireless is gone in rp, so no R)
     check("AiMesh menu (M) and Roaming Block tab (R) follow menuTree.js, router-and-node models included",
           o["amas"] == want, {k: (o["amas"].get(k), v) for k, v in want.items() if o["amas"].get(k) != v})
-    check("Firewall carries its badge flag in the tree", any("menu_Firewall" == m for m in rt))
+    check("Firewall is in the tree; the dead rail badge flag is gone (Q-C2-8, 2026-11-05)", any("menu_Firewall" == m for m in rt)
+          and "badge" not in t and "fwred" not in t)
     check("rail: every visible menu has a first page and an icon; the dashboard is a top-level page",
           all(x.split(":")[2] == "1" and x.split(":")[1] for x in o["rail"]) and "menu_Index:Main_ReaperDash.asp:1" in o["rail"], o["rail"][:6])
     check("rail opens a real page, never an inherit-only one (the old __HIDE__-first problem)",
-          "menu_APP:APP_Installation.asp:1" in o["rail"] and "menu_Setting:Advanced_OperationMode_Content.asp:1" in o["rail"], [x for x in o["rail"] if x.startswith("menu_APP") or x.startswith("menu_Setting")])
-    # 2026-10-24 (owner): USB Application first, USB Disks last
+          "menu_APP:Reaper_USBApps.asp:1" in o["rail"] and "menu_Setting:Advanced_OperationMode_Content.asp:1" in o["rail"], [x for x in o["rail"] if x.startswith("menu_APP") or x.startswith("menu_Setting")])
+    # 2026-10-24 (owner): USB Application first, USB Disks last; 2026-11-03 USB wave: the hub is the kit page
     check("USB Applications: USB Application is the first tab and USB Disks the last",
-          rt["menu_APP"][0] == "APP_Installation.asp" and rt["menu_APP"][-1] == "Reaper_USB.asp", rt["menu_APP"])
+          rt["menu_APP"][0] == "Reaper_USBApps.asp" and rt["menu_APP"][-1] == "Reaper_USB.asp", rt["menu_APP"])
 
 if fails:
     print("\n%d FAILED:" % len(fails))

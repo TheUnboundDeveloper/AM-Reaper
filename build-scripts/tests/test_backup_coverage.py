@@ -45,14 +45,16 @@ check("the sections are contiguous (the export opens each once)", contiguous, se
 carried = {n for _, n in rows}
 idx = {n: i for i, (_, n) in enumerate(rows)}
 check("sources come before their keys (keys are pruned against the sources just written)",
-      idx.get("rwarden_dnssrc", 99) < idx.get("rwarden_dnskeys", -1) and idx.get("wallguard_lists", 99) < idx.get("wallguard_keys", -1))
+      idx.get("rwarden_dnssrc", 99) < idx.get("rwarden_dnskeys", -1) and idx.get("wallguard_lists", 99) < idx.get("wallguard_keys", -1)
+      and idx.get("rwarden_cfeeds", 99) < idx.get("rwarden_cfkeys", -1))	# 2026-11-15: the custom IP feeds' keys
 # carried in the settings file's list part, not the flag table
 LISTS = {"gk_rl", "reaper_pbr_rulelist", "reaper_fw_obj", "reaper_fw_grp", "reaper_fw_svc", "reaper_fw_zone",
          "reaper_fw_zpol", "reaper_fw_rules", "reaper_fw_edef", "reaper_fw_nat"}
 # not nvram: a /jffs file or the Warden list store, named in the table
-STORE = {"rwarden_ban", "rwarden_allow", "rwarden_dnsallow", "rwarden_dnssrc", "rwarden_dnskeys", "rdev_dhcp6",
+STORE = {"rwarden_ban", "rwarden_allow", "rwarden_dnsallow", "rwarden_dnssrc", "rwarden_dnskeys", "rwarden_cfkeys", "rdev_dhcp6",
          "rwatch_rules", "rlog_filter", "wallguard_lists", "wallguard_block", "wallguard_allow", "wallguard_profiles",
-         "wallguard_assign", "wallguard_services", "wallguard_sched", "wallguard_safe", "wallguard_keys"}
+         "wallguard_assign", "wallguard_services", "wallguard_sched", "wallguard_safe", "wallguard_rewrite", "wallguard_keys",
+         "wallguard_adv"}	# 2026-11-06: Advanced rules (/jffs/wallguard/adv)
 FULL_ONLY = {   # in the full .rbk (all nvram + /jffs) only, on purpose
     "amas_bh_park": "AiMesh: this mesh's backhaul", "amas_chanfit": "AiMesh: this mesh's node channels",
     "firmware_check_hour": "spread per router (one shared minute would hit the manifest host at once)",
@@ -63,15 +65,24 @@ FULL_ONLY = {   # in the full .rbk (all nvram + /jffs) only, on purpose
     "reaper_pbr_active": "state", "reaper_pbr_armed": "state", "reaper_pbr_err": "state",
     "reaper_fwsig_override": "one-shot confirm, cleared by its consumer", "reaper_upg_fail": "state",
     "rwarden_lastupd": "state",
+    "reaper_ledns_state": "state", "reaper_ledns_err": "state", "reaper_ledns_when": "state",
     "reaper_store": "this router's USB store", "reaper_store_ds": "this router's USB store",
     "reaper_store_vid": "this router's USB volume pin", "reaper_store_vname": "this router's USB volume pin",
     "rtraf_path": "a USB path on this router",
     "reaper_wanbounce_enable": "this router's WAN port",
     "wl_bwfloor": "radio tuning", "wl_punct": "radio tuning", "wl_rmit": "radio tuning",
+    # review 2026-11-11 (B-C4): it must travel WITH the stock portal secret it describes (cp_uamsecret, in the router
+    # settings of both files); carried alone it could say "your own" next to a random secret
+    "reaper_cp_secret_own": "Guest Portal: travels with the stock portal secret",
+    # 2026-11-19: a guest network's chosen main-network devices and discovery types (apgN_rg_devs / apgN_rg_mdns) belong
+    # to that network's stock settings object and its index; carried alone they would name a different network
+    "apg_rg_devs": "travels with the stock network lists", "apg_rg_mdns": "travels with the stock network lists",
+    # 2026-11-19: a network's AP Isolation choice (apgN_ap_isolate_lan: Wi-Fi only / Wi-Fi and LAN ports) - same reason
+    "apg_ap_isolate_lan": "travels with the stock network lists",
 }
 STOCK = {   # stock keys whose default Reaper changed: the router settings carry them like any stock setting
     "ASUS_EULA", "ASUS_NEW_EULA", "computer_name", "dns_norebind", "enable_samba", "enable_samba_tuxera",
-    "http_dut_redir", "message_loglevel", "qos_enable", "smbd_cpage", "smbd_cset", "smbd_enable", "st_max_user",
+    "http_dut_redir", "message_loglevel", "nf_ftp", "qos_enable", "smbd_cpage", "smbd_cset", "smbd_enable", "st_max_user",
     "upnp_pinhole_enable", "wrs_cc_enable", "wrs_mals_enable", "wrs_protect_enable", "x_Setting",
 }
 PREFIX = ("reaper_", "rwarden_", "wallguard_", "gk_", "rwatch_", "rtraf_", "rmcp_", "rchq_", "rconn_", "rdev_", "rlog_",
@@ -90,15 +101,28 @@ placed = carried | LISTS | set(FULL_ONLY) | STOCK
 check("every Reaper option is placed: carried by the settings file, full-backup-only with a reason, or stock",
       not (reaper_keys - placed), sorted(reaper_keys - placed))
 check("nothing is both carried and full-backup-only", not (carried & set(FULL_ONLY)), sorted(carried & set(FULL_ONLY)))
+# 2026-11-19 (Image 2): the Firewall page's zone switch is a setting of this router's rules engine - in the settings
+# file; the two per-network keys are templates of the stock network lists (full backup only, above)
+check("reaper_fw_zpol_guest (Zone policies may open one-way paths into guest networks) is carried by the settings file",
+      "reaper_fw_zpol_guest" in carried and "reaper_fw_zpol_guest" in all_keys)
+check("apg_rg_devs / apg_rg_mdns are template rows in defaults.c and full-backup-only",
+      {"apg_rg_devs", "apg_rg_mdns"} <= all_keys and {"apg_rg_devs", "apg_rg_mdns"} <= set(FULL_ONLY) and not ({"apg_rg_devs", "apg_rg_mdns"} & carried))
+# 2026-11-19: AP Isolation per network - the main network's choice is a setting of this router (settings file); the
+# per-network template row travels with the stock network lists (full backup only, above)
+check("reaper_ap_isolate_lan (main network: Wi-Fi only / Wi-Fi and LAN ports) is carried by the settings file",
+      "reaper_ap_isolate_lan" in carried and "reaper_ap_isolate_lan" in all_keys)
+check("apg_ap_isolate_lan is a template row in defaults.c and full-backup-only",
+      "apg_ap_isolate_lan" in all_keys and "apg_ap_isolate_lan" in FULL_ONLY and "apg_ap_isolate_lan" not in carried)
 check("every carried nvram key exists in defaults.c (a typo would carry nothing)",
       not (carried - STORE - all_keys), sorted(carried - STORE - all_keys))
 fields = re.findall(r'\{ "([a-z]+)", SH_JFFS "/\1", sh_chk_[a-z]+ \}', web)
 check("every Wallguard settings file (sh_files) is in the settings file",
-      len(fields) == 8 and all("wallguard_" + f in carried for f in fields), fields)
+      len(fields) == 9 and all("wallguard_" + f in carried for f in fields), fields)   # 2026-11-05: + rewrite (DNS rewrites)
 check("the Wallguard page's save and the import share sh_files", "for (i = 0; i < SH_NFILES; i++) {" in web
       and "char *v = get_cgi((char *)sh_files[i].field);" in web and "static const struct { const char *field, *file; int (*check)(char *); } F[]" not in web)
 sect_rst = {"wallguard": "restart_wallguard;start_wallguard_update", "dns": "restart_dnsmasq;restart_rdnshc", "encdns": "restart_rednsd",
-            "watch": "restart_rwatch", "traffic": "restart_rtraf", "export": "restart_rexport", "misc": "restart_upnp"}
+            "watch": "restart_rwatch", "traffic": "restart_rtraf", "export": "restart_rexport", "misc": "restart_upnp",
+            "cert": "restart_reaper_ledns"}
 check("an import restarts each section's service, in ONE notify_rc", all(v in web for v in sect_rst.values())
       and "rcfg_restart(touch_gk, touch_warden, dw_any, touch);" in web and 'if (touch_gk) notify_rc("restart_gk");' not in web)
 check("an import commits every section that writes nvram (pbr / fw keep their own Keep)",
@@ -136,6 +160,7 @@ if CC and region and tbl and all(fns):
 #include <unistd.h>
 #include <sys/stat.h>
 #include <arpa/inet.h>
+#include <reaper_rewrite.h>	/* 2026-11-05: Wallguard's DNS rewrite check (sh_chk_rewrite) */
 /* the router's /jffs is the working directory (router A exports, router B imports) */
 #define SH_JFFS "./wallguard"
 #define SH_LIST_MAX 16384
@@ -143,6 +168,7 @@ if CC and region and tbl and all(fns):
 #define REAPER_RW_DIR "./rwarden"
 #define RDW_SRC REAPER_RW_DIR "/dnssrc"
 #define RDW_KEYS REAPER_RW_DIR "/dnskeys"
+#define RW_CFKEYS REAPER_RW_DIR "/cfkeys"
 #define RDW_SRC_MAX 16384
 #define REAPER_DHCP6_FILE "./reaper/dhcp6_static"
 #define RVIEW_RULES "./reaper/review/rules"
@@ -188,7 +214,7 @@ int main(int argc, char **argv) {
         c = os.path.join(w, "t.c")
         open(c, "w").write(STUB + region + "\n" + fns[0] + fns[1] + tbl.group(0) + "".join(fns[2:]) + MAIN)
         exe = os.path.join(w, "t")
-        r = subprocess.run([CC, "-Wall", "-Wno-unused-function", "-o", exe, c], capture_output=True, text=True)
+        r = subprocess.run([CC, "-Wall", "-Wno-unused-function", "-I", os.path.join(SRC, "shared"), "-o", exe, c], capture_output=True, text=True)
         check("the region compiles on its own", r.returncode == 0, r.stderr[-1500:])
         if r.returncode == 0:
             A, B = os.path.join(w, "A"), os.path.join(w, "B")
@@ -198,11 +224,15 @@ int main(int argc, char **argv) {
             fa = lambda rel, v: open(os.path.join(A, rel), "w").write(v)
             fa("wallguard/lists", "hagezi_normal\nhidden oisd_small\ncustom 2 https://api.example/v1/ name=TFox fmt=json:ioc hdr=Auth-Key\n")
             fa("wallguard/block", "ads.example\n")
+            fa("wallguard/rewrite", "nas.home.arpa 192.168.50.20\nlab.test fd00::3 sub\nwww.home.arpa nas.home.arpa\n")
             fa("wallguard/profiles", "kids 7fffffff Kids\n")
             fa("wallguard/keys", "2 WgKEY-1\n")
             fa("rwarden/dnssrc", "hidden basics\ncustom 1 https://lists.example/hosts.txt name=My%20list\noff 1\n")
             fa("rwarden/dnskeys", "1 DwKEY-9\n")
             fa("rwarden/ban", "203.0.113.0/24\n")
+            # 2026-11-15: a custom IP feed that sends an API key ($APIkey in its address) and its key
+            fa("rwarden/cfeeds", "<Keyed>https://k.example/ips?token=$APIkey><Plain>https://p.example/ips.txt>")
+            fa("rwarden/cfkeys", "1 CfKEY-7\n")
             fa("reaper/logfilter", "dhcp\n")
             NVA = {"wallguard_enable": "1", "wallguard_mode": "nx", "reaper_dot_srv": "1", "reaper_dnshc_target": "10.20.0.98",
                    "reaper_export_url": "https://splunk.example:8088/services/collector?x=1&y=2", "reaper_export_token": "Tok-123/abc=",
@@ -220,6 +250,7 @@ int main(int argc, char **argv) {
             # router B already has its own Wallguard allow file and a stale key: the restore must leave allow alone
             open(os.path.join(B, "wallguard/allow"), "w").write("keep.example\n")
             open(os.path.join(B, "rwarden/dnskeys"), "w").write("5 StaleKEY\n")
+            open(os.path.join(B, "rwarden/cfkeys"), "w").write("2 StaleCfKEY\n")
             r = subprocess.run([exe, "import"], cwd=B, input="".join("%s=%s\n" % (k, v) for k, v in exp.items()), capture_output=True, text=True)
             puts = dict(l.split()[1:3] for l in r.stdout.split("\n") if l.startswith("PUT "))
             nvb = {l[3:].split("=", 1)[0]: bytes.fromhex(l[3:].split("=", 1)[1]).decode() for l in r.stdout.split("\n") if l.startswith("NV ")}
@@ -228,19 +259,25 @@ int main(int argc, char **argv) {
             check("import: every exported value was taken", puts and all(v == "0" for v in puts.values()), {k: v for k, v in puts.items() if v != "0"})
             check("import: Wallguard's files and Dreadwatch's sources come back as written",
                   rb("wallguard/lists") == ra("wallguard/lists") and rb("wallguard/block") == ra("wallguard/block")
+                  and rb("wallguard/rewrite") == ra("wallguard/rewrite")
                   and rb("wallguard/profiles") == ra("wallguard/profiles") and rb("rwarden/dnssrc") == ra("rwarden/dnssrc")
                   and rb("rwarden/ban") in (ra("rwarden/ban"), ra("rwarden/ban").rstrip("\n")),
                   [rb("wallguard/lists"), rb("rwarden/dnssrc")])
             check("import: both key files are the backup's (router B's stale key is gone)",
                   rb("wallguard/keys") == "2 WgKEY-1\n" and rb("rwarden/dnskeys") == "1 DwKEY-9\n", [rb("wallguard/keys"), rb("rwarden/dnskeys")])
+            check("export + import: the custom IP feeds travel with their API key; router B's stale feed key is gone",
+                  dec.get("rwarden_cfkeys") == "1 CfKEY-7" and "$APIkey" in dec.get("rwarden_cfeeds", "")
+                  and (rb("rwarden/cfeeds") or "").rstrip("\n") == ra("rwarden/cfeeds") and rb("rwarden/cfkeys") == "1 CfKEY-7\n",
+                  [dec.get("rwarden_cfkeys"), rb("rwarden/cfeeds"), rb("rwarden/cfkeys")])
             check("import: a file the backup did not carry is left as router B had it", rb("wallguard/allow") == "keep.example\n")
             check("import: the switches land in nvram, URL and token included",
                   all(nvb.get(k) == v for k, v in NVA.items()), {k: (nvb.get(k), v) for k, v in NVA.items() if nvb.get(k) != v})
             # refusals: nothing written
             bad = {"wallguard_block": "not a name!\n", "rwarden_dnssrc": "custom 9 https://x.example/l\n",
                    "reaper_export_url": 'https://x.example/"q', "wallguard_keys": "2 has space", "reaper_dot_srv": "1;reboot",
-                   "wallguard_lists": "custom 1 http://plain.example/\n"}
-            before = {rel: rb(rel) for rel in ("wallguard/block", "rwarden/dnssrc", "wallguard/keys", "wallguard/lists")}
+                   "wallguard_lists": "custom 1 http://plain.example/\n",
+                   "wallguard_rewrite": "nas.home.arpa 192.168.50.20,1.2.3.4\n"}   # a comma would split a host-record
+            before = {rel: rb(rel) for rel in ("wallguard/block", "rwarden/dnssrc", "wallguard/keys", "wallguard/lists", "wallguard/rewrite")}
             r = subprocess.run([exe, "import"], cwd=B, input="".join("%s=%s\n" % (k, v.encode().hex()) for k, v in bad.items()), capture_output=True, text=True)
             puts = dict(l.split()[1:3] for l in r.stdout.split("\n") if l.startswith("PUT "))
             check("import: a bad value in any store is refused", len(puts) == len(bad) and all(v == "-1" for v in puts.values()), puts)

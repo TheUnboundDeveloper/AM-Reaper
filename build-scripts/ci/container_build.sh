@@ -166,12 +166,28 @@ if [ "$(id -u)" = 0 ]; then
     echo "   resolver not ready ($i/6); retrying in $((i * 10)) s"
     sleep $((i * 10))
   done
-  apt-get update -qq
+  # 2026-11-19 (run 44529567993, BQ16_PRO MCP, 1 job of 16): security.ubuntu.com
+  # answered HTTP 520 for focal-security InRelease, apt-get update exited 100 and
+  # the job ended 25 s into the container. A mirror outage is transient: retry the
+  # index fetch a few times (about 3.5 min at most), then fail naming the cause.
+  apt_update(){
+    local i
+    for i in 1 2 3 4 5; do
+      apt-get -o Acquire::Retries=3 update -qq && return 0
+      if [ "$i" -eq 5 ]; then
+        echo "::error::apt-get update failed 5 times (Ubuntu mirror outage?); see the E: lines above"
+        return 1
+      fi
+      echo "   apt-get update failed ($i/5); retrying in $((i * 20)) s"
+      sleep $((i * 20))
+    done
+  }
+  apt_update
   apt-get install -y -qq software-properties-common ca-certificates \
                          git curl wget sudo >/dev/null
   add-apt-repository -y universe >/dev/null 2>&1
   dpkg --add-architecture i386
-  apt-get update -qq
+  apt_update
 
   PKGS="build-essential bison flex gawk gettext libreadline-dev libssl-dev
         autogen autoconf automake libtool gtk-doc-tools u-boot-tools
@@ -364,6 +380,27 @@ if [ "$MODEL" != "RT-BE96U" ]; then
     fi
     tar -xzf "$PLAT"
     echo "   unpacked $(tar -tzf "$PLAT" | wc -l) platform files"
+
+    # Asuswrt-Merlin d7c6a53e440 (ASUS GPL 102_40585): hndnvram.sh runs its
+    # defaults-volume mount on every invocation and stacks a second mount on
+    # the one mount-data.inc made; the fixed script asks df which filesystem
+    # the path is on and mounts only over tmpfs. The 102.10 base carries it for
+    # every model there; these platform trees predate it. Same rule as the
+    # archives: the shipped copy is hash-pinned, and the copy it replaces must
+    # be the known older one - a platform tree with any other script is an
+    # error here, never silently overwritten.
+    HNV="$REPO_DIR/overlays/hndnvram-40585.sh"
+    HNV_OLD=9ce212c6d29e27e19561afb0c9435aea7db14df3e7b5d4b27adb5fb7396de640
+    [ -f "$HNV" ] && [ -f "${HNV%.sh}.sha256" ] || { echo "::error::overlays/hndnvram-40585.sh or its sha256 is missing"; exit 1; }
+    HNV_NEW=$(awk '{print $1}' "${HNV%.sh}.sha256" | head -1)
+    [ "$(sha256sum "$HNV" | cut -d' ' -f1)" = "$HNV_NEW" ] || { echo "::error::overlays/hndnvram-40585.sh hash mismatch"; exit 1; }
+    _HDST="release/src-rt-5.04behnd.4916/router-sysdep.$(echo "$MODEL" | tr 'A-Z' 'a-z')/wlan/scripts/hndnvram.sh"
+    [ -f "$_HDST" ] || { echo "::error::$MODEL: $_HDST not in the platform tree"; exit 1; }
+    case "$(sha256sum "$_HDST" | cut -d' ' -f1)" in
+      "$HNV_NEW") echo "   [MATCH] $_HDST already carries the 40585 defaults-mount fix" ;;
+      "$HNV_OLD") cp -f "$HNV" "$_HDST"; echo "   [MATCH] $_HDST <- hndnvram-40585.sh (defaults-mount fix)" ;;
+      *) echo "::error::$MODEL: $_HDST is neither the known older script nor the 40585 one - check it before replacing"; exit 1 ;;
+    esac
   fi
 
   OV="$REPO_DIR/overlays/${MODEL}.patch"

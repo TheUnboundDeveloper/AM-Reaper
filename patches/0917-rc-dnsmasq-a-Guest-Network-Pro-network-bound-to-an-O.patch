@@ -1,0 +1,129 @@
+From a4af4c0af0dfcf0bf895e45e95af85a4373cbb74 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Fri, 30 Oct 2026 20:09:25 -0400
+Subject: [PATCH] rc, dnsmasq: a Guest Network Pro network bound to an OpenVPN
+ client resolves through that client's tunnel (102.8 line)
+
+Field report (RT-BE86U, v3.6.3): a Guest Network Pro network sent through an OpenVPN client from
+the Network page had no Internet, while a VPN Director rule for the same subnet worked. The
+tester's reads showed routing, FORWARD and NAT in order (the iif rule to the client's table, the
+default route through the tunnel, the bridge-to-tunnel accept, the Kill Switch prohibit). The
+network's DNS was the fault: its dnsmasq instance takes the client's resolvers from
+/tmp/resolv.vpncN and asks them from the router itself (iif lo), and for OpenVPN nothing routes
+those queries into the tunnel - libovpn's "iif lo to <dns>" rule is compiled out (#if 0) and only
+vpnc_up(), the WireGuard path, reaches _set_network_routing_rule(). The queries left by the WAN;
+a resolver address shared with another tunnel's resolver went down that tunnel instead.
+- rc/vpnc_fusion.c: _gen_vpnc_resolv_conf_dev(idx, dev) writes server=<dns>@<dev> so dnsmasq
+  binds the query socket to the tunnel; dev is accepted only as a plain interface name
+  (< IFNAMSIZ, [A-Za-z0-9._-]), anything else writes the plain lines as before.
+  _gen_vpnc_resolv_conf() is the NULL-dev wrapper (WireGuard and vpnc_up unchanged).
+- rc/openvpn.c: ovpn_up_main passes the tunnel from the up script's "dev".
+- dnsmasq/src/dnsmasq.c: an instance with a servers-file keeps CAP_NET_RAW - the file is read
+  after the privilege drop, and binding a socket to an interface needs it (an instance doing
+  DHCP kept it already, for ping).
+
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
+---
+ release/src/router/dnsmasq/src/dnsmasq.c |  8 ++++++++
+ release/src/router/rc/openvpn.c          |  8 +++++++-
+ release/src/router/rc/vpnc_fusion.c      | 22 +++++++++++++++++++++-
+ 3 files changed, 36 insertions(+), 2 deletions(-)
+
+diff --git a/release/src/router/dnsmasq/src/dnsmasq.c b/release/src/router/dnsmasq/src/dnsmasq.c
+index b80fe2e5ac7..284cb75d8d3 100644
+--- a/release/src/router/dnsmasq/src/dnsmasq.c
++++ b/release/src/router/dnsmasq/src/dnsmasq.c
+@@ -518,6 +518,14 @@ int main (int argc, char **argv)
+     if (serv->interface[0] != 0)
+       need_cap_net_raw = 1;
+ 
++  /* Reaper 2026-10-30: a servers-file is read only after the privileges are
++     dropped, and it may name an interface (server=10.9.0.1@tun13 for an SDN
++     network bound to a VPN client), so the loop above cannot see it. An
++     instance doing DHCP keeps CAP_NET_RAW already (ping); this covers one
++     that does not. */
++  if (daemon->servers_file)
++    need_cap_net_raw = 1;
++
+   /* If we're doing Dbus or UBus, the above can be set dynamically,
+      (as can ports) so always (potentially) needed. */
+ #ifdef HAVE_DBUS
+diff --git a/release/src/router/rc/openvpn.c b/release/src/router/rc/openvpn.c
+index c6600e851da..5fa08290b5d 100644
+--- a/release/src/router/rc/openvpn.c
++++ b/release/src/router/rc/openvpn.c
+@@ -31,6 +31,9 @@
+ #if 0
+ void _ovpn_update_routing_rules(int add_cmd, const int unit);
+ #endif
++#ifdef RTCONFIG_MULTILAN_CFG
++extern int _gen_vpnc_resolv_conf_dev(const int vpnc_idx, const char *dev);	/* vpnc_fusion.c */
++#endif
+ 
+ 
+ int ovpn_up_main(int argc, char **argv) {
+@@ -53,7 +56,10 @@ int ovpn_up_main(int argc, char **argv) {
+ 		// Set vpnc%d_dns nvram
+ 		vpnc_ovpn_set_dns(unit);
+ 		// Create vpnc%d_resolv config file
+-		_gen_vpnc_resolv_conf(vpnc_idx);
++		/* 2026-10-30: bound to this client's tunnel (server=<dns>@tun1N) -
++		 * the bound SDN's dnsmasq asks from the router itself and nothing
++		 * else sends that into the tunnel (see _gen_vpnc_resolv_conf_dev) */
++		_gen_vpnc_resolv_conf_dev(vpnc_idx, safe_getenv("dev"));
+ #endif
+ 		update_resolvconf();
+ 
+diff --git a/release/src/router/rc/vpnc_fusion.c b/release/src/router/rc/vpnc_fusion.c
+index 092260e4c63..01cbc45f95a 100644
+--- a/release/src/router/rc/vpnc_fusion.c
++++ b/release/src/router/rc/vpnc_fusion.c
+@@ -76,6 +76,7 @@ static int _get_vpnc_state(const int vpnc_idx);
+ int vpnc_update_resolvconf(const int unit);
+ static int _set_network_routing_rule(const VPNC_ROUTE_CMD cmd, const int vpnc_idx);
+ extern int _gen_vpnc_resolv_conf(const int vpnc_idx);
++int _gen_vpnc_resolv_conf_dev(const int vpnc_idx, const char *dev);
+ 
+ int vpnc_pppstatus(const int unit)
+ {
+@@ -2592,9 +2593,25 @@ int write_vpn_fusion_mangle()
+ }
+ 
+ int _gen_vpnc_resolv_conf(const int vpnc_idx)
++{
++	return _gen_vpnc_resolv_conf_dev(vpnc_idx, NULL);
++}
++
++/* 2026-10-30: dev = the tunnel these servers must be asked through
++ * ("server=10.9.0.1@tun13", dnsmasq binds the socket to it). An SDN network
++ * bound to a VPN client resolves through the router's own dnsmasq, whose
++ * queries leave from the router (iif lo); for OpenVPN nothing routes those
++ * into the tunnel (libovpn's "iif lo to <dns>" rule is #if 0, and only
++ * vpnc_up() - WireGuard - reaches _set_network_routing_rule()), and a
++ * destination rule could not tell two tunnels sharing a resolver address
++ * apart anyway. NULL, or a name that is not a plain interface name, writes
++ * the plain lines as before. */
++int _gen_vpnc_resolv_conf_dev(const int vpnc_idx, const char *dev)
+ {
+ 	FILE *fp;
+ 	char resolv_file[128], vpnc_prefix[] = "vpncXXXXXX_", *vpnc_dns, *next, tmp[128];
++	int bind_dev = dev && dev[0] && strlen(dev) < IFNAMSIZ &&
++		strspn(dev, "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-") == strlen(dev);
+ 
+ 	snprintf(resolv_file, sizeof(resolv_file), vpnc_resolv_path, vpnc_idx);
+ 	snprintf(vpnc_prefix, sizeof(vpnc_prefix), "vpnc%d_", vpnc_idx);
+@@ -2611,7 +2628,10 @@ int _gen_vpnc_resolv_conf(const int vpnc_idx)
+ 	{
+ 		foreach (tmp, vpnc_dns, next)
+ 		{
+-			fprintf(fp, "server=%s\n", tmp);
++			if (bind_dev)
++				fprintf(fp, "server=%s@%s\n", tmp, dev);
++			else
++				fprintf(fp, "server=%s\n", tmp);
+ 		}
+ 		fclose(fp);
+ 		chmod(resolv_file, S_IRUSR|S_IWUSR|S_IRGRP|S_IWGRP|S_IROTH|S_IWOTH);
+-- 
+2.25.1
+

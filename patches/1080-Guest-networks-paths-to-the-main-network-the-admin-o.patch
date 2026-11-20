@@ -1,0 +1,3035 @@
+From 27c4fcb0161e80c17cdc555f6e94abbd5745edbb Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Thu, 19 Nov 2026 20:37:15 -0500
+Subject: [PATCH] Guest networks: paths to the main network the admin opts
+ into; Rule Status shows held paths
+
+- Reach these main-network devices (per isolated guest network, off by default): guests may open
+  connections to the main-network devices the admin ticks (DHCP reservations only, never AiMesh nodes,
+  never the router); the devices only answer. The guest isolation chains stay deny-only; the accept
+  lives in its own chain after Gatekeeper and the rules engine. Re-applied when reservations change.
+- Device discovery with the main network (per network, off by default): mDNS between the main network
+  and that network only, never between two guest networks, limited to the service types picked
+  (printing, AirPlay, Google Cast, HomeKit / Matter, Spotify / Sonos, own entries). The router's own
+  names are not announced there, and a guest device cannot take over a main-network name or withdraw a
+  main-network service. The avahi config reader takes lines up to 4 KB.
+- Firewall > Zones switch (off by default): an Accept zone policy from the main network (or a network
+  linked to it) into an isolated guest network opens that path one way; never guest to guest.
+- Rule Status 1.16: a zone policy that guest isolation holds is "Held" (amber), not failed; new rows
+  for chosen devices, discovery and the reverse direction of an opened path. The dashboard, the
+  diagnostics bundle and the AI Advisor describe the held state.
+- services.c also carries the IPv6 gates of the previous commit and the AP Isolation calls of the next;
+  web.c also the AiMesh MLO mark and the AP Isolation keys; defaults.c / init.c also those keys and the
+  /56 default.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ .../src/router/avahi/avahi-core/announce.c    |   7 +
+ release/src/router/avahi/avahi-core/core.h    |   1 +
+ .../src/router/avahi/avahi-core/internal.h    |   6 +
+ release/src/router/avahi/avahi-core/server.c  | 394 +++++++++++++-
+ .../avahi/avahi-daemon/ini-file-parser.c      |   2 +-
+ release/src/router/avahi/avahi-daemon/main.c  |  77 +++
+ release/src/router/httpd/web.c                | 248 ++++++++-
+ release/src/router/others/reaper_diag         |   8 +-
+ release/src/router/rc/init.c                  |   3 +
+ release/src/router/rc/reaper_aimesh.c         |   8 +
+ release/src/router/rc/reaper_fw.c             |  11 +
+ release/src/router/rc/reaper_guest.c          | 480 +++++++++++++++++-
+ release/src/router/rc/reaper_hook.c           |   5 +-
+ release/src/router/rc/reaper_hook.h           |   5 +
+ release/src/router/rc/services.c              | 144 +++++-
+ .../src/router/reaper_fwsim/reaper_fwsim.c    | 320 +++++++++++-
+ release/src/router/rmcpd/rmcpd.c              |   2 +-
+ release/src/router/shared/defaults.c          |   7 +-
+ release/src/router/shared/reaper_jfile.c      | 174 +++++++
+ release/src/router/shared/shared.h            |   8 +
+ release/src/router/www/Main_ReaperDash.asp    |   1 +
+ release/src/router/www/Reaper_Firewall.asp    |  28 +-
+ 22 files changed, 1857 insertions(+), 82 deletions(-)
+
+diff --git a/release/src/router/avahi/avahi-core/announce.c b/release/src/router/avahi/avahi-core/announce.c
+index ccdbf15adf..427d5b678a 100644
+--- a/release/src/router/avahi/avahi-core/announce.c
++++ b/release/src/router/avahi/avahi-core/announce.c
+@@ -239,6 +239,13 @@ static void new_announcer(AvahiServer *s, AvahiInterface *i, AvahiEntry *e) {
+     if (!avahi_interface_match(i, e->interface, e->protocol) || !i->announcing || !avahi_entry_is_commited(e))
+         return;
+ 
++    /* reaper 2026-11-19 (owner): reflect-guest. The router's own records (its host name, its addresses, its service
++     * files) are never probed, announced or answered on a guest interface: with no announcer there,
++     * avahi_entry_is_registered() is false for it, so queries from that network get no local answer and its devices
++     * cannot push the router's records into conflict. The interface still receives and reflects (server.c). */
++    if (avahi_reflect_guest_types(s, i))
++        return;
++
+     /* We don't want duplicate announcers */
+     if (get_announcer(s, e, i))
+         return;
+diff --git a/release/src/router/avahi/avahi-core/core.h b/release/src/router/avahi/avahi-core/core.h
+index 26c037047d..b703bd0c82 100644
+--- a/release/src/router/avahi/avahi-core/core.h
++++ b/release/src/router/avahi/avahi-core/core.h
+@@ -72,6 +72,7 @@ typedef struct AvahiServerConfig {
+     unsigned ratelimit_burst;         /**< If ratelimit_interval is non-zero, rate-limiting burst parameter. */
+     char **aliases;                   /**< Additional names to publish as CNAME for this host. */
+     AvahiStringList *reflect_interfaces; /**< reaper 2026-11-14: if enable_reflector is 1 and this is set, only these interfaces take part in reflection */
++    AvahiStringList *reflect_guest;      /**< reaper 2026-11-19: one "<ifname>:<type>:<type>..." per guest interface - reflected only to and from the reflect_interfaces, through that guest's service types; never guest to guest; no local records on it */
+ } AvahiServerConfig;
+ 
+ /** Allocate a new mDNS responder object. */
+diff --git a/release/src/router/avahi/avahi-core/internal.h b/release/src/router/avahi/avahi-core/internal.h
+index b8f930269c..b0a22116a4 100644
+--- a/release/src/router/avahi/avahi-core/internal.h
++++ b/release/src/router/avahi/avahi-core/internal.h
+@@ -159,6 +159,9 @@ struct AvahiServer {
+ 
+     AvahiMulticastLookupEngine *multicast_lookup_engine;
+     AvahiWideAreaLookupEngine *wide_area_lookup_engine;
++
++    /* reaper 2026-11-19: reflect-guest - names seen on the main network (server.c rg_seen_*) */
++    struct RgSeen *reaper_rg_seen;
+ };
+ 
+ void avahi_entry_free(AvahiServer*s, AvahiEntry *e);
+@@ -180,6 +183,9 @@ void avahi_host_rr_entry_group_callback(AvahiServer *s, AvahiSEntryGroup *g, Ava
+ 
+ void avahi_server_decrease_host_rr_pending(AvahiServer *s);
+ 
++/* reaper 2026-11-19: reflect-guest - the service-type list ("" for none) of a guest interface, NULL when i is not one */
++const char *avahi_reflect_guest_types(AvahiServer *s, AvahiInterface *i);
++
+ int avahi_server_set_errno(AvahiServer *s, int error);
+ 
+ int avahi_server_is_service_local(AvahiServer *s, AvahiIfIndex interface, AvahiProtocol protocol, const char *name);
+diff --git a/release/src/router/avahi/avahi-core/server.c b/release/src/router/avahi/avahi-core/server.c
+index 35ae9290bc..610d31062f 100644
+--- a/release/src/router/avahi/avahi-core/server.c
++++ b/release/src/router/avahi/avahi-core/server.c
+@@ -511,19 +511,322 @@ static int reflect_iface_ok(AvahiServer *s, AvahiInterface *i) {
+     return 0;
+ }
+ 
++/* REAPER-RGUEST-BEGIN reaper 2026-11-19 (owner): reflect-guest - device discovery between the main network and chosen
++ * guest networks, star only. An interface named in reflect-guest ("<ifname>:<type>:<type>...") is a GUEST interface;
++ * the interfaces in reflect-interfaces are the CORE (with reflect-guest set, an empty reflect-interfaces names none).
++ *   core <-> core   the reflect-interfaces rule above, unfiltered;
++ *   core <-> guest  reflected through THAT guest's service types, both directions;
++ *   guest <-> guest never; an interface in neither list never.
++ * The filter (only when one end is a guest): PTR whose owner is an allowed type (or its subtype) and whose target is
++ * an instance of it, or a type-enumeration PTR (_services._dns-sd._udp.local) whose target is an allowed type;
++ * SRV / TXT of an instance of an allowed type; A / AAAA only for a host that an allowed SRV record in the SENDING
++ * network's cache points at (never the router's own name); nothing else (HINFO, NSEC, CNAME, reverse PTR...).
++ * A type matches anchored: the name equals "<type>.local" or ends with ".<type>.local" after an unescaped dot, so
++ * _ipp._tcp never matches _ipps._tcp. Queries from either side cross only for such names (A / AAAA: an allowed host in
++ * the answering network's cache). The router's own records never go onto a guest interface (announce.c). With
++ * reflect-guest unset every function here reduces to reflect_iface_ok() on both ends: stock / 2026-11-14 behaviour. */
++
++#define RG_ENUM_NAME "_services._dns-sd._udp.local"
++
++/* mode 0: n is an instance of type t ("<label>.<t>.local", a subtype included); 1: that or n is "<t>.local";
++ * 2: only "<t>.local" */
++static int rg_name_is_type(const char *n, const char *t, size_t tl, int mode) {
++    size_t nl = strlen(n), k, b;
++
++    if (!tl || nl < tl + 6 || strcasecmp(n + nl - 6, ".local") != 0 || strncasecmp(n + nl - 6 - tl, t, tl) != 0)
++        return 0;
++    if (nl == tl + 6)
++        return mode != 0;
++    if (mode == 2)
++        return 0;
++    k = nl - 7 - tl;
++    if (k == 0 || n[k] != '.')
++        return 0;
++    for (b = 0; k > 0 && n[k - 1] == '\\'; k--)
++        b++;
++    return !(b & 1);
++}
++
++/* types = "<type>:<type>..." */
++static int rg_has_type(const char *types, const char *n, int mode) {
++    const char *t = types, *c;
++
++    while (t && *t) {
++        c = strchr(t, ':');
++        if (rg_name_is_type(n, t, c ? (size_t) (c - t) : strlen(t), mode))
++            return 1;
++        t = c ? c + 1 : NULL;
++    }
++    return 0;
++}
++
++/* an allowed SRV record in this cache points at host */
++static int rg_host_ok(AvahiCache *c, const char *types, const char *host) {
++    AvahiCacheEntry *e;
++
++    if (!c || !host)
++        return 0;
++    for (e = c->entries; e; e = e->entry_next)
++        if (e->record->key->type == AVAHI_DNS_TYPE_SRV && e->record->key->clazz == AVAHI_DNS_CLASS_IN &&
++            rg_has_type(types, e->record->key->name, 0) && avahi_domain_equal(e->record->data.srv.name, host))
++            return 1;
++    return 0;
++}
++
++/* may record r cross between a guest (types) and the core; src = the cache of the network it comes from,
++ * own = the router's host name */
++static int rg_record_ok(const char *types, AvahiRecord *r, AvahiCache *src, const char *own) {
++    const char *n = r->key->name;
++
++    if (r->key->clazz != AVAHI_DNS_CLASS_IN)
++        return 0;
++    switch (r->key->type) {
++        case AVAHI_DNS_TYPE_PTR:
++            if (strcasecmp(n, RG_ENUM_NAME) == 0)
++                return rg_has_type(types, r->data.ptr.name, 2);
++            return rg_has_type(types, n, 1) && rg_has_type(types, r->data.ptr.name, 0);
++        case AVAHI_DNS_TYPE_SRV:
++        case AVAHI_DNS_TYPE_TXT:
++            return rg_has_type(types, n, 0);
++        case AVAHI_DNS_TYPE_A:
++        case AVAHI_DNS_TYPE_AAAA:
++            if (own && avahi_domain_equal(n, own))
++                return 0;
++            return rg_host_ok(src, types, n);
++        default:
++            return 0;
++    }
++}
++
++/* may query key k cross between a guest (types) and the core; answering = the cache of the network it goes to */
++static int rg_key_ok(const char *types, AvahiKey *k, AvahiCache *answering) {
++    const char *n = k->name;
++
++    if (k->clazz != AVAHI_DNS_CLASS_IN && k->clazz != AVAHI_DNS_CLASS_ANY)
++        return 0;
++    if (rg_has_type(types, n, 1))
++        return 1;
++    if (strcasecmp(n, RG_ENUM_NAME) == 0)
++        return k->type == AVAHI_DNS_TYPE_PTR || k->type == AVAHI_DNS_TYPE_ANY;
++    if (k->type == AVAHI_DNS_TYPE_A || k->type == AVAHI_DNS_TYPE_AAAA || k->type == AVAHI_DNS_TYPE_ANY)
++        return rg_host_ok(answering, types, n);
++    return 0;
++}
++
++const char *avahi_reflect_guest_types(AvahiServer *s, AvahiInterface *i) {
++    AvahiStringList *l;
++    const char *n = i->hardware->name;
++    size_t nl = strlen(n);
++
++    for (l = s->config.reflect_guest; l; l = l->next)
++        if (l->size >= nl && strncasecmp((const char*) l->text, n, nl) == 0 && (l->size == nl || l->text[nl] == ':'))
++            return (const char*) l->text + (l->size == nl ? nl : nl + 1);
++    return NULL;
++}
++
++static int rg_core_ok(AvahiServer *s, AvahiInterface *i) {
++    return reflect_iface_ok(s, i) && (s->config.reflect_interfaces || !s->config.reflect_guest) &&
++        !avahi_reflect_guest_types(s, i);
++}
++
++/* the receiving end takes part at all */
++static int reflect_side_ok(AvahiServer *s, AvahiInterface *i) {
++    return rg_core_ok(s, i) || avahi_reflect_guest_types(s, i) != NULL;
++}
++
++/* i -> j allowed; *types = NULL unfiltered (core <-> core), else the guest end's service types */
++static int reflect_pair_ok(AvahiServer *s, AvahiInterface *i, AvahiInterface *j, const char **types) {
++    const char *gi = avahi_reflect_guest_types(s, i), *gj = avahi_reflect_guest_types(s, j);
++
++    *types = NULL;
++    if (gi && gj)
++        return 0;
++    if (gi || gj) {
++        if (!rg_core_ok(s, gi ? j : i))
++            return 0;
++        *types = gi ? gi : gj;
++        return 1;
++    }
++    return rg_core_ok(s, i) && rg_core_ok(s, j);
++}
++
++static void* rg_found_callback(AVAHI_GCC_UNUSED AvahiCache *c, AVAHI_GCC_UNUSED AvahiKey *pattern, AVAHI_GCC_UNUSED AvahiCacheEntry *e, void* userdata) {
++    return userdata;
++}
++
++/* a core interface's cache holds this name and type (owned by a main-network device) */
++static int rg_core_claims(AvahiServer *s, AvahiKey *k) {
++    AvahiInterface *x;
++
++    for (x = s->monitor->interfaces; x; x = x->interface_next)
++        if (x->cache && rg_core_ok(s, x) && avahi_cache_walk(x->cache, k, rg_found_callback, x))
++            return 1;
++    return 0;
++}
++
++/* a name this router publishes itself: its host name, its aliases (CNAMEs such as findasus.local), its service
++ * instances, its address records - every local entry, any type */
++static int rg_local_name(AvahiServer *s, const char *n) {
++    AvahiEntry *e;
++
++    if (!n)
++        return 0;
++    for (e = s->entries; e; e = e->entries_next)
++        if (avahi_domain_equal(e->record->key->name, n))
++            return 1;
++    return 0;
++}
++
++/* reaper 2026-11-19 (review): names seen on the main network during this daemon's life - A / AAAA owners, SRV
++ * targets, SRV / TXT instance names, PTR targets received on a CORE interface (only while reflect-guest is set). A
++ * main device's record leaves the router's cache after its TTL while main clients may still hold it; a guest must not
++ * take such a name either. Fixed size (RG_SEEN_MAX), FIFO replacement, lower-case copies, freed with the server. */
++#define RG_SEEN_MAX 512
++
++struct RgSeen {
++    unsigned next;
++    unsigned hash[RG_SEEN_MAX];
++    char *name[RG_SEEN_MAX];
++};
++
++static unsigned rg_seen_hash(const char *n) {
++    unsigned h = 2166136261U;
++
++    for (; *n; n++)
++        h = (h ^ (unsigned char) (*n >= 'A' && *n <= 'Z' ? *n + 32 : *n)) * 16777619U;
++    return h;
++}
++
++static int rg_seen_has(AvahiServer *s, const char *n) {
++    unsigned h, k;
++
++    if (!s->reaper_rg_seen || !n)
++        return 0;
++    h = rg_seen_hash(n);
++    for (k = 0; k < RG_SEEN_MAX; k++)
++        if (s->reaper_rg_seen->name[k] && s->reaper_rg_seen->hash[k] == h && strcasecmp(s->reaper_rg_seen->name[k], n) == 0)
++            return 1;
++    return 0;
++}
++
++static void rg_seen_add(AvahiServer *s, const char *n) {
++    struct RgSeen *t;
++    char *c, *p;
++
++    if (!n || !*n || rg_seen_has(s, n))
++        return;
++    if (!s->reaper_rg_seen && !(s->reaper_rg_seen = avahi_new0(struct RgSeen, 1)))
++        return;
++    if (!(c = avahi_strdup(n)))
++        return;
++    for (p = c; *p; p++)
++        if (*p >= 'A' && *p <= 'Z')
++            *p += 32;
++    t = s->reaper_rg_seen;
++    avahi_free(t->name[t->next]);
++    t->name[t->next] = c;
++    t->hash[t->next] = rg_seen_hash(c);
++    t->next = (t->next + 1) % RG_SEEN_MAX;
++}
++
++/* a record received on a core interface (handle_response_packet): remember the names it holds */
++static void rg_seen_note(AvahiServer *s, AvahiInterface *i, AvahiRecord *r) {
++    if (!s->config.enable_reflector || !s->config.reflect_guest || r->key->clazz != AVAHI_DNS_CLASS_IN || !rg_core_ok(s, i))
++        return;
++    switch (r->key->type) {
++        case AVAHI_DNS_TYPE_A:
++        case AVAHI_DNS_TYPE_AAAA:
++        case AVAHI_DNS_TYPE_TXT:
++            rg_seen_add(s, r->key->name);
++            break;
++        case AVAHI_DNS_TYPE_SRV:
++            rg_seen_add(s, r->key->name);
++            rg_seen_add(s, r->data.srv.name);
++            break;
++        case AVAHI_DNS_TYPE_PTR:
++            if (strcasecmp(r->key->name, RG_ENUM_NAME) != 0)
++                rg_seen_add(s, r->data.ptr.name);
++            break;
++        default:
++            break;
++    }
++}
++
++static void rg_seen_free(AvahiServer *s) {
++    unsigned k;
++
++    if (!s->reaper_rg_seen)
++        return;
++    for (k = 0; k < RG_SEEN_MAX; k++)
++        avahi_free(s->reaper_rg_seen->name[k]);
++    avahi_free(s->reaper_rg_seen);
++    s->reaper_rg_seen = NULL;
++}
++
++static void* rg_same_callback(AVAHI_GCC_UNUSED AvahiCache *c, AVAHI_GCC_UNUSED AvahiKey *pattern, AvahiCacheEntry *e, void* userdata) {
++    return avahi_record_equal_no_ttl(e->record, userdata) ? e : NULL;
++}
++
++/* the instance a PTR names is held on the main network: an SRV or TXT for it in a core cache (no memory = held) */
++static int rg_core_holds_instance(AvahiServer *s, const char *n) {
++    AvahiKey *k;
++    int held;
++
++    if (!(k = avahi_key_new(n, AVAHI_DNS_CLASS_IN, AVAHI_DNS_TYPE_SRV)))
++        return 1;
++    held = rg_core_claims(s, k);
++    avahi_key_unref(k);
++    if (held)
++        return 1;
++    if (!(k = avahi_key_new(n, AVAHI_DNS_CLASS_IN, AVAHI_DNS_TYPE_TXT)))
++        return 1;
++    held = rg_core_claims(s, k);
++    avahi_key_unref(k);
++    return held;
++}
++
++/* record r crossing a guest boundary (gt = the guest's types): the filter; and from a guest never a name this router
++ * publishes (as the owner or as an SRV / PTR target) and never a unique name a main-network device holds in a core
++ * cache or seen there (rg_seen_*), and no goodbye for what it did not announce. A PTR owner is a shared type name the router may publish too (_ipp._tcp): there the target (an instance)
++ * decides; a type-enumeration PTR points at a shared type name, which the router may publish as well. */
++static int rg_cross_ok(AvahiServer *s, const char *gt, AvahiRecord *r, AvahiCache *from, int from_guest) {
++    if (!rg_record_ok(gt, r, from, s->host_name_fqdn))
++        return 0;
++    if (!from_guest)
++        return 1;
++    /* a goodbye (TTL 0) only for a record this guest network announced itself (in its own cache) */
++    if (r->ttl == 0 && !(from && avahi_cache_walk(from, r->key, rg_same_callback, r)))
++        return 0;
++    if (r->key->type == AVAHI_DNS_TYPE_PTR)
++        return strcasecmp(r->key->name, RG_ENUM_NAME) == 0 ||
++            (!rg_local_name(s, r->data.ptr.name) && !rg_seen_has(s, r->data.ptr.name) &&
++             !rg_core_holds_instance(s, r->data.ptr.name));
++    if (r->key->type == AVAHI_DNS_TYPE_SRV && (rg_local_name(s, r->data.srv.name) || rg_seen_has(s, r->data.srv.name)))
++        return 0;
++    return !rg_local_name(s, r->key->name) && !rg_seen_has(s, r->key->name) && !rg_core_claims(s, r->key);
++}
++/* REAPER-RGUEST-END */
++
+ static void reflect_response(AvahiServer *s, AvahiInterface *i, AvahiRecord *r, int flush_cache) {
+     AvahiInterface *j;
++    const char *gt;
++    int gi;
+ 
+     assert(s);
+     assert(i);
+     assert(r);
+ 
+-    if (!s->config.enable_reflector || !reflect_iface_ok(s, i))
++    if (!s->config.enable_reflector || !reflect_side_ok(s, i))
+         return;
+ 
++    /* reaper 2026-11-19: a guest's record reaches the main network WITHOUT the cache-flush bit, so a name the checks
++     * cannot see (a main device's record already expired from the cache) can never evict the real owner's records */
++    gi = avahi_reflect_guest_types(s, i) != NULL;
++
+     for (j = s->monitor->interfaces; j; j = j->interface_next)
+-        if (j != i && reflect_iface_ok(s, j) && (s->config.reflect_ipv || j->protocol == i->protocol))
+-            avahi_interface_post_response(j, r, flush_cache, NULL, 1);
++        if (j != i && reflect_pair_ok(s, i, j, &gt) && (s->config.reflect_ipv || j->protocol == i->protocol) &&
++            (!gt || rg_cross_ok(s, gt, r, i->cache, gi)))
++            avahi_interface_post_response(j, r, gi ? 0 : flush_cache, NULL, 1);
+ }
+ 
+ static void* reflect_cache_walk_callback(AvahiCache *c, AvahiKey *pattern, AvahiCacheEntry *e, void* userdata) {
+@@ -546,40 +849,83 @@ static void* reflect_cache_walk_callback(AvahiCache *c, AvahiKey *pattern, Avahi
+     return NULL;
+ }
+ 
++/* reaper 2026-11-19: reflect-guest - a cache answer crosses into or out of a guest network only through its filter */
++struct rg_walk {
++    AvahiServer *server;
++    const char *types;
++    int from_guest;
++};
++
++static void* rg_cache_walk_callback(AvahiCache *c, AvahiKey *pattern, AvahiCacheEntry *e, void* userdata) {
++    struct rg_walk *w = userdata;
++    AvahiRecord *r;
++
++    assert(w);
++    assert(e);
++
++    if (!rg_cross_ok(w->server, w->types, e->record, c, w->from_guest))
++        return NULL;
++    if (!w->from_guest)
++        return reflect_cache_walk_callback(c, pattern, e, w->server);
++
++    /* from a guest cache: as reflect_cache_walk_callback, but never with the cache-flush bit */
++    r = e->record;
++    if ((r->key->type == AVAHI_DNS_TYPE_AAAA) &&
++            (r->data.aaaa.address.address[0] == 0xFE) &&
++            (r->data.aaaa.address.address[1] == 0x80))
++        return NULL;
++    avahi_record_list_push(w->server->record_list, r, 0, 0, 0);
++    return NULL;
++}
++
+ static void reflect_query(AvahiServer *s, AvahiInterface *i, AvahiKey *k) {
+     AvahiInterface *j;
++    const char *gt;
++    struct rg_walk w;
+ 
+     assert(s);
+     assert(i);
+     assert(k);
+ 
+-    if (!s->config.enable_reflector || !reflect_iface_ok(s, i))
++    if (!s->config.enable_reflector || !reflect_side_ok(s, i))
+         return;
+ 
+     for (j = s->monitor->interfaces; j; j = j->interface_next)
+-        if (j != i && reflect_iface_ok(s, j) && (s->config.reflect_ipv || j->protocol == i->protocol)) {
++        if (j != i && reflect_pair_ok(s, i, j, &gt) && (s->config.reflect_ipv || j->protocol == i->protocol)) {
++            /* reaper 2026-11-19: across a guest boundary only a name of that guest's service types */
++            if (gt && !rg_key_ok(gt, k, j->cache))
++                continue;
++
+             /* Post the query to other networks */
+             avahi_interface_post_query(j, k, 1, NULL);
+ 
+             /* Reply from caches of other network. This is needed to
+              * "work around" known answer suppression. */
+ 
+-            avahi_cache_walk(j->cache, k, reflect_cache_walk_callback, s);
++            if (gt) {
++                w.server = s;
++                w.types = gt;
++                w.from_guest = avahi_reflect_guest_types(s, j) != NULL;
++                avahi_cache_walk(j->cache, k, rg_cache_walk_callback, &w);
++            } else
++                avahi_cache_walk(j->cache, k, reflect_cache_walk_callback, s);
+         }
+ }
+ 
+ static void reflect_probe(AvahiServer *s, AvahiInterface *i, AvahiRecord *r) {
+     AvahiInterface *j;
++    const char *gt;
+ 
+     assert(s);
+     assert(i);
+     assert(r);
+ 
+-    if (!s->config.enable_reflector || !reflect_iface_ok(s, i))
++    if (!s->config.enable_reflector || !reflect_side_ok(s, i))
+         return;
+ 
+     for (j = s->monitor->interfaces; j; j = j->interface_next)
+-        if (j != i && reflect_iface_ok(s, j) && (s->config.reflect_ipv || j->protocol == i->protocol))
++        if (j != i && reflect_pair_ok(s, i, j, &gt) && (s->config.reflect_ipv || j->protocol == i->protocol) &&
++            (!gt || rg_cross_ok(s, gt, r, i->cache, avahi_reflect_guest_types(s, i) != NULL)))
+             avahi_interface_post_probe(j, r, 1);
+ }
+ 
+@@ -730,6 +1076,7 @@ static void handle_response_packet(AvahiServer *s, AvahiDnsPacket *p, AvahiInter
+ 
+             if (handle_conflict(s, i, record, cache_flush)) {
+                 if (!from_local_iface) {
++                    rg_seen_note(s, i, record);	/* reaper 2026-11-19: names seen on the main network */
+                     if (!avahi_record_is_link_local_address(record))
+                         reflect_response(s, i, record, cache_flush);
+                     avahi_cache_update(i->cache, record, cache_flush, a);
+@@ -838,6 +1185,7 @@ static void legacy_unicast_reflect_slot_timeout(AvahiTimeEvent *e, void *userdat
+ static void reflect_legacy_unicast_query_packet(AvahiServer *s, AvahiDnsPacket *p, AvahiInterface *i, const AvahiAddress *a, uint16_t port) {
+     AvahiLegacyUnicastReflectSlot *slot;
+     AvahiInterface *j;
++    const char *gt;
+ 
+     assert(s);
+     assert(p);
+@@ -846,8 +1194,15 @@ static void reflect_legacy_unicast_query_packet(AvahiServer *s, AvahiDnsPacket *
+     assert(port > 0);
+     assert(i->protocol == a->proto);
+ 
+-    if (!s->config.enable_reflector || !reflect_iface_ok(s, i))
++    if (!s->config.enable_reflector || !reflect_side_ok(s, i))
++        return;
++
++    /* reaper 2026-11-19: reflect-guest. Legacy unicast queries and their answers are relayed untouched, so they
++     * cannot go through the per-record filter: they never cross a guest boundary (core <-> core only). */
++    if (avahi_reflect_guest_types(s, i)) {
++        avahi_log_debug("reflect-guest: legacy unicast query on %s is not reflected (guest network).", i->hardware->name);
+         return;
++    }
+ 
+     /* Reflecting legacy unicast queries is a little more complicated
+        than reflecting normal queries, since we must route the
+@@ -877,7 +1232,7 @@ static void reflect_legacy_unicast_query_packet(AvahiServer *s, AvahiDnsPacket *
+     for (j = s->monitor->interfaces; j; j = j->interface_next)
+         if (j->announcing &&
+             j != i &&
+-            reflect_iface_ok(s, j) &&
++            reflect_pair_ok(s, i, j, &gt) && !gt &&
+             (s->config.reflect_ipv || j->protocol == i->protocol)) {
+ 
+             if (j->protocol == AVAHI_PROTO_INET && s->fd_legacy_unicast_ipv4 >= 0) {
+@@ -1491,6 +1846,7 @@ AvahiServer *avahi_server_new(const AvahiPoll *poll_api, const AvahiServerConfig
+ 
+     s->legacy_unicast_reflect_slots = NULL;
+     s->legacy_unicast_reflect_id = 0;
++    s->reaper_rg_seen = NULL;
+ 
+     s->record_list = avahi_record_list_new();
+ 
+@@ -1556,6 +1912,8 @@ void avahi_server_free(AvahiServer* s) {
+ 
+     free_slots(s);
+ 
++    rg_seen_free(s);	/* reaper 2026-11-19 */
++
+     avahi_hashmap_free(s->entries_by_key);
+     avahi_record_list_free(s->record_list);
+     avahi_hashmap_free(s->record_browser_hashmap);
+@@ -1660,6 +2018,7 @@ AvahiServerConfig* avahi_server_config_init(AvahiServerConfig *c) {
+     c->reflect_ipv = 0;
+     c->reflect_filters = NULL;
+     c->reflect_interfaces = NULL;
++    c->reflect_guest = NULL;
+     c->add_service_cookie = 0;
+     c->enable_wide_area = 0;
+     c->n_wide_area_servers = 0;
+@@ -1684,13 +2043,14 @@ void avahi_server_config_free(AvahiServerConfig *c) {
+     avahi_string_list_free(c->browse_domains);
+     avahi_string_list_free(c->reflect_filters);
+     avahi_string_list_free(c->reflect_interfaces);
++    avahi_string_list_free(c->reflect_guest);
+     avahi_string_list_free(c->allow_interfaces);
+     avahi_string_list_free(c->deny_interfaces);
+ }
+ 
+ AvahiServerConfig* avahi_server_config_copy(AvahiServerConfig *ret, const AvahiServerConfig *c) {
+     char *d = NULL, *h = NULL;
+-    AvahiStringList *browse = NULL, *allow = NULL, *deny = NULL, *reflect = NULL, *rifs = NULL;
++    AvahiStringList *browse = NULL, *allow = NULL, *deny = NULL, *reflect = NULL, *rifs = NULL, *rguest = NULL;
+     assert(ret);
+     assert(c);
+ 
+@@ -1744,6 +2104,17 @@ AvahiServerConfig* avahi_server_config_copy(AvahiServerConfig *ret, const AvahiS
+         return NULL;
+     }
+ 
++    if (!(rguest = avahi_string_list_copy(c->reflect_guest)) && c->reflect_guest) {	/* reaper 2026-11-19 */
++        avahi_string_list_free(rifs);
++        avahi_string_list_free(reflect);
++        avahi_string_list_free(allow);
++        avahi_string_list_free(browse);
++        avahi_string_list_free(deny);
++        avahi_free(h);
++        avahi_free(d);
++        return NULL;
++    }
++
+     *ret = *c;
+     ret->host_name = h;
+     ret->domain_name = d;
+@@ -1752,6 +2123,7 @@ AvahiServerConfig* avahi_server_config_copy(AvahiServerConfig *ret, const AvahiS
+     ret->deny_interfaces = deny;
+     ret->reflect_filters = reflect;
+     ret->reflect_interfaces = rifs;
++    ret->reflect_guest = rguest;
+ 
+     return ret;
+ }
+diff --git a/release/src/router/avahi/avahi-daemon/ini-file-parser.c b/release/src/router/avahi/avahi-daemon/ini-file-parser.c
+index 0a99ce366c..6835114154 100644
+--- a/release/src/router/avahi/avahi-daemon/ini-file-parser.c
++++ b/release/src/router/avahi/avahi-daemon/ini-file-parser.c
+@@ -50,7 +50,7 @@ AvahiIniFile* avahi_ini_file_load(const char *fname) {
+ 
+     line = 0;
+     while (!feof(fo)) {
+-        char ln[256], *s, *e;
++        char ln[4096], *s, *e;	/* reaper 2026-11-19: was 256 - a longer reflect-guest= line split and avahi refused its config */
+         AvahiIniFilePair *pair;
+ 
+         if (!(fgets(ln, sizeof(ln), fo)))
+diff --git a/release/src/router/avahi/avahi-daemon/main.c b/release/src/router/avahi/avahi-daemon/main.c
+index 8397080cef..ca21568734 100644
+--- a/release/src/router/avahi/avahi-daemon/main.c
++++ b/release/src/router/avahi/avahi-daemon/main.c
+@@ -612,6 +612,56 @@ static char *get_machine_id(void) {
+     return avahi_strndup(buf, sizeof buf);
+ }
+ 
++/* reaper 2026-11-19 (owner): reflect-guest. One entry "<ifname>:<type>:<type>..." per guest network; rc
++ * (generate_mdns_config) writes the types expanded and validated. Here the interface name must be 1-15 of
++ * [A-Za-z0-9._-]; a type must be _name._tcp or _name._udp (name 1-32 of [A-Za-z0-9-]); others are dropped with a
++ * warning, at most 32 types are kept. Returns a new string, or NULL when there is no usable interface name. */
++static int reaper_rg_type_ok(const char *t, size_t n) {
++    size_t k, d;
++
++    if (n < 7 || n > 38 || t[0] != '_')
++        return 0;
++    d = n - 5;
++    if (strncmp(t + d, "._tcp", 5) != 0 && strncmp(t + d, "._udp", 5) != 0)
++        return 0;
++    for (k = 1; k < d; k++)
++        if (!((t[k] >= 'a' && t[k] <= 'z') || (t[k] >= 'A' && t[k] <= 'Z') || (t[k] >= '0' && t[k] <= '9') || t[k] == '-'))
++            return 0;
++    return 1;
++}
++
++static char *reaper_rg_entry(const char *v) {
++    const char *c = strchr(v, ':'), *t, *e;
++    size_t il = c ? (size_t) (c - v) : strlen(v), k, tl;
++    unsigned n = 0;
++    char *out, *o;
++
++    if (il < 1 || il > 15)
++        return NULL;
++    for (k = 0; k < il; k++)
++        if (!((v[k] >= 'a' && v[k] <= 'z') || (v[k] >= 'A' && v[k] <= 'Z') || (v[k] >= '0' && v[k] <= '9') ||
++              v[k] == '.' || v[k] == '_' || v[k] == '-'))
++            return NULL;
++    if (!(out = avahi_new(char, strlen(v) + 1)))
++        return NULL;
++    memcpy(out, v, il);
++    o = out + il;
++    for (t = c; t; t = e) {
++        t++;
++        e = strchr(t, ':');
++        tl = e ? (size_t) (e - t) : strlen(t);
++        if (reaper_rg_type_ok(t, tl) && n < 32) {
++            *o++ = ':';
++            memcpy(o, t, tl);
++            o += tl;
++            n++;
++        } else if (tl)
++            avahi_log_warn("reflect-guest: service type \"%.*s\" for %.*s ignored", (int) tl, t, (int) il, v);
++    }
++    *o = 0;
++    return out;
++}
++
+ static int load_config_file(DaemonConfig *c) {
+     int r = -1;
+     AvahiIniFile *f;
+@@ -879,6 +929,25 @@ static int load_config_file(DaemonConfig *c) {
+ 
+                     avahi_strfreev(e);
+                 }
++                else if (strcasecmp(p->key, "reflect-guest") == 0) {	/* reaper 2026-11-19 */
++                    char **e, **t;
++
++                    avahi_string_list_free(c->server_config.reflect_guest);
++                    c->server_config.reflect_guest = NULL;
++                    e = avahi_split_csv(p->value);
++
++                    for (t = e; *t; t++) {
++                        char *ge = reaper_rg_entry(*t);
++
++                        if (ge) {
++                            c->server_config.reflect_guest = avahi_string_list_add(c->server_config.reflect_guest, ge);
++                            avahi_free(ge);
++                        } else if (**t)
++                            avahi_log_warn("reflect-guest: entry \"%s\" ignored (no valid interface name)", *t);
++                    }
++
++                    avahi_strfreev(e);
++                }
+                 else {
+                     avahi_log_error("Invalid configuration key \"%s\" in group \"%s\"\n", p->key, g->name);
+                     goto finish;
+@@ -1742,6 +1811,14 @@ int main(int argc, char *argv[]) {
+         sd_notifyf(0, "STATUS=%s "PACKAGE_VERSION" starting up.", argv0);
+         avahi_set_proc_title(argv0, "%s: starting up", argv0);
+ 
++        {   /* reaper 2026-11-19: reflect-guest, one line per guest network (syslog) */
++            AvahiStringList *l;
++
++            if (config.server_config.enable_reflector)
++                for (l = config.server_config.reflect_guest; l; l = l->next)
++                    avahi_log_info("reflect-guest %s: a guest network - only these service types cross to and from the main network; the router's own records stay off it.", (const char*) l->text);
++        }
++
+         if (run_server(&config) == 0)
+             r = 0;
+ 
+diff --git a/release/src/router/httpd/web.c b/release/src/router/httpd/web.c
+index 40e9e9a34a..ac543b8bea 100644
+--- a/release/src/router/httpd/web.c
++++ b/release/src/router/httpd/web.c
+@@ -676,6 +676,7 @@ static int get_client_detail_info(struct json_object *clients, struct json_objec
+ /* v3.3.3: the device store feeds the client-list hook on a box that is not routing (defined with the rdev code) */
+ static int rdev_nonrouting(void);
+ static void rdev_merge_clientlist(struct json_object *clients, struct json_object *macArray);
++static void rdev_mark_mlo(struct json_object *clients);	/* REAPER-AIMESH-MLO: defined with the rdev code */
+ static int get_custom_clientlist_info(struct json_object *json_object_ptr);
+ static int get_client_name(char *ipaddr, char *name, size_t name_len);
+ #define CLIENTAPILEVEL "7"
+@@ -11530,6 +11531,10 @@ static int ej_get_clientlist(int eid, webs_t wp, int argc, char_t **argv)
+ 	 * (GT-BE19000 tester, Access Point mode). Reaper's own presence scan fills it. */
+ 	if (rdev_nonrouting())
+ 		rdev_merge_clientlist(clients, macArray);
++	/* reaper 2026-11-19 REAPER-AIMESH-MLO (v3.8.1 alpha field report): in EVERY mode, raise "mlo" to "1" on the
++	 * rows of devices Reaper's own scan knows are MLO - the AiMesh tab and the stock client lists read it from
++	 * here and networkmap leaves it 0 for them. Cached sources only (see rdev_mark_mlo). */
++	rdev_mark_mlo(clients);
+ 	json_object_object_add(clients, "maclist", macArray);
+ 	json_object_object_add(clients, "ClientAPILevel", json_object_new_string(CLIENTAPILEVEL));
+ 	websWrite(wp, "%s", json_object_to_json_string(clients));
+@@ -14006,7 +14011,9 @@ static int reaper_syscmd_shape_ok(const char *page, const char *cmd, char *mac,
+ /* is t[0..n) a guest-network service (its name, arguments ignored) */
+ static int reaper_sdn_tok(const char *t, size_t n)
+ {
+-	static const char *const tok[] = { "restart_sdn", "start_sdn_del", "restart_chilli", "restart_uam_srv", "restart_CP", NULL };
++	/* reaper 2026-11-19: restart_reaper_guest = the Network page's light save (chosen devices / device discovery) */
++	static const char *const tok[] = { "restart_sdn", "start_sdn_del", "restart_chilli", "restart_uam_srv", "restart_CP",
++					   "restart_reaper_guest", NULL };
+ 	size_t w = strcspn(t, " ;");
+ 	int i;
+ 
+@@ -29976,6 +29983,9 @@ static const struct { const char *sect; const char *nv; size_t max; } rcfg_flags
+ 	{ "pbr",    "reaper_pbr_enable", 2  },
+ 	{ "fw",     "reaper_fw_enable", 2   }, { "fw",     "reaper_fw_confirm", 6 },
+ 	{ "fw",     "reaper_fw_st_auto", 2  }, { "fw",     "reaper_fw_wt_auto", 2 },	/* 2026-11-17: the page's Auto refresh switches */
++	/* 2026-11-19: Firewall > Zone policies may open one-way paths from the main network into isolated guest networks
++	 * (rc/reaper_guest.c); 0 / 1, imported with the zone lists and kept with them */
++	{ "fw",     "reaper_fw_zpol_guest", 2 },
+ 	{ "warden", "rwarden_enable",   2   }, { "warden", "rwarden_feeds",  512 },
+ 	{ "warden", "rwarden_cfeeds",  4096 }, { "warden", "rwarden_geo",    512 },
+ 	{ "warden", "rwarden_dir",      6   }, { "warden", "rwarden_self",   2   },
+@@ -30057,6 +30067,7 @@ static const struct { const char *sect; const char *nv; size_t max; } rcfg_flags
+ 	{ "misc",   "reaper_bgdfs_stock", 2 },	/* review 2026-11-11 (C-5): Tweaks > Wireless stability */
+ 	{ "misc",   "reaper_dhd_ioto", 6    }, { "misc",   "disable_exap",   2   },	/* review 2026-11-11: Tweaks > Wireless stability */
+ 	{ "misc",   "reaper_mdns_reflect", 2 },	/* 2026-11-14: Tweaks > mDNS across networks */
++	{ "misc",   "reaper_ap_isolate_lan", 2 },	/* 2026-11-19: AP Isolation of the main network: 0 Wi-Fi only, 1 Wi-Fi and LAN ports */
+ };
+ #define RCFG_NFLAGS ((int)(sizeof(rcfg_flags) / sizeof(rcfg_flags[0])))
+ static const char *rcfg_fw_lists[] = { "obj", "grp", "svc", "zone", "zpol", "rules", "edef", "nat" };
+@@ -32510,18 +32521,17 @@ static const char *rdev_amesh_band(json_object *wl, const char *mac, const char
+ /* v3.1.1: the MLD MAC that owns a per-link MAC, from the live list. Parses the
+  * file once and re-reads only when cfg_mnt rewrote it (mtime/size) - this runs
+  * once per associated station per request. 1 + the MLD MAC, or 0. */
+-static int rdev_amesh_mld_of(const char *linkmac, char *out, size_t n)
++/* reaper 2026-11-19 REAPER-AIMESH-MLO: the parse cache, taken out of rdev_amesh_mld_of so the client-list hook's
++ * MLO mark (rdev_amesh_mld_walk) shares it. Unchanged rule: parsed once, re-read only when cfg_mnt rewrote the
++ * file (mtime/size), under cfg_mnt's lock; NULL when the file is absent or is not an object. */
++static json_object *rdev_amesh_wl_cache(void)
+ {
+ 	static json_object *cache = NULL;
+ 	static time_t cmtime = 0;
+ 	static off_t csize = -1;
+ 	struct stat st;
+-	int hit = 0;
+ 
+-	if (!out || n < 18) return 0;
+-	out[0] = '\0';
+-	if (!linkmac || strlen(linkmac) != 17) return 0;
+-	if (stat(ALLWCLIENT_LIST_JSON_PATH, &st) != 0 || !S_ISREG(st.st_mode)) return 0;
++	if (stat(ALLWCLIENT_LIST_JSON_PATH, &st) != 0 || !S_ISREG(st.st_mode)) return NULL;
+ 	if (!cache || st.st_mtime != cmtime || st.st_size != csize) {
+ 		int lock = file_lock(ALLWEVENT_FILE_LOCK);
+ 		if (cache) json_object_put(cache);
+@@ -32534,7 +32544,18 @@ static int rdev_amesh_mld_of(const char *linkmac, char *out, size_t n)
+ 			cache = NULL;
+ 		}
+ 	}
+-	if (!cache) return 0;
++	return cache;
++}
++
++static int rdev_amesh_mld_of(const char *linkmac, char *out, size_t n)
++{
++	json_object *cache;
++	int hit = 0;
++
++	if (!out || n < 18) return 0;
++	out[0] = '\0';
++	if (!linkmac || strlen(linkmac) != 17) return 0;
++	if ((cache = rdev_amesh_wl_cache()) == NULL) return 0;
+ 	json_object_object_foreach(cache, nodemac, bands) {
+ 		(void)nodemac;
+ 		if (hit || !json_object_is_type(bands, json_type_object)) continue;
+@@ -32557,6 +32578,29 @@ static int rdev_amesh_mld_of(const char *linkmac, char *out, size_t n)
+ 	return hit;
+ }
+ 
++/* reaper 2026-11-19 REAPER-AIMESH-MLO: every (per-link MAC, mld_mac) pair in the live list - this router's and
++ * every node's stations - off the same cache, for the client-list hook's link -> device fold. No file is read
++ * unless cfg_mnt rewrote it. */
++static void rdev_amesh_mld_walk(void (*cb)(const char *link, const char *mld, void *arg), void *arg)
++{
++	json_object *cache = rdev_amesh_wl_cache();
++
++	if (!cache || !cb) return;
++	json_object_object_foreach(cache, nodemac, bands) {
++		(void)nodemac;
++		if (!json_object_is_type(bands, json_type_object)) continue;
++		json_object_object_foreach(bands, bandkey, stas) {
++			(void)bandkey;
++			if (!json_object_is_type(stas, json_type_object)) continue;
++			json_object_object_foreach(stas, stamac, staval) {
++				const char *mld = rdev_sta_mldmac(staval);
++
++				if (mld) cb(stamac, mld, arg);
++			}
++		}
++	}
++}
++
+ static int rdev_amesh_is_wired(json_object *wired, const char *mac)
+ {
+ 	/* The TOP level needs the same type guard the levels below it get. The
+@@ -32669,6 +32713,8 @@ static void rdev_scan_amesh(struct rdev *v, int *n)
+ static void rdev_scan_amesh(struct rdev *v, int *n) { (void)v; (void)n; }
+ static int rdev_amesh_mld_of(const char *linkmac, char *out, size_t n)
+ { (void)linkmac; if (out && n) out[0] = '\0'; return 0; }
++static void rdev_amesh_mld_walk(void (*cb)(const char *link, const char *mld, void *arg), void *arg)
++{ (void)cb; (void)arg; }	/* REAPER-AIMESH-MLO: no cfg_mnt list without AiMesh sync */
+ #endif	/* RTCONFIG_CFGSYNC */
+ 
+ /* reaper 2026-08-19 / 2026-08-21 (field report, twice: "the wireless AiMesh
+@@ -32981,6 +33027,14 @@ static void rdev_bh_resolve(struct rdev *v, int n)
+ 	}
+ }
+ 
++/* reaper 2026-11-19 REAPER-AIMESH-MLO: the MLO switch, one rule for the collect and the client-list hook's mark */
++static int rdev_mlo_active(void)
++{
++	return (nvram_match("mld_enable", "1") &&
++	        (*nvram_safe_get("mld0_ifnames") || *nvram_safe_get("mld1_ifnames") ||
++	         *nvram_safe_get("mld2_ifnames"))) ? 1 : 0;
++}
++
+ static void rdev_collect(void)
+ {
+ 	struct rdev *dev = rdev_tab;
+@@ -32999,9 +33053,7 @@ static void rdev_collect(void)
+ 	 * Multi-Link Device is actually formed. When on, a client's per-link
+ 	 * affiliated MACs each appear in a radio assoclist as a locally-
+ 	 * administered, lease-less station - NOT a separate device. */
+-	mlo_on = (nvram_match("mld_enable", "1") &&
+-	          (*nvram_safe_get("mld0_ifnames") || *nvram_safe_get("mld1_ifnames") ||
+-	           *nvram_safe_get("mld2_ifnames"))) ? 1 : 0;
++	mlo_on = rdev_mlo_active();
+ 
+ 	ndn = reaper_nd_load(ndt, RDEV_ND);
+ 
+@@ -33340,6 +33392,9 @@ static void rdev_merge_clientlist(struct json_object *clients, struct json_objec
+ 				json_object_object_add(row, "sdn_idx", json_object_new_string(sdn));
+ 			if (d->via[0] && (!json_object_object_get_ex(row, "amesh_papMac", &o) || !o || !(s = json_object_get_string(o)) || !*s))
+ 				json_object_object_add(row, "amesh_papMac", json_object_new_string(d->via));
++			/* reaper 2026-11-19 REAPER-AIMESH-MLO: an MLO device in Reaper's table raises networkmap's "mlo"; a "1" is never cleared */
++			if (rdev_tab_mlo && d->mlo && (!json_object_object_get_ex(row, "mlo", &o) || !o || !(s = json_object_get_string(o)) || strcmp(s, "1")))
++				json_object_object_add(row, "mlo", json_object_new_string("1"));
+ 			if (!rdev_maclist_has(macArray, d->mac))
+ 				json_object_array_add(macArray, json_object_new_string(d->mac));
+ 			continue;
+@@ -33400,6 +33455,154 @@ static void rdev_merge_clientlist(struct json_object *clients, struct json_objec
+ 	}
+ }
+ 
++/* REAPER-AIMESH-MLO-BEGIN */
++/* reaper 2026-11-19 (v3.8.1 alpha field report: "devices connected as MLO are not showing in the AiMesh tab as
++ * MLO even when connected to the main router"). The AiMesh tab (aimesh_topology.html) and the stock client lists
++ * (client_function.js) read "mlo" from the get_clientlist hook - networkmap's closed list - and networkmap leaves it
++ * 0 for stations Reaper's own scan knows are MLO (the PSEUDO_MLO_CAP links cfg_mnt maps through mld_mac). The hook
++ * now only RAISES a row's "mlo" to "1" for such a device: a "1" is never cleared, no row is added, no other field
++ * changes. Host-tested by build-scripts/tests/test_aimesh_tab_mlo.py: json-c and libc only in this block. */
++#define RMLO_MAX 512
++struct rmlo_set {
++	char dev[RMLO_MAX][18];		/* device (MLD) MACs Reaper marks MLO - uppercase, sorted by rmlo_finish */
++	int ndev;
++	char link[RMLO_MAX][2][18];	/* per-link MAC -> its device MAC (cfg_mnt mld_mac), sorted by link MAC */
++	int nlink;
++};
++
++/* a MAC in the 17-char xx:xx:xx:xx:xx:xx shape, uppercased into out[18]; 0 for anything else */
++static int rmlo_norm(const char *in, char *out)
++{
++	int i;
++
++	if (!in || strlen(in) != 17)
++		return 0;
++	for (i = 0; i < 17; i++) {
++		unsigned char c = (unsigned char)in[i];
++
++		if ((i % 3 == 2) ? (c != ':') : !isxdigit(c))
++			return 0;
++		out[i] = (char)toupper(c);
++	}
++	out[17] = '\0';
++	return 1;
++}
++
++static void rmlo_reset(struct rmlo_set *s)
++{
++	s->ndev = 0;
++	s->nlink = 0;
++}
++
++/* full table = the rest is left out (those rows keep what networkmap said) */
++static void rmlo_add_dev(struct rmlo_set *s, const char *mac)
++{
++	if (s->ndev < RMLO_MAX && rmlo_norm(mac, s->dev[s->ndev]))
++		s->ndev++;
++}
++
++static void rmlo_add_link(struct rmlo_set *s, const char *link, const char *dev)
++{
++	if (s->nlink < RMLO_MAX && rmlo_norm(link, s->link[s->nlink][0]) && rmlo_norm(dev, s->link[s->nlink][1]))
++		s->nlink++;
++}
++
++/* both tables start each entry with a NUL-terminated MAC: one compare serves the sort and the lookups */
++static int rmlo_cmp(const void *a, const void *b)
++{
++	return strcmp((const char *)a, (const char *)b);
++}
++
++static void rmlo_finish(struct rmlo_set *s)
++{
++	if (s->ndev > 1)
++		qsort(s->dev, s->ndev, sizeof(s->dev[0]), rmlo_cmp);
++	if (s->nlink > 1)
++		qsort(s->link, s->nlink, sizeof(s->link[0]), rmlo_cmp);
++}
++
++/* is this MAC - or the device its per-link MAC belongs to - a device Reaper marks MLO? Case does not matter. */
++static int rmlo_hit(const struct rmlo_set *s, const char *mac)
++{
++	char k[18];
++	const char (*l)[18];
++
++	if (!s->ndev || !rmlo_norm(mac, k))
++		return 0;
++	if (bsearch(k, s->dev, s->ndev, sizeof(s->dev[0]), rmlo_cmp))
++		return 1;
++	if (!s->nlink)
++		return 0;
++	l = bsearch(k, s->link, s->nlink, sizeof(s->link[0]), rmlo_cmp);
++	return (l && bsearch(l[1], s->dev, s->ndev, sizeof(s->dev[0]), rmlo_cmp)) ? 1 : 0;
++}
++
++/* raise "mlo" to "1" on each row whose device Reaper marks MLO. A row that says "1" is left alone; a row without
++ * the field gains it (json-c replaces a value in place or appends the key, and escapes and sizes the output
++ * itself). Values that are not row objects (maclist, ClientAPILevel) are skipped. Returns the rows changed. */
++static int rmlo_mark_rows(struct json_object *clients, const struct rmlo_set *s)
++{
++	int marked = 0;
++
++	if (!clients || !s || !s->ndev || !json_object_is_type(clients, json_type_object))
++		return 0;
++	{
++		json_object_object_foreach(clients, key, row) {
++			struct json_object *o = NULL;
++			const char *cur;
++
++			if (!row || !json_object_is_type(row, json_type_object) || !rmlo_hit(s, key))
++				continue;
++			cur = (json_object_object_get_ex(row, "mlo", &o) && o) ? json_object_get_string(o) : NULL;
++			if (cur && !strcmp(cur, "1"))
++				continue;
++			json_object_object_add(row, "mlo", json_object_new_string("1"));
++			marked++;
++		}
++	}
++	return marked;
++}
++/* REAPER-AIMESH-MLO-END */
++
++#define RMLO_TAB_AGE 60	/* s: the oldest device table the hook still reads */
++
++/* a cfg_mnt (link, mld_mac) pair, by the rule rdev_scan_wl folds with: a randomized per-link MAC naming another
++ * MAC as its device */
++static void rmlo_link_cb(const char *link, const char *mld, void *arg)
++{
++	struct rmlo_set *s = arg;
++
++	if (!link || !mld || strlen(link) != 17 || !rdev_is_rand(link) || !strcasecmp(link, mld))
++		return;
++	rmlo_add_link(s, link, mld);
++	rmlo_add_dev(s, mld);
++}
++
++/* reaper 2026-11-19 REAPER-AIMESH-MLO: the get_clientlist hook's MLO mark, router and AP mode alike. The hook is
++ * polled by many pages, so both sources are CACHED and nothing here scans the radios: Reaper's device table as the
++ * last collect left it (the Devices page, the dashboard and AP mode's merge refresh it - never this function; older
++ * than RMLO_TAB_AGE = not used), and cfg_mnt's live client list through rdev_amesh_mld_walk (parsed again only
++ * when cfg_mnt rewrote it), which also folds a per-link MAC row into its device. Nodes and backhaul stations are
++ * not client devices. MLO off = returns before anything, the output is unchanged. Cost per call: a few nvram
++ * reads, one stat, two sorts of at most RMLO_MAX entries and one binary search per row. */
++static void rdev_mark_mlo(struct json_object *clients)
++{
++	static struct rmlo_set s;	/* about 27 KB: static, off httpd's stack */
++	time_t now = time(NULL);
++	int i;
++
++	if (!clients || !rdev_mlo_active())
++		return;
++	rmlo_reset(&s);
++	if (rdev_tab_t && rdev_tab_mlo && now >= rdev_tab_t && now - rdev_tab_t <= RMLO_TAB_AGE)
++		for (i = 0; i < rdev_tab_n; i++)
++			if (rdev_tab[i].mlo && !rdev_tab[i].node && !rdev_tab[i].bh_sta)
++				rmlo_add_dev(&s, rdev_tab[i].mac);
++	rdev_amesh_mld_walk(rmlo_link_cb, &s);
++	rmlo_finish(&s);
++	rmlo_mark_rows(clients, &s);
++}
++
+ static void do_reaper_dev_cgi(char *url, FILE *stream)
+ {
+ 	char *action = get_cgi("action");
+@@ -36855,6 +37058,26 @@ update_alexa_ifttt_guestnetwork(int from_app, int expiretime, int bss_enabled, c
+ 	return ret;
+ }
+ 
++/* REAPER-RG-CLEAR (2026-11-19, image 2): a new network takes the lowest free apg index, and the Reaper keys of a
++ * network deleted before it are still stored under that index - the Network page clears them on delete (sdn.js), but
++ * the app / Alexa / IFTTT create paths below write only the stock apgN_ keys. Without this the new network would
++ * inherit the chosen main-network devices (apgN_rg_devs) and the device discovery services (apgN_rg_mdns) of the old
++ * one. Unset = off (rc/reaper_guest.c reads both as empty). Router-only keys: not in APGx_NVRAM_LIST, so AiMesh never
++ * syncs them. Not in update_apgx_profile(): that one edits an EXISTING app network, whose choices stay. */
++static void reaper_apg_rg_clear(int apg_idx)
++{
++	char k[32];
++
++	if (apg_idx <= 0)
++		return;
++	snprintf(k, sizeof(k), "apg%d_rg_devs", apg_idx);
++	nvram_unset(k);
++	snprintf(k, sizeof(k), "apg%d_rg_mdns", apg_idx);
++	nvram_unset(k);
++	snprintf(k, sizeof(k), "apg%d_ap_isolate_lan", apg_idx);	/* 2026-11-19: and the AP Isolation choice (rc/lan.c) */
++	nvram_unset(k);
++}
++
+ void
+ update_apgx_profile(int from_app, char *apg_idx, int expiretime, int bss_enabled)
+ {
+@@ -37052,6 +37275,7 @@ create_alexa_ifttt_sdn_profile(int from_app, char *ssid, char *key, int expireti
+ 	memset(b, 0, sizeof(b));
+ 	snprintf(b, sizeof(b)-1, "%s<%d>Guest>%d>%d>%d>%d>0>0>0>0>0>0>0>0>0>0>0>0>0>%s>0>0", nvram_safe_get("sdn_rl"), sdn_idx, bss_enabled, vlan_idx, subnet_idx, apg_idx, trigger_from);
+ 	nvram_set("sdn_rl", b);
++	reaper_apg_rg_clear(apg_idx);	/* 2026-11-19: nothing inherited from a deleted network */
+ 
+ 	// vlan_rl=<1>51>0><2>52>0>
+ 	if(vlan_idx != 0){
+@@ -58299,6 +58523,7 @@ int create_sdn_profile(struct json_object *wgn_obj)
+ 	memset(b, 0, sizeof(b));
+ 	snprintf(b, sizeof(b), "%s<%d>%s>1>%d>%d>%d>0>0>0>0>0>0>0>0>0>0>0>0>0>%s>0>0", nvram_safe_get("sdn_rl"), sdn_idx, sdn_type_t, vlan_idx, subnet_idx, apg_idx, trigger_from_t);
+ 	nvram_set("sdn_rl", b);
++	reaper_apg_rg_clear(apg_idx);	/* 2026-11-19: nothing inherited from a deleted network */
+ 
+ 	//dbg("nvram_set sdn_rl = %s\n", b);
+ 
+@@ -58755,6 +58980,7 @@ int create_sdn_guest_profile(struct json_object *wl_obj)
+ 	memset(b, 0, sizeof(b));
+ 	snprintf(b, sizeof(b), "%s<%d>%s>1>%d>%d>%d>0>0>0>0>0>0>0>0>0>0>0>0>0>%s>0>0", nvram_safe_get("sdn_rl"), sdn_idx, sdn_type, vlan_idx, subnet_idx, apg_idx, trigger_from);
+ 	nvram_set("sdn_rl", b);
++	reaper_apg_rg_clear(apg_idx);	/* 2026-11-19: nothing inherited from a deleted network */
+ 
+ 	//dbg("nvram_set sdn_rl = %s\n", b);
+ 
+diff --git a/release/src/router/others/reaper_diag b/release/src/router/others/reaper_diag
+index 59bf89319b..b0237ac72b 100644
+--- a/release/src/router/others/reaper_diag
++++ b/release/src/router/others/reaper_diag
+@@ -2168,8 +2168,14 @@ if [ -x /usr/bin/reaper_fwsim ]; then
+   head -1 "$_fwd" | sed 's/^/  /'
+   _red=$(head -1 "$_fwd" | sed -n 's/.* \([0-9]*\) red.*/\1/p')
+   _dep=$(head -1 "$_fwd" | sed -n 's/.* \([0-9]*\) depends.*/\1/p')
+-  echo "  -- red / depends rows (green rows omitted; the JSON at /tmp/reaper/fwstatus.json has them all) --"
++  echo "  -- red / held / depends rows (green rows omitted; the JSON at /tmp/reaper/fwstatus.json has them all) --"
+   grep -A2 '^  [A-Za-z0-9.]* *\(RED\|DEP\) ' "$_fwd" | grep -v '^--$' | sed 's/^/  /' | head -90
++  # REAPER-FWSIM-HELD (v1.15): HELD = a zone policy that allows a path the guest isolation layer keeps
++  # closed - by design (that layer runs before the rules engine), so never counted red; the note line
++  # names the guest network.
++  _held=$(head -1 "$_fwd" | sed -n 's/.* \([0-9]*\) held.*/\1/p')
++  grep -A3 '^  [A-Za-z0-9.]* *HELD ' "$_fwd" | grep -v '^--$' | sed 's/^/  /' | head -40
++  [ "${_held:-0}" -gt 0 ] && echo "  note: $_held zone policy row(s) held by guest isolation - by design, the guest layer runs first; Access Intranet links two networks"
+   # INFO, not WARN: the walker is advisory by design (owner, 2026-09-16). A red
+   # row is something to read, not a fault the router has confirmed - the
+   # boot skeleton below stays WARN because that one IS a fault class (R15).
+diff --git a/release/src/router/rc/init.c b/release/src/router/rc/init.c
+index a5c7c8cc69..2507c69dce 100644
+--- a/release/src/router/rc/init.c
++++ b/release/src/router/rc/init.c
+@@ -290,6 +290,9 @@ const static struct apmx_apgx_nv_default_t apgx_default[] = {
+     {   "mlo",          "0"     	},
+     {   "disabled",     "0"     	},
+     {   "11be",         "0"     	},
++    {   "rg_devs",      ""      	},	/* 2026-11-19 (Reaper): chosen main-network devices, rc/reaper_guest.c */
++    {   "rg_mdns",      ""      	},	/* 2026-11-19 (Reaper): device discovery services; both unset on restore */
++    {   "ap_isolate_lan", "0"   	},	/* 2026-11-19 (Reaper): AP Isolation - 0 Wi-Fi only, 1 Wi-Fi and LAN ports */
+     {   NULL,           NULL    	}                                                      };
+ static void 
+ apgx_resotre_defaults(void)
+diff --git a/release/src/router/rc/reaper_aimesh.c b/release/src/router/rc/reaper_aimesh.c
+index 337e2228d3..a0728bb2a5 100644
+--- a/release/src/router/rc/reaper_aimesh.c
++++ b/release/src/router/rc/reaper_aimesh.c
+@@ -89,6 +89,14 @@ int reaper_aimesh_sync_main(int argc, char *argv[])
+ 		eval("ipset", "destroy", AIMESH_STAGE);
+ 	}
+ 	file_unlock(lock);
++#ifdef RTCONFIG_MULTILAN_CFG
++	/* reaper 2026-11-19 REAPER-GUEST-AIMESH: a guest network's chosen main-network devices never include an AiMesh
++	 * node (rc/reaper_guest.c). The node list is part of what they were resolved from: when it changed, ask rc for a
++	 * guest rebuild - queued (notify_rc does not wait), never run here: this applet is also run by layer scripts
++	 * that hold the firewall lock. Nothing when no network names a device. */
++	if (getpid() != 1 && reaper_guest_resv_changed())	/* an applet process; never from inside rc (PID 1) */
++		notify_rc("restart_reaper_guest");
++#endif
+ 
+ 	/* log on change only: rwatch runs this every tick */
+ 	reaper_secure_dir("/tmp/reaper", 0700);
+diff --git a/release/src/router/rc/reaper_fw.c b/release/src/router/rc/reaper_fw.c
+index 6c2d480bf2..f863ad0130 100644
+--- a/release/src/router/rc/reaper_fw.c
++++ b/release/src/router/rc/reaper_fw.c
+@@ -2772,6 +2772,17 @@ static void rfw_gen_cc(void)
+ {
+ 	/* reaper 2026-11-18 (review C-D2): the watcher script has one generator, rc/reaper_cc.h */
+ 	reaper_cc_gen(RFW_CC, RFW_ARMED, RFW_DEADLINE, RFW_ROLLBACK);
++	/* reaper 2026-11-19 REAPER-GUEST-ZPOL-CC: a revert at the deadline runs without rc's service handler, so the guest
++	 * layer's zone paths (reaper_fw_zpol_guest) are re-run from here - after the revert, through rc. With the switch off
++	 * the layer's rules come out the same and nothing is purged (its signature) */
++	{
++		FILE *f = fopen(RFW_CC, "a");
++
++		if (f) {
++			fputs("service restart_reaper_guest >/dev/null 2>&1\nexit 0\n", f);
++			fclose(f);
++		}
++	}
+ }
+ 
+ /* S1/S3 preflight. The protective head already keeps the arming operator
+diff --git a/release/src/router/rc/reaper_guest.c b/release/src/router/rc/reaper_guest.c
+index cb92386c63..fcba04d14a 100644
+--- a/release/src/router/rc/reaper_guest.c
++++ b/release/src/router/rc/reaper_guest.c
+@@ -10,8 +10,10 @@
+  * the `br+ -o br+` drop never sees); a bound VPN client's own rules let new connections in from the tunnel; and a
+  * portal network's IPv6 rode the bridge past the portal (chilli is IPv4-only).
+  *
+- * This layer is DENY-ONLY: REAPER_GUI (INPUT) and REAPER_GUF (FORWARD), IPv4 and IPv6, never ACCEPT. What it lets
+- * through goes on to the stock rules (and the kill switch, Gatekeeper, the rules engine) exactly as before:
++ * REAPER_GUI (INPUT) and REAPER_GUF (FORWARD), IPv4 and IPv6, are DENY-ONLY: RETURN or DROP, never ACCEPT. The one
++ * ACCEPT of this layer is its own chain REAPER_GUA (reaper 2026-11-19, "chosen devices" below), hooked LAST in the
++ * FORWARD front chain, after Gatekeeper and the rules engine. What GUI / GUF let through goes on to the stock rules
++ * (and the kill switch, Gatekeeper, the rules engine) exactly as before:
+  *   to the router   AiMesh, established flows, flows the router itself DNAT'd (Gatekeeper's waiting room, DNS
+  *                   redirects), DHCP, DNS to the network's own gateway, IPv6 neighbour discovery / MLD, and for a
+  *                   portal its sign-in ports on its own gateway - then DROP, on every router address
+@@ -33,6 +35,24 @@
+  *   guest pairs     reaper 2026-11-16: an Access Intranet pair between two guest networks = forwarding between those
+  *                   two only, as the stock pair rule grants it; both stay closed to the router and to the main LAN.
+  *                   Never for a portal, never with a network that is itself paired with the Main Network
++ *   chosen devices  reaper 2026-11-19 (owner): per network (apgN_rg_devs, never a portal) the admin may name reserved
++ *                   main-network devices the guests may open connections to. IPv4 only, the address from the
++ *                   device's DHCP reservation (used only with reservations on, inside the LAN subnet, never the
++ *                   router's own address, never an AiMesh node - its address would open the node's web UI and SSH).
++ *                   REAPER_GUF RETURNs those flows; REAPER_GUA, hooked after Gatekeeper and the rules engine (both
++ *                   decide first), ACCEPTs only the NEW ones. The device can only answer: nothing opens from the main
++ *                   LAN into the network. Kept with the kill switch on (not a way out to the Internet). The ACCEPT
++ *                   skips the later stock FORWARD rules, as the rules engine's own ACCEPTs do. While the rules engine
++ *                   re-applies, its hook.sh rebuilds the front chain and the jump to REAPER_GUA is back with it. A
++ *                   chosen device that routes or proxies is a way around the kill switch: that is the admin's choice
++ *   discovery       reaper 2026-11-19: apgN_rg_mdns set and Set AP Isolated off - mDNS (udp 5353, IPv4: avahi runs
++ *                   use-ipv6=no) reaches the router's reflector, which relays only the picked service types between
++ *                   this network and the main network (avahi reflect-guest, reaper_mdns_ifaces). Discovery, not access
++ *   zone paths      reaper 2026-11-19: with reaper_fw_zpol_guest and the rules engine on, a zone policy whose FIRST
++ *                   match is ACCEPT, from the main LAN (or a network paired with the Main Network) to this network,
++ *                   opens that one-way path: new connections in from that source, replies back to it. The engine's
++ *                   own ACCEPT still decides. Never from a WAN, a VPN client, a wildcard or another guest network;
++ *                   never into a portal. A guest-as-source policy stays held here (Rule Status says so)
+  * Hooked by hook.sh (rc/reaper_hook.c) right after Warden; re-applied at every firewall build's tail and after every
+  * guest-network change. The main LAN (br0) and networks paired with the Main Network are never touched.
+  */
+@@ -55,6 +75,9 @@
+ #define RG_PR_EXACT	(RG_PR_MAX - 10)	/* past this many, one whole-client exit each (10 clients at most) */
+ #define RG_PBR_MASK	"0xf0000"	/* rc/reaper_pbr.c PPBR_MASK: codes 1-5 OVPN1-5, 6-10 WGC1-5 */
+ #define RG_PEER_MAX	16	/* reaper 2026-11-16: guest networks one network can be paired with */
++#define RG_DEV_MAX	16	/* reaper 2026-11-19: chosen main-network devices of one network (apgN_rg_devs) */
++#define RG_ZP_MAX	16	/* reaper 2026-11-19: zone-policy paths into one network */
++#define RG_MDNS_MAX	16	/* reaper 2026-11-19: mDNS service types one network may see (apgN_rg_mdns) */
+ struct rg_pr {
+ 	char ifname[IFNAMSIZ];	/* the VPN client's interface (tun1N, wgcN) */
+ 	char src[20];		/* "a.b.c.d[/n]" as the rule names it, "" = any */
+@@ -77,6 +100,13 @@ struct rg_net {
+ 	int npr;
+ 	char peer[RG_PEER_MAX][IFNAMSIZ];	/* reaper 2026-11-16: the guest networks it is paired with (rg_peers) */
+ 	int npeer;
++	/* reaper 2026-11-19 REAPER-GUEST-CROSS: the opt-in paths (owner); never on a portal */
++	char dev4[RG_DEV_MAX][16];	/* chosen main-network devices: their reserved IPv4 addresses (rg_dev_resolve) */
++	int ndev;
++	char devlan[IFNAMSIZ];	/* the main LAN bridge those devices sit on (lan_ifname) */
++	int mdns;		/* device discovery on: udp 5353 may reach the router's reflector */
++	struct { char a[IFNAMSIZ]; char b[IFNAMSIZ]; } zp[RG_ZP_MAX];	/* zone paths: new connections from a into b */
++	int nzp;
+ };
+ 
+ /* REAPER-GUEST-PAIR-BEGIN (also compiled on the host by test_mdns_reflector.py) */
+@@ -177,6 +207,207 @@ static int rg_peers(const char *rl, int idx, const struct rg_ref *refs, int n, c
+ }
+ /* REAPER-GUEST-PAIR-END */
+ 
++/* REAPER-GUEST-DEV-BEGIN (reaper 2026-11-19; compiled on the host by test_guest_isolation.py) */
++static int rg_cidr4(const char *s, unsigned int *addr, int *plen);	/* below (2026-11-15) */
++/* the strict 17-character form aa:bb:cc:dd:ee:ff, either case (ether_atoe() alone takes junk as all zeros) */
++static int rg_mac_ok(const char *s, size_t len)
++{
++	size_t i;
++
++	if (len != 17)
++		return 0;
++	for (i = 0; i < 17; i++)
++		if ((i % 3 == 2) ? s[i] != ':' : !((s[i] >= '0' && s[i] <= '9') || (s[i] >= 'a' && s[i] <= 'f') ||
++						     (s[i] >= 'A' && s[i] <= 'F')))
++			return 0;
++	return 1;
++}
++
++/* two MACs already checked by rg_mac_ok, compared without case */
++static int rg_mac_eq(const char *a, const char *b)
++{
++	int i;
++
++	for (i = 0; i < 17; i++)
++		if ((a[i] | 0x20) != (b[i] | 0x20))
++			return 0;
++	return 1;
++}
++
++static void rg_note(char *buf, size_t n, const char *mac, size_t ml, const char *why)
++{
++	size_t l;
++
++	if (!buf || !n)
++		return;
++	l = strlen(buf);
++	if (l + ml + strlen(why) + 4 < n)
++		snprintf(buf + l, n - l, "%s%.*s %s", l ? ", " : "", (int)ml, mac, why);
++}
++
++/* the chosen devices of one network -> their IPv4 addresses (out, at most max, no duplicates); returns how many.
++ * devs is apgN_rg_devs ("<MAC><MAC>..."), stl dhcp_staticlist ("<MAC>IP>DNS>name"), static_on dhcp_static_x == 1,
++ * lanip / lanmask the main LAN, aim[0..naim-1] the AiMesh node MACs (reaper_aimesh_macs). A device is used only
++ * when it has a reservation, reservations are on, the address is inside the LAN subnet and is neither the router's
++ * own nor the subnet's network / broadcast address, and it is not an AiMesh node. Each one left out is named in
++ * skip ("<mac> <why>, ..."); an entry that is not a MAC is never echoed. */
++static int rg_dev_resolve(const char *devs, const char *stl, int static_on, const char *lanip, const char *lanmask,
++			  char aim[][18], int naim, char out[][16], int max, char *skip, size_t sn)
++{
++	const char *p = devs, *e, *r, *re, *f, *fe;
++	unsigned int la = 0, lm = 0, ip = 0;
++	int lp, n = 0, k, seen = 0, hit;
++	char ips[16];	/* an IPv4 address */
++	size_t len, fl;
++
++	if (skip && sn)
++		skip[0] = '\0';
++	if (!lanip || !lanmask || strchr(lanip, '/') || strchr(lanmask, '/') || !rg_cidr4(lanip, &la, &lp) || lp != 32 ||
++	    !rg_cidr4(lanmask, &lm, &lp) || lp != 32)
++		la = lm = 0;	/* no usable LAN address: nothing is inside it */
++	while (p && *p) {
++		if (*p == '<' || *p == '>')
++			p++;
++		e = strpbrk(p, "<>");	/* "<MAC<MAC" (the Network page) or "<MAC><MAC>" */
++		len = e ? (size_t)(e - p) : strlen(p);
++		if (len == 0) {
++			p = e;
++			continue;
++		}
++		if (++seen > RG_DEV_MAX || n >= max) {
++			rg_note(skip, sn, "devices", 7, "past the first 16 ignored");
++			break;
++		}
++		if (!rg_mac_ok(p, len)) {
++			rg_note(skip, sn, "an entry", 8, "that is not a MAC address");
++			p = e;
++			continue;
++		}
++		if (!static_on) {
++			rg_note(skip, sn, p, 17, "(DHCP reservations are off)");
++			p = e;
++			continue;
++		}
++		ips[0] = '\0';
++		for (hit = 0, r = stl; r && *r && !hit; r = re) {
++			if (*r == '<')
++				r++;
++			re = strchr(r, '<');
++			f = strchr(r, '>');
++			if (!f || (re && f > re) || !rg_mac_ok(r, (size_t)(f - r)) || !rg_mac_eq(r, p))
++				continue;
++			hit = 1;
++			f++;
++			fe = strchr(f, '>');
++			if (re && (!fe || fe > re))
++				fe = re;
++			fl = fe ? (size_t)(fe - f) : strlen(f);
++			if (fl > 0 && fl < 16) {
++				memcpy(ips, f, fl);
++				ips[fl] = '\0';
++			}
++		}
++		if (!hit)
++			rg_note(skip, sn, p, 17, "(no DHCP reservation)");
++		else if (!ips[0] || strchr(ips, '/') || !rg_cidr4(ips, &ip, &lp) || lp != 32 || !lm || (ip & lm) != (la & lm) ||
++			 ip == la || (ip & ~lm) == 0 || (ip | lm) == 0xffffffffU)
++			rg_note(skip, sn, p, 17, "(reserved address is not a device address on the main LAN)");
++		else {
++			for (k = 0; k < naim && !(strlen(aim[k]) == 17 && rg_mac_eq(aim[k], p)); k++)
++				;
++			if (k < naim)
++				rg_note(skip, sn, p, 17, "(an AiMesh node)");
++			else {
++				for (k = 0; k < n && strcmp(out[k], ips); k++)
++					;
++				if (k == n)
++					snprintf(out[n++], 16, "%s", ips);
++			}
++		}
++		p = e;
++	}
++	return n;
++}
++/* REAPER-GUEST-DEV-END */
++
++/* REAPER-GUEST-MDNS-BEGIN (reaper 2026-11-19; also compiled on the host by test_mdns_reflector.py) */
++/* apgN_rg_mdns -> the service types the reflector may relay for the network, ':'-joined into out; returns how many.
++ * A token is a preset or a type "_name._tcp" / "_name._udp" (name: 1-32 of a-z, 0-9, '-'); anything else is
++ * ignored. At most RG_MDNS_MAX types, no duplicates. "" = discovery off. */
++static const char *const rg_mdns_presets[][2] = {
++	{ "print", "_ipp._tcp,_ipps._tcp,_printer._tcp,_pdl-datastream._tcp,_uscan._tcp" },
++	{ "airplay", "_airplay._tcp,_raop._tcp" },
++	{ "cast", "_googlecast._tcp" },
++	{ "homekit", "_hap._tcp,_hap._udp,_matter._tcp,_matterc._udp" },
++	{ "audio", "_spotify-connect._tcp,_sonos._tcp" },
++};
++
++static int rg_mdns_type_ok(const char *s, size_t l)
++{
++	size_t i;
++
++	if (l < 7 || l > 38 || s[0] != '_' || (memcmp(s + l - 5, "._tcp", 5) && memcmp(s + l - 5, "._udp", 5)))
++		return 0;
++	for (i = 1; i < l - 5; i++)
++		if (!((s[i] >= 'a' && s[i] <= 'z') || (s[i] >= '0' && s[i] <= '9') || s[i] == '-'))
++			return 0;
++	return 1;
++}
++
++static int rg_mdns_add(char *out, size_t on, int n, const char *t, size_t l)
++{
++	const char *p, *q;
++	size_t ol = strlen(out), tl;
++
++	if (n >= RG_MDNS_MAX || !rg_mdns_type_ok(t, l))
++		return n;
++	for (p = out; *p; p = q + 1) {
++		q = strchr(p, ':');
++		tl = q ? (size_t)(q - p) : strlen(p);
++		if (tl == l && !memcmp(p, t, l))
++			return n;
++		if (!q)
++			break;
++	}
++	if (ol + l + 2 > on)
++		return n;
++	if (ol)
++		out[ol++] = ':';
++	memcpy(out + ol, t, l);
++	out[ol + l] = '\0';
++	return n + 1;
++}
++
++static int rg_mdns_types(const char *in, char *out, size_t on)
++{
++	const char *p = in, *e, *x, *y;
++	size_t l, k, np = sizeof(rg_mdns_presets) / sizeof(rg_mdns_presets[0]);
++	int n = 0;
++
++	if (!out || !on)
++		return 0;
++	out[0] = '\0';
++	while (p && *p) {
++		e = strchr(p, ',');
++		l = e ? (size_t)(e - p) : strlen(p);
++		for (k = 0; k < np; k++)
++			if (strlen(rg_mdns_presets[k][0]) == l && !memcmp(rg_mdns_presets[k][0], p, l))
++				break;
++		if (k < np)
++			for (x = rg_mdns_presets[k][1]; ; x = y + 1) {
++				y = strchr(x, ',');
++				n = rg_mdns_add(out, on, n, x, y ? (size_t)(y - x) : strlen(x));
++				if (!y)
++					break;
++			}
++		else
++			n = rg_mdns_add(out, on, n, p, l);
++		p = e ? e + 1 : NULL;
++	}
++	return n;
++}
++/* REAPER-GUEST-MDNS-END */
++
+ /* Merlin's vpnc_idx: 1..5 WireGuard client N (wgcN), 6..10 OpenVPN client idx-5 (tun1N) - shared/mtlan_utils.c
+  * get_vpnx_by_vpnc_idx; the static mapping, not vpncN_ifname, which exists only while the tunnel is up */
+ static void rg_vpnif(int vpnc_idx, char *out, size_t n)
+@@ -323,6 +554,11 @@ static void rg_iface(FILE *f, const struct rg_net *g, const char *X, int v6, int
+ 		if (!v6 && g->portal)
+ 			fprintf(f, "%s -A REAPER_GUI -i %s -p tcp -m multiport --dports %s -m addrtype --dst-type LOCAL --limit-iface-in -j RETURN\n",
+ 				T, X, g->portal == 2 ? "3998,3991,8083" : "3990,3991,8083");
++		/* reaper 2026-11-19 REAPER-GUEST-MDNS-GUI: device discovery on - mDNS reaches the router's reflector, which relays
++		 * only the picked service types, and only between this network and the main network (avahi reflect-guest).
++		 * IPv4 only: avahi runs use-ipv6=no */
++		if (!v6 && !g->portal && g->mdns)
++			fprintf(f, "%s -A REAPER_GUI -i %s -p udp --dport 5353 -j RETURN\n", T, X);
+ 	}
+ 	fprintf(f, "%s -A REAPER_GUI -i %s -j DROP\n", T, X);
+ 
+@@ -393,6 +629,19 @@ static void rg_iface(FILE *f, const struct rg_net *g, const char *X, int v6, int
+ 			for (k = 0; k < g->nsrv && k < RG_SRV_MAX; k++)
+ 				fprintf(f, "%s -A REAPER_GUF -i %s -o %s -m conntrack --ctstate RELATED,ESTABLISHED -j RETURN\n",
+ 					T, X, g->srvif[k]);
++		/* reaper 2026-11-19 REAPER-GUEST-DEV-GUF (owner): the admin's chosen main-network devices (reserved addresses).
++		 * RETURN here - this chain stays deny-only; REAPER_GUA (below) accepts only the NEW connections, after
++		 * Gatekeeper and the rules engine. Kept with the kill switch on: the main LAN is not a way to the Internet */
++		if (!v6 && !g->portal && g->devlan[0])
++			for (k = 0; k < g->ndev && k < RG_DEV_MAX; k++)
++				fprintf(f, "%s -A REAPER_GUF -i %s -o %s -d %s -j RETURN\n", T, X, g->devlan, g->dev4[k]);
++		/* reaper 2026-11-19 REAPER-GUEST-ZPOL-GUF: a zone path into this network (reaper_fw_zpol_guest) - the network
++		 * answers its source; it never opens a connection to it */
++		if (!g->portal)
++			for (k = 0; k < g->nzp && k < RG_ZP_MAX; k++)
++				if (!strcmp(g->zp[k].b, X))
++					fprintf(f, "%s -A REAPER_GUF -i %s -o %s -m conntrack --ctstate RELATED,ESTABLISHED -j RETURN\n",
++						T, X, g->zp[k].a);
+ 	}
+ 	fprintf(f, "%s -A REAPER_GUF -i %s -j DROP\n", T, X);
+ 	if (!closed) {
+@@ -415,8 +664,19 @@ static void rg_iface(FILE *f, const struct rg_net *g, const char *X, int v6, int
+ 		if (!g->portal)
+ 			for (k = 0; k < g->npeer && k < RG_PEER_MAX; k++)
+ 				fprintf(f, "%s -A REAPER_GUF -o %s -i %s -j RETURN\n", T, X, g->peer[k]);
++		/* reaper 2026-11-19 REAPER-GUEST-ZPOL-IN: and new connections in from a zone path's source - on to the rules
++		 * engine, whose zone policy ACCEPT decides */
++		if (!g->portal)
++			for (k = 0; k < g->nzp && k < RG_ZP_MAX; k++)
++				if (!strcmp(g->zp[k].b, X))
++					fprintf(f, "%s -A REAPER_GUF -o %s -i %s -j RETURN\n", T, X, g->zp[k].a);
+ 	}
+ 	fprintf(f, "%s -A REAPER_GUF -o %s -j DROP\n", T, X);
++	/* reaper 2026-11-19 REAPER-GUEST-GUA: the layer's only ACCEPT, in its own chain (hooked last in the FORWARD front
++	 * chain): a NEW connection from the network to a chosen device. Replies come back by the stock established rule */
++	if (!closed && !v6 && !g->portal && g->devlan[0])
++		for (k = 0; k < g->ndev && k < RG_DEV_MAX; k++)
++			fprintf(f, "%s -A REAPER_GUA -i %s -o %s -d %s -m conntrack --ctstate NEW -j ACCEPT\n", T, X, g->devlan, g->dev4[k]);
+ }
+ 
+ /* the whole apply script for n guest networks (n == 0: tear the layer down) */
+@@ -432,7 +692,8 @@ static void rg_write(FILE *f, const struct rg_net *g, int n, char wan4[][IFNAMSI
+ 	if (n == 0) {
+ 		fputs("for T in iptables ip6tables; do\n"
+ 		      "  $T -D " REAPER_HOOK_IN " -j REAPER_GUI 2>/dev/null; $T -D " REAPER_HOOK_FWD " -j REAPER_GUF 2>/dev/null\n"
+-		      "  for C in REAPER_GUI REAPER_GUF; do $T -F $C 2>/dev/null; $T -X $C 2>/dev/null; done\n"
++		      "  $T -D " REAPER_HOOK_FWD " -j REAPER_GUA 2>/dev/null\n"	/* reaper 2026-11-19: chosen devices */
++		      "  for C in REAPER_GUI REAPER_GUF REAPER_GUA; do $T -F $C 2>/dev/null; $T -X $C 2>/dev/null; done\n"
+ 		      "done\n"
+ 		      "iptables -t nat -D PREROUTING -j REAPER_GUN 2>/dev/null; iptables -t nat -F REAPER_GUN 2>/dev/null; "
+ 		      "iptables -t nat -X REAPER_GUN 2>/dev/null\n", f);
+@@ -461,7 +722,7 @@ static void rg_write(FILE *f, const struct rg_net *g, int n, char wan4[][IFNAMSI
+ 	      "R() { if [ \"$RGB\" = 1 ] && [ \"$2\" = -A ]; then _rgq \"$@\"; return 0; fi; \"$@\" 2>/dev/null || RG_FAIL=$((RG_FAIL+1)); }\n"
+ 	      "ipset create " REAPER_AIMESH_SET " hash:mac -exist 2>/dev/null\n"
+ 	      "[ \"$RGB\" = 1 ] || for T in iptables ip6tables; do\n"
+-	      "  for C in REAPER_GUI REAPER_GUF; do $T -N $C 2>/dev/null; $T -F $C; done\n"
++	      "  for C in REAPER_GUI REAPER_GUF REAPER_GUA; do $T -N $C 2>/dev/null; $T -F $C; done\n"
+ 	      "done\n"
+ 	      "# 2026-11-13 (owner): a portal guest's DNS goes to the guest network's own resolver, wherever it was sent\n"
+ 	      "iptables -t nat -N REAPER_GUN 2>/dev/null; iptables -t nat -F REAPER_GUN\n"
+@@ -482,6 +743,16 @@ static void rg_write(FILE *f, const struct rg_net *g, int n, char wan4[][IFNAMSI
+ 				fprintf(f, " %s", g[i].peer[k]);
+ 			fputs(" (Access Intranet): devices of these networks reach each other; the router and the main network stay closed\n", f);
+ 		}
++		if (!g[i].portal && g[i].ndev > 0) {	/* reaper 2026-11-19: the opt-in paths */
++			fputs("#   chosen main-network devices it may open connections to:", f);
++			for (k = 0; k < g[i].ndev && k < RG_DEV_MAX; k++)
++				fprintf(f, " %s", g[i].dev4[k]);
++			fputs(" (they may only answer)\n", f);
++		}
++		if (!g[i].portal && g[i].mdns)
++			fputs("#   device discovery (mDNS) with the main network: the picked service types only\n", f);
++		for (k = 0; !g[i].portal && k < g[i].nzp && k < RG_ZP_MAX; k++)
++			fprintf(f, "#   a zone policy opens a one-way path from %s into %s\n", g[i].zp[k].a, g[i].zp[k].b);
+ 		if (g[i].portal) {	/* 2026-11-13: to the address of the tunnel it arrived on = the guest resolver */
+ 			fprintf(f, "R iptables -t nat -A REAPER_GUN -i %s -p udp --dport 53 -j REDIRECT --to-ports 53\n", g[i].ifname);
+ 			fprintf(f, "R iptables -t nat -A REAPER_GUN -i %s -p tcp --dport 53 -j REDIRECT --to-ports 53\n", g[i].ifname);
+@@ -502,8 +773,9 @@ static void rg_write(FILE *f, const struct rg_net *g, int n, char wan4[][IFNAMSI
+ 	 *    missing signature, a refused rule or a rule-by-rule load means purge, as before. A stock firewall
+ 	 *    restart replaces the filter table, so the chains are gone when this runs and the purge still happens. */
+ 	fprintf(f,
+-	  "rg_live() { for T in iptables ip6tables; do $T -S REAPER_GUI 2>/dev/null; $T -S REAPER_GUF 2>/dev/null\n"
++	  "rg_live() { for T in iptables ip6tables; do $T -S REAPER_GUI 2>/dev/null; $T -S REAPER_GUF 2>/dev/null; $T -S REAPER_GUA 2>/dev/null\n"
+ 	  "    $T -C %s -j REAPER_GUI 2>/dev/null && echo \"$T in\"; $T -C %s -j REAPER_GUF 2>/dev/null && echo \"$T fwd\"\n"
++	  "    $T -C %s -j REAPER_GUA 2>/dev/null && echo \"$T acc\"\n"
+ 	  "  done | md5sum | cut -d' ' -f1; }\n"
+ 	  "RG_SAME=0; RG_NEW=''\n"
+ 	  "if [ \"$RGB\" = 1 ]; then\n"
+@@ -513,14 +785,14 @@ static void rg_write(FILE *f, const struct rg_net *g, int n, char wan4[][IFNAMSI
+ 	  "  _qok=1; [ -e \"$RGBD.bad\" ] && _qok=0\n"
+ 	  "  for T in iptables ip6tables; do\n"
+ 	  "    [ \"$_qok\" = 1 ] || continue\n"
+-	  "    { echo '*filter'; echo ':REAPER_GUI - [0:0]'; echo ':REAPER_GUF - [0:0]'; cat \"$RGBD.$T\" 2>/dev/null; echo COMMIT; } | $T-restore --noflush 2>/dev/null || _qok=0\n"
++	  "    { echo '*filter'; echo ':REAPER_GUI - [0:0]'; echo ':REAPER_GUF - [0:0]'; echo ':REAPER_GUA - [0:0]'; cat \"$RGBD.$T\" 2>/dev/null; echo COMMIT; } | $T-restore --noflush 2>/dev/null || _qok=0\n"
+ 	  "  done\n"
+ 	  "  rm -f \"$RGBD\".*\n"
+ 	  "  if [ \"$_qok\" != 1 ]; then\n"
+ 	  "    logger -t reaper 'guest isolation: batched rule load refused - loading rule by rule'\n"
+ 	  "    export RG_NOBATCH=1; exec sh \"$0\" \"$@\"\n"
+ 	  "  fi\n"
+-	  "fi\n", REAPER_HOOK_IN, REAPER_HOOK_FWD);
++	  "fi\n", REAPER_HOOK_IN, REAPER_HOOK_FWD, REAPER_HOOK_FWD);
+ 	fputs(hook_run, f);
+ 	fputs("if [ \"$RG_SAME\" = 1 ] && [ \"$RG_FAIL\" = 0 ]; then :; else\n"
+ 	      "# flows opened before these rules must re-traverse them\n", f);
+@@ -573,6 +845,43 @@ static int rg_refs_load(struct rg_ref *refs, int max)
+ 	return n;
+ }
+ 
++/* reaper 2026-11-19: what the chosen devices are resolved from (FNV-1a of the reservations, their switch, the LAN
++ * address and the AiMesh node list
++ * (reaper_aimesh_macs) - a reserved device that joins as a node must leave the layer), "-" when no network names a
++ * device */
++static void rg_resv_sig(char *out, size_t n, int anydev)
++{
++	const char *v[4];
++	unsigned int h = 2166136261U;
++	const char *p;
++	int k;
++
++	if (!anydev) {
++		snprintf(out, n, "-");
++		return;
++	}
++	v[0] = nvram_safe_get("dhcp_static_x");
++	v[1] = nvram_safe_get("dhcp_staticlist");
++	v[2] = nvram_safe_get("lan_ipaddr");
++	v[3] = nvram_safe_get("lan_netmask");
++	for (k = 0; k < 4; k++) {
++		for (p = v[k]; *p; p++)
++			h = (h ^ (unsigned char)*p) * 16777619U;
++		h = (h ^ '|') * 16777619U;
++	}
++	{
++		char am[REAPER_AIMESH_MAX][18];
++		int na = reaper_aimesh_macs(am, REAPER_AIMESH_MAX, NULL), i;
++
++		for (i = 0; i < na; i++) {
++			for (p = am[i]; *p; p++)
++				h = (h ^ (unsigned char)(*p | 0x20)) * 16777619U;
++			h = (h ^ ',') * 16777619U;
++		}
++	}
++	snprintf(out, n, "%08x", h);
++}
++
+ void reaper_guest_gen(void)
+ {
+ 	MTLAN_T *pmtl = NULL;
+@@ -587,6 +896,9 @@ void reaper_guest_gen(void)
+ 	size_t sz = 0, i;
+ 	int n = 0, nw4 = 0, u, k, dup;
+ 	FILE *f;
++	/* reaper 2026-11-19: chosen devices (rg_dev_resolve) - the AiMesh node list, read once when first needed */
++	char aim[REAPER_AIMESH_MAX][18], sk[512], skipall[1024] = "", ty[RG_MDNS_MAX * 40], key[40], sig[16];
++	int naim = -1, anydev = 0;
+ 
+ 	memset(g, 0, sizeof(g));
+ 	if (is_routing_enabled() && (pmtl = (MTLAN_T *)INIT_MTLAN(sizeof(MTLAN_T))) != NULL) {
+@@ -628,6 +940,29 @@ void reaper_guest_gen(void)
+ 				}
+ 				/* reaper 2026-11-16: the guest networks this one is paired with (none for a portal) */
+ 				g[n].npeer = rg_peers(acc, m->sdn_t.sdn_idx, refs, nref, lanif, g[n].peer, RG_PEER_MAX);
++				/* reaper 2026-11-19 REAPER-GUEST-CROSS-LOAD (owner): the opt-in paths, from the network's own settings
++				 * object (apgN_*, the Network page). Never on a portal */
++				if (!portal && m->sdn_t.apg_idx > 0) {
++					snprintf(key, sizeof(key), "apg%d_rg_devs", m->sdn_t.apg_idx);
++					if (*nvram_safe_get(key)) {
++						if (naim < 0)
++							naim = reaper_aimesh_macs(aim, REAPER_AIMESH_MAX, NULL);
++						anydev = 1;
++						strlcpy(g[n].devlan, lanif[0] ? lanif : "br0", sizeof(g[n].devlan));
++						g[n].ndev = rg_dev_resolve(nvram_safe_get(key), nvram_safe_get("dhcp_staticlist"),
++									   nvram_get_int("dhcp_static_x") == 1, nvram_safe_get("lan_ipaddr"),
++									   nvram_safe_get("lan_netmask"), aim, naim, g[n].dev4, RG_DEV_MAX,
++									   sk, sizeof(sk));
++						if (*sk && strlen(skipall) + strlen(g[n].ifname) + strlen(sk) + 8 < sizeof(skipall))
++							snprintf(skipall + strlen(skipall), sizeof(skipall) - strlen(skipall), "%s%s: %s",
++								 *skipall ? "; " : "", g[n].ifname, sk);
++					}
++					snprintf(key, sizeof(key), "apg%d_rg_mdns", m->sdn_t.apg_idx);
++					if (rg_mdns_types(nvram_safe_get(key), ty, sizeof(ty)) > 0) {
++						snprintf(key, sizeof(key), "apg%d_ap_isolate", m->sdn_t.apg_idx);
++						g[n].mdns = nvram_get_int(key) != 1;	/* AP isolated: never joined to another network */
++					}
++				}
+ 				n++;
+ 			}
+ 		}
+@@ -670,6 +1005,68 @@ void reaper_guest_gen(void)
+ 			rg_policy_vpn(&g[k], vd, rgw);
+ 	}
+ #endif
++	/* REAPER-GUEST-ZPOL-BEGIN reaper 2026-11-19 (owner): "Zone policies may open one-way paths from the main network into
++	 * isolated guest networks" (reaper_fw_zpol_guest, Firewall page), with the rules engine on. For each network b of
++	 * this layer (never a portal) and each source a that is the main LAN or a network paired with the Main Network
++	 * (never a WAN, a VPN client, a wildcard or another guest network - they are not in the list): the path opens
++	 * when the engine's FIRST zone-policy rule for a -> b is an ACCEPT of a policy that names both interfaces itself
++	 * (shared/reaper_jfile.c reaper_zpol_open). The lists are the ones the engine RUNS (reaper_fw_list_live): the
++	 * draft only while a change awaits Keep. Re-run after every engine apply / Keep / revert (rc/services.c, and the
++	 * deadline watcher), so the paths follow what is live. */
++	if (n > 0 && nvram_match("reaper_fw_zpol_guest", "1") && nvram_match("reaper_fw_enable", "1")) {
++		char *zl = reaper_fw_list_live("zone"), *pl = reaper_fw_list_live("zpol");
++		struct reaper_zpol *z = (zl && pl) ? reaper_zpol_load(zl, pl) : NULL;
++		const char *rl = nvram_safe_get("sdn_access_rl"), *lan = lanif[0] ? lanif : "br0", *X;
++		char mains[2 * MTLAN_MAXINUM + 1][IFNAMSIZ];
++		int nm = 0, j, x, d;
++
++		strlcpy(mains[nm++], lan, IFNAMSIZ);
++		for (j = 0; j < nref; j++) {
++			if (refs[j].portal || !(rg_is_main(refs[j].idx, refs, nref, lan) || rg_main_access(rl, refs[j].idx, refs, nref, lan)))
++				continue;
++			for (x = 0; x < 2; x++) {
++				X = x ? refs[j].ifname : refs[j].br;
++				for (d = 0; d < nm && strcmp(mains[d], X); d++)
++					;
++				if (X[0] && d == nm && nm < 2 * MTLAN_MAXINUM + 1)
++					strlcpy(mains[nm++], X, IFNAMSIZ);
++			}
++		}
++		for (k = 0; z && k < n; k++) {
++			if (g[k].portal)
++				continue;
++			for (x = 0; x < 2; x++) {
++				X = x ? g[k].brname : g[k].ifname;
++				if (!X[0] || (x && !strcmp(X, g[k].ifname)))
++					continue;
++				for (j = 0; j < nm && g[k].nzp < RG_ZP_MAX; j++)
++					if (reaper_zpol_open(z, mains[j], X)) {
++						strlcpy(g[k].zp[g[k].nzp].a, mains[j], IFNAMSIZ);
++						strlcpy(g[k].zp[g[k].nzp].b, X, IFNAMSIZ);
++						g[k].nzp++;
++					}
++			}
++		}
++		free(z);
++		free(zl);
++		free(pl);
++	}
++	/* REAPER-GUEST-ZPOL-END */
++	/* reaper 2026-11-19: a chosen device left out is logged once - when the list of them changes - and what the
++	 * devices were resolved from is kept, so a reservation edit re-runs this layer (reaper_guest_resv_follow) */
++	reaper_secure_dir(RG_DIR, 0700);
++	{
++		char old[sizeof(skipall)] = "";
++
++		f_read_string(RG_DIR "/devskip", old, sizeof(old));
++		if (strcmp(old, skipall)) {
++			if (*skipall)
++				logmessage("reaper", "guest isolation: chosen device(s) left out - %s", skipall);
++			f_write_string(RG_DIR "/devskip", skipall, 0, 0);
++		}
++	}
++	rg_resv_sig(sig, sizeof(sig), anydev);
++	f_write_string(RG_DIR "/resv.sig", sig, 0, 0);
+ 	for (u = WAN_UNIT_FIRST; u < WAN_UNIT_MAX; u++) {
+ 		w = get_wan_ifname(u);
+ 		if (!w || !*w || !strcmp(w, "br0"))
+@@ -735,9 +1132,12 @@ static void rm_add(char *buf, size_t n, const char *s)
+ 	strlcat(buf, s, n);
+ }
+ 
+-void reaper_mdns_ifaces(char *deny, size_t dn, char *refl, size_t rn, char *why, size_t wn)
++void reaper_mdns_ifaces(char *deny, size_t dn, char *refl, size_t rn, char *why, size_t wn, char *guest, size_t gn)
+ {
+-	struct { char br[IFNAMSIZ]; const char *out; } b[MTLAN_MAXINUM + 1];
++	/* reaper 2026-11-19: deny / core per bridge, and gty = a discovery guest network's service types (see below) */
++	struct { char br[IFNAMSIZ]; const char *out; int deny, core; char gty[RG_MDNS_MAX * 40]; } b[MTLAN_MAXINUM + 1];
++	char ty[RG_MDNS_MAX * 40];
++	size_t gl;
+ 	struct rg_ref refs[MTLAN_MAXINUM];	/* reaper 2026-11-16: for the main-network pair test (rg_main_access) */
+ 	int nref;
+ 	MTLAN_T *pmtl = NULL;
+@@ -747,7 +1147,7 @@ void reaper_mdns_ifaces(char *deny, size_t dn, char *refl, size_t rn, char *why,
+ 	size_t sz = 0, i;
+ 	int nb, k, u;
+ 
+-	deny[0] = refl[0] = why[0] = '\0';
++	deny[0] = refl[0] = why[0] = guest[0] = '\0';
+ 	if (!is_routing_enabled() || !*lan)
+ 		return;
+ 	memset(b, 0, sizeof(b));
+@@ -783,6 +1183,28 @@ void reaper_mdns_ifaces(char *deny, size_t dn, char *refl, size_t rn, char *why,
+ 				}
+ 				if (!on_lan && (portal || m->sdn_t.sdn_idx == 0 || m->nw_t.idx == 0 ||
+ 						!rg_main_access(acc, m->sdn_t.sdn_idx, refs, nref, lan))) {
++					/* reaper 2026-11-19 REAPER-GUEST-MDNS-STAR (owner): a network of the layer (never a portal) with
++					 * device discovery on (apgN_rg_mdns) and Set AP Isolated off is a discovery guest: off deny, not
++					 * in the reflector's core list, but in the guest list (reflect-guest) - avahi relays the picked
++					 * types between it and the main network only, never to another guest network, and publishes
++					 * nothing of the router onto it (avahi patch). A bridge shared with any other network stays
++					 * denied. */
++					if (!portal && m->sdn_t.sdn_idx != 0 && m->nw_t.idx != 0 && m->sdn_t.apg_idx > 0 && !b[k].deny &&
++					    !b[k].gty[0]) {
++						snprintf(key, sizeof(key), "apg%d_rg_mdns", m->sdn_t.apg_idx);
++						if (rg_mdns_types(nvram_safe_get(key), ty, sizeof(ty)) > 0) {
++							snprintf(key, sizeof(key), "apg%d_ap_isolate", m->sdn_t.apg_idx);
++							if (nvram_get_int(key) != 1) {
++								strlcpy(b[k].gty, ty, sizeof(b[k].gty));
++								continue;
++							}
++						}
++					}
++					b[k].deny = 1;
++					if (b[k].gty[0]) {	/* a second network on a discovery bridge: the bridge is denied */
++						b[k].gty[0] = '\0';
++						b[k].out = "no intranet access";
++					}
+ 					/* the networks guest isolation closes (reaper_guest_gen): avahi stays off them */
+ 					rm_add(deny, dn, br);
+ 					if (portal && m->nw_t.ifname[0])
+@@ -794,6 +1216,7 @@ void reaper_mdns_ifaces(char *deny, size_t dn, char *refl, size_t rn, char *why,
+ 					b[k].out = "Guest Portal";
+ 					continue;
+ 				}
++				b[k].core = 1;	/* reaper 2026-11-19: a network of the main side on this bridge */
+ 				if (m->sdn_t.apg_idx > 0) {
+ 					snprintf(key, sizeof(key), "%s%d_ap_isolate", strcmp(m->name, "MAINFH") ? "apg" : "apm",
+ 						 m->sdn_t.apg_idx);
+@@ -805,6 +1228,16 @@ void reaper_mdns_ifaces(char *deny, size_t dn, char *refl, size_t rn, char *why,
+ 		FREE_MTLAN((void *)pmtl);
+ 	}
+ 	for (k = 0; k < nb; k++) {
++		if (b[k].gty[0]) {	/* reaper 2026-11-19: a discovery guest bridge - "<bridge>:<type>:<type>" whole, or denied */
++			gl = strlen(guest);
++			if (!b[k].core && gl + strlen(b[k].br) + strlen(b[k].gty) + 3 <= gn) {
++				snprintf(guest + gl, gn - gl, "%s%s:%s", gl ? "," : "", b[k].br, b[k].gty);
++				continue;
++			}
++			rm_add(deny, dn, b[k].br);
++			if (!b[k].out)
++				b[k].out = b[k].core ? "no intranet access" : "discovery list too long";
++		}
+ 		if (!b[k].out) {
+ 			rm_add(refl, rn, b[k].br);
+ 			continue;
+@@ -843,3 +1276,30 @@ void reaper_guest_apply(int have_lock)
+ 	if (lk >= 0)
+ 		file_unlock(lk);
+ }
++
++/* reaper 2026-11-19: a reservation edit on the DHCP page restarts only dnsmasq (rc/services.c), and the chosen devices
++ * take their addresses from the reservations - re-run this layer when what they were resolved from changed. Nothing
++ * when no network names a device ("-") or the layer was never built. */
++int reaper_guest_resv_changed(void)
++{
++	char old[16] = "", cur[16];
++
++	if (f_read_string(RG_DIR "/resv.sig", old, sizeof(old)) <= 0 || !strcmp(old, "-"))
++		return 0;
++	rg_resv_sig(cur, sizeof(cur), 1);
++	return strcmp(old, cur) != 0;
++}
++
++void reaper_guest_resv_follow(void)
++{
++	if (reaper_guest_resv_changed())
++		reaper_guest_apply(0);
++}
++
++/* reaper 2026-11-19: the rules engine applied, kept or reverted a ruleset - the zone paths follow what is live now.
++ * Only with the switch on: with it off the layer has no zone path, and an engine change leaves it as it is. */
++void reaper_guest_zpol_follow(void)
++{
++	if (nvram_match("reaper_fw_zpol_guest", "1"))
++		reaper_guest_apply(0);
++}
+diff --git a/release/src/router/rc/reaper_hook.c b/release/src/router/rc/reaper_hook.c
+index d86eb52c49..791beba23d 100644
+--- a/release/src/router/rc/reaper_hook.c
++++ b/release/src/router/rc/reaper_hook.c
+@@ -26,7 +26,7 @@ void reaper_hook_gen(void)
+ 	  "#!/bin/sh\n"
+ 	  "# generated by reaper_hook_gen - do not edit. See rc/reaper_hook.h.\n"
+ 	  "# Rebuilds the Reaper front chains in the FIXED order\n"
+-	  "#   Warden -> Gatekeeper -> rules engine\n"
++	  "#   Warden -> guest isolation -> Gatekeeper -> rules engine -> guest exceptions (FORWARD)\n"
+ 	  "# and pins one jump per base chain at the front - behind any rule that is\n"
+ 	  "# declared in " REAPER_FRONT_EXEMPT ", narrow, or terminal (rwatch 3d's rule). Idempotent; called by\n"
+ 	  "# every layer's apply.sh at its tail, so the order converges no matter\n"
+@@ -107,6 +107,9 @@ void reaper_hook_gen(void)
+ 	  "        $T -nL REAPER_GUF >/dev/null 2>&1 && $T -A \"$C\" -j REAPER_GUF\n"
+ 	  "        if $T -nL REAPER_GKF >/dev/null 2>&1; then for I in $GKIFS; do $T -A \"$C\" -i \"$I\" -j REAPER_GKF; done; fi\n"
+ 	  "        $T -nL REAPER_FWF >/dev/null 2>&1 && $T -A \"$C\" -j REAPER_FWF\n"
++	  /* reaper 2026-11-19: guest isolation's chosen devices (rc/reaper_guest.c REAPER_GUA) - the one ACCEPT outside
++	   * the rules engine, LAST: Warden, Gatekeeper and the engine decide first. Only when the chain exists. */
++	  "        $T -nL REAPER_GUA >/dev/null 2>&1 && $T -A \"$C\" -j REAPER_GUA\n"
+ 	  "        ;;\n"
+ 	  "      OUTPUT)\n"
+ 	  "        $T -nL RW_SELF >/dev/null 2>&1 && $T -A \"$C\" -j RW_SELF\n"
+diff --git a/release/src/router/rc/reaper_hook.h b/release/src/router/rc/reaper_hook.h
+index 51b80e815e..9d37bcf234 100644
+--- a/release/src/router/rc/reaper_hook.h
++++ b/release/src/router/rc/reaper_hook.h
+@@ -7,6 +7,11 @@
+  * `-I <base> 1`, so whichever layer applied LAST sat on top. reaper_fw is the
+  * only layer that emits a terminal ACCEPT (user allow rules, zone policy,
+  * egress defaults, the DNAT companion) - the other two only DROP or RETURN.
++ * (reaper 2026-11-19: guest isolation's REAPER_GUA is the one other ACCEPT -
++ * the admin's chosen main-network devices, NEW connections only - and it is
++ * hooked LAST in REAPER_HOOK_F, after the rules engine, so every layer
++ * decides first. A firmware change always reboots, so /tmp/reaper/hook.sh,
++ * written once per boot, is always this firmware's.)
+  * An ACCEPT inside a chain jumped from INPUT/FORWARD ends traversal of the
+  * whole table, so with reaper_fw on top (cold boot and every restart_firewall)
+  * a single allow rule silently re-admitted every threat-feed / geo-blocked
+diff --git a/release/src/router/rc/services.c b/release/src/router/rc/services.c
+index 5c0258e625..df9c07e95d 100644
+--- a/release/src/router/rc/services.c
++++ b/release/src/router/rc/services.c
+@@ -2244,7 +2244,9 @@ void start_dnsmasq(void)
+ 		strlcpy(v6_prefix, nvram_safe_get(ipv6_nvname("ipv6_prefix")), sizeof(v6_prefix));
+ 		v6_prefix_length = nvram_get_int(ipv6_nvname("ipv6_prefix_length")) ?: 64;
+ 		if (strlen(v6_prefix) && v6_prefix_length <= 104) {
+-			if (v6_sdn_num && (v6_prefix_length <= 56 || v6_prefix_div)) {
++			/* reaper 2026-11-19 (REAPER-V6SPLIT-MAIN): with a /57-/63 the main LAN keeps this stock path (its range follows
++			 * br0's own address, see _add_ip6_lansdnaddr); only guest and VLAN networks get the new per-network /64 */
++			if (v6_sdn_num && (v6_prefix_length <= 56 || v6_prefix_div) && (v6_prefix_length < 57 || v6_prefix_length > 63)) {
+ 				sdn_prefix_length = mtlan_extend_prefix_by_subnet_idx(
+ 					v6_prefix, v6_prefix_length, 0, 8, sdn_prefix, sizeof(sdn_prefix));
+ 				if (sdn_prefix_length < 64)
+@@ -3035,6 +3037,23 @@ void stop_stubby(void)
+ 
+ #ifdef RTCONFIG_IPV6
+ #ifdef RTCONFIG_MULTILAN_CFG
++/* reaper 2026-11-19 (IPv6 prefix split, REAPER-V6SPLIT-NOTE): a network that falls back to a private (ULA) prefix
++ * because the provider's prefix has no /64 left for it is logged once per boot (flag under /tmp/reaper) */
++static void reaper_v6split_ula_note(const char *ifname, int plen, int idx)
++{
++	char flag[64];
++
++	snprintf(flag, sizeof(flag), "/tmp/reaper/v6split_ula.%d.%d", plen, idx);
++	if (f_exists(flag))
++		return;
++	f_write_string(flag, "1", 0, 0600);
++	if (plen < 64)
++		logmessage("ipv6", "%s: the provider's /%d has no /64 for network %d (it has %d); this network uses a private (ULA) prefix",
++			ifname, plen, idx, 1 << (64 - plen));
++	else
++		logmessage("ipv6", "%s: the provider's /%d cannot be split; this network uses a private (ULA) prefix", ifname, plen);
++}
++
+ int set_ip6_sdnaddr(void)
+ {
+ 	MTLAN_T *pmtl = NULL;
+@@ -3054,6 +3073,7 @@ int set_ip6_sdnaddr(void)
+ 	int wan6_unit = 0;
+ 	int share_subnet = 1;
+ 	int v6_prefix_div = nvram_get_int("ipv6_prefix_div") ? : 0;
++	char lan6[INET6_ADDRSTRLEN] = {0};	/* REAPER-V6SPLIT-LANCLASH: the main LAN's own address (its stock path) */
+ #ifdef RTCONFIG_MULTIWAN_IF
+ 	int j, wan6_cnt = 0;
+ #endif
+@@ -3062,6 +3082,7 @@ int set_ip6_sdnaddr(void)
+ 
+ 	if (pmtl) {
+ 		strlcpy(v6_ula_random, nvram_safe_get("ipv6_ula_random"), sizeof(v6_ula_random));
++		strlcpy(lan6, ipv6_router_address(NULL), sizeof(lan6));
+ 		get_mtlan(pmtl, &mtl_sz);
+ 		// SDN without IoT
+ 		for (i = 1; i < mtl_sz; i++) {
+@@ -3076,9 +3097,10 @@ int set_ip6_sdnaddr(void)
+ 				strlcpy(v6_rtr_addr, nvram_safe_get(ipv6_nvname_by_unit("ipv6_rtr_addr", wan6_unit)), sizeof(v6_rtr_addr));
+ 				v6_prefix_length = nvram_get_int(ipv6_nvname_by_unit("ipv6_prefix_length", wan6_unit)) ?:64;
+ 
+-				if (share_subnet && (v6_prefix_length <= 56 || v6_prefix_div)) {
++				if (share_subnet && mtlan_prefix_split_ok_lan(v6_prefix[0] ? v6_prefix : ipv6_prefix_by_unit(NULL, wan6_unit),
++						v6_prefix_length, pmtl[i].nw_t.idx, v6_prefix_div, lan6)) {	/* REAPER-V6SPLIT, -LANCLASH */
+ 					if (v6_prefix[0]) {
+-						sdn_prefix_length = mtlan_extend_prefix_by_subnet_idx(v6_prefix, v6_prefix_length, pmtl[i].nw_t.idx, 8, sdn_prefix, sizeof(sdn_prefix));
++						sdn_prefix_length = mtlan_prefix_by_subnet(v6_prefix, v6_prefix_length, pmtl[i].nw_t.idx, sdn_prefix, sizeof(sdn_prefix));
+  						if (sdn_prefix_length) {
+ 							if (pmtl[i].nw_t.addr6[0])
+ 								snprintf(ip, sizeof(ip), "%s%s/%d", sdn_prefix, pmtl[i].nw_t.addr6, sdn_prefix_length);
+@@ -3088,7 +3110,7 @@ int set_ip6_sdnaddr(void)
+ 					}
+ 					else if (v6_rtr_addr[0]) {
+ 						strlcpy(v6_prefix, ipv6_prefix_by_unit(NULL, wan6_unit), sizeof(v6_prefix));
+-						sdn_prefix_length = mtlan_extend_prefix_by_subnet_idx(v6_prefix, v6_prefix_length, pmtl[i].nw_t.idx, 8, sdn_prefix, sizeof(sdn_prefix));
++						sdn_prefix_length = mtlan_prefix_by_subnet(v6_prefix, v6_prefix_length, pmtl[i].nw_t.idx, sdn_prefix, sizeof(sdn_prefix));
+ 						if (sdn_prefix_length) {
+ 							if (pmtl[i].nw_t.addr6[0])
+ 								snprintf(ip, sizeof(ip), "%s%s/%d", sdn_prefix, pmtl[i].nw_t.addr6, sdn_prefix_length);
+@@ -3131,6 +3153,8 @@ int set_ip6_sdnaddr(void)
+ 				}
+ #endif
+ 				else {
++					if (share_subnet && v6_prefix_length > 56 && (v6_prefix[0] || v6_rtr_addr[0]))	/* REAPER-V6SPLIT-ULA */
++						reaper_v6split_ula_note(pmtl[i].nw_t.ifname, v6_prefix_length, pmtl[i].nw_t.idx);
+ 					sdn_prefix_length = mtlan_extend_prefix_by_subnet_idx(v6_ula_random, 48, pmtl[i].nw_t.idx, 16, sdn_prefix, sizeof(sdn_prefix));
+ 					if (pmtl[i].nw_t.addr6[0])
+ 						snprintf(ip, sizeof(ip), "%s%s/%d", sdn_prefix, pmtl[i].nw_t.addr6, sdn_prefix_length);
+@@ -3166,7 +3190,10 @@ char* _add_ip6_lansdnaddr()
+ 	nvram_safe_get_r("lan_ifname", lan_ifname, sizeof(lan_ifname));
+ 	v6_prefix_length = nvram_get_int(ipv6_nvname("ipv6_prefix_length")) ?:64;
+ 
+-	if (set_ip6_sdnaddr()) {
++	/* reaper 2026-11-19 (REAPER-V6SPLIT-LAN0): set_ip6_sdnaddr() numbers the guest and VLAN networks (a /57-/63 included);
++	 * with a /57-/63 the main LAN keeps the stock address path below - ipv6_router_address(), never rebuilt from the
++	 * prefix, so a Static IPv6 LAN address is not overwritten */
++	if (set_ip6_sdnaddr() && (v6_prefix_length < 57 || v6_prefix_length > 63)) {
+ 		strlcpy(v6_prefix, nvram_safe_get(ipv6_nvname("ipv6_prefix")), sizeof(v6_prefix));
+ 		strlcpy(v6_rtr_addr, nvram_safe_get(ipv6_nvname("ipv6_rtr_addr")), sizeof(v6_rtr_addr));
+ 		strlcpy(v6_ula_random, nvram_safe_get(ipv6_nvname("ipv6_ula_random")), sizeof(v6_ula_random));
+@@ -9456,18 +9483,58 @@ void stop_lltd(void)
+  * them. The networks guest isolation closes are added to deny-interfaces. The plan's signature is kept beside the
+  * config, so a network change (restart_sdn / sdn_del) restarts avahi only when what it would be told changed. */
+ #define REAPER_MDNS_SIG	AVAHI_CONFIG_PATH "/reaper_mdns.sig"
++/* reaper 2026-11-19: device discovery on guest networks (reaper_mdns_ifaces' guest list, avahi reflect-guest) */
++#define REAPER_MDNS_DBUF	1024	/* deny-interfaces part */
++#define REAPER_MDNS_GBUF	2048	/* reflect-guest value: "<bridge>:<type>:...,<bridge>:..." (avahi reads the whole line) */
++#define REAPER_MDNS_SIGBUF	3600
++/* avahi-daemon reads its config a line at a time into 4096 bytes (avahi-daemon/ini-file-parser.c ln[4096], raised from
++ * 256 by Reaper 2026-11-19); a longer line splits, the rest has no '=' and avahi refuses the WHOLE file - it would not
++ * start. So the reflect-guest value stays well within one line: "reflect-guest=" (14) + this - 1 + "\n" = 2062 bytes.
++ * A guest entry that does not fit whole is left out (its bridge denied, as before discovery). It must stay <=
++ * REAPER_MDNS_GBUF and under the reader's buffer (test_mdns_reflector.py ties the two). */
++#define REAPER_MDNS_GLINE	2048
+ 
+-static int reaper_mdns_plan(char *deny, size_t dn, char *refl, size_t rn, char *why, size_t wn, char *sig, size_t sn)
++/* the bridges of the guest list back onto deny (whole names only) */
++static void reaper_mdns_guest_deny(char *deny, size_t dn, const char *guest)
++{
++	const char *p = guest, *c, *e;
++	size_t l, dl;
++
++	while (p && *p) {
++		e = strchr(p, ',');
++		c = strchr(p, ':');
++		l = (c && (!e || c < e)) ? (size_t)(c - p) : (e ? (size_t)(e - p) : strlen(p));
++		dl = strlen(deny);
++		if (l > 0 && dl + l + 2 <= dn) {
++			if (dl)
++				deny[dl++] = ',';
++			memcpy(deny + dl, p, l);
++			deny[dl + l] = '\0';
++		}
++		p = e ? e + 1 : NULL;
++	}
++}
++
++static int reaper_mdns_plan(char *deny, size_t dn, char *refl, size_t rn, char *why, size_t wn, char *guest, size_t gn,
++			    char *sig, size_t sn)
+ {
+ 	const char *p;
+-	int on, n = 0;
++	int on, n = 0, ng = 0;
+ 
+-	reaper_mdns_ifaces(deny, dn, refl, rn, why, wn);
++	reaper_mdns_ifaces(deny, dn, refl, rn, why, wn, guest, gn < REAPER_MDNS_GLINE ? gn : REAPER_MDNS_GLINE);
+ 	if (*refl)
+ 		for (n = 1, p = refl; (p = strchr(p, ',')) != NULL; p++)
+ 			n++;
+-	on = !nvram_match("reaper_mdns_reflect", "0") && n >= 2;
+-	snprintf(sig, sn, "%d|%s|%s", on, deny, on ? refl : "");
++	if (*guest)
++		for (ng = 1, p = guest; (p = strchr(p, ',')) != NULL; p++)
++			ng++;
++	/* reaper 2026-11-19: a discovery guest network counts beside the core bridges, and needs one of them (star only) */
++	on = !nvram_match("reaper_mdns_reflect", "0") && n >= 1 && n + ng >= 2;
++	if (!on && *guest) {	/* no reflector: the discovery guest networks are closed to avahi again, as before */
++		reaper_mdns_guest_deny(deny, dn, guest);
++		guest[0] = '\0';
++	}
++	snprintf(sig, sn, "%d|%s|%s|%s", on, deny, on ? refl : "", guest);
+ 	return on;
+ }
+ 
+@@ -9477,18 +9544,22 @@ int generate_mdns_config(void)
+ 	char avahi_config[80];
+ 	int ret = 0;
+ 	char *wan1_ifname;
+-	char rm_deny[256], rm_refl[256], rm_why[384], rm_sig[600], rm_old[600] = "";
++	char rm_deny[REAPER_MDNS_DBUF], rm_refl[256], rm_why[384], rm_guest[REAPER_MDNS_GBUF], rm_sig[REAPER_MDNS_SIGBUF];
++	char rm_old[REAPER_MDNS_SIGBUF] = "";
+ 	int rm_on;
+ 
+ 	sprintf(avahi_config, "%s/%s", AVAHI_CONFIG_PATH, AVAHI_CONFIG_FN);
+ 
+ 	/* reaper 2026-11-14: mDNS across networks - log the plan when it changes */
+-	rm_on = reaper_mdns_plan(rm_deny, sizeof(rm_deny), rm_refl, sizeof(rm_refl), rm_why, sizeof(rm_why), rm_sig, sizeof(rm_sig));
++	rm_on = reaper_mdns_plan(rm_deny, sizeof(rm_deny), rm_refl, sizeof(rm_refl), rm_why, sizeof(rm_why), rm_guest, sizeof(rm_guest),
++				 rm_sig, sizeof(rm_sig));
+ 	f_read_string(REAPER_MDNS_SIG, rm_old, sizeof(rm_old));
+ 	if (strcmp(rm_old, rm_sig)) {
+-		if (rm_on)
++		if (rm_on) {
+ 			logmessage("mdns", "devices can find each other across %s%s%s", rm_refl, *rm_why ? "; left out: " : "", rm_why);
+-		else if (nvram_match("reaper_mdns_reflect", "0"))
++			if (*rm_guest)	/* reaper 2026-11-19 */
++				logmessage("mdns", "device discovery with the main network (picked service types only): %s", rm_guest);
++		} else if (nvram_match("reaper_mdns_reflect", "0"))
+ 			logmessage("mdns", "mDNS across networks is off");
+ 		else if (*rm_why)
+ 			logmessage("mdns", "mDNS across networks: fewer than two networks can take part (left out: %s)", rm_why);
+@@ -9544,6 +9615,10 @@ int generate_mdns_config(void)
+ 		fprintf(fp, "enable-reflector=yes\n");
+ 		fprintf(fp, "reflect-ipv=no\n");
+ 		fprintf(fp, "reflect-interfaces=%s\n", rm_refl);
++		/* reaper 2026-11-19: discovery guest networks - star only, their picked types (avahi patch); not in
++		 * reflect-interfaces, not in deny-interfaces */
++		if (*rm_guest)
++			fprintf(fp, "reflect-guest=%s\n", rm_guest);
+ 	}
+ 
+ 	/* Set [rlimits] configuration */
+@@ -9764,11 +9839,11 @@ int start_mdns(void)
+  * or reflects between changed. Called from the rc service handler itself, so no notify_rc (review 2026-11-11 C-1). */
+ void reaper_mdns_follow(void)
+ {
+-	char d[256], r[256], w[384], sig[600], old[600] = "";
++	char d[REAPER_MDNS_DBUF], r[256], w[384], gs[REAPER_MDNS_GBUF], sig[REAPER_MDNS_SIGBUF], old[REAPER_MDNS_SIGBUF] = "";
+ 
+ 	if (!pids("avahi-daemon"))
+ 		return;
+-	reaper_mdns_plan(d, sizeof(d), r, sizeof(r), w, sizeof(w), sig, sizeof(sig));
++	reaper_mdns_plan(d, sizeof(d), r, sizeof(r), w, sizeof(w), gs, sizeof(gs), sig, sizeof(sig));
+ 	f_read_string(REAPER_MDNS_SIG, old, sizeof(old));
+ 	if (!strcmp(old, sig))
+ 		return;
+@@ -19259,6 +19334,9 @@ script_allnet:
+ #else
+ 			start_dnsmasq(ALL_SDN);
+ #endif
++#ifdef RTCONFIG_MULTILAN_CFG
++			reaper_guest_resv_follow();	/* reaper 2026-11-19 REAPER-GUEST-RESV-NP: chosen devices follow a reservation edit */
++#endif
+ #ifdef RTCONFIG_DHCP_OVERRIDE
+ 			start_detectWAN_arp();
+ #endif
+@@ -21289,6 +21367,7 @@ check_ddr_done:
+ 		
+ 		if (action & RC_SERVICE_START) {
+ 			apg_create_vlan_for_lan();
++			reaper_brport_wired_open();
+ 			update_amas_lldpd_ifnames();
+ 		}
+ 	}
+@@ -21301,6 +21380,7 @@ check_ddr_done:
+ 		
+ 		if (action & RC_SERVICE_START) {
+ 			apg_start();
++			reaper_brport_wired_open();
+ 			update_amas_lldpd_ifnames();
+ 		}
+ 	}
+@@ -21485,6 +21565,12 @@ check_ddr_done:
+ #else
+ 		if(action & RC_SERVICE_STOP) stop_dnsmasq();
+ 		if(action & RC_SERVICE_START) start_dnsmasq();
++#endif
++#ifdef RTCONFIG_MULTILAN_CFG
++		/* reaper 2026-11-19 REAPER-GUEST-RESV: a reservation edit (DHCP page) restarts only dnsmasq, and guest isolation's
++		 * chosen devices take their addresses from the reservations - re-applied only when those changed */
++		if (action & RC_SERVICE_START)
++			reaper_guest_resv_follow();
+ #endif
+ 	}
+ #ifdef RTCONFIG_DNSPRIVACY
+@@ -23245,6 +23331,20 @@ retry_wps_enr:
+ 		 * invokes it directly and was never affected. */
+ 		if((action & RC_SERVICE_START) && reaper_script_ok("/tmp/rwarden/update.sh")) doSystem("sh /tmp/rwarden/update.sh &");
+ 	}
++#ifdef RTCONFIG_MULTILAN_CFG
++	/* reaper 2026-11-19 REAPER-GUEST-SVC: restart_reaper_guest - the Network page sends it when only a network's chosen
++	 * devices / device discovery (apgN_rg_devs, apgN_rg_mdns) changed: the guest layer and the mDNS plan follow, no
++	 * radio restart */
++	else if (strcmp(script, "reaper_guest") == 0)
++	{
++		if (action & RC_SERVICE_START) {
++			reaper_guest_apply(0);
++#if defined(RTCONFIG_MDNS)
++			reaper_mdns_follow();
++#endif
++		}
++	}
++#endif
+ 	/* reaper v2.3.8 native firewall rules engine. The four verbs are separate
+ 	 * services rather than one with arguments so each is individually auditable
+ 	 * from the notify_rc log, and so a confirm can never be mistaken for an
+@@ -23253,18 +23353,30 @@ retry_wps_enr:
+ 	{
+ 		if(action & RC_SERVICE_STOP) stop_reaper_fw();
+ 		if(action & RC_SERVICE_START) start_reaper_fw();
++#ifdef RTCONFIG_MULTILAN_CFG
++		reaper_guest_zpol_follow();	/* reaper 2026-11-19: the engine on or off - zone paths follow */
++#endif
+ 	}
+ 	else if (strcmp(script, "reaper_fw_apply") == 0)	/* apply the DRAFT and arm commit-confirm */
+ 	{
+ 		if(action & RC_SERVICE_START) reaper_fw_apply();
++#ifdef RTCONFIG_MULTILAN_CFG
++		if(action & RC_SERVICE_START) reaper_guest_zpol_follow();	/* reaper 2026-11-19: zone paths follow, outside the lock */
++#endif
+ 	}
+ 	else if (strcmp(script, "reaper_fw_confirm") == 0)	/* keep the armed ruleset (the only path that writes flash) */
+ 	{
+ 		if(action & RC_SERVICE_START) reaper_fw_confirm();
++#ifdef RTCONFIG_MULTILAN_CFG
++		if(action & RC_SERVICE_START) reaper_guest_zpol_follow();	/* reaper 2026-11-19: zone paths follow, outside the lock */
++#endif
+ 	}
+ 	else if (strcmp(script, "reaper_fw_rollback") == 0)	/* revert to the last confirmed ruleset */
+ 	{
+ 		if(action & RC_SERVICE_START) reaper_fw_rollback();
++#ifdef RTCONFIG_MULTILAN_CFG
++		if(action & RC_SERVICE_START) reaper_guest_zpol_follow();	/* reaper 2026-11-19: zone paths follow, outside the lock */
++#endif
+ 	}
+ 	else if (strcmp(script, "reaper_fw_dryrun") == 0)	/* compile the draft to a preview, execute nothing */
+ 	{
+diff --git a/release/src/router/reaper_fwsim/reaper_fwsim.c b/release/src/router/reaper_fwsim/reaper_fwsim.c
+index 10a52576df..a4b623dd2f 100644
+--- a/release/src/router/reaper_fwsim/reaper_fwsim.c
++++ b/release/src/router/reaper_fwsim/reaper_fwsim.c
+@@ -47,7 +47,22 @@
+ #include <shared.h>
+ #endif
+ 
+-#define FWSIM_VER	"1.14"
++#define FWSIM_VER	"1.16"
++/* v1.16 (image 2, 2026-11-19): the opt-in paths across guest isolation - a guest network reaches its chosen
++ * main-network devices (G5), device discovery (G6), and Firewall > Zone policies may open one-way paths from the main
++ * network into isolated guest networks (F2 judged, plus a reverse-DROP companion). REAPER-FWSIM-GUESTCROSS below. */
++/* v1.15 (field, GT-BE98, 2026-11-16): the note on a HELD row - a zone policy that allows a path the guest
++ * isolation layer keeps closed (see eval_pkt). One place, so the hint can change with the feature (image 2
++ * names the Firewall switch). %s = the guest bridge from the deciding REAPER_GUF rule. */
++#define FWSIM_HELD_NOTE	"Not in effect: guest isolation on %s holds this path. Link the networks with Access Intranet on the Network page to allow it."
++/* v1.16: the same HELD state for a zone policy FROM the main network into an isolated guest network: the Firewall
++ * switch (reaper_fw_zpol_guest) is what opens that path, so the note names it (the v1.15 note above stays the note of
++ * a guest-as-source policy). Into a Guest Portal network no switch opens anything. */
++#define FWSIM_HELD_NOTE_ZPOL	"Not in effect: guest isolation on %s holds this path. Turn on Firewall > Zone policies may open one-way paths from the main network into isolated guest networks to allow it."
++#define FWSIM_HELD_NOTE_PORTAL	"Not in effect: guest isolation on %s holds this path. A Guest Portal network stays closed to the main network."
++/* v1.16: a G5 row (a guest reaching a chosen device) decided by the admin's own rules-engine rule, which runs before
++ * the guest layer's chosen-device ACCEPT (REAPER_GUA, hooked after REAPER_FWF) */
++#define FWSIM_G5_FWF_NOTE	"Decided by your own Firewall rule (rules engine), which runs before the chosen-device rule."
+ #define FWSIM_DIR	"/tmp/reaper"
+ #define FWSIM_JSON	FWSIM_DIR "/fwstatus.json"
+ #define FWSIM_STATIC	"/usr/share/reaper/witness.static"
+@@ -987,6 +1002,9 @@ struct ctx {
+ 	 * actually decided every ordinary row on its way out. */
+ 	char snat[200];
+ 	int hops;
++	/* v1.15: the rule behind the terminal verdict in `decide` (NULL for a policy verdict), so a row can
++	 * name the interface that rule matched - a HELD row names the guest bridge */
++	const struct rule *drule;
+ };
+ 
+ static void path_add(struct ctx *c, const char *fmt, ...)
+@@ -1155,7 +1173,7 @@ static int walk_chain(struct ctx *c, struct table *t, struct chain *ch, int dept
+ 		}
+ 		if (!strcmp(r->target, "ACCEPT") || !strcmp(r->target, "DROP") || !strcmp(r->target, "REJECT") || !strcmp(r->target, "RETURN")) {
+ 			v = r->target[0] == 'A' ? V_ACCEPT : r->target[0] == 'D' ? V_DROP : r->target[2] == 'J' ? V_REJECT : V_RETURN;
+-			if (v != V_RETURN || depth == 0) { snprintf(c->decide, sizeof(c->decide), "%s/%s#%d %s", t->name, ch->name, r->idx, r->text); }
++			if (v != V_RETURN || depth == 0) { snprintf(c->decide, sizeof(c->decide), "%s/%s#%d %s", t->name, ch->name, r->idx, r->text); c->drule = (v != V_RETURN) ? r : NULL; }
+ 			path_add(c, "%s#%d %s", ch->name, r->idx, r->target);
+ 			return v;
+ 		}
+@@ -1231,7 +1249,7 @@ static int walk_packet(struct ctx *c)
+ 	const char *post[][2] = { {"mangle", "POSTROUTING"}, {"nat", "POSTROUTING"} };
+ 	int i, local;
+ 
+-	c->path[0] = 0; c->decide[0] = 0; c->depends[0] = 0; c->nat[0] = 0; c->hops = 0;
++	c->path[0] = 0; c->decide[0] = 0; c->depends[0] = 0; c->nat[0] = 0; c->hops = 0; c->drule = NULL;
+ 	if (p->gen) {
+ 		if (!p->out[0]) snprintf(p->out, sizeof(p->out), "%s", egress_for(&p->dst));
+ 		for (i = 0; i < 4; i++) {
+@@ -1284,6 +1302,9 @@ struct witness {
+ 	char in[20], src[48], dst[48], proto[12], port[12], ct[40], out[20], mac[20];
+ 	/* results */
+ 	int done, ok, na, dep;
++	int held;			/* v1.15: a zone ACCEPT the guest isolation layer holds (state "held") */
++	int heldkind;			/* v1.16: the note of a HELD row: 0 guest source, 1 main -> guest (the switch), 2 main -> portal */
++	int noheld;			/* v1.16: the switch is on, so the guest layer should have opened it: judged, never held */
+ 	char verdict[96], decide[200], path[MAXPATH], note[320];
+ };
+ static struct witness wit[MAXWIT]; static int nwit = 0;
+@@ -1534,6 +1555,28 @@ static void eval_pkt(struct witness *w)
+ 	else if (!strcmp(want, "REJECT")) w->ok = (v == V_REJECT);
+ 	else if (!strcmp(want, "PASS")) w->ok = (v == V_ACCEPT);
+ 	else { w->na = 1; snprintf(w->note, sizeof(w->note), "unknown expectation %s", want); }
++	/* REAPER-FWSIM-HELD v1.15 (field, GT-BE98, 2026-11-16): a zone policy that ALLOWS a path into or out of
++	 * an isolated guest network meets the guest isolation layer first (REAPER_GUF runs before REAPER_FWF,
++	 * rc/reaper_hook.c), and that layer drops it - by design, not a broken policy. Such a row is HELD
++	 * (state "held", amber on the page, never counted red) and its note names the guest bridge from the
++	 * deciding rule (`-i X -j DROP` = X is the source network, `-o X -j DROP` = the destination). Only F2
++	 * rows that expect ACCEPT: a DROP row, a row decided by any other chain, and a REAPER_GUF decision on
++	 * any other row family are judged exactly as before. */
++	if (!w->ok && !w->na && !w->noheld && !strncmp(w->id, "F2.", 3) && !strcmp(want, "ACCEPT") && (v == V_DROP || v == V_REJECT) &&
++	    !strncmp(c.decide, "filter/REAPER_GUF#", 18)) {
++		const struct rule *dr = c.drule; const char *net = "";
++		if (dr && dr->in[0] && !dr->in_neg) net = dr->in;
++		else if (dr && dr->out[0] && !dr->out_neg) net = dr->out;
++		w->held = 1;
++		if (!net[0]) net = "a guest network";
++		/* v1.16: the note says what would open it (heldkind is set where the F2 row is made) */
++		if (w->heldkind == 1) snprintf(w->note, sizeof(w->note), FWSIM_HELD_NOTE_ZPOL, net);
++		else if (w->heldkind == 2) snprintf(w->note, sizeof(w->note), FWSIM_HELD_NOTE_PORTAL, net);
++		else snprintf(w->note, sizeof(w->note), FWSIM_HELD_NOTE, net);
++	}
++	/* v1.16: a G5 row the admin's own rules-engine rule decided - the rule column names it, the note says whose it is */
++	if (!w->na && !strncmp(w->id, "G5.", 3) && !strncmp(c.decide, "filter/REAPER_FWF#", 18))
++		snprintf(w->note, sizeof(w->note), "%s", FWSIM_G5_FWF_NOTE);
+ }
+ 
+ static void eval_all(void)
+@@ -1967,6 +2010,146 @@ static int sdn_peers(const char *br, char out[][20], int max)
+ 	return n;
+ }
+ 
++/* REAPER-FWSIM-GUESTCROSS v1.16 (image 2, 2026-11-19): the opt-in paths across guest isolation (rc/reaper_guest.c).
++ * Per guest network, by its apg index (sdn_rl field 5):
++ *   apgN_rg_devs  "<MAC<MAC..." (or "<MAC><MAC>...") - main-network devices its guests may open connections to (G5). rc uses an entry
++ *                 only while DHCP reservations are on (dhcp_static_x=1), when the MAC (any case) has a reservation in
++ *                 dhcp_staticlist ("<MAC>IP>DNS>name"), its IPv4 is inside the LAN subnet and is not the router's,
++ *                 and the MAC is not an AiMesh node (a node's address would open its UI / SSH); at most 16 entries.
++ *                 Same tests here, so there is a row exactly for each device rc opens - an unreserved, malformed or
++ *                 skipped MAC has none. The node test reads the AiMesh set (hash:mac reaper_aimesh): ipset on the
++ *                 router, the members file on the host.
++ *   apgN_rg_mdns  "" = device discovery off, else the service list: udp/5353 from the guest bridge to the router
++ *                 (REAPER_GUI RETURN, IPv4) is open (G6) while one entry is usable; with Set AP Isolated on rc opens
++ *                 nothing (the reflector leaves the network out), so the row expects DROP.
++ * Only a non-portal network that guest isolation closes (no Access Intranet pair with the main network): a portal gets
++ * none of the switches, and a network paired with Main is not isolated. An input without the network list (sdn_rl)
++ * resolves no network, so it has no G5 / G6 row. */
++#define G5_MAX 16
++struct gdev { char ip[16]; char name[24]; };
++
++/* the enabled network with a subnet of its own on bridge br (sdn_bridge's reading): its apg index, and whether it is a
++ * captive portal. 0 = none (the main LAN, a bridge no network names, or no network list in this input). */
++static int sdn_by_bridge(const char *br, int *apg, int *portal)
++{
++	char *dup, *rec, *save = NULL, f[24], bb[20];
++	int found = 0;
++
++	*apg = *portal = 0;
++	if (!br || !br[0] || !strcmp(br, lan_ifname)) return 0;
++	dup = xstrdup(nv_get("sdn_rl"));
++	for (rec = strtok_r(dup, "<", &save); rec && !found; rec = strtok_r(NULL, "<", &save)) {
++		int idx, pt;
++		if (!rec_field(rec, 0, f, sizeof(f)) || !isdigit((unsigned char)f[0]) || (idx = atoi(f)) <= 0) continue;
++		if (!sdn_bridge(idx, bb, sizeof(bb), &pt) || strcmp(bb, br)) continue;
++		*apg = rec_field(rec, 5, f, sizeof(f)) ? atoi(f) : 0;
++		*portal = pt;
++		found = 1;
++	}
++	free(dup);
++	return found;
++}
++
++/* "aa:bb:cc:dd:ee:ff" exactly (shared ether_atoe() takes junk as zeros - the shape is checked first) */
++static int mac_shape(const char *s, size_t n)
++{
++	size_t i;
++	if (n != 17) return 0;
++	for (i = 0; i < 17; i++)
++		if ((i % 3 == 2) ? (s[i] != ':') : !isxdigit((unsigned char)s[i])) return 0;
++	return 1;
++}
++
++/* a MAC in a hash:mac set. Host build: the members file is the whole truth, as for set_test(). */
++static int mac_in_set(const char *set, const char *mac)
++{
++	int i;
++	for (i = 0; i < nmembers; i++)
++		if (!strcmp(members[i].set, set) && !strcasecmp(members[i].addr, mac)) return members[i].in;
++#ifdef FWSIM_HOST
++	return 0;
++#else
++	{
++		char *argv[] = { "ipset", "test", (char *)set, (char *)mac, "-q", NULL };
++		int rc = _eval(argv, ">/dev/null", 5, NULL);
++		member_add(set, mac, rc == 0);
++		return rc == 0;
++	}
++#endif
++}
++
++/* the chosen devices of network apg that rc opens (see above); returns how many */
++static int guest_devs(int apg, const struct addr *lan4, struct gdev *out, int max)
++{
++	char key[32], *list, *p;
++	int n = 0, seen = 0;
++
++	if (apg <= 0 || !lan4 || lan4->fam != 4 || !nv_is("dhcp_static_x", "1")) return 0;
++	snprintf(key, sizeof(key), "apg%d_rg_devs", apg);
++	list = xstrdup(nv_get(key));
++	for (p = list; *p && seen < G5_MAX && n < max; ) {
++		char mac[18], *e, *res, *rec, *sv = NULL;
++		size_t len;
++		while (*p == '<' || *p == '>') p++;
++		if (!*p) break;
++		e = strpbrk(p, "<>");	/* "<MAC<MAC" (the Network page) or "<MAC><MAC>" - split as rc's rg_dev_resolve does */
++		len = e ? (size_t)(e - p) : strlen(p);
++		seen++;
++		if (!mac_shape(p, len)) { p += len; continue; }
++		memcpy(mac, p, 17); mac[17] = 0;
++		p += len;
++		if (mac_in_set("reaper_aimesh", mac)) continue;
++		res = xstrdup(nv_get("dhcp_staticlist"));
++		for (rec = strtok_r(res, "<", &sv); rec; rec = strtok_r(NULL, "<", &sv)) {
++			char m[24], ip[16], nm[24];
++			struct addr a;
++			int k;
++			if (!rec_field(rec, 0, m, sizeof(m)) || strcasecmp(m, mac)) continue;
++			/* the first reservation of this MAC decides */
++			if (!rec_field(rec, 1, ip, sizeof(ip)) || strchr(ip, '/') || addr_parse(ip, 4, &a) != 0) break;
++			if (!addr_in(lan4, &a) || !memcmp(a.a, lan4->a, 4)) break;
++			{	/* nor the subnet's network / broadcast address (rc: rg_dev_resolve) */
++				unsigned v, msk = lan4->plen > 0 && lan4->plen <= 32 ? 0xffffffffu << (32 - lan4->plen) : 0;
++				memcpy(&v, a.a, 4); v = ntohl(v);
++				if (lan4->plen < 31 && ((v & ~msk) == 0 || (v | msk) == 0xffffffffu)) break;
++			}
++			for (k = 0; k < n && strcmp(out[k].ip, ip); k++) { }
++			if (k < n) break;
++			snprintf(out[n].ip, sizeof(out[n].ip), "%.15s", ip);
++			if (!rec_field(rec, 3, nm, sizeof(nm))) nm[0] = 0;
++			snprintf(out[n].name, sizeof(out[n].name), "%.23s", nm);
++			n++;
++			break;
++		}
++		free(res);
++	}
++	free(list);
++	return n;
++}
++
++/* apgN_rg_mdns turns discovery on when at least one entry is usable, as rc reads it (rg_mdns_types): a preset name or
++ * a service type "_name._tcp" / "_name._udp" (name: 1-32 of a-z, 0-9, '-'). A list of nothing usable is off. */
++static int mdns_on(const char *v)
++{
++	static const char *pre[] = { "print", "airplay", "cast", "homekit", "audio", NULL };
++	const char *p = v, *e;
++	size_t l, i;
++	int k;
++
++	while (p && *p) {
++		e = strchr(p, ',');
++		l = e ? (size_t)(e - p) : strlen(p);
++		for (k = 0; pre[k]; k++) if (strlen(pre[k]) == l && !memcmp(pre[k], p, l)) return 1;
++		if (l >= 7 && l <= 38 && p[0] == '_' && (!memcmp(p + l - 5, "._tcp", 5) || !memcmp(p + l - 5, "._udp", 5))) {
++			for (i = 1; i < l - 5; i++)
++				if (!((p[i] >= 'a' && p[i] <= 'z') || (p[i] >= '0' && p[i] <= '9') || p[i] == '-')) break;
++			if (i == l - 5) return 1;
++		}
++		p = e ? e + 1 : NULL;
++	}
++	return 0;
++}
++
+ static void gen_witnesses(void)
+ {
+ 	char lanhost[48], rtr[48], wanip[48], buf[200], id[16], feat[80], lanmac[20];
+@@ -2494,7 +2677,30 @@ static void gen_witnesses(void)
+ 					nz++;
+ 					snprintf(id, sizeof(id), "F2.%d", nz);
+ 					snprintf(feat, sizeof(feat), "Zone policy: %.20s -> %.20s is %.8s", sz, dz, act);
+-					wit_pkt(id, feat, 4, sif, sh, dh, "tcp", "445", "NEW", expect, "", lanmac);
++					{
++						/* v1.16 (REAPER-FWSIM-GUESTCROSS): a main -> guest ACCEPT. With Firewall > "Zone policies may
++						 * open one-way paths from the main network into isolated guest networks" (reaper_fw_zpol_guest)
++						 * rc opens it: the row is judged like any other (green when the guest layer RETURNs it and the
++						 * zone policy admits it, red when the layer still drops it) and a companion row checks that
++						 * the guest still cannot open a connection back. Switch off: HELD, the note names the switch.
++						 * Into a Guest Portal network no switch opens it. A guest-as-source policy keeps the Access
++						 * Intranet note. "Main" = the main LAN or a network paired with it (rc: rg_main_access). */
++						struct witness *zw = wit_pkt(id, feat, 4, sif, sh, dh, "tcp", "445", "NEW", expect, "", lanmac);
++						int smain = !strcmp(sif, lan_ifname) || sdn_main_access(sif), dapg, dportal;
++						int dnet = sdn_by_bridge(dif, &dapg, &dportal);
++						if (zw && smain && !strcmp(expect, "ACCEPT")) {
++							if (dnet && dportal) zw->heldkind = 2;
++							else if (!nv_is("reaper_fw_zpol_guest", "1")) zw->heldkind = 1;
++							else {
++								zw->noheld = 1;
++								if (dnet && !sdn_main_access(dif)) {
++									snprintf(id, sizeof(id), "F2.%dr", nz);
++									snprintf(feat, sizeof(feat), "Zone policy: %.20s -> %.20s: reverse stays closed", sz, dz);
++									wit_pkt(id, feat, 4, dif, dh, sh, "tcp", "445", "NEW", "DROP", "", lanmac);
++								}
++							}
++						}
++					}
+ 				}
+ 				free(zp);
+ 			}
+@@ -2536,10 +2742,22 @@ static void gen_witnesses(void)
+ 	{
+ 		int k = 0;
+ 		for (i = 0; i < nown; i++) {
+-			char gh[48], gr[48];
++			char gh[48], gr[48], g1alt[48];
++			struct gdev gd[G5_MAX];
++			int nd = 0, gapg = 0, gportal = 0, gnet, gmember, d;
++			const char *g1dst = lanhost;
+ 			if (own[i].a.fam != 4 || own[i].scope_link || strncmp(own[i].ifname, "br", 2) || !strcmp(own[i].ifname, lan_ifname)) continue;
+ 			k++;
+ 			host_free(&own[i].a, 123, gh, sizeof(gh)); addr_str(&own[i].a, gr, sizeof(gr));
++			/* v1.16 (REAPER-FWSIM-GUESTCROSS): the network on this bridge, and the chosen devices rc opens for it. G1
++			 * ("isolated from the main LAN") must aim at a main host that is NOT one of them: the LAN stand-in already
++			 * skips every reserved address, but with the admin access restriction on the LAN witness is the allowed
++			 * client, which can be a chosen device - then G1 aims at the stand-in instead. */
++			gnet = sdn_by_bridge(own[i].ifname, &gapg, &gportal);
++			gmember = gnet && !gportal && !sdn_main_access(own[i].ifname);
++			if (gmember) nd = guest_devs(gapg, lan4, gd, G5_MAX);
++			for (d = 0; d < nd; d++)
++				if (!strcmp(gd[d].ip, lanhost)) { host_free(lan4, 123, g1alt, sizeof(g1alt)); g1dst = g1alt; break; }
+ 			snprintf(id, sizeof(id), "G1.%d", k); snprintf(feat, sizeof(feat), "Guest network %s: isolated from the main LAN", own[i].ifname);
+ 			/* reaper 2026-11-16 (bug review A1): sdn_access_rl pairs networks BY INDEX. This row used to stand down
+ 			 * ("not witnessed") while ANY pair existed. A pair is now read for what it is (sdn_bridge): only a pair
+@@ -2551,7 +2769,7 @@ static void gen_witnesses(void)
+ 			else if (sdn_main_access(own[i].ifname))
+ 				wit_shape(id, feat, 4, "NOTE this network has Access Intranet to the main network; it reaches the main LAN by design", "OK");
+ 			else
+-				wit_pkt(id, feat, 4, own[i].ifname, gh, lanhost, "tcp", "445", "NEW", "DROP", "", lanmac);
++				wit_pkt(id, feat, 4, own[i].ifname, gh, g1dst, "tcp", "445", "NEW", "DROP", "", lanmac);
+ 			snprintf(id, sizeof(id), "G2.%d", k); snprintf(feat, sizeof(feat), "Guest network %s: reaches the WAN", own[i].ifname);
+ 			{
+ 				const struct iprule *pr = iprule_iif(4, own[i].ifname, 0), *ks = pr ? iprule_iif(4, own[i].ifname, 1) : NULL;
+@@ -2583,6 +2801,37 @@ static void gen_witnesses(void)
+ 			}
+ 			snprintf(id, sizeof(id), "G4.%d", k); snprintf(feat, sizeof(feat), "Guest network %s: DNS at its gateway", own[i].ifname);
+ 			wit_pkt(id, feat, 4, own[i].ifname, gh, gr, "udp", "53", "NEW", "RESOLVED", "", lanmac);
++			/* G5 (v1.16) - each chosen device: a guest opens a connection to it (the guest layer RETURNs it in
++			 * REAPER_GUF and REAPER_GUA accepts it after the rules engine, so an engine rule decides first). G1 above
++			 * still expects every other main host closed. */
++			for (d = 0; d < nd; d++) {
++				snprintf(id, sizeof(id), "G5.%d.%d", k % 1000, d + 1);
++				if (gd[d].name[0])
++					snprintf(feat, sizeof(feat), "Guest network %.15s: reaches chosen device %.15s %.10s", own[i].ifname, gd[d].ip, gd[d].name);
++				else
++					snprintf(feat, sizeof(feat), "Guest network %.15s: reaches chosen device %.15s", own[i].ifname, gd[d].ip);
++				wit_pkt(id, feat, 4, own[i].ifname, gh, gd[d].ip, "tcp", "445", "NEW", "ACCEPT", "", lanmac);
++			}
++			/* G6 (v1.16) - device discovery: mDNS from the guest bridge to the router (224.0.0.251 is delivered locally)
++			 * is open while the network has a usable service chosen, closed (REAPER_GUI DROP) while it has none. With Set
++			 * AP Isolated on, rc opens nothing whatever is chosen (the reflector leaves the network out): closed too. */
++			if (gmember) {
++				char gk[32];
++				int on, iso;
++				snprintf(gk, sizeof(gk), "apg%d_rg_mdns", gapg); on = mdns_on(nv_get(gk));
++				snprintf(gk, sizeof(gk), "apg%d_ap_isolate", gapg); iso = nv_is(gk, "1");
++				snprintf(id, sizeof(id), "G6.%d", k);
++				if (on && iso) {
++					snprintf(feat, sizeof(feat), "Guest network %.12s: discovery (mDNS) closed by AP Isolation", own[i].ifname);
++					wit_pkt(id, feat, 4, own[i].ifname, gh, "224.0.0.251", "udp", "5353", "NEW", "DROP", "", lanmac);
++				} else if (on) {
++					snprintf(feat, sizeof(feat), "Guest network %.15s: discovery (mDNS) is open", own[i].ifname);
++					wit_pkt(id, feat, 4, own[i].ifname, gh, "224.0.0.251", "udp", "5353", "NEW", "ACCEPT", "", lanmac);
++				} else {
++					snprintf(feat, sizeof(feat), "Guest network %.15s: discovery (mDNS) is closed", own[i].ifname);
++					wit_pkt(id, feat, 4, own[i].ifname, gh, "224.0.0.251", "udp", "5353", "NEW", "DROP", "", lanmac);
++				}
++			}
+ 		}
+ 	}
+ 	/* G7 - the off-segment resolver. When LAN clients are handed a DNS
+@@ -2818,6 +3067,7 @@ static const char *dump_keys[] = {
+ 	"gk_enable", "gk_default", "rwarden_enable", "rwarden_dir", "rwarden_geo",
+ 	"enable_acc_restriction", "restrict_rulelist",
+ 	"dhcp_staticlist",	/* v1.10: reservations keep stand-ins off devices */
++	"dhcp_static_x", "reaper_fw_zpol_guest", "sdn_rl", "subnet_rl",	/* v1.16: G5 / G6 / F2, and G1 / G3 resolve pairs */
+ 	"reaper_fw_enable", "reaper_pbr_enable",
+ 	"vpn_serverx_start", "vpn_server1_proto", "vpn_server1_port",
+ 	"vpn_server2_proto", "vpn_server2_port", "wgs_enable", "wgs_port",
+@@ -2901,6 +3151,20 @@ static void dump_mask_add(const char *s, const char *t, char (*store)[48], const
+ 	masks[*n] = store[*n]; toks[*n] = t; (*n)++;
+ }
+ 
++/* one key=value line of the nv fixture, through the WAN masks. v1.16: shared by the fixed list and the per-network
++ * keys, and 4 KB - a reservation list longer than 1 KB used to be cut (dhcp_staticlist feeds G5). */
++static void dump_nv(FILE *f, const char *key, const char **masks, const char **toks, int nmask)
++{
++	static char buf2[4096];
++	const char *v = nv_get(key);
++
++	snprintf(buf2, sizeof(buf2), "%s", v ? v : "");
++	mask_line(buf2, sizeof(buf2), masks, toks, nmask);
++	/* a newline in a value would break the key=value fixture format */
++	if (strchr(buf2, '\n')) return;
++	fprintf(f, "%s=%s\n", key, buf2);
++}
++
+ /* Everything the generator reads, in the shape tier 2 replays, with the WAN
+  * addresses masked. Read-only: it runs the same commands router_inputs()
+  * already runs and writes only into the directory it was handed. */
+@@ -2956,16 +3220,21 @@ static int dump_inputs(const char *dir)
+ 	snprintf(path, sizeof(path), "%s/nv", dir);
+ 	f = fopen(path, "w");
+ 	if (f) {
+-		for (i = 0; dump_keys[i]; i++) {
+-			const char *v = nv_get(dump_keys[i]);
+-			int j;
+-			char buf2[1024];
+-			snprintf(buf2, sizeof(buf2), "%s", v ? v : "");
+-			(void)j;
+-			mask_line(buf2, sizeof(buf2), masks, toks, nmask);
+-			/* a newline in a value would break the key=value fixture format */
+-			if (strchr(buf2, '\n')) continue;
+-			fprintf(f, "%s=%s\n", dump_keys[i], buf2);
++		for (i = 0; dump_keys[i]; i++)
++			dump_nv(f, dump_keys[i], masks, toks, nmask);
++		/* v1.16: the per-network keys G5 / G6 read, for each apg index the network list names */
++		{
++			static const char *sfx[] = { "rg_devs", "rg_mdns", "ap_isolate", NULL };
++			char *dup = xstrdup(nv_get("sdn_rl")), *rec, *sv = NULL, fa[16], k[40];
++			int s;
++			for (rec = strtok_r(dup, "<", &sv); rec; rec = strtok_r(NULL, "<", &sv)) {
++				if (!rec_field(rec, 5, fa, sizeof(fa)) || atoi(fa) <= 0) continue;
++				for (s = 0; sfx[s]; s++) {
++					snprintf(k, sizeof(k), "apg%d_%s", atoi(fa), sfx[s]);
++					dump_nv(f, k, masks, toks, nmask);
++				}
++			}
++			free(dup);
+ 		}
+ 		fclose(f);
+ 	}
+@@ -3024,9 +3293,9 @@ static void json_str(FILE *f, const char *s)
+ 
+ static void write_json(const char *path, int skeleton)
+ {
+-	char tmp[300]; FILE *f; int i, green = 0, red = 0, dep = 0, na = 0; long up = 0;
++	char tmp[300]; FILE *f; int i, green = 0, red = 0, held = 0, dep = 0, na = 0; long up = 0;
+ 	{ FILE *u = fopen("/proc/uptime", "r"); if (u) { double d = 0; if (fscanf(u, "%lf", &d) == 1) up = (long)d; fclose(u); } }
+-	for (i = 0; i < nwit; i++) { if (wit[i].na) na++; else if (wit[i].dep) dep++; else if (wit[i].ok) green++; else red++; }
++	for (i = 0; i < nwit; i++) { if (wit[i].na) na++; else if (wit[i].dep) dep++; else if (wit[i].ok) green++; else if (wit[i].held) held++; else red++; }
+ 	snprintf(tmp, sizeof(tmp), "%s.tmp", path);
+ 	f = fopen(tmp, "w");
+ 	if (!f) { fprintf(stderr, "cannot write %s: %s\n", tmp, strerror(errno)); return; }
+@@ -3035,13 +3304,13 @@ static void write_json(const char *path, int skeleton)
+ 	 * nothing acts on it. Consumers key off this field. */
+ 	fprintf(f, "{\"ok\":1,\"ver\":\"%s\",\"mode\":\"advisory\",\"ts\":%ld,\"uptime\":%ld,\"family\":%d,\"skeleton\":%d,\"v4\":%d,\"v6\":%d,"
+ 		   "\"wansrc\":\"%s\",\"wansrc_note\":\"%s\",\"wan6src\":\"%s\",\"wan6src_note\":\"%s\",\"lanhost\":\"%s\",\"lanhost_note\":\"%s\",\"wandst\":\"%s\",\"wandst_note\":\"%s\","
+-		   "\"summary\":{\"total\":%d,\"green\":%d,\"red\":%d,\"depends\":%d,\"na\":%d},\"witnesses\":[",
++		   "\"summary\":{\"total\":%d,\"green\":%d,\"red\":%d,\"held\":%d,\"depends\":%d,\"na\":%d},\"witnesses\":[",
+ 		FWSIM_VER, (long)time(NULL), up, opt_family, skeleton, fw4.loaded, fw6.loaded,
+ 		sub_get("WANSRC") ? sub_get("WANSRC") : "", wansrc_why,
+ 		sub_get("WAN6SRC") ? sub_get("WAN6SRC") : "", wan6src_why,
+ 		sub_get("LANHOST") ? sub_get("LANHOST") : "", lanhost_why,
+ 		sub_get("WANDST") ? sub_get("WANDST") : "", wandst_why,
+-		nwit, green, red, dep, na);
++		nwit, green, red, held, dep, na);
+ 	for (i = 0; i < nwit; i++) {
+ 		struct witness *w = &wit[i]; char wtxt[400];
+ 		if (w->shape) snprintf(wtxt, sizeof(wtxt), "%s", w->pred);
+@@ -3051,7 +3320,7 @@ static void write_json(const char *path, int skeleton)
+ 		fprintf(f, ",\"family\":%d,\"witness\":", w->fam); json_str(f, wtxt);
+ 		fprintf(f, ",\"expect\":"); json_str(f, w->expect);
+ 		fprintf(f, ",\"verdict\":"); json_str(f, w->verdict);
+-		fprintf(f, ",\"state\":\"%s\"", w->na ? "na" : w->dep ? "depends" : w->ok ? "green" : "red");
++		fprintf(f, ",\"state\":\"%s\"", w->na ? "na" : w->dep ? "depends" : w->ok ? "green" : w->held ? "held" : "red");
+ 		fprintf(f, ",\"rule\":"); json_str(f, w->decide);
+ 		fprintf(f, ",\"path\":"); json_str(f, w->path);
+ 		fprintf(f, ",\"note\":"); json_str(f, w->note);
+@@ -3064,15 +3333,16 @@ static void write_json(const char *path, int skeleton)
+ 
+ static void print_text(int skeleton)
+ {
+-	int i, green = 0, red = 0, dep = 0, na = 0;
+-	for (i = 0; i < nwit; i++) { if (wit[i].na) na++; else if (wit[i].dep) dep++; else if (wit[i].ok) green++; else red++; }
+-	printf("reaper_fwsim %s: %d witnesses - %d green, %d red, %d depends, %d n/a%s [advisory: information only, nothing re-applied]\n", FWSIM_VER, nwit, green, red, dep, na, skeleton ? " - FILTER TABLE IS THE BOOT SKELETON" : "");
++	int i, green = 0, red = 0, held = 0, dep = 0, na = 0;
++	for (i = 0; i < nwit; i++) { if (wit[i].na) na++; else if (wit[i].dep) dep++; else if (wit[i].ok) green++; else if (wit[i].held) held++; else red++; }
++	printf("reaper_fwsim %s: %d witnesses - %d green, %d red, %d held, %d depends, %d n/a%s [advisory: information only, nothing re-applied]\n", FWSIM_VER, nwit, green, red, held, dep, na, skeleton ? " - FILTER TABLE IS THE BOOT SKELETON" : "");
+ 	for (i = 0; i < nwit; i++) {
+ 		struct witness *w = &wit[i];
+-		printf("  %-7s %-5s %-6s %s\n", w->id, w->na ? "n/a" : w->dep ? "DEP" : w->ok ? "ok" : "RED", w->fam == 6 ? "v6" : "v4", w->feature);
++		printf("  %-7s %-5s %-6s %s\n", w->id, w->na ? "n/a" : w->dep ? "DEP" : w->ok ? "ok" : w->held ? "HELD" : "RED", w->fam == 6 ? "v6" : "v4", w->feature);
+ 		if (w->na) { if (w->note[0]) printf("          %s\n", w->note); continue; }
+ 		printf("          expect %s, got %s\n", w->expect, w->verdict);
+ 		if (w->decide[0]) printf("          rule: %s\n", w->decide);
++		if (w->note[0]) printf("          note: %s\n", w->note);	/* v1.16: a HELD row, or a G5 row decided by an engine rule */
+ 		if (opt_print > 1 && w->path[0]) printf("          path: %s\n", w->path);
+ 	}
+ }
+diff --git a/release/src/router/rmcpd/rmcpd.c b/release/src/router/rmcpd/rmcpd.c
+index 5842071ab4..f33d0927b9 100644
+--- a/release/src/router/rmcpd/rmcpd.c
++++ b/release/src/router/rmcpd/rmcpd.c
+@@ -1296,7 +1296,7 @@ static const char *TOOLS_CATALOG =
+ "{\"name\":\"get_qos\",\"description\":\"QoS engine, type, and bandwidth configuration.\",\"inputSchema\":{\"type\":\"object\",\"properties\":{}}},"
+ "{\"name\":\"get_traffic\",\"description\":\"Traffic Analyzer snapshot for a window.\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"window\":{\"type\":\"string\",\"enum\":[\"live\",\"m5\",\"hour\",\"day\",\"month\"]}}}},"
+ "{\"name\":\"get_firewall_summary\",\"description\":\"Firewall summary: iptables + ip6tables filter rules, per-rule hit counters (packets/bytes), and NAT forwards.\",\"inputSchema\":{\"type\":\"object\",\"properties\":{}}},"
+-"{\"name\":\"get_firewall_status\",\"description\":\"Firewall Rule Status: each feature's witness packets walked through the live iptables/ip6tables tables by reaper_fwsim - verdict, expected verdict, state (green/red/depends/na) and the deciding rule per witness. Advisory by design (mode=advisory in the report): a red row is information to check, not a confirmed fault - the witness address or an unmodelled match can be the reason. Read-only; nothing is ever re-applied.\",\"inputSchema\":{\"type\":\"object\",\"properties\":{}}},"
++"{\"name\":\"get_firewall_status\",\"description\":\"Firewall Rule Status: each feature's witness packets walked through the live iptables/ip6tables tables by reaper_fwsim - verdict, expected verdict, state (green/red/held/depends/na; held = a zone policy ACCEPT that guest isolation keeps closed, by design - not a fault) and the deciding rule per witness. Advisory by design (mode=advisory in the report): a red row is information to check, not a confirmed fault - the witness address or an unmodelled match can be the reason. Read-only; nothing is ever re-applied.\",\"inputSchema\":{\"type\":\"object\",\"properties\":{}}},"
+ "{\"name\":\"get_nvram\",\"description\":\"Curated non-secret configuration keys (secrets are never included).\",\"inputSchema\":{\"type\":\"object\",\"properties\":{}}},"
+ "{\"name\":\"get_logs\",\"description\":\"Recent system log lines, secrets redacted.\",\"inputSchema\":{\"type\":\"object\",\"properties\":{}}},"
+ "{\"name\":\"get_settings_audit\",\"description\":\"Composed security-posture snapshot for auditing and explanation.\",\"inputSchema\":{\"type\":\"object\",\"properties\":{}}}";
+diff --git a/release/src/router/shared/defaults.c b/release/src/router/shared/defaults.c
+index 086062ee54..2065010000 100644
+--- a/release/src/router/shared/defaults.c
++++ b/release/src/router/shared/defaults.c
+@@ -797,6 +797,9 @@ struct nvram_tuple router_defaults[] = {
+ 	{ "apg_sched", "", CKN_STR1024, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },
+ 	{ "apg_expiretime", "", CKN_STR1024, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },
+ 	{ "apg_ap_isolate", "0", CKN_STR1, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },
++	{ "apg_rg_devs", "", CKN_STR512, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* guest isolation: chosen main-network devices, <MAC><MAC>... (16 at most) */
++	{ "apg_rg_mdns", "", CKN_STR256, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* guest isolation: device discovery, presets and service types (empty = off) */
++	{ "apg_ap_isolate_lan", "0", CKN_STR1, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* AP Isolation choice: 0 Wi-Fi only, 1 Wi-Fi and LAN ports (read in rc/lan.c) */
+ 	{ "apg_macmode", "disabled", CKN_STR16, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },
+ 	{ "apg_maclist", "", CKN_STR2048, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },
+ 	{ "apg_iot_max_cmpt", "", CKN_STR64, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },
+@@ -3185,6 +3188,7 @@ struct nvram_tuple router_defaults[] = {
+ 	/* review 2026-11-11 (B-C4, owner): 0 = the Guest Portal secret is this router's random one (rc), 1 = the admin's own */
+ 	{ "reaper_cp_secret_own", "0", CKN_STR1, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },
+ 	{ "reaper_mdns_reflect", "1", CKN_STR1, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* 2026-11-14 (owner): Tweaks > mDNS across networks, on */
++	{ "reaper_ap_isolate_lan", "0", CKN_STR1, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* 2026-11-19 (owner): AP Isolation of the main network - 0 Wi-Fi only, 1 Wi-Fi and LAN ports */
+ 	/* review 2026-11-11 (A-C1): the driver's wait for a radio to answer one call, in ms (rc/services.c
+ 	 * reaper_dhd_ioto_apply). 0 = OFF = the driver's own 5000; the Tweaks page has the switch (2000-5000, 3000 recommended) */
+ 	{ "reaper_dhd_ioto", "0", CKN_STR8, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },
+@@ -3264,6 +3268,7 @@ struct nvram_tuple router_defaults[] = {
+ 	{ "reaper_fw_confirm", "60", CKN_STR4, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* commit-confirm auto-revert seconds; clamped to 15-3600, 0 is promoted (never off) - the anti-lockout net */
+ 	{ "reaper_fw_st_auto", "0", CKN_STR1, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* 2026-11-17: Firewall page, Status tab Auto refresh (kept on the router, not in the browser) */
+ 	{ "reaper_fw_wt_auto", "0", CKN_STR1, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* 2026-11-17: Firewall page, Rule Status tab Auto refresh */
++	{ "reaper_fw_zpol_guest", "0", CKN_STR1, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* 2026-11-19 (owner): Firewall > Zones - zone policies may open one-way paths from the main network into isolated guest networks (rc/reaper_guest.c); off */
+ 	{ "reaper_fw_obj", "", CKN_STR_MAX, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* address objects: <name>type>value>comment ; type=host|cidr|range|mac|fqdn|geo (geo value=CC ref to Warden) */
+ 	{ "reaper_fw_grp", "", CKN_STR_MAX, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* address groups: <name>member,member,...>comment (members = object names) */
+ 	{ "reaper_fw_svc", "", CKN_STR2048, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* service objects: <name>proto>ports>comment ; proto=tcp|udp|both|icmp, ports=list/range */
+@@ -4583,7 +4588,7 @@ struct nvram_tuple router_defaults[] = {
+ 	{ "ipv6_prefix_length", "64", CKN_STR3, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* The bit length of the prefix. Used by dhcp6c. For radvd */
+ 	{ "ipv6_dhcp_pd", "1", CKN_STR1, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* Enable DHCP-PD (DHCP Prefix Delegation) by default */
+ 	{ "ipv6_rtr_addr", "", CKN_STR39, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* defaults to $ipv6_prefix::1 */
+-	{ "ipv6_prefix_len_wan", "64", CKN_STR3, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* used in ipv6_service other */
++	{ "ipv6_prefix_len_wan", "56", CKN_STR3, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* used in ipv6_service other; 56 = new routers ask for a /56 so each guest network gets a /64 (DHCP-PD size hint); the IPv6 page shows 64 for Static */
+ 	{ "ipv6_ipaddr", "", CKN_STR39, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* used in ipv6_service other */
+ 	{ "ipv6_gateway", "", CKN_STR39, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* used in ipv6_service other */
+ 	{ "ipv6_radvd", "1", CKN_STR1, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* Enable Router Advertisement (radvd) */
+diff --git a/release/src/router/shared/reaper_jfile.c b/release/src/router/shared/reaper_jfile.c
+index 597655d9c5..456c8a101d 100644
+--- a/release/src/router/shared/reaper_jfile.c
++++ b/release/src/router/shared/reaper_jfile.c
+@@ -330,6 +330,180 @@ char *reaper_fw_list_get(const char *key)
+  * value need this - a transient failure that resolved to "" used to be written
+  * straight into the confirmed snapshot, and the .committed marker then blessed
+  * it, so the real list was gone with no rollback source. */
++/* reaper 2026-11-19: the lists the rules engine RUNS now (guest isolation's zone paths, rc/reaper_guest.c). The
++ * draft only while a change is armed - the candidate built from it is live until Keep or the revert; a draft saved
++ * but never applied is not live. Else the confirmed copy, else (a box that never migrated) nvram. Caller frees. */
++char *reaper_fw_list_live(const char *key)
++{
++	char p[128], nv[40];
++	int ex;
++	char *v;
++
++	if (d_exists(REAPER_FW_ARMED_DIR))
++		return strdup(reaper_fw_list_get(key));
++	snprintf(p, sizeof(p), REAPER_FW_LASTGOOD_DIR "/.committed");
++	if (f_exists(p)) {
++		snprintf(p, sizeof(p), REAPER_FW_LASTGOOD_DIR "/%s", key);
++		v = rjf_get(p, &ex);
++		return strdup(ex && v ? v : "");
++	}
++	snprintf(nv, sizeof(nv), "reaper_fw_%s", key);
++	return strdup(nvram_safe_get(nv));
++}
++
++/* REAPER-ZPOL-PURE-BEGIN (reaper 2026-11-19; compiled on the host by test_guest_cross_rc.py)
++ * The rules engine's zone policies as rc/reaper_fw.c rfw_emit_zpol() emits them: records "<src>dst>action" in list
++ * order, at most 64 (every record counts, as there); a zone "<name>iface,iface,...>comment" - the FIRST record of
++ * that name, at most 8 valid interfaces (a kernel name, or one ending in the '+' wildcard). A policy with an unknown
++ * action, a field too long or a zone without interfaces emits nothing in the engine and is left out here too; a pair
++ * of equal interfaces gets no rule. reaper_fw.c keeps its own parser (test_review_2026_11_18_batch.py extracts its
++ * rfw_field); test_guest_cross_rc.py runs both on the same lists. */
++#define RZP_MAX		64	/* RFW_MAX_ZPOL */
++#define RZP_IFMAX	8	/* RFW_MAX_IFACE */
++#define RZP_IFLEN	18	/* IFNAMSIZ + 2 */
++#define RZP_NAMELEN	27	/* RFW_NAME_MAX + 2 */
++#define RZP_REC		2048	/* rfw_find / rfw_zone_ifaces */
++struct reaper_zpol {
++	int n;
++	struct {
++		int act;	/* 1 accept, 2 drop, 3 reject */
++		int same;	/* source zone == destination zone */
++		int ns, nd;
++		char s[RZP_IFMAX][RZP_IFLEN], d[RZP_IFMAX][RZP_IFLEN];
++	} p[RZP_MAX];
++};
++
++static int rzp_field(const char *rec, int idx, char *out, size_t ol)
++{
++	const char *p = rec, *end;
++	size_t n;
++	int i;
++
++	out[0] = 0;
++	for (i = 0; i < idx; i++) {
++		if ((p = strchr(p, '>')) == NULL)
++			return 0;
++		p++;
++	}
++	end = strchr(p, '>');
++	n = end ? (size_t)(end - p) : strlen(p);
++	if (n >= ol)
++		return 0;
++	memcpy(out, p, n);
++	out[n] = 0;
++	return 1;
++}
++
++static int rzp_iface_ok(const char *s)
++{
++	const char *p;
++	size_t n = strlen(s);
++
++	if (n == 0 || n > 16)
++		return 0;
++	for (p = s; *p; p++) {
++		if (*p == '+') {
++			if (p[1])
++				return 0;
++			continue;
++		}
++		if (!((*p >= 'A' && *p <= 'Z') || (*p >= 'a' && *p <= 'z') || (*p >= '0' && *p <= '9') || *p == '.' || *p == '_'))
++			return 0;
++	}
++	return 1;
++}
++
++static int rzp_zone(const char *zone, const char *name, char ifs[][RZP_IFLEN])
++{
++	char *dup, *tok, *save = NULL, f0[RZP_NAMELEN], *list, *d2, *t2, *s2 = NULL;
++	int n = 0;
++
++	if (!zone || !*zone || !*name || (dup = strdup(zone)) == NULL)
++		return 0;
++	for (tok = strtok_r(dup, "<", &save); tok; tok = strtok_r(NULL, "<", &save)) {
++		if (!rzp_field(tok, 0, f0, sizeof(f0)) || strcmp(f0, name))
++			continue;
++		if (strlen(tok) < RZP_REC && (list = malloc(RZP_REC)) != NULL) {
++			if (rzp_field(tok, 1, list, RZP_REC) && (d2 = strdup(list)) != NULL) {
++				for (t2 = strtok_r(d2, ",", &s2); t2 && n < RZP_IFMAX; t2 = strtok_r(NULL, ",", &s2))
++					if (rzp_iface_ok(t2))
++						snprintf(ifs[n++], RZP_IFLEN, "%s", t2);
++				free(d2);
++			}
++			free(list);
++		}
++		break;
++	}
++	free(dup);
++	return n;
++}
++
++struct reaper_zpol *reaper_zpol_load(const char *zone, const char *zpol)
++{
++	struct reaper_zpol *z;
++	char *dup, *tok, *save = NULL, sz[RZP_NAMELEN], dz[RZP_NAMELEN], act[12];
++	int cnt = 0, a;
++
++	if (!zpol || !*zpol || (z = calloc(1, sizeof(*z))) == NULL)
++		return NULL;
++	if ((dup = strdup(zpol)) == NULL) {
++		free(z);
++		return NULL;
++	}
++	for (tok = strtok_r(dup, "<", &save); tok; tok = strtok_r(NULL, "<", &save)) {
++		if (++cnt > RZP_MAX)
++			break;
++		if (!rzp_field(tok, 0, sz, sizeof(sz)) || !rzp_field(tok, 1, dz, sizeof(dz)) || !rzp_field(tok, 2, act, sizeof(act)))
++			continue;
++		a = !strcmp(act, "accept") ? 1 : !strcmp(act, "drop") ? 2 : !strcmp(act, "reject") ? 3 : 0;
++		if (!a)
++			continue;
++		z->p[z->n].ns = rzp_zone(zone, sz, z->p[z->n].s);
++		z->p[z->n].nd = rzp_zone(zone, dz, z->p[z->n].d);
++		if (!z->p[z->n].ns || !z->p[z->n].nd)
++			continue;
++		z->p[z->n].act = a;
++		z->p[z->n].same = !strcmp(sz, dz);
++		z->n++;
++	}
++	free(dup);
++	return z;
++}
++
++static int rzp_match(const char *pat, const char *name)
++{
++	size_t l = strlen(pat);
++
++	return (l && pat[l - 1] == '+') ? !strncmp(pat, name, l - 1) : !strcmp(pat, name);
++}
++
++/* does the engine open a -> b: its FIRST zone-policy rule that matches the pair (wildcards as iptables reads them)
++ * must be an ACCEPT, of a policy between two different zones that names both interfaces itself. a and b are
++ * interface names, never a wildcard. */
++int reaper_zpol_open(const struct reaper_zpol *z, const char *a, const char *b)
++{
++	int k, i, j, hit, named;
++
++	if (!z || !a || !b || !*a || !*b || !strcmp(a, b) || strchr(a, '+') || strchr(b, '+'))
++		return 0;
++	for (k = 0; k < z->n; k++) {
++		for (hit = named = 0, i = 0; i < z->p[k].ns; i++)
++			for (j = 0; j < z->p[k].nd; j++) {
++				if (!strcmp(z->p[k].s[i], z->p[k].d[j]))
++					continue;	/* the engine emits no rule for it */
++				if (rzp_match(z->p[k].s[i], a) && rzp_match(z->p[k].d[j], b)) {
++					hit = 1;
++					if (!strcmp(z->p[k].s[i], a) && !strcmp(z->p[k].d[j], b))
++						named = 1;
++				}
++			}
++		if (hit)
++			return z->p[k].act == 1 && !z->p[k].same && named;
++	}
++	return 0;
++}
++/* REAPER-ZPOL-PURE-END */
++
+ char *reaper_fw_list_get_checked(const char *key, int *ok)
+ {
+ 	char p[128], nv[40];
+diff --git a/release/src/router/shared/shared.h b/release/src/router/shared/shared.h
+index 10f28d8503..bfdaff908f 100644
+--- a/release/src/router/shared/shared.h
++++ b/release/src/router/shared/shared.h
+@@ -3641,6 +3641,14 @@ extern char *reaper_pbr_rl_get(void);	/* draft > confirmed > legacy nvram */
+ #define REAPER_FW_DRAFT_DIR    "/tmp/reaper_fw/draft"
+ #define REAPER_FW_LASTGOOD_DIR "/jffs/reaper_fw/lastgood"
+ extern char *reaper_fw_list_get(const char *key);	/* key: obj grp svc zone zpol rules edef nat */
++/* reaper 2026-11-19: the lists the rules engine RUNS now - the draft only while a change is armed (awaiting Keep),
++ * else the confirmed copy, else legacy nvram. Caller frees. The armed path is rc/reaper_fw.c RFW_ARMED. */
++#define REAPER_FW_ARMED_DIR "/tmp/reaper_fw/armed"
++extern char *reaper_fw_list_live(const char *key);
++/* reaper 2026-11-19: zone policies as the engine emits them (first match wins) - guest isolation's zone paths */
++struct reaper_zpol;
++extern struct reaper_zpol *reaper_zpol_load(const char *zone, const char *zpol);	/* NULL = none; free() it */
++extern int reaper_zpol_open(const struct reaper_zpol *z, const char *a, const char *b);	/* 1: a -> b opens */
+ /* v2.7.9: the Warden lists - the last three that were still in nvram */
+ #define REAPER_RW_DIR "/jffs/rwarden"
+ extern char *rw_list_get(const char *name);	/* name: ban allow cfeeds. CALLER FREES. */
+diff --git a/release/src/router/www/Main_ReaperDash.asp b/release/src/router/www/Main_ReaperDash.asp
+index a6e84e786c..03c9cb6858 100644
+--- a/release/src/router/www/Main_ReaperDash.asp
++++ b/release/src/router/www/Main_ReaperDash.asp
+@@ -1908,6 +1908,7 @@ function pollWit(){
+     tag.textContent = skel ? `<#RDSH_74#>` : (red>0 ? `<#RFW_319#>` : `<#RFW_304#>`);
+     tag.className = 'tag '+(skel ? 'warn' : (red>0 ? 'adv' : 'ok'));
+     var t = (s.green||0)+' '+`<#RFW_304#>`+' \u00b7 '+red+' '+`<#RFW_305#>`
++          + ((s.held||0)>0 ? (' \u00b7 '+(s.held||0)+' '+`<#RFW_417#>`) : '')
+           + (j.ts ? (' \u00b7 '+`<#RFW_309#>`+' '+new Date(j.ts*1000).toLocaleTimeString()) : '');
+     if(skel) t = `<#RFW_293#>`;
+     /* .sub2 clips with an ellipsis (standing rule 41) - carry the full text in a title */
+diff --git a/release/src/router/www/Reaper_Firewall.asp b/release/src/router/www/Reaper_Firewall.asp
+index de3676df6d..f8686c0a21 100644
+--- a/release/src/router/www/Reaper_Firewall.asp
++++ b/release/src/router/www/Reaper_Firewall.asp
+@@ -185,6 +185,11 @@ table.rt .empty td{color:var(--steel);text-align:center;padding:14px}
+ .wpill.r{background:rgba(255,59,48,.16);color:var(--danger)}
+ .wpill.d{background:rgba(224,169,59,.16);color:var(--amber)}
+ .wpill.n{background:var(--panel-2);color:var(--steel)}
++/* REAPER-FWSIM-HELD (v1.15): a zone policy the guest isolation layer holds - amber like Inconclusive, but
++   outlined, so the two read apart at a glance; the row's note (the guest network) sits under the rule */
++.wpill.h{background:rgba(224,169,59,.07);color:var(--amber);box-shadow:inset 0 0 0 1px rgba(224,169,59,.55)}
++.wt .whn{font-family:var(--body);font-size:11.5px;color:var(--amber);margin-top:4px;overflow-wrap:anywhere;line-height:1.45}
++.statgrid .v.warn{color:var(--amber)}
+ .statgrid .kv{display:flex;flex-direction:column;gap:2px;min-width:96px}
+ .statgrid .k{font-size:10px;letter-spacing:.12em;text-transform:uppercase;color:var(--steel)}
+ .statgrid .v{font-family:var(--hdr);font-weight:600;font-size:17px;color:var(--bone)}
+@@ -323,6 +328,7 @@ table.rt .empty td{color:var(--steel);text-align:center;padding:14px}
+         <span class="tg" id="wt_auto"></span><span class="suffix"><#RFW_20#></span></label>
+     </div>
+     <p class="note"><#RFW_295#></p>
++    <p class="note"><#RFW_418#></p>
+   </div>
+   <div id="wt_groups"></div>
+ </div>
+@@ -528,6 +534,15 @@ table.rt .empty td{color:var(--steel);text-align:center;padding:14px}
+         <select class="fld s" id="zp_act"><option value="accept"><#RFW_138#></option><option value="drop"><#RFW_139#></option><option value="reject"><#RFW_140#></option></select></div>
+       <button class="btn ghost sm" id="zp_add"><#RFW_59#></button><button class="btn ghost sm cancel" id="zp_cancel"><#CTL_Cancel#></button><span class="saved hidden" id="rfs_zpol"></span>
+     </div>
++    <!-- REAPER-ZPOL-GUEST (2026-11-19): one global opt-in, reaper_fw_zpol_guest (0/1). rc/reaper_guest.c reads it with
++         reaper_fw_enable: an Accept zone policy from the main network (or a network paired with it) into an isolated
++         guest network opens that one-way path; saved by fwApply (restart_firewall re-runs the guest layer) -->
++    <div class="row" style="margin-top:16px;flex-wrap:nowrap;align-items:flex-start">
++      <span class="tg" data-nv="reaper_fw_zpol_guest" id="zg_en" role="switch" aria-label="<#RFW_420#>"></span>
++      <span style="font-size:13px;line-height:1.45"><#RFW_420#></span>
++    </div>
++    <p class="note"><#RFW_421#></p>
++    <div class="row"><button class="btn ghost sm" id="zg_apply"><#RFW_62#></button></div>
+   </div>
+ </div>
+ 
+@@ -790,6 +805,7 @@ var NV={
+   url_mode_x:<% nvram_get_js("url_mode_x"); %>,
+   keyword_enable_x:<% nvram_get_js("keyword_enable_x"); %>,
+   svc_ready:<% nvram_get_js("svc_ready"); %>,
++  reaper_fw_zpol_guest:<% nvram_get_js("reaper_fw_zpol_guest"); %>,
+   filter_wllist:decodeURIComponent('<% nvram_char_to_ascii("", "filter_wllist"); %>'),
+   ipv6_fw_rulelist:decodeURIComponent('<% nvram_char_to_ascii("", "ipv6_fw_rulelist"); %>'),
+   filter_lwlist:decodeURIComponent('<% nvram_char_to_ascii("", "filter_lwlist"); %>'),
+@@ -1337,11 +1353,11 @@ function rfwWitPreview(){
+   witFetch(true,function(j){
+     var el=$('rf_wit'); if(!el)return;
+     if(!j||!j.ok||!j.summary){el.textContent='';return;}
+-    var red=j.summary.red||0;
++    var red=j.summary.red||0, held=j.summary.held||0;
+     /* the link is the tab's own name (RFW_290), not "open Rule Status" (owner,
+        2026-09-15). RFW_290 is already translated in all 25 packs, so this costs
+        no dictionary edit and no lockstep change. */
+-    el.innerHTML=esc(`<#RFW_316#>`)+' <b>'+red+' '+esc(`<#RFW_317#>`)+'</b> &middot; <a href="#" id="rf_wit_go">'+esc(`<#RFW_290#>`)+'</a>';
++    el.innerHTML=esc(`<#RFW_316#>`)+' <b>'+red+' '+esc(`<#RFW_317#>`)+'</b>'+(held>0?(' &middot; '+held+' '+esc(`<#RFW_419#>`)):'')+' &middot; <a href="#" id="rf_wit_go">'+esc(`<#RFW_290#>`)+'</a>';
+     var a=$('rf_wit_go'); if(a)a.onclick=function(e){e.preventDefault();showTab('witness');};
+   });
+ }
+@@ -1358,6 +1374,7 @@ function stWit(){
+     if(skel){el.textContent=`<#RFW_293#>`;return;}
+     el.innerHTML='<b>'+esc(`<#RFW_290#>`)+'</b>: <b>'
+       +red+' '+esc(`<#RFW_317#>`)+'</b> &middot; '+(s.green||0)+' '+esc(`<#RFW_304#>`)
++      +((s.held||0)>0?(' &middot; '+(s.held||0)+' '+esc(`<#RFW_419#>`)):'')
+       +(j.ts?(' &middot; '+esc(`<#RFW_309#>`)+' '+esc(new Date(j.ts*1000).toLocaleTimeString())):'')
+       +' &middot; <a href="#" id="st_wit_go">'+esc(`<#RFW_290#>`)+'</a>';
+     var a=$('st_wit_go'); if(a)a.onclick=function(e){e.preventDefault();showTab('witness');};
+@@ -1431,7 +1448,7 @@ function initTab(){
+    here changes a rule. Groups follow the witness catalog (A core .. H the rest). */
+ var wtTimer=null;
+ var WT_GROUPS={A:`<#RFW_296#>`,B:`<#RFW_297#>`,C:`<#RFW_298#>`,D:`<#RFW_299#>`,E:`<#RFW_300#>`,F:`<#RFW_301#>`,G:`<#RFW_302#>`,H:`<#RFW_303#>`};
+-var WT_STATE={green:['g',`<#RFW_304#>`],red:['r',`<#RFW_305#>`],depends:['d',`<#RFW_306#>`],na:['n',`<#RFW_307#>`]};
++var WT_STATE={green:['g',`<#RFW_304#>`],red:['r',`<#RFW_305#>`],depends:['d',`<#RFW_306#>`],na:['n',`<#RFW_307#>`],held:['h',`<#RFW_417#>`]};
+ /* v3.2.8 (crawl 2026-09-26, F5): a fresh walk no longer runs inside httpd, where it
+    stalled every admin page for its length. run=1 answers at once with the CURRENT
+    report and running:1; the walk lands in the background and the report's ts moves.
+@@ -1458,6 +1475,7 @@ function loadWit(fresh){
+     var s=j.summary||{},g;
+     g =kvRow(`<#RFW_304#>`,'on',String(s.green||0));
+     g+=kvRow(`<#RFW_305#>`,(s.red||0)>0?'off':'on',String(s.red||0));
++    g+=kvRow(`<#RFW_417#>`,(s.held||0)>0?'warn':'off',String(s.held||0));
+     g+=kvRow(`<#RFW_306#>`,'off',String(s.depends||0));
+     g+=kvRow(`<#RFW_307#>`,'off',String(s.na||0));
+     g+=kvRow(`<#RFW_309#>`,'off',j.ts?new Date(j.ts*1000).toLocaleTimeString():'-');
+@@ -1486,7 +1504,7 @@ function loadWit(fresh){
+           +'<td class="rl">'+esc(w.witness||'')+'</td>'
+           +'<td class="exp">'+esc(w.expect||'')+'</td>'
+           +'<td><span class="wpill '+st[0]+'">'+esc(st[1])+'</span><div class="rl">'+esc(w.verdict||'')+'</div></td>'
+-          +'<td class="rl" title="'+esc(w.path||'')+'">'+esc(w.rule||w.note||'')+'</td></tr>';
++          +'<td class="rl" title="'+esc(w.path||'')+'">'+esc(w.rule||w.note||'')+(w.state==='held'&&w.rule&&w.note?'<div class="whn">'+esc(w.note)+'</div>':'')+'</td></tr>';
+       });
+       h+='</tbody></table></div></div>';
+     });
+@@ -2294,6 +2312,8 @@ function initRfw(){
+     rfwRenderZpol();rfwSave('zpol',RFW.zpol,B);
+   };
+   $('zp_cancel').onclick=function(){ editCancel('zpol'); rfwRenderZpol(); };
++  /* REAPER-ZPOL-GUEST: the zones-tab switch, through the page's own apply (start_apply.htm + restart_firewall) */
++  $('zg_apply').onclick=function(){fwApply({reaper_fw_zpol_guest:tgGet($('zg_en'))});};
+   $('rf_add').onclick=function(){
+     B=S;
+     var r=['1',$('rf_dir').value,$('rf_act').value,
+-- 
+2.25.1
+

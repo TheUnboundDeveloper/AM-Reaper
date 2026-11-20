@@ -336,8 +336,10 @@ int main(int argc, char **argv) { struct rg_net g[2]; char wan4[2][IFNAMSIZ] = {
 	memset(g, 0, sizeof(g));
 	if (s == 2) { g[0].sdn_idx = 4; strcpy(g[0].ifname, "tun22"); strcpy(g[0].brname, "br55"); strcpy(g[0].subnet, "192.168.52.0/24"); g[0].portal = 1; }
 	else { g[0].sdn_idx = 5; strcpy(g[0].ifname, "br56"); strcpy(g[0].brname, "br56"); strcpy(g[0].subnet, "192.168.53.0/24");
-	       if (s == 3) { strcpy(g[0].vpnif, "wgc5"); g[0].killsw = 1; } }
-	rg_write(stdout, g, 1, wan4, 1, "eth0", "HOOK_RUN\n"); return 0; }
+	       if (s == 3) { strcpy(g[0].vpnif, "wgc5"); g[0].killsw = 1; }
+	       /* reaper 2026-11-19: 4 = one chosen main-network device (REAPER_GUA); 5 = no guest network (teardown) */
+	       if (s == 4) { strcpy(g[0].devlan, "br0"); strcpy(g[0].dev4[0], "192.168.50.10"); g[0].ndev = 1; } }
+	rg_write(stdout, g, s == 5 ? 0 : 1, wan4, 1, "eth0", "HOOK_RUN\n"); return 0; }
 ''')
         r = subprocess.run([CC, "-Wall", "-Wno-unused-function", "-o", g3, c3], capture_output=True, text=True)
         check("guest isolation: the pure block compiles on the host", r.returncode == 0, r.stderr[:1200])
@@ -360,7 +362,8 @@ int main(int argc, char **argv) { struct rg_net g[2]; char wan4[2][IFNAMSIZ] = {
             fakes(b, {"iptables": XT, "ip6tables": XT, "iptables-restore": RS, "ip6tables-restore": RS,
                       "ipset": "exit 0\n", "logger": 'echo "logger $*" >> "$OUT"\n', "conntrack": 'echo "conntrack $*" >> "$OUT"\n',
                       "fc": 'echo "fc $*" >> "$OUT"\n',
-                      "HOOK_RUN": 'echo HOOK_RUN >> "$OUT"\nfor T in iptables ip6tables; do : > "$STATE/$T.hook.REAPER_GUI"; : > "$STATE/$T.hook.REAPER_GUF"; done\n'})
+                      "HOOK_RUN": 'echo HOOK_RUN >> "$OUT"\nfor T in iptables ip6tables; do : > "$STATE/$T.hook.REAPER_GUI"; : > "$STATE/$T.hook.REAPER_GUF"; '
+                                  ': > "$STATE/$T.hook.REAPER_GUA"; done\n'})
             def gen(s):
                 return subprocess.run([g3, str(s)], capture_output=True, text=True).stdout
             def run4(text, how="path", **envx):
@@ -382,20 +385,22 @@ int main(int argc, char **argv) { struct rg_net g[2]; char wan4[2][IFNAMSIZ] = {
                     pl.append(l[4:])
                 return pl
             o, p = run4(t1)
-            check("guest, first load: each family's two chains arrive in ONE --noflush commit that names both chains",
+            # reaper 2026-11-19: the chosen-devices chain REAPER_GUA is the third chain of each commit (empty in v6)
+            HDR = ["*filter", ":REAPER_GUI - [0:0]", ":REAPER_GUF - [0:0]", ":REAPER_GUA - [0:0]"]
+            check("guest, first load: each family's three chains arrive in ONE --noflush commit that names them all",
                   o.count("iptables-restore --noflush") == 1 and o.count("ip6tables-restore --noflush") == 1
-                  and payload(o, "iptables") == ["*filter", ":REAPER_GUI - [0:0]", ":REAPER_GUF - [0:0]"] + f4 + ["COMMIT"]
-                  and payload(o, "ip6tables") == ["*filter", ":REAPER_GUI - [0:0]", ":REAPER_GUF - [0:0]"] + f6 + ["COMMIT"] and len(f4) > 8,
+                  and payload(o, "iptables") == HDR + f4 + ["COMMIT"]
+                  and payload(o, "ip6tables") == HDR + f6 + ["COMMIT"] and len(f4) > 8,
                   o[:1500])
             live = [l for l in o.splitlines() if l.startswith(("iptables ", "ip6tables "))]
             check("guest, first load: the chains are never emptied or filled by single calls (no -F, -N or -A on them)",
-                  not [l for l in live if re.search(r" -(F|N|A) REAPER_GU[IF]\b", l)], "\n".join(live))
+                  not [l for l in live if re.search(r" -(F|N|A) REAPER_GU[IFA]\b", l)], "\n".join(live))
             check("guest, first load: the commit comes before hook.sh, and the flows are purged (rules are new)",
                   o.index("ip6tables-restore --noflush") < o.index("HOOK_RUN") < o.index("conntrack -D -s 192.168.53.0/24")
                   and "conntrack -D -d 192.168.53.0/24" in o and os.path.isfile(os.path.join(gdir, "apply.sh.sig")), o[-600:])
             o, p = run4(t1)
             check("guest, same rules and the chains untouched since: the chains are still replaced in one commit each",
-                  o.count("-restore --noflush") == 2 and payload(o, "iptables")[3:-1] == f4, o[:400])
+                  o.count("-restore --noflush") == 2 and payload(o, "iptables")[4:-1] == f4, o[:400])
             check("guest, same rules and the chains untouched since: NO flow is purged (no conntrack -D, no fc flush)",
                   not [l for l in o.splitlines() if l.startswith(("conntrack ", "fc "))], o[-400:])
             wipe()
@@ -413,6 +418,42 @@ int main(int argc, char **argv) { struct rg_net g[2]; char wan4[2][IFNAMSIZ] = {
             run4(t1)
             o, p = run4(t3)
             check("guest, the rules changed (kill switch on): the flows ARE purged", "conntrack -D -s 192.168.53.0/24" in o and t3 != t1, o[-400:])
+            # ---- reaper 2026-11-19: chosen devices (REAPER_GUA) ----
+            t4 = gen(4)
+            wipe(); run4(t1)
+            o, p = run4(t4)
+            g4a = [l[len("R iptables "):] for l in t4.splitlines() if l.startswith("R iptables -A REAPER_GUA ")]
+            check("guest, a chosen device added: the flows ARE purged, and its ACCEPT arrives in the same commit as the chains",
+                  "conntrack -D -s 192.168.53.0/24" in o and g4a == ["-A REAPER_GUA -i br56 -o br0 -d 192.168.50.10 -m conntrack --ctstate NEW -j ACCEPT"]
+                  and all(x in payload(o, "iptables") for x in g4a) and payload(o, "ip6tables")[:4] == HDR, o[-600:])
+            o, p = run4(t4)
+            check("guest, the same device set again with the chains untouched: no purge", not [l for l in o.splitlines() if l.startswith(("conntrack ", "fc "))], o[-400:])
+            o, p = run4(t1)
+            check("guest, the chosen device removed: the flows ARE purged (a flow it allowed must re-traverse)", "conntrack -D -s 192.168.53.0/24" in o, o[-400:])
+            run4(t4)
+            os.unlink(os.path.join(state, "iptables.hook.REAPER_GUA"))
+            o, p = run4(t4)
+            check("guest, the REAPER_GUA jump was missing: the flows ARE purged (the signature covers it)", "conntrack -D -s 192.168.53.0/24" in o, o[-400:])
+            run4(t4)
+            with open(os.path.join(state, "iptables.REAPER_GUA"), "a") as fh: fh.write("-A REAPER_GUA -j ACCEPT\n")
+            o, p = run4(t4)
+            check("guest, REAPER_GUA changed behind the layer's back: the flows ARE purged", "conntrack -D -s 192.168.53.0/24" in o, o[-400:])
+            check("guest, the signature reads REAPER_GUA and its jump (source)",
+                  "$T -S REAPER_GUA 2>/dev/null" in guest and "$T -C %s -j REAPER_GUA 2>/dev/null && echo \\\"$T acc\\\"" in guest)
+            wipe()
+            o, p = run4(t4, FAKE_RESTORE_FAIL="1")
+            check("guest, commit refused with a device: rule by rule, REAPER_GUA created and emptied like the other two, its rule loaded",
+                  "iptables -N REAPER_GUA" in o.splitlines() and "iptables -F REAPER_GUA" in o.splitlines()
+                  and "iptables -A REAPER_GUA -i br56 -o br0 -d 192.168.50.10 -m conntrack --ctstate NEW -j ACCEPT" in o.splitlines(), o[:900])
+            t5 = gen(5)
+            check("guest teardown (no guest network left): REAPER_GUA unhooked from the FORWARD front chain, emptied and removed",
+                  "$T -D REAPER_HOOK_F -j REAPER_GUA 2>/dev/null" in t5 and "for C in REAPER_GUI REAPER_GUF REAPER_GUA; do $T -F $C 2>/dev/null; $T -X $C 2>/dev/null; done" in t5, t5[:600])
+            wipe()
+            o, p = run4(t5)
+            check("guest teardown runs: the GUA jump delete, flush and delete are issued for both families",
+                  all(("%s -D REAPER_HOOK_F -j REAPER_GUA" % T) in o and ("%s -F REAPER_GUA" % T) in o and ("%s -X REAPER_GUA" % T) in o
+                      for T in ("iptables", "ip6tables")) and p.returncode == 0, o[:600])
+            wipe(); run4(t1)
             wipe(); run4(t1)
             o, p = run4(t1, FAKE_RESTORE_FAIL="1")
             L = o.splitlines()

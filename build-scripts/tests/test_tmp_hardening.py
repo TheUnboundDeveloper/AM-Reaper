@@ -198,7 +198,8 @@ check("the restore's staged settings (a stock path) are created fresh, never thr
       'reaper_fopen_new("/tmp/settings_u.prf", 0600)' in web and 'fopen("/tmp/settings_u.prf", "w")' not in web)
 check("httpd opens the name map without following a link", "open(RDM_PATH, O_RDWR | O_NOFOLLOW)" in web)
 check("httpd's Gatekeeper and Connections lock files are opened O_NOFOLLOW",
-      web.count('open("/tmp/gk/rl.lock", O_CREAT | O_RDWR | O_NOFOLLOW, 0600)') == 2 and
+      web.count('open("/tmp/gk/rl.lock", O_CREAT | O_RDWR | O_NOFOLLOW, 0600)') == 3 and   # + gk_rl_merge (review 2026-11-11, B-6)
+      'open("/tmp/gk/rl.lock"' not in web.replace('open("/tmp/gk/rl.lock", O_CREAT | O_RDWR | O_NOFOLLOW, 0600)', "") and
       'open("/tmp/reaper/reaper_conn.lock", O_CREAT | O_RDWR | O_NOFOLLOW, 0600)' in web)
 rdm = rd("rdnsmapd/rdnsmapd.c")
 check("rdnsmapd maps only into a private /tmp/reaper and never through a link",
@@ -237,9 +238,9 @@ dg = rd("others/reaper_diag")
 check("diag: scratch files in the private directory; the report created fresh under noclobber",
       'SCR=/tmp/reaper' in dg and 'RAW="$SCR/.rdiag_raw.$$"' in dg and 'rm -f "$OUT"\nset -C\n{' in dg and 'set +C' in dg)
 check("diag v1.3.33+ reports the four protections and the directories",
-      'VER="REAPER-DIAG v1.3.51"' in dg and "protected_$k" in dg and "/tmp/rv6names:drwxr-xr-x" in dg and "*.bad.*" in dg)
+      'VER="REAPER-DIAG v1.3.61"' in dg and "protected_$k" in dg and "/tmp/rv6names:drwxr-xr-x" in dg and "*.bad.*" in dg)
 check("diag page and marker follow the version",
-      "REAPER-DIAG v1.3.51</span>" in rd("www/Reaper_Diag.asp"))
+      "REAPER-DIAG v1.3.61</span>" in rd("www/Reaper_Diag.asp"))
 shell = shutil.which("bash")
 if shell:
     for rel in ["rom/webs_scripts/reaper_webs_update.sh", "rom/webs_scripts/reaper_webs_upgrade.sh", "others/reaper_diag"]:
@@ -296,9 +297,11 @@ check("V11: the per-disk app starter only refreshes lists where the refresher ex
       "[ -x /usr/sbin/app_update.sh ]" in rd("rom/apps_scripts/asusrouter"))
 wmk = rd("www/Makefile")
 check("V11: ASUS's developer test form for the installer is not shipped", "rm -f $(INSTALLDIR)/www/apps_test.asp" in wmk)
-# the USB Application hub is NOT the installer: the dashboard rail and eight USB pages link to it
-check("V11: the USB Application hub page stays - no Reaper rule removes it, and the menu model still lists it",
-      "rm -f $(INSTALLDIR)/www/APP_Installation.asp" not in wmk and "T('APP_Installation.asp'" in rd("www/reaper/menu.js"))
+# the USB Application hub is NOT the installer: since 2026-11-03 it is the kit page Reaper_USBApps.asp, and the stock
+# APP_Installation.asp (which the dashboard rail and eight stock USB pages link to) bounces there
+check("V11: the USB Application hub is Reaper_USBApps.asp in the menu model, and the stock hub's URL bounces to it",
+      "T('Reaper_USBApps.asp'" in rd("www/reaper/menu.js")
+      and '{ "app_installation.asp", "Reaper_USBApps.asp", 0 }' in rd("httpd/reaper_inject.c"))
 
 # ---------------------------------------------------------------- 6. V5
 mk = rd("www/Makefile")

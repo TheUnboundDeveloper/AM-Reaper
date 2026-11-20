@@ -1,0 +1,107 @@
+From 8756f0efe17de34f3575a0325f152ea73ad4c0db Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Sat, 14 Nov 2026 17:05:22 -0500
+Subject: [PATCH] Devices: a device cabled to an AiMesh node is not shown as a
+ Wi-Fi client
+
+- httpd/web.c: when the mesh's wireless client list was missing or unreadable, the node wired list
+  was skipped too, so every device cabled to a node lost its wired mark and, behind a wireless
+  backhaul, was called Wi-Fi. Only the wireless pass is skipped now.
+- httpd/web.c: a Wi-Fi band remembered for a device is no longer copied into a row already known
+  to be wired.
+- Dashboard tiles and the AiMesh map (access point mode) sorted devices by band only; both test
+  wired first, as the Devices page does.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ release/src/router/httpd/web.c                 | 18 +++++++++++++-----
+ release/src/router/www/Main_ReaperDash.asp     |  3 ++-
+ .../src/router/www/aimesh/aimesh_topology.html |  2 +-
+ 3 files changed, 16 insertions(+), 7 deletions(-)
+
+diff --git a/release/src/router/httpd/web.c b/release/src/router/httpd/web.c
+index c183e78908..01074cf976 100644
+--- a/release/src/router/httpd/web.c
++++ b/release/src/router/httpd/web.c
+@@ -32309,15 +32309,18 @@ static void rdev_scan_amesh(struct rdev *v, int *n)
+ 	wl = json_object_from_file(ALLWCLIENT_LIST_JSON_PATH);
+ 	file_unlock(lock);
+ 	/* NULL = parse failure; a valid NON-OBJECT would crash the foreach below
+-	 * (see the note in rdev_amesh_is_wired). Both are rejected here. */
+-	if (!wl) return;
+-	if (!json_object_is_type(wl, json_type_object)) { json_object_put(wl); return; }
++	 * (see the note in rdev_amesh_is_wired). Both skip the wireless pass only:
++	 * 2026-11-14 - returning here also skipped the node WIRED list further down,
++	 * so with no wireless list every client cabled to a node lost its wired mark
++	 * and rdev_bh_resolve() called it Wi-Fi behind a wireless backhaul. */
++	if (wl && !json_object_is_type(wl, json_type_object)) { json_object_put(wl); wl = NULL; }
+ 
+ 	lock = file_lock(WIREDCLIENTLIST_FILE_LOCK);
+ 	wired = json_object_from_file(WIRED_CLIENT_LIST_JSON_PATH);
+ 	file_unlock(lock);
+ 
+ 	/* node -> band -> client */
++	if (wl) {
+ 	json_object_object_foreach(wl, nodemac, bands) {
+ 		(void)nodemac;
+ 		if (!json_object_is_type(bands, json_type_object)) continue;
+@@ -32363,6 +32366,8 @@ static void rdev_scan_amesh(struct rdev *v, int *n)
+ 		}
+ 	}
+ 
++	}	/* if (wl) */
++
+ 	/* v3.3.1: a client cabled to a node sits in the wired list under that
+ 	 * node. Runs after the wireless pass so the cable wins, the same rule the
+ 	 * stale-wireless test above applies. */
+@@ -32380,7 +32385,7 @@ static void rdev_scan_amesh(struct rdev *v, int *n)
+ 	}
+ 
+ 	if (wired) json_object_put(wired);
+-	json_object_put(wl);
++	if (wl) json_object_put(wl);
+ }
+ #else
+ static void rdev_scan_amesh(struct rdev *v, int *n) { (void)v; (void)n; }
+@@ -32891,7 +32896,10 @@ static void rdev_collect(void)
+ 		 * so it no longer makes a row online, and its "last" counts only once
+ 		 * gkd has stopped seeing the device as well */
+ 		if (!seen[i].online && seen[i].last > dev[idx].last) dev[idx].last = seen[i].last;
+-		if (!dev[idx].band[0] && seen[i].band[0])
++		/* 2026-11-14: not into a row already known to be wired - a band there made the
++		 * views that sort by band (dashboard tiles, AiMesh map in AP mode) count a
++		 * cabled device as a Wi-Fi client */
++		if (!dev[idx].band[0] && seen[i].band[0] && !dev[idx].wired)
+ 			snprintf(dev[idx].band, sizeof(dev[0].band), "%s", seen[i].band);
+ 		/* an absent device keeps its last-known medium: the band above (Wi-Fi)
+ 		 * or gkd's wired verdict - never the present-device fallback */
+diff --git a/release/src/router/www/Main_ReaperDash.asp b/release/src/router/www/Main_ReaperDash.asp
+index d06eb2f8fe..70df8ed7fa 100644
+--- a/release/src/router/www/Main_ReaperDash.asp
++++ b/release/src/router/www/Main_ReaperDash.asp
+@@ -1742,7 +1742,8 @@ function pollClientsDev(){
+            list, and an AiMesh node is not a client - the Devices page folds
+            both, and a tile that double-counted them would be its own bug */
+         if(!d.online || d.mlo_link || d.node) continue;
+-        var k=(d.band==='2.4')?'24':(d.band==='5')?'5':(d.band==='6')?'6':'eth';
++        /* 2026-11-14: a wired device is wired whatever band it once had */
++        var k=d.wired?'eth':(d.band==='2.4')?'24':(d.band==='5')?'5':(d.band==='6')?'6':'eth';
+         var nm=(d.name&&String(d.name).length)?d.name:((d.host&&String(d.host).length)?d.host:d.mac);
+         b[k].push({n:nm, ip:(d.ip&&String(d.ip).length)?d.ip:'\u2014', ip6:d.ip6?String(d.ip6):'', m:d.mac});
+       }
+diff --git a/release/src/router/www/aimesh/aimesh_topology.html b/release/src/router/www/aimesh/aimesh_topology.html
+index a452fa4e1a..33aa952c90 100644
+--- a/release/src/router/www/aimesh/aimesh_topology.html
++++ b/release/src/router/www/aimesh/aimesh_topology.html
+@@ -4455,7 +4455,7 @@ function reaper_ap_apply(){
+ 		if(c.name == "") c.name = (d.name && String(d.name).length) ? htmlEnDeCode.htmlEncode(String(d.name)) : ((d.host && String(d.host).length) ? htmlEnDeCode.htmlEncode(String(d.host)) : mac);
+ 		if(c.nickName == "" && d.name) c.nickName = htmlEnDeCode.htmlEncode(String(d.name));
+ 		c.ip = (d.ip && String(d.ip).length) ? d.ip : "";
+-		c.isWL = wl[d.band] || 0;
++		c.isWL = d.wired ? 0 : (wl[d.band] || 0);	/* 2026-11-14: wired first, as the Devices page does */
+ 		c.amesh_isReClient = (via != cap);
+ 		c.amesh_papMac = spell[via] || via;
+ 	}
+-- 
+2.25.1
+

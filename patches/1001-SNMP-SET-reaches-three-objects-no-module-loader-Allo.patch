@@ -1,0 +1,184 @@
+From d57e7c81f69e8d9e1a3eebf8b277018b1e2fbc94 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Mon, 16 Nov 2026 16:23:12 -0500
+Subject: [PATCH] SNMP: SET reaches three objects, no module loader, Allow
+ access from WAN works
+
+- The agent's user could write everything the agent exposes. It still reads everything, and can
+  set only sysContact, sysName and sysLocation; with WAN access on it can set nothing. A wider
+  write view remains possible through /jffs/configs/snmpd.conf.add.
+- The agent is built without its run-time module loader.
+- Allow access from WAN opened the firewall, but the agent listened on the LAN address only. It
+  now also listens on each WAN address that is up, and is restarted when the WAN comes up. SNMP
+  and its WAN access stay off by default.
+
+Co-Authored-By: Claude Fable 5.2 <noreply@anthropic.com>
+---
+ release/src/router/Makefile   |  1 -
+ release/src/router/rc/snmpd.c | 90 +++++++++++++++++++++++++++++++----
+ release/src/router/rc/wan.c   |  8 ++++
+ 3 files changed, 90 insertions(+), 9 deletions(-)
+
+diff --git a/release/src/router/Makefile b/release/src/router/Makefile
+index d3da4e564f..a12a22121f 100644
+--- a/release/src/router/Makefile
++++ b/release/src/router/Makefile
+@@ -8826,7 +8826,6 @@ net-snmp-5.9.4/stamp-h1:
+ 		mibII/vacm_vars,\
+ 		tunnel,\
+ 		ucd-snmp/disk_hw,\
+-		ucd-snmp/dlmod,\
+ 		ucd-snmp/extensible,\
+ 		ucd-snmp/loadave,\
+ 		ucd-snmp/memory,\
+diff --git a/release/src/router/rc/snmpd.c b/release/src/router/rc/snmpd.c
+index efa59437a7..b1a2d9a754 100644
+--- a/release/src/router/rc/snmpd.c
++++ b/release/src/router/rc/snmpd.c
+@@ -21,6 +21,8 @@
+  */
+ 
+ #include <arpa/inet.h>	/* 2026-10-07 IPv6 A9: inet_pton for the udp6 agentAddress */
++#include <ifaddrs.h>	/* reaper 2026-11-16: getifaddrs for the WAN bind (snmp_addr_live) */
++#include <netinet/in.h>
+ #include <rc.h>
+ #include <stdlib.h>
+ #include <bcmnvram.h>
+@@ -71,6 +73,70 @@ static void snmp_sanitize_token(char *dst, size_t dsize, const char *src)
+ 	dst[j] = '\0';
+ }
+ 
++/* REAPER-SNMP-WAN-BEGIN (also compiled on the host by test_reaper_snmp_tweaks.py) */
++/* reaper 2026-11-16 (owner): is this IPv4 address on an interface right now. snmpd gives up altogether when one of its
++ * agentAddress entries cannot be bound, so a WAN address is listed only while the router really holds it. */
++static int snmp_addr_live(const char *ip)
++{
++	struct ifaddrs *ifa = NULL, *p;
++	struct in_addr a;
++	int hit = 0;
++
++	if (!ip || !*ip || inet_pton(AF_INET, ip, &a) != 1 || a.s_addr == 0)
++		return 0;
++	if (getifaddrs(&ifa) != 0)
++		return 0;
++	for (p = ifa; p; p = p->ifa_next)
++		if (p->ifa_addr && p->ifa_addr->sa_family == AF_INET &&
++		    ((struct sockaddr_in *)p->ifa_addr)->sin_addr.s_addr == a.s_addr) {
++			hit = 1;
++			break;
++		}
++	freeifaddrs(ifa);
++	return hit;
++}
++
++/* reaper 2026-11-16 (owner): the WAN addresses the agent listens on while "Allow access from WAN" is on - every WAN
++ * unit's address that is up now, appended to the agentAddress list aa (n = its length). The firewall lets UDP 161 in
++ * on the WAN interface only under the same switch (rc/firewall.c), and nothing is writable over SNMP while it is on. */
++static size_t snmp_wan_binds(char *aa, size_t sz, size_t n, const char *lan_ip)
++{
++	char key[32], ent[64];
++	int unit;
++
++	for (unit = WAN_UNIT_FIRST; unit < WAN_UNIT_MAX; unit++) {
++		const char *ip;
++
++		snprintf(key, sizeof(key), "wan%d_ipaddr", unit);
++		ip = nvram_safe_get(key);
++		if (!snmp_addr_live(ip) || !strcmp(ip, lan_ip))
++			continue;
++		snprintf(ent, sizeof(ent), "udp:%s:161", ip);
++		if (strstr(aa, ent) || n + strlen(ent) + 2 > sz)
++			continue;	/* listed already (two units, one address), or no room */
++		n += snprintf(aa + n, sz - n, ",%s", ent);
++	}
++	return n;
++}
++/* REAPER-SNMP-WAN-END */
++
++/* reaper 2026-11-16 (review): the user keeps SNMP SET (owner, 2026-08-19), but SET reaches only the three
++ * descriptive system objects. "rwuser" gave write access to every writable object the agent carries: interface
++ * admin state, the agent's own user and access tables, the tunnel tables and - until it left the build - the
++ * module loader, which loads a library by path as root. Read access is unchanged: the whole tree. A "-V view" on
++ * rwuser would narrow READS as well (net-snmp uses that one view for both), hence the explicit group / view /
++ * access lines. With the agent opened to the WAN, nothing is writable. Wider SET: /jffs/configs/snmpd.conf.add. */
++static void snmp_write_access(FILE *fp, const char *user, const char *level)
++{
++	fprintf(fp, "group reaper_g usm %s\n", user);
++	fprintf(fp, "view reaper_all included .1\n");
++	fprintf(fp, "view reaper_set included .1.3.6.1.2.1.1.4\n");	/* sysContact */
++	fprintf(fp, "view reaper_set included .1.3.6.1.2.1.1.5\n");	/* sysName */
++	fprintf(fp, "view reaper_set included .1.3.6.1.2.1.1.6\n");	/* sysLocation */
++	fprintf(fp, "access reaper_g \"\" usm %s exact reaper_all %s none\n", level,
++		nvram_match("snmpd_wan", "1") ? "none" : "reaper_set");
++}
++
+ void start_snmpd(void)
+ {
+ 	int ret = 0;
+@@ -115,12 +181,20 @@ void start_snmpd(void)
+ 		const char *lan_ip6 = nvram_safe_get(ipv6_nvname("ipv6_rtr_addr"));
+ 		struct in6_addr a6;
+ 		int have6 = ipv6_enabled() && lan_ip6[0] && inet_pton(AF_INET6, lan_ip6, &a6) == 1;
+-		if (lan_ip[0] && have6)
+-			fprintf(fp, "agentAddress udp:%s:161,udp6:[%s]:161\n", lan_ip, lan_ip6);
+-		else if (lan_ip[0])
+-			fprintf(fp, "agentAddress udp:%s:161\n", lan_ip);
+-		else
+-			fprintf(fp, "agentAddress udp:161\n");
++		char aa[320];
++		size_t n = 0;
++
++		aa[0] = '\0';
++		if (lan_ip[0])
++			n += snprintf(aa + n, sizeof(aa) - n, "udp:%s:161", lan_ip);
++		if (lan_ip[0] && have6 && n < sizeof(aa))
++			n += snprintf(aa + n, sizeof(aa) - n, ",udp6:[%s]:161", lan_ip6);
++		/* reaper 2026-11-16 (owner): "Allow access from WAN" opened the firewall while the agent listened on the LAN
++		 * address only, so nothing outside ever got an answer over IPv4. With the switch on, the agent also binds each
++		 * WAN address that is up (snmp_wan_binds); wan_up() restarts it when the address arrives or changes. */
++		if (lan_ip[0] && nvram_match("snmpd_wan", "1"))
++			n = snmp_wan_binds(aa, sizeof(aa), n, lan_ip);
++		fprintf(fp, "agentAddress %s\n", aa[0] ? aa : "udp:161");
+ 	}
+ 
+ 	if(!strcmp(authType, "MD5") || !strcmp(authType, "SHA")) {	
+@@ -129,7 +203,7 @@ void start_snmpd(void)
+ 				cprintf("SNMPv3: empty auth/priv passphrase; refusing createUser (net-snmp would reject it)\n");
+ 			else {
+ 				fprintf(fp, "createUser %s %s %s %s %s\n", user, authType, authPwd, privType, privPwd);
+-				fprintf(fp, "rwuser %s priv\n", user);
++				snmp_write_access(fp, user, "priv");
+ 			}
+ 		}
+ 		else if(!strcmp(privType, "NONE")) {
+@@ -137,7 +211,7 @@ void start_snmpd(void)
+ 				cprintf("SNMPv3: empty auth passphrase; refusing createUser (net-snmp would reject it)\n");
+ 			else {
+ 				fprintf(fp, "createUser %s %s %s\n", user, authType, authPwd);
+-				fprintf(fp, "rwuser %s auth\n", user);
++				snmp_write_access(fp, user, "auth");
+ 			}
+ 		}
+ 		else
+diff --git a/release/src/router/rc/wan.c b/release/src/router/rc/wan.c
+index 320532f654..6db5a13b0a 100644
+--- a/release/src/router/rc/wan.c
++++ b/release/src/router/rc/wan.c
+@@ -4160,6 +4160,14 @@ wan_up(const char *pwan_ifname)
+ #endif
+ 
+ 		start_firewall(wan_unit, 0);
++#ifdef RTCONFIG_SNMPD
++		/* reaper 2026-11-16 (owner): with "Allow access from WAN" on, the SNMP agent listens on the WAN address by
++		 * value (rc/snmpd.c snmp_wan_binds): start it again now that this WAN has its address, or a new one */
++		if (nvram_match("snmpd_enable", "1") && nvram_match("snmpd_wan", "1")) {
++			stop_snmpd();
++			start_snmpd();
++		}
++#endif
+ #if defined(RTCONFIG_IPV6) && (defined(RTAX82_XD6) || defined(RTAX82_XD6S) || defined(XD6_V2) || defined(ET12))
+ 		if (!strncmp(nvram_safe_get("territory_code"), "CH", 2) &&
+ 			ipv6_enabled() &&
+-- 
+2.25.1
+

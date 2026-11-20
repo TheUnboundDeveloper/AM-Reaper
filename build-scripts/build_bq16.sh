@@ -16,7 +16,10 @@
 # taken from the vendor's own BQ16 image (102_39256), each Broadcom
 # 17.10.369.39012 (r839077) - the host dhd driver's version - and each stamped
 # "BQ16" (the 6726b0 also carries "BQ16.v2", the second board revision).
-# reaper_verify 8c expects both chips; 8d checks the stamp.
+# Only 6726b0 is INSTALLED (2026-11-18): both board files (BQ16_2556 and
+# BQ16_2556_2) name four radios, all BCM6726, so src-rt/Makefile
+# (REAPER-NO-6717A0) leaves 6717a0 out; reaper_verify 8c expects 6726b0 and
+# fails an image carrying 6717a0; 8d checks the stamp.
 
 case "${1:-}" in
   -h|--help) sed -n "2,4 p" "$0" | sed "s/^# \?//"; exit 0 ;;

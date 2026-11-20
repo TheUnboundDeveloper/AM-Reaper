@@ -1,0 +1,88 @@
+From 55403c71a2fbe1be7ddd5982d917f3da8e9bb50e Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Fri, 30 Oct 2026 20:13:27 -0400
+Subject: [PATCH] diag: v1.3.53 - two address-shaped names stay readable
+
+Lab read of v3.6.3: the report's sanitizer, which masks public addresses as [EXT-IP-n], also
+masked two things that only look like addresses - the speed-test engine's four-part version (in
+10b) and a 5 GHz WDS link's interface name (wds1.1.1.0, wds1.1.1.52; wds0.* survived because 0.x
+is private) - 39 lines in sections 4, 18 and 19 of one report.
+10b prints the version as "v3.8.0 build 235"; the IPv4 stage and the tripwire both keep a match
+that directly follows "wds". Version label on the Diagnostics page.
+
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
+---
+ release/src/router/others/reaper_diag  | 16 +++++++++++-----
+ release/src/router/www/Reaper_Diag.asp |  2 +-
+ 2 files changed, 12 insertions(+), 6 deletions(-)
+
+diff --git a/release/src/router/others/reaper_diag b/release/src/router/others/reaper_diag
+index 81d8f258e14..13250f8c102 100644
+--- a/release/src/router/others/reaper_diag
++++ b/release/src/router/others/reaper_diag
+@@ -1,6 +1,8 @@
+ #!/bin/sh
+ # ============================================================================
+-#  REAPER-DIAG v1.3.52 (2026-10-29) - sanitized one-shot diagnostic bundle
++#  REAPER-DIAG v1.3.53 (2026-10-30) - sanitized one-shot diagnostic bundle
++#  v1.3.53 keeps two address-shaped names readable that came out as [EXT-IP-n]: the speed-test engine's
++#  four-part version (printed in 10b as "3.8.0 build 235") and a WDS link's interface name (wds1.1.1.0).
+ #  v1.3.51 reports each custom script in section 13: executable, line endings, how its last run ended and
+ #  whether its output was kept, with findings for a script that cannot run, failed, or sits outside /jffs/scripts.
+ #  v1.3.50 warns about a RAM store only when a real disk (a /dev block device) is mounted under /tmp/mnt -
+@@ -171,7 +173,7 @@
+ #  not add an unbounded command here.
+ # ============================================================================
+ PATH=/sbin:/bin:/usr/sbin:/usr/bin
+-VER="REAPER-DIAG v1.3.52"
++VER="REAPER-DIAG v1.3.53"
+ T0="$(date +%s 2>/dev/null)"
+ MODEL="$(nvram get productid 2>/dev/null)"
+ EXTNO="$(nvram get extendno 2>/dev/null)"
+@@ -630,7 +632,8 @@ function privip(ip,  a) {
+   out = ""
+   while (match(line, /[0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*/)) {
+     m = substr(line, RSTART, RLENGTH)
+-    if (privip(m)) rep = m
++    # v1.3.53: a WDS link's interface name (wds1.1.1.0, wds1.1.1.52) is shaped like an address; it stays
++    if (privip(m) || (RSTART > 3 && substr(line, RSTART - 3, 3) == "wds")) rep = m
+     else { if (!(m in M4)) { c4++; M4[m] = "[EXT-IP-" c4 "]" }; rep = M4[m] }
+     out = out substr(line, 1, RSTART-1) rep
+     line = substr(line, RSTART + RLENGTH)
+@@ -1390,7 +1393,10 @@ sec "10b. INTERNET SPEED TEST (engine, host-TCP offload, last run - addresses ne
+ # is reachable only because host TCP rides the Runner (GDX/HTOA, license-gated), so the offload
+ # state comes first. The engine's stderr was discarded until v3.0.5 (ookla_run keeps it).
+ OK_DIR=/jffs/.sys/OOKLA; [ -d /tmp/OOKLA ] && [ ! -d "$OK_DIR" ] && OK_DIR=/tmp/OOKLA
+-echo "  engine            : v$(grep -a -o -m1 -E '3\.[0-9]+\.[0-9]+\.[0-9]+' /usr/sbin/ookla 2>/dev/null || echo ?)  $(ls -l /usr/sbin/ookla 2>/dev/null | awk '{print $5}') bytes  launcher=$([ -x /usr/sbin/ookla_run ] && echo ookla_run || echo direct)  rc_support ookla=$(nvram get rc_support 2>/dev/null | grep -c -w ookla)"
++_ov="$(grep -a -o -m1 -E '3\.[0-9]+\.[0-9]+\.[0-9]+' /usr/sbin/ookla 2>/dev/null)"
++# v1.3.53: the version is shaped like an address (four dotted numbers) and the sanitizer masked it; print its build apart
++[ -n "$_ov" ] && _ov="v${_ov%.*} build ${_ov##*.}" || _ov="?"
++echo "  engine            : $_ov  $(ls -l /usr/sbin/ookla 2>/dev/null | awk '{print $5}') bytes  launcher=$([ -x /usr/sbin/ookla_run ] && echo ookla_run || echo direct)  rc_support ookla=$(nvram get rc_support 2>/dev/null | grep -c -w ookla)"
+ echo "  ookla_state       : $(nvram get ookla_state 2>/dev/null)  (0 idle, 1 running, 2 wan-down, 3 timeout, 4 engine-error, 5 launch-failed)"
+ _hl="$(dmesg 2>/dev/null | grep -o 'HTOA license[^*]*' | tail -1)"
+ echo "  host tcp offload  : ${_hl:-license line no longer in the kernel ring buffer - read /proc/gdx/stats below}"
+@@ -2318,7 +2324,7 @@ RESID="$(awk -v FWVER="$(nvram get firmver 2>/dev/null)" '
+   {
+     line = $0
+     while (match(line, /[0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*/)) {
+-      m = substr(line, RSTART, RLENGTH); if (!privip(m)) r4++
++      m = substr(line, RSTART, RLENGTH); if (!privip(m) && !(RSTART > 3 && substr(line, RSTART - 3, 3) == "wds")) r4++
+       line = substr(line, RSTART + RLENGTH)
+     }
+     line = $0
+diff --git a/release/src/router/www/Reaper_Diag.asp b/release/src/router/www/Reaper_Diag.asp
+index 93c7ecdf45d..b834b2eee4b 100644
+--- a/release/src/router/www/Reaper_Diag.asp
++++ b/release/src/router/www/Reaper_Diag.asp
+@@ -69,7 +69,7 @@ pre.sample .g{color:var(--jade)} pre.sample .r{color:#e0837d} pre.sample .w{colo
+ 
+ <div class="pagehead">
+   <h1><#RDIAG_00#> <a href="https://github.com/TheUnboundDeveloper/AM-Reaper/blob/main/docs/REAPER-GUIDE.md#413-diagnostics" target="_blank" rel="noopener noreferrer" title="<#RABT_43#>" style="display:inline-flex;align-items:center;justify-content:center;width:22px;height:22px;margin-left:8px;border-radius:50%;border:1px solid #4a4a4e;color:#8d897f;font:700 13px Arial,sans-serif;text-decoration:none;vertical-align:middle">?</a></h1>
+-  <span class="ver"><#RDIAG_01#> &middot; REAPER-DIAG v1.3.52</span>
++  <span class="ver"><#RDIAG_01#> &middot; REAPER-DIAG v1.3.53</span>
+ </div>
+ <p class="lede"><#RDIAG_02#></p>
+ 
+-- 
+2.25.1
+

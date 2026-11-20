@@ -143,7 +143,11 @@ if fn:
 cfg = os.path.join(K, ".config")
 if os.path.isfile(cfg):
     c = open(cfg, encoding="latin-1").read()
-    check("model kernel config: CONFIG_IP_SCTP=y (the OOTB path is in the image)", "\nCONFIG_IP_SCTP=y" in c)
+    # 2026-11-05 (owner): SCTP is off in config_base (no firmware feature uses it), so sctp_sf_ootb() is not in the
+    # image at all; the source hunk above stays pinned for the day it is switched back on. Built as a module would
+    # bring the path back without the =y line, so only =y or "not set" pass.
+    check("model kernel config: SCTP either built in (the fixed OOTB path is in the image) or not built at all",
+          "\nCONFIG_IP_SCTP=y" in c or "\n# CONFIG_IP_SCTP is not set" in c)
     check("model kernel config: CONFIG_IP_MULTICAST=y (the IGMP timer path is in the image)", "\nCONFIG_IP_MULTICAST=y" in c)
     check("model kernel config: CONFIG_PANIC_ON_WARN off (the 47684 WARN_ONCE must not reboot the box)", "\nCONFIG_PANIC_ON_WARN=y" not in c)
 else:

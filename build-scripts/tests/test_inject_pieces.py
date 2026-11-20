@@ -34,7 +34,8 @@ def check(name, cond, detail=""):
     if not cond: fails.append(name + (" - " + str(detail)[:400] if detail else ""))
 
 src = open(INJ, encoding="utf-8").read()
-rows = re.findall(r'\{ "([a-z0-9_.]+)",\s*"([^"]+)",\s*([01]) \}', src[src.index("reaper_pagemap[] = {"):])
+# 2026-11-06: page names may carry '-' (device-map/clients-listview.asp, audit B-6)
+rows = re.findall(r'\{ "([a-z0-9_.-]+)",\s*"([^"]+)",\s*([01]) \}', src[src.index("reaper_pagemap[] = {"):])
 check("reaper_pagemap[] parses (one table, ~69 rows)", len(rows) >= 60, len(rows))
 check("no second copy of the map: no SUP literal and no reaper_gone[] table left in the source",
       '\\"advanced_' not in src and "reaper_gone[] = {" not in src and "static const char REAPER_BLOCK[]" not in src)
@@ -60,6 +61,7 @@ try:
 #include "reaper_inject.h"
 char *nvram_get(const char *n) { (void)n; return "1"; }
 int nvram_match(const char *n, const char *v) { (void)n; (void)v; return 0; }
+int reaper_req_authed = 0;	/* httpd.c (review 2026-11-03, B-1): unauthenticated here, so no token hook is written */
 static const char *BODY;
 static void out(char *file, FILE *f) { (void)file; fputs(BODY, f); }
 int main(int argc, char **argv)
@@ -73,8 +75,10 @@ int main(int argc, char **argv)
 '''
     hp = os.path.join(work, "h.c"); open(hp, "w").write(harness)
     exe = os.path.join(work, "h")
+    # 2026-11-17: built as the supported models are (the Network page present) - three rows of the page table exist
+    # only then, and the comparison below reads every row of the source
     b = subprocess.run([CC, "-std=gnu99", "-Wall", "-Wextra", "-Werror", "-Wno-unused-function", "-Wno-unused-parameter",
-                        "-I", inc, "-o", exe, hp, INJ], capture_output=True, text=True)
+                        "-DRTCONFIG_MULTILAN_CFG", "-I", inc, "-o", exe, hp, INJ], capture_output=True, text=True)
     check("reaper_inject.c compiles on the host (-Wall -Wextra -Werror) against stub headers", b.returncode == 0, b.stderr[-800:])
     if b.returncode:
         raise SystemExit
@@ -100,9 +104,11 @@ int main(int argc, char **argv)
           all(k in sup for k in ("advanced_instant_guard.asp", "advanced_multisubnet_content.asp",
                                  "advanced_vpnclientfusion_content.asp", "advanced_vpnserver_content.asp")))
     # 2026-10-26 (owner): the VLAN Switch / Profile pair is a live stock page again (stock shows it WITH mtlancfg) -
-    # no row may bounce it to SDN.asp
-    check("LAN > VLAN is not bounced: no SUP row for the VLAN Switch / Profile pages",
-          "advanced_vlan_switch_content.asp" not in sup and "advanced_vlan_profile_content.asp" not in sup)
+    # no row may bounce it to SDN.asp. 2026-11-01 (owner review): Reaper_VLAN.asp replaces the pair, which stopped
+    # shipping - both bounce to the kit page, still never to SDN.asp
+    check("LAN > VLAN bounces to the kit page (Switch / Profiles tab), never to SDN.asp",
+          sup.get("advanced_vlan_switch_content.asp") == "Reaper_VLAN.asp"
+          and sup.get("advanced_vlan_profile_content.asp") == "Reaper_VLAN.asp?tab=pf")
     nat = serve("Reaper_LAN.asp", PAGE)
     check("reaper-native page: the link floor and the small self-top bounce only (no SUP, no reaper_content.css, no banner)",
           "if(self===top){var rp=" in nat and "var SUP=" not in nat and "reaper_content.css" not in nat and "Reaper_SecBanner.asp" not in nat)
@@ -116,7 +122,7 @@ int main(int argc, char **argv)
     g = gone[0]
     st = serve(g[0].replace("advanced", "Advanced"), PAGE)
     check("an unshipped page answers with the bounce stub to its target", "/reaper_shell.asp#%s" % g[1] in st and "B</body>" not in st, st[:200])
-    k = kept[0]
+    k = kept[0] if kept else g      # 2026-11-17: the last three shipped rows went (review B-25); the table may hold none
     ks = serve(k[0] + ".missing.asp", PAGE)
     check("a name not in the table is not a gone page", "reaper_shell.asp#" not in ks.split("<script>")[0])
     check("a shipped row is never answered with the stub, even when the file is absent",

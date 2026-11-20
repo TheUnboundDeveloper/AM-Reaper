@@ -94,6 +94,9 @@ OK_MAIL = {'theunbounddeveloper@outlook.com'}
 PLACEHOLDER_PW = {'pass', 'password', 'secret', 'hunter2', 'x', 'xxx', 'changeme', 'example',
                   'examplekey1', 'admin', 'pw', 'passwd', 'token', 'key', 'apikey', 'p', 'test'}
 DOC4 = [ipaddress.ip_network(n) for n in ('192.0.2.0/24', '198.51.100.0/24', '203.0.113.0/24')]
+# a Markdown heading numbered four levels deep ("##### N.N.N.N Title") reads like an IPv4 address;
+# in a .md file, a value equal to one of that file's own heading numbers is a section number
+RX_SECNUM = re.compile(r'^#{2,6}[ \t]+(\d+(?:\.\d+){3})\.?[ \t]', re.M)
 DOC6 = [ipaddress.ip_network(n) for n in ('2001:db8::/32', '3fff::/20')]
 
 
@@ -223,6 +226,7 @@ def scan(paths, deny, allow_paths, allow_values, root, max_details, generic_patc
         text = raw.decode('utf-8', 'replace')
         is_patch = rel.endswith('.patch') or rel.endswith('.diff')
         gen_ok = not any(fnmatch.fnmatch(rel, g) for g in allow_paths)
+        secnums = set(RX_SECNUM.findall(text)) if rel.lower().endswith('.md') else set()
         in_header = True
         own = True
         for i, line in enumerate(text.split('\n'), 1):
@@ -246,6 +250,8 @@ def scan(paths, deny, allow_paths, allow_values, root, max_details, generic_patc
             elif RX_PEM.match(line):
                 findings.append(('pemkey', rel, i, line.strip()))
             for rule, v in generic(line, allow_values):
+                if rule == 'ipv4' and v in secnums:
+                    continue
                 findings.append((rule, rel, i, v if show_values else mask(v)))
     return nfiles, findings
 

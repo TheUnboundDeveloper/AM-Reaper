@@ -1,0 +1,2360 @@
+From 0f4fdf0315e5753067e902db0483db3e391bc089 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Fri, 13 Nov 2026 18:39:20 -0500
+Subject: [PATCH] Guest Portal: create/delete applied, guest isolation, guest
+ DNS, a quicker sign-in
+
+- A Guest Network Pro create sent from the Network page reached the router as "restart_sdn+4" and
+  none of it ran; a delete did. httpd turns a '+' back into a space and records the request, and
+  reaper_sdn_settle applies the saved list itself when rc ran no guest-network service within the
+  settle window (rc/sdn.c). After any guest-network change the portal processes follow the saved
+  settings: one portal start per request, a deleted portal network stops its portal, and a portal
+  started without a pid file is found by its own configuration argument.
+- Guest isolation (rc/reaper_guest.c, new): a guest or Guest Portal device reaches only the WAN or
+  its VPN client, and the router only for DHCP, DNS and the portal ports; the layer sits after
+  Warden and before Gatekeeper and follows the set of networks. Access Intranet on a portal
+  network opens the main LAN only. A VPN binding starts with its Kill Switch on.
+- Sign-in: before sign-in the portal answers every A lookup with a stand-in address in the
+  benchmarking range, so a phone's sign-in sheet opens even when the network's resolver has no
+  upstream. The success page waits for the first address to answer. The portal network's resolver
+  binds by interface name, so it starts in either order. After sign-in a device's connections to
+  the stand-in are refused at once instead of timing out (about 30 s saved per sign-in), and
+  frames the router sends itself on the portal's interface are no longer taken for a guest.
+- Guest DNS: every port-53 query from a portal tunnel goes to the guest network's own resolver and
+  port 853 is dropped; a guest resolver without intranet access reads no hosts file, so no
+  main-LAN names. The network's DNS Server setting picks the guests' upstream: empty means
+  Cloudflare for Families over DNS-over-TLS through a forwarder of its own (restarted by the
+  watchdog after the clock is set or if it stops), a known DNS-over-TLS provider is asked over
+  TLS, any other address plainly. A VPN-bound portal keeps the tunnel's DNS. The Network page says
+  so under DNS Server.
+- The portal module is handed the stored secret, as stock does - a second decrypt made every
+  sign-in fail. A Free Wi-Fi portal is terms-only (no passcode); the Tweaks Guest Portal secret
+  panel is gone, each router makes its own.
+Also in these files: services.c and rc/Makefile drop the ASUS DDNS client, web.c its unregister
+handler (the ASUS DDNS commit).
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ release/src/router/coovachilli/src/dhcp.c     | 166 ++++++-
+ release/src/router/httpd/web.c                | 131 +++++-
+ .../lighttpd-1.4.39/external_file/css/uam.js  | 113 ++++-
+ .../lighttpd-1.4.39/src/nvram_control.c       |  21 +-
+ release/src/router/rc/Makefile                |   9 +-
+ release/src/router/rc/firewall.c              |   5 +
+ release/src/router/rc/lan.c                   |  11 +
+ release/src/router/rc/rc.c                    |   7 +-
+ release/src/router/rc/rc.h                    |  15 +-
+ release/src/router/rc/reaper_guest.c          | 292 ++++++++++++
+ release/src/router/rc/reaper_hook.c           |   3 +
+ release/src/router/rc/sdn.c                   | 436 +++++++++++++++++-
+ release/src/router/rc/services.c              | 352 +++++++-------
+ release/src/router/www/Reaper_Tweaks.asp      |  40 +-
+ .../router/www/sysdep/FUNCTION/SDN/SDN/sdn.js | 138 ++----
+ 15 files changed, 1363 insertions(+), 376 deletions(-)
+ create mode 100644 release/src/router/rc/reaper_guest.c
+
+diff --git a/release/src/router/coovachilli/src/dhcp.c b/release/src/router/coovachilli/src/dhcp.c
+index 99e0c8b0a5..d44d6e33bf 100644
+--- a/release/src/router/coovachilli/src/dhcp.c
++++ b/release/src/router/coovachilli/src/dhcp.c
+@@ -1631,6 +1631,109 @@ int dhcp_nakDNS(struct dhcp_conn_t *conn, uint8_t *pack, size_t len) {
+   return 0;
+ }
+ 
++/* REAPER-STANDIN-BEGIN (compiled on the host by test_chilli_standin_reset.py)
++ * reaper 2026-11-13 (Guest Portal: about 30 s between "Successful!" and a working connection). Before sign-in
++ * every A lookup is answered with the stand-in address 198.18.0.1 (REAPER-PREAUTH). A phone goes on using that
++ * answer for a while after sign-in, TTL 0 or not. Its connections to the stand-in were then forwarded and dropped
++ * further on, silently, so each one waited out its own timeout (and each was counted as a blocked outbound
++ * connection of that guest). A signed-in device's packets to the stand-in now stop here, and a TCP connection is
++ * refused at once (RFC 793 reset generation), so the device looks the name up again instead of waiting.
++ *
++ * seg = an IPv4 packet, IP header first, len bytes. out = the 40-byte reset to send back, checksums left zero
++ * for the caller. Returns 40, or 0 = send nothing (not TCP, a fragment, too short, or itself a reset). */
++#define REAPER_STANDIN_ADDR 0xC6120001u	/* 198.18.0.1 in host order (RFC 2544 space, never routed) */
++static size_t reaper_tcp_refuse(uint8_t *out, size_t olen, const uint8_t *seg, size_t len)
++{
++  const uint8_t *t;
++  size_t ihl, thl, tot;
++  uint32_t ack;
++  uint8_t fl;
++
++  if (!out || !seg || olen < 40 || len < 40 || (seg[0] >> 4) != 4 || seg[9] != 6)
++    return 0;
++  ihl = (size_t)(seg[0] & 0x0f) * 4;
++  tot = ((size_t)seg[2] << 8) | seg[3];
++  if (ihl < 20 || tot > len || tot < ihl + 20)
++    return 0;
++  if ((seg[6] & 0x3f) || seg[7])	/* more-fragments set or an offset: a fragment has no header to answer */
++    return 0;
++  t = seg + ihl;
++  fl = t[13];
++  thl = (size_t)(t[12] >> 4) * 4;
++  if ((fl & 0x04) || thl < 20 || ihl + thl > tot)	/* never answer a reset */
++    return 0;
++  memset(out, 0, 40);
++  out[0] = 0x45;
++  out[3] = 40;
++  out[6] = 0x40;	/* do not fragment */
++  out[8] = 64;
++  out[9] = 6;
++  memcpy(out + 12, seg + 16, 4);	/* from the address the device wrote to */
++  memcpy(out + 16, seg + 12, 4);
++  memcpy(out + 20, t + 2, 2);
++  memcpy(out + 22, t, 2);
++  if (fl & 0x10) {	/* the segment acknowledges something: a reset with that sequence number */
++    memcpy(out + 24, t + 8, 4);
++    out[33] = 0x04;
++  } else {		/* a first SYN: sequence 0, acknowledging everything it carried */
++    ack = ((uint32_t)t[4] << 24) | ((uint32_t)t[5] << 16) | ((uint32_t)t[6] << 8) | t[7];
++    ack += (uint32_t)(tot - ihl - thl) + ((fl & 0x02) ? 1 : 0) + ((fl & 0x01) ? 1 : 0);
++    out[28] = (uint8_t)(ack >> 24);
++    out[29] = (uint8_t)(ack >> 16);
++    out[30] = (uint8_t)(ack >> 8);
++    out[31] = (uint8_t)ack;
++    out[33] = 0x14;
++  }
++  out[32] = 0x50;
++  return 40;
++}
++/* REAPER-STANDIN-END */
++
++/* REAPER-PREAUTH-BEGIN (compiled on the host by test_chilli_preauth_dns.py)
++ * reaper 2026-11-12 (Guest Portal field report: no "Sign in to network" on Android 17 / iOS 27, then "No internet").
++ * A phone offers the sign-in page only when its probe name (captive.apple.com, connectivitycheck.gstatic.com, ...)
++ * resolves and the HTTP request is redirected. Before sign-in chilli let lookups through to the network's own
++ * resolver only, and that resolver has no upstream whenever the network's VPN client is down (fail-closed by the
++ * owner's choice) - so no answer, no redirect, "No internet". A device that has not signed in now gets the
++ * portal's own address for every A lookup (TTL 0; a phone still holds on to it - see REAPER-STANDIN) and an empty answer for every
++ * other type; walled-garden names (uamdomain) still go to the real resolver. Nothing leaves the router before
++ * sign-in. Returns 0 = forward as before, 1 = answer with the portal address, 2 = answer with no records. */
++static int reaper_preauth_dns(int signed_in, int qtype, const char *q, char *const *doms, int ndoms)
++{
++  size_t ql, dl;
++  int id;
++
++  if (signed_in || qtype < 0 || !q || !*q)
++    return 0;
++  ql = strlen(q);
++  for (id = 0; doms && id < ndoms && doms[id]; id++) {
++    dl = strlen(doms[id]);
++    if (!dl)
++      continue;
++    if ((ql == dl && !strcmp(doms[id], q)) ||
++        (ql > dl && (doms[id][0] == '.' || q[ql - dl - 1] == '.') && !strcmp(doms[id], q + ql - dl)))
++      return 0;
++  }
++  return qtype == 1 ? 1 : 2;
++}
++
++/* the type of the first question in a DNS payload of len bytes (rec = the question section); -1 when it cannot be
++ * read plainly (a compression pointer or a label running past the end) */
++static int reaper_dns_qtype(const uint8_t *rec, size_t len)
++{
++  size_t i = 0;
++
++  while (i < len && rec[i]) {
++    if (rec[i] & 0xc0)
++      return -1;
++    i += (size_t)rec[i] + 1;
++  }
++  if (i + 2 >= len)
++    return -1;
++  return (rec[i + 1] << 8) | rec[i + 2];
++}
++/* REAPER-PREAUTH-END */
++
+ static 
+ int dhcp_matchDNS(uint8_t *r, char *name) {
+   int r_len = strlen((char *)r);
+@@ -1836,6 +1939,7 @@ int dhcp_dns(struct dhcp_conn_t *conn, uint8_t *pack,
+       uint8_t reply[4];
+ 
+       int match = 0;
++      int reaper_noans = 0;	/* reaper 2026-11-12: answer with no records */
+ 
+       if (!match) {
+ 	match = dhcp_matchDNS(q, "logout");
+@@ -1927,6 +2031,29 @@ int dhcp_dns(struct dhcp_conn_t *conn, uint8_t *pack,
+ //	}
+       }
+       
++      /* reaper 2026-11-12: a device that has not signed in - see reaper_preauth_dns */
++      if (!match) {
++	int pre = reaper_preauth_dns(conn->authstate == DHCP_AUTH_PASS,
++				     reaper_dns_qtype(dnsp->records, olen), (char *)q,
++				     _options.uamdomains, MAX_UAM_DOMAINS);
++#ifdef ENABLE_UAMDOMAINFILE
++	if (pre && _options.uamdomainfile && garden_check_domainfile((char *)q) == 1)
++	  pre = 0;
++#endif
++	if (pre) {
++	  /* 2026-11-12 (_r2 on the owner's router): NOT the alias address - with ENABLE_UAMUIPORT chilli rewrites the
++	   * alias onto its UI port (3991), whose redirect hands the sign-in page uamport=3991, and a /logon there is
++	   * not a sign-in: the page reloaded for ever. Any outside address goes through chilli's own redirect to
++	   * uamlisten:uamport instead; 198.18.0.1 (RFC 2544, never routed) is never a real destination. */
++	  struct in_addr reaper_redir;
++
++	  match = 1;
++	  reaper_noans = (pre == 2);
++	  reaper_redir.s_addr = htonl(0xC6120001);	/* 198.18.0.1 */
++	  memcpy(reply, &reaper_redir.s_addr, 4);
++	}
++      }
++
+       if (match) {
+ 	
+ 	uint8_t answer[1500];
+@@ -1965,6 +2092,7 @@ int dhcp_dns(struct dhcp_conn_t *conn, uint8_t *pack,
+ 	    query[query_len++] = *p++;
+ 	}
+ 	
++	if (!reaper_noans) {	/* reaper 2026-11-12: not an A question - the question alone, no records */
+ 	query[query_len++] = 0xc0;
+ 	query[query_len++] = 0x0c;
+ 	query[query_len++] = 0x00;
+@@ -1979,6 +2107,7 @@ int dhcp_dns(struct dhcp_conn_t *conn, uint8_t *pack,
+ 	query[query_len++] = 0x04;
+ 	memcpy(query + query_len, reply, 4);
+ 	query_len += 4;
++	}
+ 	
+ 	memcpy(answer, pack, *plen); /* TODO */
+ 	
+@@ -1991,7 +2120,7 @@ int dhcp_dns(struct dhcp_conn_t *conn, uint8_t *pack,
+ 	answer_dns->id      = dnsp->id;
+ 	answer_dns->flags   = htons(0x8000);
+ 	answer_dns->qdcount = htons(0x0001);
+-	answer_dns->ancount = htons(0x0001);
++	answer_dns->ancount = htons(reaper_noans ? 0x0000 : 0x0001);
+ 	answer_dns->nscount = htons(0x0000);
+ 	answer_dns->arcount = htons(0x0000);
+ 	memcpy(answer_dns->records, query, query_len);
+@@ -3934,6 +4063,23 @@ int dhcp_receive_ip(struct dhcp_ctx *ctx, uint8_t *pack, size_t len) {
+     }
+ #endif
+ 
++    /* REAPER-STANDIN: a signed-in device still using the address it was given before sign-in */
++    if (pack_iph->daddr == htonl(REAPER_STANDIN_ADDR)) {
++      uint8_t reaper_rst[sizeof(struct pkt_ethhdr8021q_t) + 40];
++      size_t reaper_el = sizeofeth(pack);
++
++      if (reaper_el <= sizeof(struct pkt_ethhdr8021q_t) && len > reaper_el &&
++	  reaper_tcp_refuse(reaper_rst + reaper_el, 40, (const uint8_t *)pack_iph, len - reaper_el)) {
++	memcpy(reaper_rst, pack, reaper_el);
++	memcpy(pkt_ethhdr(reaper_rst)->dst, pack_ethh->src, PKT_ETH_ALEN);
++	memcpy(pkt_ethhdr(reaper_rst)->src, pack_ethh->dst, PKT_ETH_ALEN);
++	chksum(pkt_iphdr(reaper_rst));
++	dhcp_send(this, dhcp_conn_idx(conn), conn->hismac, reaper_rst, reaper_el + 40);
++      }
++      OTHER_RECEIVED(conn, pack_iph);
++      return 0;
++    }
++
+     /* Check for post-auth proxy, otherwise pass packets unmodified */
+     dhcp_postauthDNAT(conn, pack, len, 0, &do_checksum);
+     break; 
+@@ -4968,6 +5114,20 @@ void dhcp_peer_update(char force) {
+ }
+ #endif
+ 
++/* REAPER-OWNMAC-BEGIN (compiled on the host by test_chilli_own_mac.py)
++ * reaper 2026-11-13 (Guest Portal: the portal logged a new client and held a pool address for the router's own
++ * address at each start). The portal reads its interface through a packet socket, which also delivers the frames
++ * the router itself sends there; an ARP request or a broadcast among them became a client entry. A frame whose
++ * Ethernet source is the interface's own address is never a client. */
++static int reaper_own_frame(const uint8_t *src, const uint8_t *own)
++{
++  static const uint8_t zero[6] = { 0, 0, 0, 0, 0, 0 };
++  if (!memcmp(own, zero, 6))
++    return 0;	/* the interface address is not known: filter nothing */
++  return !memcmp(src, own, 6);
++}
++/* REAPER-OWNMAC-END */
++
+ static 
+ int dhcp_decaps_cb(void *pctx, struct pkt_buffer *pb) {
+   struct dhcp_ctx *ctx = (struct dhcp_ctx *)pctx;
+@@ -4984,6 +5144,10 @@ int dhcp_decaps_cb(void *pctx, struct pkt_buffer *pb) {
+     return 0;
+   }
+   
++  /* REAPER-OWNMAC: a frame the router sent on this interface is not a client */
++  if (reaper_own_frame(pkt_ethhdr(packet)->src, ctx->parent->rawif[ctx->idx].hwaddr))
++    return 0;
++
+ #ifdef ENABLE_IEEE8021Q
+   if (_options.ieee8021q) {
+     if (is_8021q(packet)) {
+diff --git a/release/src/router/httpd/web.c b/release/src/router/httpd/web.c
+index f776a6add1..9e9c97443f 100644
+--- a/release/src/router/httpd/web.c
++++ b/release/src/router/httpd/web.c
+@@ -14247,6 +14247,110 @@ static int reaper_syscmd_shape_ok(const char *page, const char *cmd, char *mac,
+ 	return 0;
+ }
+ 
++#ifdef RTCONFIG_CFGSYNC
++/* reaper 2026-11-12 (Guest Portal field report; reproduced on the owner's router): on an AiMesh router apply_cgi
++ * hands the page's service list to the closed cfg_server (/tmp/cfg.json action_script). A Guest Network Pro
++ * create ("restart_wireless;restart_sdn 4;restart_chilli;restart_uam_srv;") reached it as "...restart_sdn+4..."
++ * and was never run: the settings were saved and nothing was built (no Wi-Fi restart, no bridge, no portal),
++ * while a delete (no argument) ran. So a guest-network request is also recorded in RSDN_PENDING and handed to
++ * reaper_sdn_settle - its own process, never rc's busy queue - which applies the saved list only when rc has
++ * run no guest-network service since (rc/sdn.c). Nothing runs twice; AiMesh nodes are unchanged (cfg_client
++ * derives its own restarts from the synced settings). */
++#define RSDN_PENDING	"/tmp/reaper/sdn_pending"
++
++/* is t[0..n) a guest-network service (its name, arguments ignored) */
++static int reaper_sdn_tok(const char *t, size_t n)
++{
++	static const char *const tok[] = { "restart_sdn", "start_sdn_del", "restart_chilli", "restart_uam_srv", "restart_CP", NULL };
++	size_t w = strcspn(t, " ;");
++	int i;
++
++	if (w > n)
++		w = n;
++	for (i = 0; tok[i]; i++)
++		if (strlen(tok[i]) == w && strncmp(t, tok[i], w) == 0)
++			return 1;
++	return 0;
++}
++
++/* does the ';' list hold the service t[0..n) exactly */
++static int reaper_sdn_list_has(const char *list, const char *t, size_t n)
++{
++	const char *p = list, *q;
++
++	for (; *p; p = *q ? q + 1 : q) {
++		q = p + strcspn(p, ";");
++		if ((size_t)(q - p) == n && strncmp(p, t, n) == 0)
++			return 1;
++	}
++	return 0;
++}
++
++static void reaper_sdn_pending(const char *act)
++{
++	char merged[256] = "", old[300] = "", ts[24], tmp[] = RSDN_PENDING ".XXXXXX";
++	char *argv[] = { "/sbin/reaper_sdn_settle", ts, NULL };
++	const char *p, *q;
++	long now = uptime(), ot;
++	struct stat st;
++	int hit = 0, fd;
++	ssize_t n;
++	pid_t pid;
++
++	for (p = act; *p; p = *q ? q + 1 : q) {
++		q = p + strcspn(p, ";");
++		if (q > p && reaper_sdn_tok(p, (size_t)(q - p)))
++			hit = 1;
++	}
++	if (!hit)
++		return;
++
++	/* a request not yet settled (younger than 60 s): keep its services and add the new ones, so a quick second
++	 * change does not drop the first one's */
++	if ((fd = open(RSDN_PENDING, O_RDONLY | O_NOFOLLOW)) >= 0) {
++		if (fstat(fd, &st) == 0 && S_ISREG(st.st_mode) && st.st_uid == 0 &&
++		    (n = read(fd, old, sizeof(old) - 1)) > 0) {
++			char *sp;
++
++			old[n] = 0;
++			old[strcspn(old, "\r\n")] = 0;
++			ot = strtol(old, &sp, 10);
++			if (sp != old && *sp == ' ' && ot >= now - 60 && strlen(sp + 1) < sizeof(merged))
++				strlcpy(merged, sp + 1, sizeof(merged));
++		}
++		close(fd);
++	}
++	for (p = act; *p; p = *q ? q + 1 : q) {
++		q = p + strcspn(p, ";");
++		if (q == p || reaper_sdn_list_has(merged, p, (size_t)(q - p)))
++			continue;
++		if (strlen(merged) + (size_t)(q - p) + 2 >= sizeof(merged)) {
++			strlcpy(merged, act, sizeof(merged));	/* no room to merge: this request alone */
++			break;
++		}
++		strncat(merged, p, (size_t)(q - p));
++		strcat(merged, ";");
++	}
++
++	reaper_secure_dir(REAPER_TMPDIR, 0700);	/* tmp hardening: root's own directory */
++	if ((fd = mkstemp(tmp)) < 0)
++		return;
++	snprintf(old, sizeof(old), "%ld %s\n", now, merged);
++	if (write(fd, old, strlen(old)) != (ssize_t)strlen(old) || fchmod(fd, 0600) != 0) {
++		close(fd);
++		unlink(tmp);
++		return;
++	}
++	close(fd);
++	if (rename(tmp, RSDN_PENDING) != 0) {
++		unlink(tmp);
++		return;
++	}
++	snprintf(ts, sizeof(ts), "%ld", now);
++	_eval(argv, NULL, 0, &pid);
++}
++#endif
++
+ static int
+ apply_cgi(webs_t wp, char_t *urlPrefix, char_t *webDir, int arg,
+ 		char_t *url, char_t *path, char_t *query)
+@@ -14327,6 +14431,18 @@ apply_cgi(webs_t wp, char_t *urlPrefix, char_t *webDir, int arg,
+ 		}
+ 
+ 		action_para = get_cgi_json("rc_service",root);
++		/* reaper 2026-11-12 (Guest Portal, owner's router): the Network page's list arrived as
++		 * "restart_wireless;restart_sdn+4;..." and none of it ran, whether it went by way of
++		 * cfg_server or directly. No service name holds a '+': hand on a copy with each one a space again. */
++		if (action_para && strchr(action_para, '+')) {
++			static char reaper_rcsvc[1024];
++			char *rp;
++
++			strlcpy(reaper_rcsvc, action_para, sizeof(reaper_rcsvc));
++			for (rp = reaper_rcsvc; (rp = strchr(rp, '+')) != NULL; rp++)
++				*rp = ' ';
++			action_para = reaper_rcsvc;
++		}
+ 		config_name = get_cgi_json("nvram_config", root);
+ 
+ 		if (config_name != NULL){
+@@ -14352,6 +14468,8 @@ apply_cgi(webs_t wp, char_t *urlPrefix, char_t *webDir, int arg,
+ 
+ 				json_object_put(cfg_root);
+ 
++				reaper_sdn_pending(action_para);	/* reaper 2026-11-12: the router applies its own guest-network request */
++
+ 				/* trigger cfg_server to send notification */
+ 				kill_pidfile_s(CFG_SERVER_PID, SIGUSR2);
+ 				cfg_changed = 0;
+@@ -34444,16 +34562,6 @@ do_reaper_mcp_cgi(char *url, FILE *stream)
+ #endif	/* RTCONFIG_REAPER_MCP */
+ 
+ 
+-#if 0	/* reaper 2026-10-23: ASUS DDNS removed; its handler row is compiled out below */
+-static void
+-do_unreg_ASUSDDNS_cgi(char *url, FILE *stream)
+-{
+-	_dprintf("[%s(%d)] notify_rc(start_asusddns_unregister)\n", __FUNCTION__, __LINE__);
+-	nvram_unset("asusddns_reg_result");
+-	notify_rc("stop_ddns;start_asusddns_unregister");
+-}
+-#endif
+-
+ static void
+ do_clean_ddns_cgi(char *url, FILE *stream)
+ {
+@@ -41892,9 +42000,6 @@ struct mime_handler mime_handlers[] =
+ 	{ "mobile_game_mode.cgi*", "text/html", no_cache, do_html_post_and_get, do_mobile_game_mode_cgi, do_auth },
+ 	{ "mobile_dev_mode.cgi*", "text/html", no_cache, do_html_post_and_get, do_mobile_dev_mode_cgi, do_auth },
+ #endif
+-#endif
+-#if 0	/* reaper 2026-10-23: ASUS DDNS removed - nothing to unregister through the GUI */
+-	{ "unreg_ASUSDDNS.cgi*", "text/html", no_cache, do_html_post_and_get, do_unreg_ASUSDDNS_cgi, do_auth },
+ #endif
+     { "clean_ddns.cgi*", "text/html", no_cache, do_html_post_and_get, do_clean_ddns_cgi, do_auth },
+ #ifdef RTCONFIG_HTTPS
+diff --git a/release/src/router/lighttpd-1.4.39/external_file/css/uam.js b/release/src/router/lighttpd-1.4.39/external_file/css/uam.js
+index 43b9809dbf..c0ebfc8d60 100755
+--- a/release/src/router/lighttpd-1.4.39/external_file/css/uam.js
++++ b/release/src/router/lighttpd-1.4.39/external_file/css/uam.js
+@@ -60,6 +60,110 @@ function getUrlVar(key_name) {
+ 	return key_value;
+ }
+ 
++/* Reaper 2026-11-12: after a sign-in chilli sends the browser to "<this page>?auth_status=pass" and drops the
++ * address the device first asked for, so the page said "Successful!" and stopped there. That first address is
++ * kept for this tab while the sign-in page is shown, and the success page goes on to it after a short pause. On a
++ * phone it is the system's own connection test, which is what lets its sign-in sheet finish. */
++var REAPER_NEXT_KEY = "reaper_uam_next";
++var REAPER_NEXT_MS = 3000;
++
++function reaperQuery(name) {
++	try {
++		return new URL(window.location.href).searchParams.get(name) || "";
++	} catch (e) {
++		return "";
++	}
++}
++
++function reaperNextUrl(u) {	/* "" unless u is, or decodes once to, a plain http(s) address */
++	var i, p;
++	for (i = 0; i < 2 && typeof u == "string" && u != ""; i++) {
++		try {
++			p = new URL(u);
++			return (p.protocol == "http:" || p.protocol == "https:") ? p.href : "";
++		} catch (e) {}
++		try {
++			u = decodeURIComponent(u);
++		} catch (e) {
++			return "";
++		}
++	}
++	return "";
++}
++
++function reaperKeepNext() {
++	try {
++		var u = reaperNextUrl(reaperQuery("userurl"));
++		if (u != "")
++			window.sessionStorage.setItem(REAPER_NEXT_KEY, u);
++	} catch (e) {}
++}
++
++/* Reaper 2026-11-13: for some seconds after a sign-in a device can still hold the stand-in address it was given
++ * for every name while it was not signed in. A page load sent there never answers, and the page sat on
++ * "Successful!". So the first address is asked for in the background until it really answers, and only then is
++ * the page sent on to it; after REAPER_TRY_MAX tries it is sent on regardless. */
++var REAPER_TRY_MS = 4000;
++var REAPER_TRY_GAP_MS = 1000;
++var REAPER_TRY_MAX = 12;
++
++function reaperTryNext(u, n) {
++	var done = false, ctl = null, timer = null, page = "";
++
++	function settle(ok) {
++		if (done)
++			return;
++		done = true;
++		clearTimeout(timer);
++		if (ok) {
++			window.location.replace(u);
++			return;
++		}
++		try {
++			if (ctl)
++				ctl.abort();
++		} catch (e) {}
++		setTimeout(function() { reaperTryNext(u, n + 1); }, REAPER_TRY_GAP_MS);
++	}
++
++	try {
++		page = new URL(window.location.href).protocol;
++	} catch (e) {}
++	/* no way to ask in the background (no fetch, or an http address from an https page): go on at once */
++	if (n >= REAPER_TRY_MAX || typeof window.fetch != "function" || (page == "https:" && u.indexOf("https:") != 0)) {
++		window.location.replace(u);
++		return;
++	}
++	try {
++		if (typeof AbortController == "function")
++			ctl = new AbortController();
++	} catch (e) {
++		ctl = null;
++	}
++	timer = setTimeout(function() { settle(false); }, REAPER_TRY_MS);
++	try {
++		window.fetch(u, { mode: "no-cors", cache: "no-store", credentials: "omit", signal: ctl ? ctl.signal : undefined })
++			.then(function() { settle(true); }, function() { settle(false); });
++	} catch (e) {
++		settle(false);
++	}
++}
++
++function reaperGoNext() {
++	var u = "";
++	try {
++		u = reaperNextUrl(window.sessionStorage.getItem(REAPER_NEXT_KEY) || "");
++		window.sessionStorage.removeItem(REAPER_NEXT_KEY);
++	} catch (e) {}
++	if (u != "")
++		reaperTryNext(u, 0);
++}
++
++$(function() {
++	if (reaperQuery("auth_status") == "pass")
++		setTimeout(reaperGoNext, REAPER_NEXT_MS);
++});
++
+ $("document").ready(function() {	
+ 	//alert("res=" + res + ", username=" + username + ", password=" + password);
+ 	
+@@ -103,6 +207,7 @@ $("document").ready(function() {
+ 	document.body.appendChild(divObj);
+ 	
+ 	if (res == "notyet") {
++		reaperKeepNext();
+ 		document.getElementById('chal').value = challenge;
+ 		document.getElementById('uamip').value = uamip;
+ 		document.getElementById('uamport').value = uamport;
+@@ -160,13 +265,9 @@ function formSubmit(auth)
+ 			param.UserName = document.getElementById('UserName').value;
+ 			param.Password = document.getElementById('Password').value;
+ 			break;
+-		case 2 : //free wifi passcode
++		case 2 : //free wifi (Reaper 2026-11-12: terms-only - a passcode box left on an older splash is ignored)
+ 			document.getElementById('UserName').value = "noauth";
+-
+-			if(document.getElementById('splash_template_passcode') == null)
+-				document.getElementById('Password').value = "noauth";
+-			else
+-				document.getElementById('Password').value = document.getElementById('splash_template_passcode').value;
++			document.getElementById('Password').value = "noauth";
+ 
+ 			param.UserName = document.getElementById('UserName').value;
+ 			param.Password = document.getElementById('Password').value;
+diff --git a/release/src/router/lighttpd-1.4.39/src/nvram_control.c b/release/src/router/lighttpd-1.4.39/src/nvram_control.c
+index 88951063d8..b06a5fb693 100755
+--- a/release/src/router/lighttpd-1.4.39/src/nvram_control.c
++++ b/release/src/router/lighttpd-1.4.39/src/nvram_control.c
+@@ -1765,23 +1765,10 @@ char *nvram_get_uamsecret(const char *str)
+ 		reaper_sec = nvram_get("chilli_uamsecret");
+ 	else
+ 		reaper_sec = nvram_get("cp_uamsecret");
+-#ifdef RTCONFIG_NVRAM_ENCRYPT
+-	/* review 2026-11-11 (B-C4, owner): rc writes chilli's config with the secret DECRYPTED (rc/services.c
+-	 * chilli_config*: pw_dec(value, buf, strlen(value), 1)) while this handed the portal module the stored,
+-	 * encrypted form. Decrypt the same way, so both ends of the sign-in hold the same secret (rc now stores a
+-	 * random per-router secret, reaper_uam_secret_ensure). A value that does not decrypt is passed as stored. */
+-	if (reaper_sec && *reaper_sec) {
+-		static char reaper_dec[128];
+-		size_t reaper_l = strlen(reaper_sec);
+-
+-		if (reaper_l < sizeof(reaper_dec)) {
+-			memset(reaper_dec, 0, sizeof(reaper_dec));
+-			pw_dec(reaper_sec, reaper_dec, reaper_l, 1);
+-			if (reaper_dec[0])
+-				return reaper_dec;
+-		}
+-	}
+-#endif
++	/* 2026-11-12 (_r4 metal): hand the portal module the STORED (encrypted) secret, as stock does - the module
++	 * decrypts what this returns itself, the same way rc decrypts it for chilli's
++	 * config. Decrypting here as well (the _r16 change) made the module decrypt twice, so every sign-in was
++	 * encoded with a secret chilli does not have and the guest's Agree never signed in. */
+ 	return reaper_sec ? reaper_sec : "";
+ #endif
+ }
+diff --git a/release/src/router/rc/Makefile b/release/src/router/rc/Makefile
+index ae95a15445..516589c49b 100644
+--- a/release/src/router/rc/Makefile
++++ b/release/src/router/rc/Makefile
+@@ -746,9 +746,6 @@ endif
+ OBJS += frs_service.o
+ #endif
+ 
+-ifeq ($(and $(RTCONFIG_TUNNEL),$(RTCONFIG_ACCOUNT_BINDING)),y)
+-OBJS += asus_ddns.o
+-endif
+ 
+ ifeq ($(RTCONFIG_DSL),y)
+ OBJS += asustest.o
+@@ -839,6 +836,7 @@ endif
+ ifeq ($(RTCONFIG_MULTILAN_CFG),y)
+ OBJS += sdn.o
+ OBJS += firewall_sdn.o
++OBJS += reaper_guest.o
+ endif
+ 
+ ifeq ($(or $(HND_ROUTER_AX_6756),$(HND_ROUTER_BE_4916)),y)
+@@ -1854,6 +1852,8 @@ endif
+ 	@cd $(INSTALLDIR)/sbin && ln -sf rc reaper_bwfloor
+ 	@cd $(INSTALLDIR)/sbin && ln -sf rc reaper_usb_release
+ 	@cd $(INSTALLDIR)/sbin && ln -sf rc reaper_aimesh_sync
++# 2026-11-12: httpd starts /sbin/reaper_sdn_settle (applets dispatch by basename only - see reaper_lockrun)
++	@cd $(INSTALLDIR)/sbin && ln -sf rc reaper_sdn_settle
+ 	@cd $(INSTALLDIR)/sbin && ln -sf rc rdnshc
+ 	@cd $(INSTALLDIR)/sbin && ln -sf rc rv6names
+ 	@cd $(INSTALLDIR)/sbin && ln -sf rc reaper_ledns
+@@ -2082,9 +2082,6 @@ ifeq ($(RTCONFIG_TC_DOWNLOAD), y)
+ 	@cd $(INSTALLDIR)/sbin && ln -sf rc tc_download
+ endif
+ 
+-ifeq ($(and $(RTCONFIG_TUNNEL),$(RTCONFIG_ACCOUNT_BINDING)),y)
+-	@cd $(INSTALLDIR)/sbin && ln -sf rc update_asus_ddns_token
+-endif
+ 	@cd $(INSTALLDIR)/sbin && ln -sf rc collect_debuglog
+ 
+ ifeq ($(RTCONFIG_TPVPN),y)
+diff --git a/release/src/router/rc/firewall.c b/release/src/router/rc/firewall.c
+index 7caeae3e38..231380db13 100644
+--- a/release/src/router/rc/firewall.c
++++ b/release/src/router/rc/firewall.c
+@@ -10597,6 +10597,11 @@ leave:
+ 		else if (f_exists("/tmp/reaper_fw/apply.sh"))
+ 			(void)(reaper_script_ok("/tmp/reaper_fw/apply.sh") && system("sh /tmp/reaper_fw/apply.sh"));
+ 	}
++#ifdef RTCONFIG_MULTILAN_CFG
++	/* 2026-11-12: guest isolation (rc/reaper_guest.c) - this rebuild unhooked it, and a WAN coming up may have
++	 * changed the WAN interface it lets guests out by; regenerated and re-run under the lock held here */
++	reaper_guest_apply(1);
++#endif
+ 	file_unlock(llock);
+ 	}
+ 
+diff --git a/release/src/router/rc/lan.c b/release/src/router/rc/lan.c
+index e579479ae6..dd6349c850 100644
+--- a/release/src/router/rc/lan.c
++++ b/release/src/router/rc/lan.c
+@@ -7085,8 +7085,19 @@ void restart_wireless(void)
+ #endif
+ 
+ #ifdef RTCONFIG_CAPTIVE_PORTAL
++#ifdef RTCONFIG_MULTILAN_CFG
++	/* reaper 2026-11-12: a portal service still to come in this request does the start (rc/services.c
++	 * reaper_rc_rest_has) - started here as well, the portal ran, was stopped and was started again */
++	if (reaper_rc_rest_has(reaper_wl_rest, "restart_chilli"))
++		logmessage("wireless", "the Guest Portal is restarted later in this request - not starting it twice");
++	else
++		start_chilli();
++	if (!reaper_rc_rest_has(reaper_wl_rest, "restart_CP"))
++		start_CP();
++#else
+ 	start_chilli();
+ 	start_CP();
++#endif
+ #ifdef RTCONFIG_MULTILAN_CFG
+ 	if (sw_mode() == SW_MODE_ROUTER) {
+ 		handle_sdn_feature(ALL_SDN, SDN_FEATURE_ROUTING, RC_SERVICE_START);
+diff --git a/release/src/router/rc/rc.c b/release/src/router/rc/rc.c
+index c21fa9664f..e78086bed9 100644
+--- a/release/src/router/rc/rc.c
++++ b/release/src/router/rc/rc.c
+@@ -2997,6 +2997,10 @@ static const applets_t applets[] = {
+ 	{ "init",			init_main				},
+ 	/* v2.7.3: rwatch self-heals under the firewall fcntl lock (rc/rwatch.c) */
+ 	{ "reaper_lockrun",		reaper_lockrun_main			},
++#ifdef RTCONFIG_MULTILAN_CFG
++	/* 2026-11-12: apply a guest-network request that never reached rc (rc/sdn.c, started by httpd) */
++	{ "reaper_sdn_settle",		reaper_sdn_settle_main			},
++#endif
+ 	/* v3.0.8: park the AiMesh backhaul carriers while no node is paired (rc/amaspark.c) */
+ 	{ "amaspark",			amaspark_main				},
+ 	/* v3.1.1: LAN resolver health check - demote a silent upstream, restore it when it answers (rc/rdnshc.c) */
+@@ -3369,9 +3373,6 @@ static const applets_t applets[] = {
+ #ifdef RTCONFIG_ISP_CUSTOMIZE_TOOL
+ 	{ "tci",			tci_main		},
+ #endif
+-#if defined(RTCONFIG_TUNNEL) && defined(RTCONFIG_ACCOUNT_BINDING)
+-	{ "update_asus_ddns_token",		update_asus_ddns_token_main			},
+-#endif
+ #if defined(RTCONFIG_IG_SITE2SITE)
+ 	{ "ig_s2s_client",      ig_s2s_client_main      },
+  #endif
+diff --git a/release/src/router/rc/rc.h b/release/src/router/rc/rc.h
+index 1554ac5e12..daa9345996 100644
+--- a/release/src/router/rc/rc.h
++++ b/release/src/router/rc/rc.h
+@@ -2998,10 +2998,6 @@ extern int upnp_enabled(void);
+ extern void stop_upnp(void);
+ extern void start_upnp(void);
+ extern void reload_upnp(void);
+-#if defined(RTCONFIG_TUNNEL) && defined(RTCONFIG_ACCOUNT_BINDING)
+-extern int update_asus_ddns_token();
+-extern int update_asus_ddns_token_main(int argc, char *argv[]);
+-#endif
+ extern void stop_ddns(void);
+ extern int start_ddns(char *caller, int isAidisk);
+ extern void refresh_ntpc(void);
+@@ -3168,6 +3164,17 @@ extern int reaper_aimesh_sync_main(int argc, char *argv[]);	/* 2026-11-01: refre
+ extern int reaper_aimesh_macs(char macs[][18], int max, int *dropped);	/* the cfg_relist parser every enforcement surface shares */
+ #define REAPER_AIMESH_SET "reaper_aimesh"	/* hash:mac, matched `src` by the rules engine and Policy Routing */
+ #define REAPER_AIMESH_MAX 256	/* 2026-11-08 (owner: next release): was 64, about 16 tri-band nodes; a node is 3-5 registry MACs */
++#ifdef RTCONFIG_MULTILAN_CFG
++extern void reaper_sdn_applied_stamp(void);
++extern int reaper_sdn_list_has_svc(const char *list);
++extern int reaper_rc_rest_has(const char *rest, const char *svc);	/* 2026-11-12: one portal start per request */
++extern const char *reaper_wl_rest;
++extern void reaper_guest_gen(void);	/* 2026-11-12: guest isolation (rc/reaper_guest.c) */
++extern void reaper_guest_apply(int have_lock);	/* 2026-11-12: guest-network requests always applied (rc/sdn.c) */
++extern int reaper_guest_intranet(int sdn_idx);	/* 2026-11-13: Access Intranet on for this network (rc/reaper_guest.c) */
++extern void reaper_guest_dot_watch(void);	/* 2026-11-13: Guest Portal encrypted DNS forwarders (rc/sdn.c) */
++extern int reaper_sdn_settle_main(int argc, char *argv[]);
++#endif
+ extern int reaper_lockrun_main(int argc, char *argv[]);	/* v2.7.3: heal scripts under the firewall fcntl lock (rc/rwatch.c) */
+ extern void stop_rexport(void);	/* reaper v2.2.2 analytics exporter: push health.json to Splunk/Datadog/etc. (rc/rexport.c) */
+ extern void start_rexport(void);
+diff --git a/release/src/router/rc/reaper_guest.c b/release/src/router/rc/reaper_guest.c
+new file mode 100644
+index 0000000000..ee3489d213
+--- /dev/null
++++ b/release/src/router/rc/reaper_guest.c
+@@ -0,0 +1,292 @@
++/*
++ * reaper_guest.c - guest isolation (owner hard rule, 2026-11-12).
++ *
++ * A guest - every device on a Guest Portal network, and on any other guest network whose "Access Intranet" is off
++ * (no pair in sdn_access_rl) - must never see or reach non-guest devices or router features, on ANY path: through its
++ * bound VPN client, in WAN fallback while that tunnel is down, kill switch on or off. Stock left it open: each guest
++ * network reached every router service on any router address except lan_ipaddr (firewall_sdn.c SDN_FI); signed-in
++ * portal guests were accepted to anywhere, the main LAN included (firewall.c `-I FORWARD -i tun22 NEW ACCEPT`, which
++ * the `br+ -o br+` drop never sees); a bound VPN client's own rules let new connections in from the tunnel; and a
++ * portal network's IPv6 rode the bridge past the portal (chilli is IPv4-only).
++ *
++ * This layer is DENY-ONLY: REAPER_GUI (INPUT) and REAPER_GUF (FORWARD), IPv4 and IPv6, never ACCEPT. What it lets
++ * through goes on to the stock rules (and the kill switch, Gatekeeper, the rules engine) exactly as before:
++ *   to the router   AiMesh, established flows, flows the router itself DNAT'd (Gatekeeper's waiting room, DNS
++ *                   redirects), DHCP, DNS to the network's own gateway, IPv6 neighbour discovery / MLD, and for a
++ *                   portal its sign-in ports on its own gateway - then DROP, on every router address
++ *   through it      out by a WAN interface or the bound VPN client only (only the VPN client while the kill switch
++ *                   is on - so the kill switch now also holds for a portal network and for IPv6), established
++ *                   replies, port forwards from the WAN; anything else in or out DROP
++ *   portal bridge   chilli reads it raw: nothing for the kernel to route there - INPUT neighbour discovery only,
++ *                   FORWARD nothing; a portal's IPv6 gets nothing at all
++ * Hooked by hook.sh (rc/reaper_hook.c) right after Warden; re-applied at every firewall build's tail and after every
++ * guest-network change. The main LAN (br0) and networks with intranet access are never touched.
++ */
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++#include <unistd.h>
++#include <sys/stat.h>
++#include <net/if.h>
++#include "rc.h"
++#include <shared.h>
++#include "reaper_hook.h"
++
++#define RG_DIR		"/tmp/rguest"
++#define RG_APPLY	RG_DIR "/apply.sh"
++
++/* REAPER-GUEST-PURE-BEGIN (compiled on the host by test_guest_isolation.py) */
++struct rg_net {
++	int sdn_idx;
++	char ifname[IFNAMSIZ];	/* the kernel interface: tun22 / tun23 for a portal, else the bridge */
++	char brname[IFNAMSIZ];	/* the bridge */
++	char subnet[48];	/* IPv4 subnet "a.b.c.d/n" or "" - live flows are flushed after an apply */
++	char vpnif[IFNAMSIZ];	/* the bound VPN client's interface, "" when none */
++	int portal;		/* 0 none, 1 Free Wi-Fi / message board (chilli), 2 account portal (chilli-cp) */
++	int killsw;		/* kill switch on (meaningful only with a bound VPN client) */
++	int lan_ok;		/* 2026-11-13 (owner): a portal with Access Intranet on may open connections to the main LAN */
++	char lanif[IFNAMSIZ];	/* the main LAN bridge (lan_ifname) */
++};
++
++/* sdn_access_rl is "<access_sdn_idx>sdn_idx" pairs (sdn.js parse_StrToJSON_sdn_access_rl_list): intranet access is
++ * on for a network named on either side of any pair */
++static int rg_access_on(const char *rl, int idx)
++{
++	const char *p = rl;
++	int a, b;
++
++	while (p && *p) {
++		if (*p == '<')
++			p++;
++		a = b = -1;
++		if (sscanf(p, "%d>%d", &a, &b) == 2 && (a == idx || b == idx))
++			return 1;
++		p = strchr(p, '<');
++	}
++	return 0;
++}
++
++/* Merlin's vpnc_idx: 1..5 WireGuard client N (wgcN), 6..10 OpenVPN client idx-5 (tun1N) - shared/mtlan_utils.c
++ * get_vpnx_by_vpnc_idx; the static mapping, not vpncN_ifname, which exists only while the tunnel is up */
++static void rg_vpnif(int vpnc_idx, char *out, size_t n)
++{
++	out[0] = '\0';
++	if (vpnc_idx >= 1 && vpnc_idx <= 5)
++		snprintf(out, n, "wgc%d", vpnc_idx);
++	else if (vpnc_idx >= 6 && vpnc_idx <= 10)
++		snprintf(out, n, "tun1%d", vpnc_idx - 5);
++}
++
++/* the rules of one interface X of guest network g, family v6 (0/1). bridge_only: X is a portal's bridge. */
++static void rg_iface(FILE *f, const struct rg_net *g, const char *X, int v6, int bridge_only,
++		     char wan4[][IFNAMSIZ], int nw4, const char *wan6)
++{
++	const char *T = v6 ? "R ip6tables" : "R iptables";
++	const char *outs[8];
++	int no = 0, k;
++	int closed = bridge_only || (v6 && g->portal);	/* nothing passes, in or out */
++	int vpn_only = g->killsw && g->vpnif[0];
++
++	/* ---- to the router ---- */
++	fprintf(f, "%s -A REAPER_GUI -i %s -m set --match-set " REAPER_AIMESH_SET " src -j RETURN\n", T, X);
++	fprintf(f, "%s -A REAPER_GUI -i %s -m conntrack --ctstate RELATED,ESTABLISHED,DNAT -j RETURN\n", T, X);
++	if (v6)
++		for (k = 0; k < 8; k++)
++			fprintf(f, "%s -A REAPER_GUI -i %s -p ipv6-icmp --icmpv6-type %d -j RETURN\n", T, X,
++				(int[]){ 133, 134, 135, 136, 130, 131, 132, 143 }[k]);
++	if (!closed) {
++		fprintf(f, "%s -A REAPER_GUI -i %s -p udp --dport %d -j RETURN\n", T, X, v6 ? 547 : 67);
++		fprintf(f, "%s -A REAPER_GUI -i %s -p udp --dport 53 -m addrtype --dst-type LOCAL --limit-iface-in -j RETURN\n", T, X);
++		fprintf(f, "%s -A REAPER_GUI -i %s -p tcp --dport 53 -m addrtype --dst-type LOCAL --limit-iface-in -j RETURN\n", T, X);
++		if (!v6 && g->portal)
++			fprintf(f, "%s -A REAPER_GUI -i %s -p tcp -m multiport --dports %s -m addrtype --dst-type LOCAL --limit-iface-in -j RETURN\n",
++				T, X, g->portal == 2 ? "3998,3991,8083" : "3990,3991,8083");
++	}
++	fprintf(f, "%s -A REAPER_GUI -i %s -j DROP\n", T, X);
++
++	/* ---- through the router ---- */
++	if (!closed) {
++		if (g->vpnif[0])
++			outs[no++] = g->vpnif;
++		if (!vpn_only) {
++			if (v6) {
++				if (wan6 && *wan6)
++					outs[no++] = wan6;
++			} else
++				for (k = 0; k < nw4 && no < 8; k++)
++					outs[no++] = wan4[k];
++		}
++		fprintf(f, "%s -A REAPER_GUF -i %s -o %s -j RETURN\n", T, X, X);
++		fprintf(f, "%s -A REAPER_GUF -i %s -m set --match-set " REAPER_AIMESH_SET " src -j RETURN\n", T, X);
++		if (!v6 && g->portal) {	/* 2026-11-13 (owner): DNS is the guest resolver's (REAPER_GUN) - no DoT / DoQ around it */
++			fprintf(f, "%s -A REAPER_GUF -i %s -p tcp --dport 853 -j DROP\n", T, X);
++			fprintf(f, "%s -A REAPER_GUF -i %s -p udp --dport 853 -j DROP\n", T, X);
++		}
++		for (k = 0; k < no; k++)
++			fprintf(f, "%s -A REAPER_GUF -i %s -o %s -j RETURN\n", T, X, outs[k]);
++		/* 2026-11-13 (owner): Access Intranet on a portal network = the MAIN LAN only - never another guest network or
++		 * the router itself (REAPER_GUI above is unchanged); nothing opens from the main LAN into the portal */
++		if (!v6 && g->portal && g->lan_ok && g->lanif[0])
++			fprintf(f, "%s -A REAPER_GUF -i %s -o %s -j RETURN\n", T, X, g->lanif);
++	}
++	fprintf(f, "%s -A REAPER_GUF -i %s -j DROP\n", T, X);
++	if (!closed) {
++		fprintf(f, "%s -A REAPER_GUF -o %s -m conntrack --ctstate RELATED,ESTABLISHED -j RETURN\n", T, X);
++		/* new connections in: port forwards from the WAN only (never from the VPN client or another network) */
++		if (!vpn_only) {
++			if (v6) {
++				if (wan6 && *wan6)
++					fprintf(f, "%s -A REAPER_GUF -o %s -i %s -j RETURN\n", T, X, wan6);
++			} else
++				for (k = 0; k < nw4; k++)
++					fprintf(f, "%s -A REAPER_GUF -o %s -i %s -j RETURN\n", T, X, wan4[k]);
++		}
++	}
++	fprintf(f, "%s -A REAPER_GUF -o %s -j DROP\n", T, X);
++}
++
++/* the whole apply script for n guest networks (n == 0: tear the layer down) */
++static void rg_write(FILE *f, const struct rg_net *g, int n, char wan4[][IFNAMSIZ], int nw4, const char *wan6,
++		     const char *hook_run)
++{
++	int i, v6;
++
++	fputs("#!/bin/sh\n"
++	      "# generated by reaper_guest_gen - guest isolation (owner rule 2026-11-12). See rc/reaper_guest.c.\n"
++	      "RG_FAIL=0\n"
++	      "R() { \"$@\" 2>/dev/null || RG_FAIL=$((RG_FAIL+1)); }\n", f);
++	if (n == 0) {
++		fputs("for T in iptables ip6tables; do\n"
++		      "  $T -D " REAPER_HOOK_IN " -j REAPER_GUI 2>/dev/null; $T -D " REAPER_HOOK_FWD " -j REAPER_GUF 2>/dev/null\n"
++		      "  for C in REAPER_GUI REAPER_GUF; do $T -F $C 2>/dev/null; $T -X $C 2>/dev/null; done\n"
++		      "done\n"
++		      "iptables -t nat -D PREROUTING -j REAPER_GUN 2>/dev/null; iptables -t nat -F REAPER_GUN 2>/dev/null; "
++		      "iptables -t nat -X REAPER_GUN 2>/dev/null\n", f);
++		fputs(hook_run, f);
++		fputs("exit 0\n", f);
++		return;
++	}
++	fputs("ipset create " REAPER_AIMESH_SET " hash:mac -exist 2>/dev/null\n"
++	      "for T in iptables ip6tables; do\n"
++	      "  for C in REAPER_GUI REAPER_GUF; do $T -N $C 2>/dev/null; $T -F $C; done\n"
++	      "done\n"
++	      "# 2026-11-13 (owner): a portal guest's DNS goes to the guest network's own resolver, wherever it was sent\n"
++	      "iptables -t nat -N REAPER_GUN 2>/dev/null; iptables -t nat -F REAPER_GUN\n"
++	      "iptables -t nat -D PREROUTING -j REAPER_GUN 2>/dev/null\n"
++	      "R iptables -t nat -I PREROUTING 1 -j REAPER_GUN\n", f);
++	for (i = 0; i < n; i++) {
++		fprintf(f, "# network %d: %s%s%s%s%s\n", g[i].sdn_idx, g[i].ifname,
++			g[i].portal ? " (portal, bridge " : "", g[i].portal ? g[i].brname : "", g[i].portal ? ")" : "",
++			g[i].vpnif[0] ? (g[i].killsw ? " - VPN client, kill switch on" : " - VPN client, kill switch off") : "");
++		if (g[i].portal) {	/* 2026-11-13: to the address of the tunnel it arrived on = the guest resolver */
++			fprintf(f, "R iptables -t nat -A REAPER_GUN -i %s -p udp --dport 53 -j REDIRECT --to-ports 53\n", g[i].ifname);
++			fprintf(f, "R iptables -t nat -A REAPER_GUN -i %s -p tcp --dport 53 -j REDIRECT --to-ports 53\n", g[i].ifname);
++		}
++		for (v6 = 0; v6 < 2; v6++) {
++			rg_iface(f, &g[i], g[i].ifname, v6, 0, wan4, nw4, wan6);
++			if (strcmp(g[i].brname, g[i].ifname) != 0 && g[i].brname[0])
++				rg_iface(f, &g[i], g[i].brname, v6, g[i].portal != 0, wan4, nw4, wan6);
++		}
++	}
++	fputs(hook_run, f);
++	fputs("# flows opened before these rules must re-traverse them\n", f);
++	for (i = 0; i < n; i++)
++		if (g[i].subnet[0])
++			fprintf(f, "conntrack -D -s %s >/dev/null 2>&1; conntrack -D -d %s >/dev/null 2>&1\n", g[i].subnet, g[i].subnet);
++	fputs("fc flush 2>/dev/null\n"
++	      "[ \"$RG_FAIL\" = 0 ] || logger -t reaper \"guest isolation: $RG_FAIL rule(s) refused\"\n"
++	      "exit 0\n", f);
++}
++/* REAPER-GUEST-PURE-END */
++
++void reaper_guest_gen(void)
++{
++	MTLAN_T *pmtl = NULL;
++	CP_TYPE_RL cpt;
++	struct rg_net g[MTLAN_MAXINUM];
++	char wan4[WAN_UNIT_MAX][IFNAMSIZ];
++	char wan6[IFNAMSIZ] = "";
++	const char *acc, *w;
++	size_t sz = 0, i;
++	int n = 0, nw4 = 0, u, k, dup;
++	FILE *f;
++
++	memset(g, 0, sizeof(g));
++	if (is_routing_enabled() && (pmtl = (MTLAN_T *)INIT_MTLAN(sizeof(MTLAN_T))) != NULL) {
++		acc = nvram_safe_get("sdn_access_rl");
++		if (get_mtlan(pmtl, &sz)) {
++			for (i = 0; i < sz && n < MTLAN_MAXINUM; i++) {
++				const MTLAN_T *m = &pmtl[i];
++				int portal = 0;
++
++				if (m->enable != 1 || m->sdn_t.sdn_idx == 0 || m->nw_t.idx == 0)
++					continue;
++				if (!m->nw_t.br_ifname[0] || !strcmp(m->nw_t.br_ifname, "br0"))
++					continue;	/* the main LAN, or a guest SSID on the main subnet: nothing to isolate at L3 */
++				if (m->sdn_t.cp_idx > 0) {
++					memset(&cpt, 0, sizeof(cpt));
++					if (get_cp_type_byidx(m->sdn_t.cp_idx, &cpt))
++						portal = (cpt.cp_type == 1) ? 2 : ((cpt.cp_type == 2 || cpt.cp_type == 4) ? 1 : 0);
++				}
++				if (!portal && rg_access_on(acc, m->sdn_t.sdn_idx))
++					continue;	/* the admin gave this network intranet access */
++				g[n].sdn_idx = m->sdn_t.sdn_idx;
++				strlcpy(g[n].ifname, m->nw_t.ifname[0] ? m->nw_t.ifname : m->nw_t.br_ifname, sizeof(g[n].ifname));
++				strlcpy(g[n].brname, m->nw_t.br_ifname, sizeof(g[n].brname));
++				if (m->nw_t.subnet[0] && m->nw_t.prefixlen > 0 && m->nw_t.prefixlen <= 32)
++					snprintf(g[n].subnet, sizeof(g[n].subnet), "%s/%u", m->nw_t.subnet, m->nw_t.prefixlen);
++				rg_vpnif(m->sdn_t.vpnc_idx, g[n].vpnif, sizeof(g[n].vpnif));
++				g[n].portal = portal;
++				g[n].killsw = m->sdn_t.killsw_sw ? 1 : 0;
++				if (portal && rg_access_on(acc, m->sdn_t.sdn_idx)) {	/* 2026-11-13 (owner): main LAN only */
++					g[n].lan_ok = 1;
++					strlcpy(g[n].lanif, nvram_safe_get("lan_ifname"), sizeof(g[n].lanif));
++				}
++				n++;
++			}
++		}
++		FREE_MTLAN((void *)pmtl);
++	}
++	for (u = WAN_UNIT_FIRST; u < WAN_UNIT_MAX; u++) {
++		w = get_wan_ifname(u);
++		if (!w || !*w || !strcmp(w, "br0"))
++			continue;
++		for (dup = 0, k = 0; k < nw4; k++)
++			if (!strcmp(wan4[k], w))
++				dup = 1;
++		if (!dup && nw4 < WAN_UNIT_MAX)
++			strlcpy(wan4[nw4++], w, IFNAMSIZ);
++	}
++	if (ipv6_enabled() && (w = get_wan6face()) != NULL)
++		strlcpy(wan6, w, sizeof(wan6));
++
++	reaper_secure_dir(RG_DIR, 0700);
++	if ((f = fopen(RG_APPLY ".tmp", "w")) == NULL)
++		return;
++	rg_write(f, g, n, wan4, nw4, wan6, REAPER_HOOK_RUN);
++	fclose(f);
++	chmod(RG_APPLY ".tmp", 0700);
++	if (rename(RG_APPLY ".tmp", RG_APPLY) != 0)
++		unlink(RG_APPLY ".tmp");
++}
++
++/* 2026-11-13: is intranet access on for this network (sdn.c: may its resolver answer main-LAN names) */
++int reaper_guest_intranet(int sdn_idx)
++{
++	return rg_access_on(nvram_safe_get("sdn_access_rl"), sdn_idx);
++}
++
++/* regenerate and run; have_lock: the caller already holds file_lock("firewall") (the start_firewall tail) */
++void reaper_guest_apply(int have_lock)
++{
++	int lk = -1;
++
++	reaper_hook_gen();
++	reaper_guest_gen();
++	if (!have_lock)
++		lk = file_lock("firewall");
++	if (reaper_script_ok(RG_APPLY))
++		eval("sh", RG_APPLY);
++	if (lk >= 0)
++		file_unlock(lk);
++}
+diff --git a/release/src/router/rc/reaper_hook.c b/release/src/router/rc/reaper_hook.c
+index e3da6fe724..d86eb52c49 100644
+--- a/release/src/router/rc/reaper_hook.c
++++ b/release/src/router/rc/reaper_hook.c
+@@ -97,11 +97,14 @@ void reaper_hook_gen(void)
+ 	  "    case \"$H\" in\n"
+ 	  "      INPUT)\n"
+ 	  "        $T -nL REAPER_WARDEN >/dev/null 2>&1 && $T -A \"$C\" -j REAPER_WARDEN\n"
++	  /* 2026-11-12: guest isolation (rc/reaper_guest.c) - deny-only, right after Warden */
++	  "        $T -nL REAPER_GUI >/dev/null 2>&1 && $T -A \"$C\" -j REAPER_GUI\n"
+ 	  "        if $T -nL REAPER_GKI >/dev/null 2>&1; then for I in $GKIFS; do $T -A \"$C\" -i \"$I\" -j REAPER_GKI; done; fi\n"
+ 	  "        $T -nL REAPER_FWI >/dev/null 2>&1 && $T -A \"$C\" -j REAPER_FWI\n"
+ 	  "        ;;\n"
+ 	  "      FORWARD)\n"
+ 	  "        $T -nL REAPER_WARDEN >/dev/null 2>&1 && $T -A \"$C\" -j REAPER_WARDEN\n"
++	  "        $T -nL REAPER_GUF >/dev/null 2>&1 && $T -A \"$C\" -j REAPER_GUF\n"
+ 	  "        if $T -nL REAPER_GKF >/dev/null 2>&1; then for I in $GKIFS; do $T -A \"$C\" -i \"$I\" -j REAPER_GKF; done; fi\n"
+ 	  "        $T -nL REAPER_FWF >/dev/null 2>&1 && $T -A \"$C\" -j REAPER_FWF\n"
+ 	  "        ;;\n"
+diff --git a/release/src/router/rc/sdn.c b/release/src/router/rc/sdn.c
+index ff4632b0d9..321be9f927 100644
+--- a/release/src/router/rc/sdn.c
++++ b/release/src/router/rc/sdn.c
+@@ -788,6 +788,282 @@ int revshare_sig_changed(void)
+ 	return strcmp(now, was) != 0;
+ }
+ 
++/* REAPER-GUESTDNS-PURE-BEGIN (compiled on the host by test_portal_guest_dns.py)
++ * 2026-11-13, owner decisions for Guest Portal DNS:
++ *  - a guest network without intranet access must not learn the main LAN's names. dnsmasq reads /etc/hosts unless
++ *    told not to, and rc writes every DHCP reservation into it (name + address), so a guest could look up the
++ *    owner's PC. `no-hosts` there; a network with Access Intranet on (or on the main subnet) keeps them.
++ *  - a Guest Portal network with no VPN binding resolves through Cloudflare for Families (malware + adult content),
++ *    encrypted: its resolver - which still applies Warden, Wallguard and the encrypted-DNS block - forwards to its
++ *    own stubby on 127.0.2.<sdn_idx>. TLS always; the server's certificate is checked once the clock is set (before
++ *    that the connection is encrypted but not authenticated, and the watchdog restarts it after the first sync).
++ *    A VPN-bound portal keeps the tunnel's DNS (owner 2026-11-10: lookups never leave outside the tunnel).
++ *  The stock per-network DoT (firewall_sdn.c) DNATs a network's queries straight to its stubby and so skips the
++ *    network's resolver and every filter in it - not used here. */
++#define RGD_DIR		"/tmp/rguestdns"
++#define RGD_EXE		RGD_DIR "/rgdot"	/* a link to stubby under its own name (stock-name-matchers rule) */
++#define RGD_HOST	"family.cloudflare-dns.com"
++
++static int rgd_hide(const char *br, const char *lanif, int intranet)
++{
++	if (!br || !*br || (lanif && *lanif && !strcmp(br, lanif)))
++		return 0;			/* on the main subnet: its devices are the main LAN */
++	return !intranet;
++}
++
++static int rgd_wanted(int enable, int cp_idx, int vpnc_idx, int nw_idx)
++{
++	return enable && cp_idx != 0 && vpnc_idx == 0 && nw_idx != 0;
++}
++
++static void rgd_addr(int sdn_idx, char *out, size_t n)
++{
++	snprintf(out, n, "127.0.2.%d", (sdn_idx >= 1 && sdn_idx <= 254) ? sdn_idx : 254);
++}
++
++/* 2026-11-13 (owner: the admin chooses the guests' DNS provider, independent of the main network): the network's own
++ * DNS Server setting (Network page, nw_t.dns[0..1]) picks the upstream. Known providers are reached over DoT - names
++ * and addresses from the firmware's own www/dot-servers.json (Control D's DoT runs on .11 with the profile in the name),
++ * plus Cloudflare's filtered pair. Anything else is the admin's own server (a LAN Pi-hole, a plain resolver) and is
++ * forwarded as plain DNS. Empty = Cloudflare for Families. */
++#define RGD_NONE	0	/* not a portal network without a VPN binding: the network's normal servers */
++#define RGD_DEFAULT	1	/* nothing set: Cloudflare for Families over DoT */
++#define RGD_DOT		2	/* every address a known DoT provider */
++#define RGD_PLAIN	3	/* at least one address of the admin's own: plain DNS to the address(es) */
++struct rgd_up { char addr[48]; const char *host; };
++static const struct { const char *plain, *dot, *host; } rgd_known[] = {
++	{ "1.1.1.3", "1.1.1.3", "family.cloudflare-dns.com" }, { "1.0.0.3", "1.0.0.3", "family.cloudflare-dns.com" },
++	{ "1.1.1.2", "1.1.1.2", "security.cloudflare-dns.com" }, { "1.0.0.2", "1.0.0.2", "security.cloudflare-dns.com" },
++	{ "1.1.1.1", "1.1.1.1", "cloudflare-dns.com" }, { "1.0.0.1", "1.0.0.1", "cloudflare-dns.com" },
++	{ "9.9.9.9", "9.9.9.9", "dns.quad9.net" }, { "149.112.112.112", "149.112.112.112", "dns.quad9.net" },
++	{ "8.8.8.8", "8.8.8.8", "dns.google" }, { "8.8.4.4", "8.8.4.4", "dns.google" },
++	{ "185.228.168.9", "185.228.168.9", "security-filter-dns.cleanbrowsing.org" },
++	{ "185.228.169.9", "185.228.169.9", "security-filter-dns.cleanbrowsing.org" },
++	{ "185.228.168.168", "185.228.168.168", "family-filter-dns.cleanbrowsing.org" },
++	{ "185.228.169.168", "185.228.169.168", "family-filter-dns.cleanbrowsing.org" },
++	{ "185.228.168.10", "185.228.168.10", "adult-filter-dns.cleanbrowsing.org" },
++	{ "185.228.169.11", "185.228.169.11", "adult-filter-dns.cleanbrowsing.org" },
++	{ "76.76.2.1", "76.76.2.11", "p1.freedns.controld.com" }, { "76.76.10.1", "76.76.10.11", "p1.freedns.controld.com" },
++	{ "76.76.2.2", "76.76.2.11", "p2.freedns.controld.com" }, { "76.76.10.2", "76.76.10.11", "p2.freedns.controld.com" },
++	{ "76.76.2.4", "76.76.2.11", "family.freedns.controld.com" }, { "76.76.10.4", "76.76.10.11", "family.freedns.controld.com" },
++	{ "149.112.121.10", "149.112.121.10", "private.canadianshield.cira.ca" },
++	{ "149.112.122.10", "149.112.122.10", "private.canadianshield.cira.ca" },
++	{ "149.112.121.20", "149.112.121.20", "protected.canadianshield.cira.ca" },
++	{ "149.112.122.20", "149.112.122.20", "protected.canadianshield.cira.ca" },
++	{ "149.112.121.30", "149.112.121.30", "family.canadianshield.cira.ca" },
++	{ "149.112.122.30", "149.112.122.30", "family.canadianshield.cira.ca" },
++};
++
++/* d1 / d2 = the network's DNS Server setting -> mode, and u[0..*n-1] = the upstream(s) (host NULL = plain DNS) */
++static int rgd_pick(const char *d1, const char *d2, struct rgd_up *u, int *n)
++{
++	const char *d[2] = { d1, d2 };
++	struct in_addr a;
++	int i, k, j, any = 0, plain = 0;
++
++	*n = 0;
++	for (i = 0; i < 2; i++) {
++		if (!d[i] || !*d[i] || inet_pton(AF_INET, d[i], &a) != 1)
++			continue;			/* empty or not an IPv4 address: not a server */
++		any = 1;
++		for (k = 0; k < (int)(sizeof(rgd_known) / sizeof(rgd_known[0])); k++)
++			if (!strcmp(d[i], rgd_known[k].plain))
++				break;
++		if (k == (int)(sizeof(rgd_known) / sizeof(rgd_known[0])))
++			plain = 1;
++	}
++	if (!any) {
++		snprintf(u[0].addr, sizeof(u[0].addr), "1.1.1.3"); u[0].host = RGD_HOST;
++		snprintf(u[1].addr, sizeof(u[1].addr), "1.0.0.3"); u[1].host = RGD_HOST;
++		*n = 2;
++		return RGD_DEFAULT;
++	}
++	for (i = 0; i < 2; i++) {
++		if (!d[i] || !*d[i] || inet_pton(AF_INET, d[i], &a) != 1)
++			continue;
++		if (plain) {
++			for (j = 0; j < *n; j++)
++				if (!strcmp(u[j].addr, d[i])) break;
++			if (j < *n) continue;
++			snprintf(u[*n].addr, sizeof(u[0].addr), "%s", d[i]);
++			u[*n].host = NULL;
++			(*n)++;
++			continue;
++		}
++		for (k = 0; strcmp(d[i], rgd_known[k].plain); k++)
++			;
++		for (j = 0; j < *n; j++)		/* Control D: two presets can land on one DoT address */
++			if (!strcmp(u[j].addr, rgd_known[k].dot) && !strcmp(u[j].host, rgd_known[k].host)) break;
++		if (j < *n) continue;
++		snprintf(u[*n].addr, sizeof(u[0].addr), "%s", rgd_known[k].dot);
++		u[*n].host = rgd_known[k].host;
++		(*n)++;
++	}
++	return plain ? RGD_PLAIN : RGD_DOT;
++}
++
++static void rgd_conf(FILE *fp, const char *listen, int auth, const struct rgd_up *u, int n)
++{
++	int i;
++
++	fprintf(fp,
++		"resolution_type: GETDNS_RESOLUTION_STUB\n"
++		"dns_transport_list:\n"
++		"  - GETDNS_TRANSPORT_TLS\n"
++		"tls_authentication: %s\n"
++		"tls_query_padding_blocksize: 128\n"
++		"tls_ca_file: \"/etc/ssl/certs/ca-certificates.crt\"\n"
++		"appdata_dir: \"/var/lib/misc\"\n"
++		"edns_client_subnet_private: 1\n"
++		"round_robin_upstreams: 0\n"
++		"idle_timeout: 9000\n"
++		"tls_connection_retries: 2\n"
++		"tls_backoff_time: 900\n"
++		"timeout: 3000\n"
++		"listen_addresses:\n"
++		"  - %s@53\n"
++		"upstream_recursive_servers:\n",
++		auth ? "GETDNS_AUTHENTICATION_REQUIRED" : "GETDNS_AUTHENTICATION_NONE", listen);
++	for (i = 0; i < n; i++)
++		if (u[i].host)
++			fprintf(fp, "  - address_data: %s\n    tls_port: 853\n    tls_auth_name: \"%s\"\n", u[i].addr, u[i].host);
++}
++/* REAPER-GUESTDNS-PURE-END */
++
++static int reaper_sdn_hide_lan_names(const MTLAN_T *m)
++{
++	return m && rgd_hide(m->nw_t.br_ifname, nvram_safe_get("lan_ifname"), reaper_guest_intranet(m->sdn_t.sdn_idx));
++}
++
++/* the guest upstream of network m (RGD_*), u[0..*n-1] filled; RGD_NONE = not a portal network without a VPN binding */
++static int reaper_guest_dns_mode(const MTLAN_T *m, struct rgd_up *u, int *n)
++{
++	*n = 0;
++	if (!m || !is_routing_enabled() || !rgd_wanted(m->enable, m->sdn_t.cp_idx, m->sdn_t.vpnc_idx, m->nw_t.idx))
++		return RGD_NONE;
++	return rgd_pick(m->nw_t.dns[0], m->nw_t.dns[1], u, n);
++}
++
++/* its own encrypted forwarder: the default or a known DoT provider (an admin's plain server needs none) */
++static int reaper_guest_dot_wanted(const MTLAN_T *m)
++{
++	struct rgd_up u[4];
++	int n, md = reaper_guest_dns_mode(m, u, &n);
++
++	return md == RGD_DEFAULT || md == RGD_DOT;
++}
++
++static void reaper_guest_dot_stop(int sdn_idx)
++{
++	char p[64];
++
++	snprintf(p, sizeof(p), "/var/run/rgdot-%d.pid", sdn_idx);
++	kill_pidfile_tk(p);
++	unlink(p);
++	snprintf(p, sizeof(p), RGD_DIR "/%d.unauth", sdn_idx);
++	unlink(p);
++}
++
++static void reaper_guest_dot_start(const MTLAN_T *m)
++{
++	char cf[64], pf[64], ga[24], b[16];
++	char *argv[] = { RGD_EXE, "-C", cf, NULL };
++	struct rgd_up ups[6];
++	int nup = 0;
++	int auth = nvram_get_int("ntp_ready") == 1;
++	pid_t pid = 0;
++	FILE *fp;
++
++	reaper_guest_dot_stop(m->sdn_t.sdn_idx);
++	if (reaper_secure_dir(RGD_DIR, 0700) != 0)
++		return;
++	if (access(RGD_EXE, X_OK) != 0) {
++		unlink(RGD_EXE);
++		if (symlink("/usr/sbin/stubby", RGD_EXE) != 0)
++			return;
++	}
++	snprintf(cf, sizeof(cf), RGD_DIR "/rgdot-%d.yml", m->sdn_t.sdn_idx);
++	rgd_addr(m->sdn_t.sdn_idx, ga, sizeof(ga));
++	if ((fp = fopen(cf, "w")) == NULL)
++		return;
++	if (reaper_guest_dns_mode(m, ups, &nup) == RGD_DEFAULT && ipv6_enabled()) {	/* the default has IPv6 servers too */
++		snprintf(ups[nup].addr, sizeof(ups[0].addr), "2606:4700:4700::1113"); ups[nup++].host = RGD_HOST;
++		snprintf(ups[nup].addr, sizeof(ups[0].addr), "2606:4700:4700::1003"); ups[nup++].host = RGD_HOST;
++	}
++	rgd_conf(fp, ga, auth, ups, nup);
++	fclose(fp);
++	_eval(argv, NULL, 0, &pid);
++	if (pid > 1) {
++		snprintf(pf, sizeof(pf), "/var/run/rgdot-%d.pid", m->sdn_t.sdn_idx);
++		snprintf(b, sizeof(b), "%d", (int)pid);
++		f_write_string(pf, b, 0, 0644);
++	}
++	if (!auth) {
++		snprintf(pf, sizeof(pf), RGD_DIR "/%d.unauth", m->sdn_t.sdn_idx);
++		f_write_string(pf, "1", 0, 0600);
++	}
++	logmessage("guest DNS", "network %d: guests resolve through %s (encrypted%s)", m->sdn_t.sdn_idx,
++		   nup > 0 && ups[0].host ? ups[0].host : RGD_HOST, auth ? "" : ", certificate checked once the clock is set");
++}
++
++/* watchdog: a forwarder that died, or one started before the clock was set, is started again */
++void reaper_guest_dot_watch(void)
++{
++	MTLAN_T *pmtl;
++	size_t sz = 0, i;
++
++	if (!is_routing_enabled() || (pmtl = (MTLAN_T *)INIT_MTLAN(sizeof(MTLAN_T))) == NULL)
++		return;
++	if (get_mtlan(pmtl, &sz)) {
++		for (i = 0; i < sz; i++) {
++			char p[64], comm[32] = "";
++			int pid, alive = 0, unauth;
++
++			if (!reaper_guest_dot_wanted(&pmtl[i]))
++				continue;
++			snprintf(p, sizeof(p), "/var/run/rgdot-%d.pid", pmtl[i].sdn_t.sdn_idx);
++			pid = f_read_string(p, comm, sizeof(comm)) > 0 ? atoi(comm) : 0;
++			if (pid > 1 && kill(pid, 0) == 0) {
++				snprintf(p, sizeof(p), "/proc/%d/comm", pid);
++				comm[0] = '\0';
++				f_read_string(p, comm, sizeof(comm));
++				alive = !strncmp(comm, "rgdot", 5);
++			}
++			snprintf(p, sizeof(p), RGD_DIR "/%d.unauth", pmtl[i].sdn_t.sdn_idx);
++			unauth = access(p, F_OK) == 0;
++			if (!alive || (unauth && nvram_get_int("ntp_ready") == 1)) {
++				if (!alive)
++					logmessage("guest DNS", "network %d: the encrypted forwarder had stopped - starting it",
++						   pmtl[i].sdn_t.sdn_idx);
++				reaper_guest_dot_start(&pmtl[i]);
++			}
++		}
++	}
++	FREE_MTLAN((void *)pmtl);
++}
++
++/* REAPER-SDNBIND-BEGIN (compiled on the host by test_portal_dns_bind.py)
++ * reaper 2026-11-13 (_r6 on the owner's router: guests signed in, then the phone sat on "Successful!").
++ * A Guest Portal network's router address sits on the portal's own tunnel (tun22 / tun23), which exists only while
++ * the portal runs. Bound by address, this resolver stopped at start whenever it was started before the portal
++ * ("failed to create listening socket for 192.168.52.1: Cannot assign requested address") and nothing started it
++ * again: a signed-in guest had no DNS, so a phone's own connection test never passed. Bound by interface name it
++ * starts in either order and takes the address when the tunnel appears, and again after a portal restart.
++ * except-interface=lo: naming an interface makes dnsmasq add the loopback, which the main resolver holds. */
++static int reaper_sdn_portal_tun(const char *ifname)
++{
++	return ifname && (!strcmp(ifname, "tun22") || !strcmp(ifname, "tun23"));
++}
++
++static void reaper_sdn_listen_conf(FILE *fp, const char *ifname, const char *addr)
++{
++	if (reaper_sdn_portal_tun(ifname))
++		fprintf(fp, "bind-dynamic\ninterface=%s\nexcept-interface=lo\n", ifname);
++	else
++		fprintf(fp, "bind-interfaces\nlisten-address=%s\n", addr ? addr : "");
++}
++/* REAPER-SDNBIND-END */
++
+ static int _gen_sdn_dnsmasq_conf(const MTLAN_T *pmtl, char *config_file, const size_t path_len)
+ {
+ 	FILE *fp;
+@@ -830,16 +1106,29 @@ static int _gen_sdn_dnsmasq_conf(const MTLAN_T *pmtl, char *config_file, const s
+ 	{
+ 		fprintf(fp, "pid-file=" sdn_dnsmasq_pid_path "\n", pmtl->sdn_t.sdn_idx);
+ 		fprintf(fp, "user=nobody\n");
+-		fprintf(fp, "bind-interfaces\n");
+-		fprintf(fp, "listen-address=%s\n", pmtl->nw_t.addr);
++		reaper_sdn_listen_conf(fp, pmtl->nw_t.ifname, pmtl->nw_t.addr);
+ 		fprintf(fp, "no-resolv\n");
+-		fprintf(fp, "servers-file=%s\n", resolv_flag ? resolv_path : dmservers);
++		{	/* 2026-11-13 (owner): a portal network's guest upstream follows its own DNS Server setting (REAPER-GUESTDNS) */
++			struct rgd_up gu[4];
++			int gn, gi, gm = reaper_guest_dns_mode(pmtl, gu, &gn);
++			if (gm == RGD_DEFAULT || gm == RGD_DOT) {	/* its own encrypted forwarder */
++				char ga[24];
++				rgd_addr(pmtl->sdn_t.sdn_idx, ga, sizeof(ga));
++				fprintf(fp, "server=%s\n", ga);
++			} else if (gm == RGD_PLAIN) {	/* the admin's own server(s), plain DNS */
++				for (gi = 0; gi < gn; gi++)
++					fprintf(fp, "server=%s\n", gu[gi].addr);
++			} else
++				fprintf(fp, "servers-file=%s\n", resolv_flag ? resolv_path : dmservers);
++		}
+ 		fprintf(fp, "no-poll\n");
+ 		fprintf(fp, "no-negcache\n");
+ 		fprintf(fp, "cache-size=1500\n");
+ 		fprintf(fp, "min-port=4096\n");
+ 
+-		if(pmtl->sdn_t.ahs_sw)
++		if (reaper_sdn_hide_lan_names(pmtl))	/* 2026-11-13 (owner): REAPER-GUESTDNS */
++			fprintf(fp, "no-hosts\n");
++		else if(pmtl->sdn_t.ahs_sw)
+ 			fprintf(fp, "addn-hosts=/etc/hosts\n");
+ 
+ 		/* 2026-10-19: Warden threat domains for this network's clients too; the
+@@ -1082,6 +1371,7 @@ static int _handle_sdn_dnsmasq(const MTLAN_T *pmtl, const int action)
+ 	{
+ 		snprintf(config_path, sizeof(config_path), sdn_dnsmasq_pid_path, pmtl->sdn_t.sdn_idx);
+ 		kill_pidfile_tk(config_path);
++		reaper_guest_dot_stop(pmtl->sdn_t.sdn_idx);	/* 2026-11-13: REAPER-GUESTDNS */
+ #ifdef RTCONFIG_DNSPRIVACY
+ 		if (pmtl->sdn_t.sdn_idx && pmtl->nw_t.idx) // ignore main LAN or IoT SDN
+ 		{
+@@ -1100,6 +1390,8 @@ static int _handle_sdn_dnsmasq(const MTLAN_T *pmtl, const int action)
+ 			if (pmtl->sdn_t.sdn_idx && pmtl->nw_t.idx) // ignore main LAN or IoT SDN
+ 			{
+ 				// generate dnsmasq config file
++				if (reaper_guest_dot_wanted(pmtl))	/* 2026-11-13: its upstream first */
++					reaper_guest_dot_start(pmtl);
+ 				if (!_gen_sdn_dnsmasq_conf(pmtl, config_path, sizeof(config_path)))
+ 				{
+ 					eval("dnsmasq", "-C", config_path, "--log-async");
+@@ -1134,6 +1426,7 @@ int remove_sdn()
+ 		// kill dnsmasq
+ 		snprintf(path, sizeof(path), sdn_dnsmasq_pid_path, pmtl[i].sdn_t.sdn_idx);
+ 		kill_pidfile_tk(path);
++		reaper_guest_dot_stop(pmtl[i].sdn_t.sdn_idx);	/* 2026-11-13: REAPER-GUESTDNS */
+ 
+ 		// remove iptables rules
+ 		reset_sdn_iptables(pmtl[i].sdn_t.sdn_idx);
+@@ -2041,3 +2334,138 @@ int write_dnsmasq_conf_sdn_ra_dhcp6_range(FILE* fp, const MTLAN_T *pmtl)
+ 	return HAVE_DHCP6;
+ }
+ #endif
++
++
++/* ---- reaper 2026-11-12: a guest-network request is always applied on the router ----
++ * httpd records a guest-network request it hands to cfg_server in RSDN_PENDING ("<uptime> <service list>") and
++ * starts this applet (httpd/web.c reaper_sdn_pending). The "sdn" / "sdn_del" handlers stamp RSDN_APPLIED when
++ * they run (rc/services.c). Field report + owner's router: a Guest Portal create sent that way never reached rc.
++ * If rc ran no guest-network service since the request, the router applies the saved list itself once the settle
++ * window is over and rc is idle; if cfg_server ran it, this does nothing. */
++#define RSDN_DIR	"/tmp/reaper"
++#define RSDN_PENDING	RSDN_DIR "/sdn_pending"
++#define RSDN_APPLIED	RSDN_DIR "/sdn_applied"
++#define RSDN_SETTLE_S	15	/* cfg_server ran a delete within a second; give it plenty */
++#define RSDN_SETTLE_MAX	45	/* and never wait longer than this for rc to go idle */
++
++/* does a ';' service list hold a guest-network service (name only, arguments ignored) - the same set httpd
++ * records (httpd/web.c reaper_sdn_tok) */
++int reaper_sdn_list_has_svc(const char *list)
++{
++	static const char *const tok[] = { "restart_sdn", "start_sdn_del", "restart_chilli", "restart_uam_srv", "restart_CP", NULL };
++	const char *p, *q;
++	size_t w;
++	int i;
++
++	for (p = list; p && *p; p = *q ? q + 1 : q) {
++		q = p + strcspn(p, ";");
++		w = strcspn(p, " ;");
++		if (w > (size_t)(q - p))
++			w = (size_t)(q - p);
++		for (i = 0; tok[i]; i++)
++			if (strlen(tok[i]) == w && strncmp(p, tok[i], w) == 0)
++				return 1;
++	}
++	return 0;
++}
++
++void reaper_sdn_applied_stamp(void)
++{
++	char buf[24];
++	int fd;
++
++	reaper_secure_dir(RSDN_DIR, 0700);	/* tmp hardening: root's own directory */
++	snprintf(buf, sizeof(buf), "%ld\n", uptime());
++	if ((fd = open(RSDN_APPLIED, O_WRONLY | O_CREAT | O_TRUNC | O_NOFOLLOW, 0600)) < 0)
++		return;
++	if (write(fd, buf, strlen(buf)) < 0)
++		_dprintf("%s: write failed\n", __FUNCTION__);
++	close(fd);
++}
++
++/* RSDN-PURE-BEGIN (compiled on the host by test_portal_settle.py) */
++/* "<uptime>" file -> value, -1 when absent or unreadable */
++static long rsdn_read_long(const char *path)
++{
++	char buf[32];
++	ssize_t n;
++	int fd = open(path, O_RDONLY | O_NOFOLLOW);
++
++	if (fd < 0)
++		return -1;
++	n = read(fd, buf, sizeof(buf) - 1);
++	close(fd);
++	if (n <= 0)
++		return -1;
++	buf[n] = 0;
++	return strtol(buf, NULL, 10);
++}
++
++/* "<uptime> <list>" -> *t + list; 0 when absent, malformed, or not root's regular file */
++static int rsdn_read_pending(const char *path, long *t, char *list, size_t len)
++{
++	char buf[320], *sp;
++	struct stat st;
++	ssize_t n;
++	int fd = open(path, O_RDONLY | O_NOFOLLOW);
++
++	if (fd < 0)
++		return 0;
++	if (fstat(fd, &st) != 0 || !S_ISREG(st.st_mode) || st.st_uid != 0) {
++		close(fd);
++		return 0;
++	}
++	n = read(fd, buf, sizeof(buf) - 1);
++	close(fd);
++	if (n <= 0)
++		return 0;
++	buf[n] = 0;
++	buf[strcspn(buf, "\r\n")] = 0;
++	*t = strtol(buf, &sp, 10);
++	if (sp == buf || *sp != ' ' || !sp[1])
++		return 0;
++	strlcpy(list, sp + 1, len);
++	return 1;
++}
++
++/* one settle step: 0 keep waiting, 1 done (nothing to do), 2 apply the list now */
++static int rsdn_settle_step(int second, long t0, int have, long t, long applied, int rc_busy)
++{
++	if (!have || t != t0)
++		return 1;		/* gone, or a newer request (with its own settle) replaced it */
++	if (applied >= t0)
++		return 1;		/* rc ran a guest-network service since the request */
++	if (second >= RSDN_SETTLE_MAX || (second >= RSDN_SETTLE_S && !rc_busy))
++		return 2;
++	return 0;
++}
++/* RSDN-PURE-END */
++
++int reaper_sdn_settle_main(int argc, char *argv[])
++{
++	char list[256];
++	long t0, t = 0;
++	int i, have, step;
++
++	if (argc < 2 || (t0 = strtol(argv[1], NULL, 10)) <= 0)
++		return 1;
++	for (i = 1; ; i++) {
++		sleep(1);
++		have = rsdn_read_pending(RSDN_PENDING, &t, list, sizeof(list));
++		step = rsdn_settle_step(i, t0, have, t, rsdn_read_long(RSDN_APPLIED), *nvram_safe_get("rc_service") != 0);
++		if (step == 1) {
++			if (have && t == t0)
++				unlink(RSDN_PENDING);
++			return 0;
++		}
++		if (step == 2)
++			break;
++	}
++	unlink(RSDN_PENDING);
++	for (i = 0; list[i]; i++)	/* 2026-11-12: no service name holds a '+' (see httpd apply_cgi) */
++		if (list[i] == '+')
++			list[i] = ' ';
++	logmessage("sdn", "a network change was saved but not applied - applying it now (%s)", list);
++	notify_rc_and_wait_2min(list);
++	return 0;
++}
+diff --git a/release/src/router/rc/services.c b/release/src/router/rc/services.c
+index 92e75c27d1..eb702e5db3 100644
+--- a/release/src/router/rc/services.c
++++ b/release/src/router/rc/services.c
+@@ -6104,22 +6104,6 @@ start_ddns(char *caller, int isAidisk)
+ 			 * postconf steps, which may replace the file. */
+ 			chmod("/etc/inadyn.conf", 0600);
+ 
+-#if defined(RTCONFIG_TUNNEL) && defined(RTCONFIG_ACCOUNT_BINDING)
+-			if(is_account_bound() && nvram_match("ddns_replace_status", "1") &&
+-				((strstr(nvram_safe_get("aae_ddnsinfo"), ".asuscomm.com") && (strstr(nvram_safe_get("ddns_hostname_x"), ".asuscomm.com")))
+-			|| (strstr(nvram_safe_get("aae_ddnsinfo"), ".asuscomm.cn") && (strstr(nvram_safe_get("ddns_hostname_x"), ".asuscomm.cn")))))
+-			{
+-				nvram_set("asusddns_token_state", "0");
+-				if(update_asus_ddns_token() != 1 || nvram_get_int("asusddns_token_state") != 1)
+-				{
+-					nvram_set("ddns_return_code", ",390");
+-					nvram_set("ddns_return_code_chk", ",390");
+-					nvram_set_int("ddns_last_wan_unit", unit);
+-					logmessage(log_title, "update ddns token failed(%d)\n", nvram_get_int("asusddns_token_state"));
+-					return -1;
+-				}
+-			}
+-#endif
+ 			if(!nvram_match("ddns_act", ddns_act))
+ 			{
+ 				unlink(cache_path);
+@@ -6200,155 +6184,6 @@ clean_ddns(void)
+ 	nvram_commit();
+ }
+ 
+-int
+-asusddns_unregister(void)
+-{
+-#ifdef RTCONFIG_INADYN
+-	FILE *fp;
+-	char cache_path[512] = {0};
+-#endif
+-	char user[128] = {0}, passwd[128] = {0}, host[64] = {0}, escaped_host[128] = {0};
+-	char *wan_ifname;
+-#ifndef RTCONFIG_INADYN
+-	char *nserver;
+-#else
+-	int realip;
+-#endif
+-	int unit, ret = -1;
+-
+-	unit = wan_primary_ifunit();
+-#if defined(RTCONFIG_DUALWAN)
+-	if (nvram_match("wans_mode", "lb")) {
+-		int ddns_wan_unit = nvram_get_int("ddns_wan_unit");
+-
+-		if (ddns_wan_unit >= WAN_UNIT_FIRST && ddns_wan_unit < WAN_UNIT_MAX) {
+-			unit = ddns_wan_unit;
+-		} else {
+-			int u = get_first_connected_public_wan_unit();
+-			if (u < WAN_UNIT_FIRST || u >= WAN_UNIT_MAX)
+-			{
+-				u = get_first_connected_dual_wan_unit(); /* can use private WAN IP */
+-				if (u < WAN_UNIT_FIRST || u >= WAN_UNIT_MAX)
+-				{
+-					logmessage("ddns", "[%s] None of wan can connect to internet in load balance Dual WAN.", __FUNCTION__);
+-					return -2;
+-				}
+-			}
+-			unit = u;
+-		}
+-	}
+-#endif
+-#ifdef RTCONFIG_MULTIWAN_IF
+-	unit = nvram_get_int("ddns_wan_unit");
+-	if (unit < WAN_UNIT_FIRST)
+-		unit = wan_primary_ifunit();
+-#endif
+-
+-	wan_ifname = get_wan_ifname(unit);
+-	snprintf(host, sizeof(host), "%s", nvram_safe_get("ddns_hostname_x"));
+-        if (!is_valid_domainname(ppp_safe_escape(host, escaped_host, sizeof(escaped_host)))) {
+-                logmessage("ddns", "Invalid domain name!");
+-                return -1;
+-        }
+-	snprintf(user, sizeof(user), "%s", get_ddns_macaddr());
+-	snprintf(passwd, sizeof(passwd), "%s", nvram_safe_get("secret_code"));
+-
+-#ifdef RTCONFIG_INADYN
+-	realip = nvram_get_int("ddns_realip_x");
+-#endif
+-
+-	nvram_set("ddns_return_code", "ddns_unregister");
+-
+-#ifndef RTCONFIG_INADYN
+-	if (pids("ez-ipupdate"))
+-	{
+-		killall("ez-ipupdate", SIGINT);
+-		sleep(1);
+-	}
+-#else
+-	if (pids("inadyn"))
+-		killall_tk("inadyn");
+-#endif
+-
+-	nvram_unset("asusddns_reg_result");
+-
+-#ifndef RTCONFIG_INADYN
+-	nserver = nvram_invmatch("ddns_serverhost_x", "") ?
+-		    nvram_safe_get("ddns_serverhost_x") :
+-		    "nwsrv-ns1.asus.com";
+-_dprintf("%s: do ez-ipupdate to unregister! unit = %d wan_ifname = %s nserver = %s hostname = %s\n", __FUNCTION__, unit, wan_ifname, nserver, nvram_safe_get("ddns_hostname_x"));
+-
+-	ret = eval("ez-ipupdate",
+-	     "-S", "dyndns", "-i", wan_ifname, "-h", nvram_safe_get("ddns_hostname_x"),
+-	     "-A", "3", "-s", nserver);
+-#else
+-	{
+-		char *inadyn_argv[] = { "/usr/sbin/inadyn",
+-			"-1", "--force",
+-			"-l", nvram_get_int("ddns_debug") ? "debug" : "notice",
+-			NULL
+-		};
+-
+-		if ((fp = fopen("/etc/inadyn.conf", "w"))) {
+-#ifdef RTCONFIG_ACCOUNT_BINDING
+-			if(is_account_bound() && nvram_match("ddns_replace_status", "1") &&
+-				((strstr(nvram_safe_get("aae_ddnsinfo"), ".asuscomm.com") && (strstr(nvram_safe_get("ddns_hostname_x"), ".asuscomm.com")))
+-				|| (strstr(nvram_safe_get("aae_ddnsinfo"), ".asuscomm.cn") && (strstr(nvram_safe_get("ddns_hostname_x"), ".asuscomm.cn")))))
+-				fprintf(fp, "provider %s {\n", "unregisterv2@asus.com");
+-			else
+-#endif
+-				fprintf(fp, "provider %s {\n", "unregister@asus.com");
+-			fprintf(fp, "hostname = '%s'\n", escaped_host);
+-			fprintf(fp, "username = '%s'\n", user);
+-			fprintf(fp, "password = '%s'\n", passwd);
+-#ifdef RTCONFIG_GETREALIP
+-			if (realip)
+-#ifdef RTCONFIG_MULTIWAN_IF
+-				fprintf(fp, "checkip-command = 'realip %d'\n", unit);
+-#else
+-				fprintf(fp, "checkip-command = '%s'\n", "getrealip.sh");
+-#endif
+-#endif
+-			fprintf(fp, "}\n");
+-
+-			fprintf(fp, "iterations = 1\n");
+-			if (!realip)
+-				fprintf(fp, "iface = %s\n", wan_ifname);
+-			fprintf(fp, "ca-trust-file = /etc/ssl/certs/ca-certificates.crt\n");
+-			if (!nvram_get_int("ntp_ready"))
+-				fprintf(fp, "broken-rtc = true\n");
+-			/* temporary for asus server */
+-			if (1)
+-				fprintf(fp, "secure-ssl = false\n");
+-			fclose(fp);
+-			chmod("/etc/inadyn.conf", 0600);	/* reaper 2026-10-08: see start_ddns() */
+-
+-#if defined(RTCONFIG_TUNNEL) && defined(RTCONFIG_ACCOUNT_BINDING)
+-			if(is_account_bound() && nvram_match("ddns_replace_status", "1") &&
+-				((strstr(nvram_safe_get("aae_ddnsinfo"), ".asuscomm.com") && (strstr(nvram_safe_get("ddns_hostname_x"), ".asuscomm.com")))
+-				|| (strstr(nvram_safe_get("aae_ddnsinfo"), ".asuscomm.cn") && (strstr(nvram_safe_get("ddns_hostname_x"), ".asuscomm.cn")))))
+-			{
+-				nvram_set("asusddns_token_state", "0");
+-				if(update_asus_ddns_token() != 1 || nvram_get_int("asusddns_token_state") != 1)
+-				{
+-					nvram_set("asusddns_reg_result", "unregister,390");
+-					return -1;
+-				}
+-			}
+-#endif			
+-			if(!nvram_match("ddns_act", "unregister"))
+-			{
+-				snprintf(cache_path, sizeof(cache_path), "/var/cache/inadyn/%s.cache", nvram_safe_get("ddns_hostname_x"));
+-				unlink(cache_path);
+-				nvram_set("ddns_act", "unregister");
+-			}
+-			ret = _eval(inadyn_argv, NULL, 0, NULL);
+-		}
+-	}
+-#endif
+-
+-	return ret;
+-}
+ 
+ #ifdef RTCONFIG_RSYSLOGD
+ char *get_loglevel_string(int loglevel){
+@@ -10291,6 +10126,8 @@ void stop_uam_srv()
+ 
+ 	if (pids("uamsrv")){
+ 		kill_pidfile_tk("/tmp/uamsrv/uamsrv.pid");
++		if (pids("uamsrv"))	/* reaper 2026-11-12: no pid file was written - stop it by its own name */
++			killall_tk("uamsrv");
+ 		unlink("/tmp/uamsrv/uamsrv.pid");
+ 		logmessage("UAM Server", "daemon is stoped");
+ 	}
+@@ -12707,12 +12544,125 @@ void hotspotsys_config(void)
+ 	return;
+ }
+ 
++/* reaper 2026-11-12: chilli processes started with -c <conf> (argv[0] "chilli", an exact <conf> argument, so the
++ * Free Wi-Fi instance and the account-portal instance never match each other); sig > 0 also signals them.
++ * stop_chilli()/stop_CP() killed by pid file only, so a chilli whose pid file was gone survived every stop. */
++int reaper_chilli_count(const char *conf, int sig)
++{
++	DIR *d = opendir("/proc");
++	struct dirent *e;
++	int n = 0;
++
++	if (!d)
++		return 0;
++	while ((e = readdir(d)) != NULL) {
++		char path[48], buf[512];
++		const char *a0, *p, *end;
++		ssize_t len;
++		int fd, hit = 0;
++		pid_t pid;
++
++		if (!isdigit((unsigned char)e->d_name[0]))
++			continue;
++		pid = (pid_t)strtol(e->d_name, NULL, 10);
++		snprintf(path, sizeof(path), "/proc/%d/cmdline", (int)pid);
++		if ((fd = open(path, O_RDONLY)) < 0)
++			continue;
++		len = read(fd, buf, sizeof(buf) - 1);
++		close(fd);
++		if (len <= 0)
++			continue;
++		buf[len] = 0;
++		end = buf + len;
++		a0 = buf;
++		p = strrchr(a0, '/');
++		if (strcmp(p ? p + 1 : a0, "chilli") != 0)
++			continue;
++		for (p = a0 + strlen(a0) + 1; p < end; p += strlen(p) + 1)
++			if (strcmp(p, conf) == 0)
++				hit = 1;
++		if (!hit)
++			continue;
++		n++;
++		if (sig > 0)
++			kill(pid, sig);
++	}
++	closedir(d);
++	return n;
++}
++
++#ifdef RTCONFIG_MULTILAN_CFG
++/* which portals an enabled network asks for - the walk start_chilli()/start_CP() make: bit 1 = Free Wi-Fi /
++ * message board (cp type 2 or 4, chilli), bit 2 = account portal (cp type 1, chilli-cp); -1 = cannot tell */
++static int reaper_portals_wanted(void)
++{
++	MTLAN_T *pmtl = (MTLAN_T *)INIT_MTLAN(sizeof(MTLAN_T));
++	CP_TYPE_RL cpt;
++	size_t sz = 0, i;
++	int want = 0;
++
++	if (!pmtl)
++		return -1;
++	if (get_mtlan(pmtl, &sz)) {
++		for (i = 0; i < sz; i++) {
++			if (pmtl[i].enable != 1 || pmtl[i].sdn_t.cp_idx <= 0)
++				continue;
++			memset(&cpt, 0, sizeof(cpt));
++			if (!get_cp_type_byidx(pmtl[i].sdn_t.cp_idx, &cpt))
++				continue;
++			if (cpt.cp_type == 2 || cpt.cp_type == 4)
++				want |= 1;
++			else if (cpt.cp_type == 1)
++				want |= 2;
++		}
++	}
++	FREE_MTLAN((void *)pmtl);
++	return want;
++}
++
++/* reaper 2026-11-12 (Guest Portal field report): after a guest-network change the portal processes follow the
++ * saved settings - running exactly while an enabled network asks for them - whether or not the page's
++ * restart_chilli / restart_uam_srv survived the trip through httpd and cfg_server. `rest` is what is left of
++ * the service list being processed: a portal service still to come does the work itself (no double start). */
++static void reaper_portal_reconcile(const char *rest)
++{
++	int want = reaper_portals_wanted(), run;
++
++	if (want < 0)
++		return;
++	if (!(rest && strstr(rest, "chilli"))) {
++		run = reaper_chilli_count("/tmp/chilli.conf", 0) > 0;
++		if ((want & 1) && !run) {
++			logmessage("sdn", "a Guest Portal network is on but its portal is not running - starting it");
++			start_chilli();
++			setup_passwd();
++		} else if (!(want & 1) && run) {
++			logmessage("sdn", "no Guest Portal network is on - stopping the portal");
++			stop_chilli();
++			setup_passwd();
++		}
++	}
++	if (!(rest && strstr(rest, "_CP"))) {
++		run = reaper_chilli_count("/tmp/chilli-cp.conf", 0) > 0;
++		if ((want & 2) && !run) {
++			logmessage("sdn", "an account portal network is on but its portal is not running - starting it");
++			start_CP();
++			setup_passwd();
++		} else if (!(want & 2) && run) {
++			logmessage("sdn", "no account portal network is on - stopping that portal");
++			stop_CP();
++			setup_passwd();
++		}
++	}
++}
++#endif
++
+ void stop_chilli(void)
+ {
+ 	char *iface = NULL;
+ 	char ifname[32], *next = NULL;
+ 
+-	if(nvram_match("chilli_enable", "0")){
++	if(nvram_match("chilli_enable", "0") && reaper_chilli_count("/tmp/chilli.conf", 0) <= 0){	/* reaper 2026-11-12: unless one still runs */
+ 		return;
+ 	}
+ 
+@@ -12728,6 +12678,10 @@ void stop_chilli(void)
+ #endif
+ 
+ 	kill_pidfile_tk("/var/run/chilli.pid");
++	if (reaper_chilli_count("/tmp/chilli.conf", SIGTERM) > 0) {	/* reaper 2026-11-12: one the pid file missed */
++		sleep(1);
++		reaper_chilli_count("/tmp/chilli.conf", SIGKILL);
++	}
+ 	unlink("/tmp/chilli.conf");
+ 	unlink("/var/run/chilli.pid");
+ 	if(pids("chilli")) {
+@@ -12767,7 +12721,7 @@ void stop_CP(void)
+ 	char *iface = NULL;
+ 	char ifname[32], *next = NULL;
+ 
+-	if(nvram_match("cp_enable", "0")){
++	if(nvram_match("cp_enable", "0") && reaper_chilli_count("/tmp/chilli-cp.conf", 0) <= 0){	/* reaper 2026-11-12 */
+ 		return;
+ 	}
+ 	stop_uam_srv();
+@@ -12782,6 +12736,10 @@ void stop_CP(void)
+ #endif
+ 
+ 	kill_pidfile_tk("/var/run/chilli-cp.pid");
++	if (reaper_chilli_count("/tmp/chilli-cp.conf", SIGTERM) > 0) {	/* reaper 2026-11-12 */
++		sleep(1);
++		reaper_chilli_count("/tmp/chilli-cp.conf", SIGKILL);
++	}
+ 	unlink("/tmp/chilli-cp.conf");
+ 	unlink("/var/run/chilli-cp.pid");
+ 	if(pids("chilli")) {
+@@ -13901,6 +13859,9 @@ void start_chilli(void)
+ 	}else 
+ 		goto chilli_cleanup;
+ 
++	/* reaper 2026-11-12 (owner): a Free Wi-Fi portal has no passcode - one stored before is kept in the settings but
++	 * never asked for (chilli then accepts the sign-in page's noauth:noauth, rc writes /tmp/localusers) */
++	cp_au_type = 0;
+ 	if(cp_local_auth){
+ 		char *pcode = NULL;
+ 		if(cp_au_type == 0){
+@@ -17353,6 +17314,31 @@ retry_prepare_cert_in_etc:
+ }
+ #endif	/* RTCONFIG_HTTPS */
+ 
++/* REAPER-RCREST-BEGIN */
++/* reaper 2026-11-12 (Guest Portal, owner's router): restart_wireless() starts the portal itself and the Network
++ * page's list restarts it again a few services later - one request ran it for 17 s, stopped it and took another
++ * 17 s to bring it back, while the first guests were already joining. The wireless handler hands restart_wireless()
++ * what is left of the list being processed; a portal service still to come does the start (rc/lan.c).
++ * Does the ';' list hold the service `svc` (its whole name, arguments ignored)? */
++int reaper_rc_rest_has(const char *rest, const char *svc)
++{
++	const char *p, *q;
++	size_t w, n;
++
++	if (!rest || !svc || !*svc)
++		return 0;
++	n = strlen(svc);
++	for (p = rest; *p; p = *q ? q + 1 : q) {
++		q = p + strcspn(p, ";");
++		w = strcspn(p, " ;");
++		if (w == n && strncmp(p, svc, n) == 0)
++			return 1;
++	}
++	return 0;
++}
++/* REAPER-RCREST-END */
++const char *reaper_wl_rest = NULL;	/* set only while the "wireless" service runs restart_wireless() */
++
+ void handle_notifications(void)
+ {
+ 	char nv[256], nvtmp[32], *cmd[8], *script;
+@@ -17376,6 +17362,12 @@ void handle_notifications(void)
+ 	// maximum rc_service strlen is 256
+ 	strlcpy(nv, nvram_safe_get("rc_service"), sizeof(nv));
+ 	nvram_set("last_rc_service", nv);
++#ifdef RTCONFIG_MULTILAN_CFG
++	/* reaper 2026-11-12: rc has STARTED a guest-network request - reaper_sdn_settle (rc/sdn.c) must not queue it
++	 * again while it runs (a portal create ran 72 s on the owner's router; stamped only at the end, it ran twice) */
++	if (reaper_sdn_list_has_svc(nv))
++		reaper_sdn_applied_stamp();
++#endif
+ 	nvptr = nv;
+ again:
+ 	nvp = strsep(&nvptr, ";");
+@@ -19540,8 +19532,14 @@ _dprintf("multipath(%s): unit_now: (%d, %d, %s), unit_next: (%d, %d, %s).\n", mo
+ #if defined(RTCONFIG_QCA) || \
+ 		(defined(RTCONFIG_RALINK) && !defined(RTCONFIG_DSL) && !defined(RTN13U))
+ 			reinit_hwnat(-1);
++#endif
++#ifdef RTCONFIG_MULTILAN_CFG
++			reaper_wl_rest = nvptr;	/* reaper 2026-11-12: one portal start per request (see reaper_rc_rest_has) */
+ #endif
+ 			restart_wireless();
++#ifdef RTCONFIG_MULTILAN_CFG
++			reaper_wl_rest = NULL;
++#endif
+ 		}
+ 		if(action & RC_SERVICE_START) {
+ 
+@@ -21084,14 +21082,6 @@ check_ddr_done:
+ 		}
+ 	}
+ #endif
+-	else if (strcmp(script, "aidisk_asusddns_register") == 0)
+-	{
+-		start_ddns(NULL, 1);
+-	}
+-	else if(strcmp(script, "asusddns_unregister") == 0)
+-	{
+-		asusddns_unregister();
+-	}
+ 	else if(strcmp(script, "clean_ddns") == 0)
+ 	{
+ 		clean_ddns();
+@@ -21229,6 +21219,13 @@ check_ddr_done:
+ 		}
+ #endif
+ 		gk_refresh();	/* reaper v2.6.5: a new/edited SDN must be hooked now, not at the next restart_gk */
++		reaper_sdn_applied_stamp();	/* reaper 2026-11-12: reaper_sdn_settle (rc/sdn.c) sees it ran */
++#ifdef RTCONFIG_COOVACHILLI
++		if (action & RC_SERVICE_START)
++			reaper_portal_reconcile(nvptr);	/* reaper 2026-11-12: portal processes follow the settings */
++#endif
++		if (action & RC_SERVICE_START)
++			reaper_guest_apply(0);	/* 2026-11-12: guest isolation follows the network set (rc/reaper_guest.c) */
+ 		/* 2026-10-08: the network set the rev-server lines were built from changed
+ 		 * (added, readdressed, retyped, toggled) - every instance needs them again */
+ 		if ((action & RC_SERVICE_START) && revshare_sig_changed()) {
+@@ -21240,6 +21237,11 @@ check_ddr_done:
+ 	{
+ 		remove_sdn();
+ 		gk_refresh();	/* reaper v2.6.5 */
++		reaper_sdn_applied_stamp();	/* reaper 2026-11-12 */
++#ifdef RTCONFIG_COOVACHILLI
++		reaper_portal_reconcile(nvptr);	/* reaper 2026-11-12: a deleted portal network stops its portal */
++#endif
++		reaper_guest_apply(0);	/* 2026-11-12: a deleted network leaves the isolation layer */
+ 		if (revshare_sig_changed()) {	/* 2026-10-08: a removed network leaves stale rev-server lines */
+ 			logmessage("dnsmasq", "networks changed - restarting the resolvers so each one can name the others' devices");
+ 			notify_rc("restart_dnsmasq");
+diff --git a/release/src/router/www/Reaper_Tweaks.asp b/release/src/router/www/Reaper_Tweaks.asp
+index b1816a20f5..fc5e560b0f 100644
+--- a/release/src/router/www/Reaper_Tweaks.asp
++++ b/release/src/router/www/Reaper_Tweaks.asp
+@@ -78,11 +78,6 @@
+   <div class="frow"><div class="fl"><#RTWK_37#></div><div class="fc"><label class="tswitch"><input type="checkbox" id="t_disable_exap"><span class="track"></span></label></div><div class="fh"><#RTWK_38#></div></div>
+   <div class="frow"><div class="fl"><#RTWK_39#></div><div class="fc"><label class="tswitch"><input type="checkbox" id="t_bgdfs_stock"><span class="track"></span></label></div><div class="fh"><#RTWK_40#></div></div>
+ </div>
+-<div class="panel" id="p_cpsec">
+-  <h2><#GuestNetwork_Portal#></h2>
+-  <div class="secerr"><#RADM_78#></div>
+-  <div class="frow"><div class="fl"><#RTWK_42#></div><div class="fc"><label class="tswitch"><input type="checkbox" id="t_cp_own"><span class="track"></span></label> <input type="password" class="mono" id="i_cp_secret" maxlength="32" autocomplete="new-password"><span class="unit" id="cp_sec_st"></span></div><div class="fh"><#RTWK_43#></div></div>
+-</div>
+ </div>
+ </div>
+ 
+@@ -105,6 +100,8 @@ var q = rp.q, hx = rp.esc;
+ var chk = rp.chk, U = rp.dec, msg = rp.msg, on = rp.on, setChk = rp.setChk;   /* the kit's copies (rp.js) */
+ var MODE = String([<% get_operation_mode(); %>][0] || 'rt').toLowerCase();
+ var ROUTING = (MODE === 'rt' || MODE === 'wisp');
++/* 2026-11-12 (owner): the Guest Portal secret panel is gone - rc gives each router its own random secret the first
++   time a portal starts (rc/services.c reaper_uam_secret_ensure) and nothing on this page touches it */
+ 
+ /* what the box holds now: the page posts only what differs from this */
+ var NV = {
+@@ -112,12 +109,10 @@ var NV = {
+   ct_max: <% nvram_get_js("ct_max"); %>, ct_tcp_timeout: <% nvram_get_js("ct_tcp_timeout"); %>, ct_udp_timeout: <% nvram_get_js("ct_udp_timeout"); %>,
+   http_dut_redir: <% nvram_get_js("http_dut_redir"); %>, ipv6_ns_drop: <% nvram_get_js("ipv6_ns_drop"); %>, dhcpd_send_wpad: <% nvram_get_js("dhcpd_send_wpad"); %>,
+   /* review 2026-11-11: Wireless stability */
+-  reaper_dhd_ioto: <% nvram_get_js("reaper_dhd_ioto"); %>, disable_exap: <% nvram_get_js("disable_exap"); %>, reaper_bgdfs_stock: <% nvram_get_js("reaper_bgdfs_stock"); %>,
+-  /* review 2026-11-11 (B-C4): only whether the portal secret is the admin's own - the secret never comes to the page */
+-  reaper_cp_secret_own: <% nvram_get_js("reaper_cp_secret_own"); %>
++  reaper_dhd_ioto: <% nvram_get_js("reaper_dhd_ioto"); %>, disable_exap: <% nvram_get_js("disable_exap"); %>, reaper_bgdfs_stock: <% nvram_get_js("reaper_bgdfs_stock"); %>
+ };
+ /* an empty nvram value means the default (shared/defaults.c): compare against what the control shows for it */
+-(function(){ var D = {ct_max: '300000', http_dut_redir: '0', ipv6_ns_drop: '0', dhcpd_send_wpad: '1', reaper_dhd_ioto: '0', disable_exap: '0', reaper_bgdfs_stock: '0', reaper_cp_secret_own: '0'}, k;
++(function(){ var D = {ct_max: '300000', http_dut_redir: '0', ipv6_ns_drop: '0', dhcpd_send_wpad: '1', reaper_dhd_ioto: '0', disable_exap: '0', reaper_bgdfs_stock: '0'}, k;
+   for (k in D) if (NV[k] === '') NV[k] = D[k]; })();
+ 
+ /* the timeout fields: id, label, nvram slot, kernel default (seconds), upper bound */
+@@ -187,27 +182,6 @@ section('p_wlstab', function(){
+   c.disable_exap = chk('t_disable_exap'); c.reaper_bgdfs_stock = chk('t_bgdfs_stock');
+ });
+ 
+-/* review 2026-11-11 (B-C4, owner): the Guest Portal secret. Off = automatic: rc gives this router a random secret the
+-   first time a portal starts (rc/services.c reaper_uam_secret_ensure - the stock default is the same public value on
+-   every router). On = the admin's own, posted as cp_uamsecret + chilli_uamsecret (httpd stores both encrypted); it is
+-   never sent back to the page. Switching back off empties both, so rc makes a new random one. */
+-var CP_OWN_SAVED = false, CP_WEAK = ['chillispot', 'ua8k69fo92n'];
+-section('p_cpsec', function(){
+-  /* rp.diff reads a missing previous value as '' - a placeholder the page never posts makes an empty secret
+-     (back to automatic) a change too */
+-  NV.cp_uamsecret = NV.chilli_uamsecret = '\u0001';
+-  CP_OWN_SAVED = isOn(NV.reaper_cp_secret_own);
+-  setChk('t_cp_own', CP_OWN_SAVED);
+-  q('i_cp_secret').disabled = !CP_OWN_SAVED;
+-  q('cp_sec_st').textContent = CP_OWN_SAVED ? `<#RTWK_45#>` : `<#RTWK_46#>`;
+-  on('t_cp_own', 'change', function(){ q('i_cp_secret').disabled = chk('t_cp_own') !== '1'; });
+-}, function(c){
+-  var own = chk('t_cp_own') === '1', v = q('i_cp_secret').value;
+-  c.reaper_cp_secret_own = own ? '1' : '0';
+-  if (own && v !== ''){ c.cp_uamsecret = v; c.chilli_uamsecret = v; }
+-  else if (!own && CP_OWN_SAVED){ c.cp_uamsecret = ''; c.chilli_uamsecret = ''; }
+-});
+-
+ /* ---------- collect, unsaved changes ---------- */
+ function collect(){
+   var c = {};
+@@ -230,10 +204,6 @@ function validate(c){
+   if (c.rwarden_sched !== '' && !/^[0-9 *\/,-]{1,64}$/.test(c.rwarden_sched)) return bad('i_rwarden_sched', `<#RTWK_07#>`);
+   if (!rp.v.int(c.ct_max, 256, 300000)) return bad('i_ct_max', `<#RTWK_29#>`);
+   if (!BROKEN.p_wlstab && c.reaper_dhd_ioto !== '0' && !rp.v.int(c.reaper_dhd_ioto, 2000, 5000)) return bad('i_dhd_ioto', `<#RTWK_41#>`);
+-  /* the portal secret: 8-32 of A-Z a-z 0-9 . _ - (fits the 32-character setting; nothing a config line or the
+-     sign-in URL treats specially); a stock public default is refused; switching on needs a secret */
+-  if (!BROKEN.p_cpsec && c.reaper_cp_secret_own === '1' && (c.cp_uamsecret !== undefined || !CP_OWN_SAVED) &&
+-      (!/^[A-Za-z0-9._-]{8,32}$/.test(c.cp_uamsecret || '') || CP_WEAK.indexOf(c.cp_uamsecret) >= 0)) return bad('i_cp_secret', `<#RTWK_44#>`);
+   for (i = 0; i < TCP.length; i++){ f = TCP[i]; if (!rp.v.int(val(f[0]), 1, f[4])) return bad('i_' + f[0], `<#RTWK_30#>`); }
+   for (i = 0; i < UDP.length; i++){ f = UDP[i]; if (!rp.v.int(val(f[0]), 1, f[4])) return bad('i_' + f[0], `<#RTWK_30#>`); }
+   return '';
+@@ -255,8 +225,6 @@ function applyAll(){
+      assistant on each report (saved only); the DFS rule is applied when the radios are set up, so Wi-Fi restarts */
+   if (has('reaper_dhd_ioto')) S.push('restart_reaper_wltune');
+   if (has('reaper_bgdfs_stock')) S.push('restart_wireless');
+-  /* review 2026-11-11 (B-C4): a running portal takes the new secret (both verbs do nothing when no portal is on) */
+-  if (has('cp_uamsecret', 'reaper_cp_secret_own')) S.push('restart_chilli', 'restart_uam_srv');
+   var script = S.length ? S.join(';') : 'saveNvram', wait = has('reaper_bgdfs_stock') ? 30 : (S.length ? 5 : 1);
+   rp.applying(`<#Reaper_c_applying#>`, `<#RADM_61#>`);
+   rp.post(document.form, changed, script, wait, false);
+diff --git a/release/src/router/www/sysdep/FUNCTION/SDN/SDN/sdn.js b/release/src/router/www/sysdep/FUNCTION/SDN/SDN/sdn.js
+index 1444d1f66d..f1c7fd7399 100644
+--- a/release/src/router/www/sysdep/FUNCTION/SDN/SDN/sdn.js
++++ b/release/src/router/www/sysdep/FUNCTION/SDN/SDN/sdn.js
+@@ -3483,8 +3483,12 @@ function show_popup_Wizard_Setting(_type){
+ 					$vpnProfiles.show();
+ 				else
+ 					$vpnProfiles.hide();
+-				if(shouldShowKillSwitch)
++				if(shouldShowKillSwitch){
++					//Reaper 2026-11-12 (owner): a VPN binding starts with the Kill Switch on; a saved network keeps its own
++					if($killSwitchContainer.css("display") == "none")
++						$killSwitch.removeClass("off on").addClass("on");
+ 					$killSwitchContainer.show();
++				}
+ 				else{
+ 					$killSwitch.removeClass("off on").addClass("off");
+ 					$killSwitchContainer.hide();
+@@ -4775,18 +4779,6 @@ function show_popup_Wizard_Setting(_type){
+ 					e = e || event;
+ 					e.stopPropagation();
+ 					var wizard_type = $(this).closest(".setting_content_container").attr("data-wizard-type");
+-					//Reaper 2026-11-10: the wizard's passcode, checked the way the Portal tab checks it
+-					var $rpc = $(_obj).find("#FWF_passcode");
+-					if($rpc.length && $(_obj).find("#FWF_passcode_enabled").hasClass("on")){
+-						$(_obj).find(".validate_hint").remove();
+-						$rpc.val($rpc.val().replace(/\s+/g, ''));
+-						var rpc_bad = ($rpc.val() == "") ? "<#JS_fieldblank#>" : (($rpc.val().length > 15) ? `<#RGNP_01#>` : ((/[^\x21-\x7e]|[<>]/.test($rpc.val())) ? "<#JS_validstr2#> < >" : ""));
+-						if(rpc_bad != ""){
+-							$rpc.show_validate_hint(rpc_bad);
+-							$rpc.focus();
+-							return false;
+-						}
+-					}
+ 					if(validate_format_Wizard_Item($(_obj), wizard_type)){
+ 						var rc_append = "";
+ 						var sdn_obj = get_new_sdn_profile();
+@@ -4871,8 +4863,8 @@ function show_popup_Wizard_Setting(_type){
+ 							sdn_profile.cp_rl.enable = "1";
+ 							sdn_profile.cp_rl.conntimeout = 60*60;
+ 							sdn_profile.cp_rl.redirecturl = "";
+-							sdn_profile.cp_rl.auth_type = ($(_obj).find("#FWF_passcode_enabled").hasClass("on")) ? "1" : "0";//Reaper 2026-11-10: the wizard's own passcode switch
+-							sdn_profile.cp_rl.local_auth_profile = (sdn_profile.cp_rl.auth_type == "1") ? $(_obj).find("#FWF_passcode").val() : "";
++							sdn_profile.cp_rl.auth_type = "0";//Reaper 2026-11-12 (owner): no passcode - a Free Wi-Fi portal is terms-only
++							sdn_profile.cp_rl.local_auth_profile = "";
+ 							sdn_profile.cp_rl.term_of_service = "1";
+ 							sdn_profile.cp_rl.NAS_ID = "";
+ 							uploadFreeWiFi({
+@@ -5021,37 +5013,6 @@ function show_popup_Wizard_Setting(_type){
+ 			var $FWF_ui_cntr = $("<div>").attr({"id":"FWF_ui_container"}).addClass("profile_setting_item FWF_ui").appendTo($freewifi_cntr);
+ 			Get_FWF_Preview_Container().appendTo($FWF_ui_cntr).find("[data-component=FWF_passcode]").hide();
+ 			Get_FWF_Change_BG_Container().hide().appendTo($FWF_ui_cntr);
+-			//Reaper 2026-11-10: the passcode can be set while the portal is created (stock offered it only on the Portal tab of an existing network)
+-			var FWF_passcode_enabled_parm = {"title":"<#FreeWiFi_Add_Passcode#>", "type":"switch", "id":"FWF_passcode_enabled", "set_value":"off"};
+-			Get_Component_Switch(FWF_passcode_enabled_parm).appendTo($freewifi_cntr)
+-				.find("#" + FWF_passcode_enabled_parm.id + "").click(function(e){
+-					e = e || event;
+-					e.stopPropagation();
+-					//the row lives in its own wrapper and is a required field only while the switch is on: choosing the portal
+-					//type shows every .profile_setting_item under it, which would un-hide the row and leave Apply greyed out
+-					var $ps = $(this).closest(".profile_setting");
+-					if($(this).hasClass("on")){
+-						$ps.find("#wizard_FWF_passcode_wrap").show().find(".profile_setting_item").show();
+-						$ps.find("#FWF_passcode").attr({"need_check":"true"});
+-						$ps.find("#FWF_Preview_Cntr [data-component=FWF_passcode]").show();
+-					}
+-					else{
+-						$ps.find("#wizard_FWF_passcode_wrap").hide().find(".validate_hint").remove();
+-						$ps.find("#FWF_passcode").removeAttr("need_check");
+-						$ps.find("#FWF_Preview_Cntr [data-component=FWF_passcode]").hide();
+-					}
+-					resize_iframe_height();
+-					_set_apply_btn_status($ps);
+-				});
+-			var FWF_passcode_parm = {"title":"<#FreeWiFi_Passcode#>", "type":"text", "id":"FWF_passcode", "need_check":true, "maxlength":15, "container_id":"container_FWF_passcode"};
+-			var $wizard_FWF_passcode_wrap = $("<div>").attr({"id":"wizard_FWF_passcode_wrap"}).hide().appendTo($freewifi_cntr);
+-			Get_Component_Input(FWF_passcode_parm).appendTo($wizard_FWF_passcode_wrap)
+-				.find("#" + FWF_passcode_parm.id + "")
+-				.removeAttr("need_check")
+-				.keyup(function(){
+-					_set_apply_btn_status($(this).closest(".profile_setting"));
+-				})
+-				.attr({"oninput": "trigger_keyup($(this))"});
+ 			if(ui_lang != "EN" && ui_lang != ""){
+ 				$.getJSON("/ajax/freewifi_tos.json?v="+sdn_variable.extendno+"", function(data){
+ 					if(data[ui_lang] != ""){
+@@ -6240,8 +6201,12 @@ function Get_Component_Full_Setting(view_mode){
+ 					$vpnProfiles.show();
+ 				else
+ 					$vpnProfiles.hide();
+-				if(shouldShowKillSwitch)
++				if(shouldShowKillSwitch){
++					//Reaper 2026-11-12 (owner): a VPN binding starts with the Kill Switch on; a saved network keeps its own
++					if($killSwitchContainer.css("display") == "none")
++						$killSwitch.removeClass("off on").addClass("on");
+ 					$killSwitchContainer.show();
++				}
+ 				else{
+ 					$killSwitch.removeClass("off on").addClass("off");
+ 					$killSwitchContainer.hide();
+@@ -6356,23 +6321,7 @@ function Get_Component_Full_Setting(view_mode){
+ 				});
+ 			var FWF_redirecturl_parm = {"title":"<#FreeWiFi_LandingPage#> (<#FreeWiFi_RedirectPage#>)", "type":"text", "id":"FWF_redirecturl", "maxlength":256};
+ 			Get_Component_Input(FWF_redirecturl_parm).appendTo($freewifi_cntr);
+-			var FWF_passcode_enabled_parm = {"title":"<#FreeWiFi_Add_Passcode#>", "type":"switch", "id":"FWF_passcode_enabled", "set_value":"off"};
+-			Get_Component_Switch(FWF_passcode_enabled_parm).appendTo($freewifi_cntr)
+-				.find("#" + FWF_passcode_enabled_parm.id + "").click(function(e){
+-					e = e || event;
+-					e.stopPropagation();
+-					var $control_container = $(this).closest(".profile_setting").find("#container_FWF_passcode, #FWF_Preview_Cntr [data-component=FWF_passcode]");
+-					if($(this).hasClass("on")){
+-						$control_container.show();
+-					}
+-					else{
+-						$control_container.hide().next(".validate_hint").remove();
+-					}
+-					resize_iframe_height();
+-					set_apply_btn_status($(this).closest(".profile_setting"));
+-				});
+-			var FWF_passcode_parm = {"title":"<#FreeWiFi_Passcode#>", "type":"text", "id":"FWF_passcode", "need_check":true, "maxlength":15, "container_id":"container_FWF_passcode"};
+-			Get_Component_Input(FWF_passcode_parm).hide().appendTo($freewifi_cntr);
++			//Reaper 2026-11-12 (owner): no passcode switch - a Free Wi-Fi portal is terms-only
+ 
+ 			var FWF_terms_service_enabled_parm = {"title":"<#FreeWiFi_OptionHint#>", "type":"switch", "id":"FWF_terms_service_enabled", "set_value":"on"};
+ 			Get_Component_Switch(FWF_terms_service_enabled_parm).appendTo($freewifi_cntr)
+@@ -8119,7 +8068,7 @@ function Update_Setting_Profile(_obj, _profile_data){
+ 							"qrcode": data,
+ 							"ssid": _profile_data.apg_rl.ssid,
+ 							"pwd": (is_wifi_open) ? "" : cap_wifi_pwd,
+-							"passcode": (_profile_data.cp_rl.auth_type == "1") ? _profile_data.cp_rl.local_auth_profile : ""
++							"passcode": ""/* Reaper 2026-11-12: no passcode */
+ 						};
+ 						if(args.qrcode_title != ""){
+ 							$("#print_html #print_wifi_info_desc").html(args.qrcode_title);
+@@ -8328,6 +8277,11 @@ function Update_Setting_Profile(_obj, _profile_data){
+ 		}
+ 		if(dns_text != "")
+ 			$(_obj).find("#dns").html(htmlEnDeCode.htmlEncode(dns_text));
++		/* reaper 2026-11-13: on a Guest Portal network this setting picks the guests' DNS provider (rc REAPER-GUESTDNS) */
++		$(_obj).find("#dns_portal_note").remove();
++		if(_profile_data.sdn_rl != undefined && _profile_data.sdn_rl.cp_idx != undefined && _profile_data.sdn_rl.cp_idx != "" && _profile_data.sdn_rl.cp_idx != "0")
++			$("<div>").attr({"id":"dns_portal_note"}).css({"font-size":"12px","opacity":"0.75","margin":"4px 0 8px","line-height":"1.4"})
++				.html(`<#RGPD_1#>`).insertAfter($(_obj).find("#dns").closest(".profile_setting_item"));
+ 
+ 		$(_obj).find("#dhcp_enable").removeClass("off on").addClass((function(){
+ 			return ((_profile_data.subnet_rl.dhcp_enable == "1") ? "on" : "off");
+@@ -8550,16 +8504,7 @@ function Update_Setting_Profile(_obj, _profile_data){
+ 					terms_service_content = htmlEnDeCode.htmlEncode(terms_service_content).replace().replace(/(?:\r\n|\r|\n)/g, '<div style=height:6px;></div>');
+ 					$(_obj).find("#FWF_ui_container [data-component=FWF_TS]").html(terms_service_content);
+ 				}
+-				$(_obj).find("#FWF_passcode_enabled").removeClass("off on").addClass((function(){
+-					if(_cp_rl_data.auth_type == "1"){
+-						$(_obj).find("#container_FWF_passcode, #FWF_Preview_Cntr [data-component=FWF_passcode]").show();
+-						return "on";
+-					}
+-					else{
+-						$(_obj).find("#container_FWF_passcode, #FWF_Preview_Cntr [data-component=FWF_passcode]").hide();
+-						return "off";
+-					}
+-				})());
++				$(_obj).find("#FWF_Preview_Cntr [data-component=FWF_passcode]").hide();//Reaper 2026-11-12: no passcode, even for a portal saved with one
+ 				$(_obj).find("#FWF_terms_service_enabled").removeClass("off on").addClass((function(){
+ 					if(_cp_rl_data.term_of_service == "0"){
+ 						$(_obj).find("#container_FWF_TS, #FWF_Preview_Cntr [data-group=FWF_TS]").hide();
+@@ -8572,10 +8517,6 @@ function Update_Setting_Profile(_obj, _profile_data){
+ 						return "on";
+ 					}
+ 				})());
+-				$(_obj).find("#FWF_passcode").val(_cp_rl_data.local_auth_profile);
+-				//Reaper: guests can only sign in with a passcode of 15 characters or fewer
+-				if(_cp_rl_data.auth_type == "1" && (_cp_rl_data.local_auth_profile || "").length > 15)
+-					$(_obj).find("#FWF_passcode").show_validate_hint(`<#RGNP_01#>`);
+ 			}
+ 			else if(_cp_rl_data.cp_idx == "4"){
+ 				var response = httpApi.hookGet("get_customized_attribute-" + _cp_rl_data.idx_for_customized_ui + "");
+@@ -9591,10 +9532,10 @@ function set_apply_btn_status(_obj){
+ 						sdn_profile.cp_rl.enable = "1";
+ 						sdn_profile.cp_rl.conntimeout = ((cp_idx == "2") ? (($(_obj).find("#FWF_conntimeout").val())*60).toString() : 60*60);
+ 						sdn_profile.cp_rl.redirecturl = ((cp_idx == "2") ? $(_obj).find("#FWF_redirecturl").val() : "");
+-						sdn_profile.cp_rl.auth_type = ((cp_idx == "2") ? (($(_obj).find("#FWF_passcode_enabled").hasClass("on")) ? "1" : "0") : "0");
++						sdn_profile.cp_rl.auth_type = "0";//Reaper 2026-11-12 (owner): no passcode - terms-only
+ 						sdn_profile.cp_rl.term_of_service = ((cp_idx == "2") ? (($(_obj).find("#FWF_terms_service_enabled").hasClass("on")) ? "1" : "0") : "0");
+ 						sdn_profile.cp_rl.NAS_ID = "";
+-						sdn_profile.cp_rl.local_auth_profile = ((cp_idx == "2") ? (($(_obj).find("#FWF_passcode_enabled").hasClass("on")) ? $(_obj).find("#FWF_passcode").val() : "") : "");
++						sdn_profile.cp_rl.local_auth_profile = "";
+ 						var upload_data = {"id": sdn_profile.cp_rl.idx_for_customized_ui, "cp_idx": cp_idx, "auth_type": sdn_profile.cp_rl.auth_type};
+ 						if(cp_idx == "2"){
+ 							upload_data["brand_name"] = $("#FWF_brand_name").val();
+@@ -10548,35 +10489,6 @@ function validate_format_Wizard_Item(_obj, _type){
+ 					}
+ 				}
+ 
+-				var $FWF_passcode_enabled = $(_obj).find("#FWF_passcode_enabled");
+-				if($FWF_passcode_enabled.hasClass("on")){
+-					var $FWF_passcode = $(_obj).find("#FWF_passcode");
+-					$FWF_passcode.val($FWF_passcode.val().replace(/\s+/g, ''));//remove space
+-					if($FWF_passcode.val() == ""){
+-						$FWF_passcode.show_validate_hint("<#JS_fieldblank#>");
+-						$FWF_passcode.focus();
+-						return false;
+-					}
+-					if($FWF_passcode.val().length > 15){//Reaper: longer passcodes never sign in
+-						$FWF_passcode.show_validate_hint(`<#RGNP_01#>`);
+-						$FWF_passcode.focus();
+-						return false;
+-					}
+-					var isValid_passcode = valid_block_chars($FWF_passcode.val(), ["<", ">"]);
+-					if(isValid_passcode.isError){
+-						$FWF_passcode.show_validate_hint(isValid_passcode.errReason);
+-						$FWF_passcode.focus();
+-						return false;
+-					}
+-					//confirm common string combination	#JS_common_passwd#
+-					var is_common_string = check_common_string($FWF_passcode.val(), "httpd_password");
+-					if(is_common_string){
+-						if(!confirm("<#JS_common_passwd#>")){
+-							$FWF_passcode.focus();
+-							return false;
+-						}
+-					}
+-				}
+ 			}
+ 
+ 			const $ipv6_enable = $(_obj).find("#ipv6_enable");
+@@ -13520,8 +13432,12 @@ function Get_Component_VPN_Profiles(){
+ 					const $killSwitch = $killSwitchContainer.find("#kill_switch");
+ 					const $vpnEnabled = $profileSetting.find("#vpn_enabled");
+ 					const shouldShowKillSwitch = $vpnEnabled.hasClass("on") && $radio.attr("data-vpn-type") == "vpnc";
+-					if(shouldShowKillSwitch)
++					if(shouldShowKillSwitch){
++						//Reaper 2026-11-12 (owner): a VPN binding starts with the Kill Switch on
++						if($killSwitchContainer.css("display") == "none")
++							$killSwitch.removeClass("off on").addClass("on");
+ 						$killSwitchContainer.show();
++					}
+ 					else{
+ 						$killSwitch.removeClass("off on").addClass("off");
+ 						$killSwitchContainer.hide();
+-- 
+2.25.1
+

@@ -1,6 +1,6 @@
 # Build Provenance — from published image back to source
 
-> **Doc status:** current as of **v3.6.2** · 2026-10-28 <!--@stamp-->
+> **Doc status:** current as of **v3.8.3** · 2026-11-19 <!--@stamp-->
 
 This document lets anyone verify, end to end, that a published Reaper firmware
 image was built from exactly the source published in this repository — with
@@ -28,7 +28,7 @@ Each link is pinned and independently checkable:
 
 1. **Base** — Asuswrt-Merlin 3006.102.10 (ASUS GPL 102_40585), commit
    `ca72a61f8bc5ef920e29d63d53d9864262208f0c`, from upstream
-   `RMerl/asuswrt-merlin.ng` (untagged upstream), from v3.6.0. Up to v3.5.0 the base was
+   `Asuswrt-Merlin/asuswrt-merlin.ng` (untagged upstream), from v3.6.0. Up to v3.5.0 the base was
    `3006.102.8-beta2` (`a7ebfa133a`): the v3.6.0 cut rebased the stack and regenerated the
    [`patches/`](../patches) series from the new base. Between rebases upstream carry-forwards
    are **cherry-picked**, so the recipe stays constant; a release's own manifest entry names
@@ -48,7 +48,7 @@ Each link is pinned and independently checkable:
 
 ```sh
 # 1. Get the pinned upstream base (includes the vendor blobs upstream ships)
-git clone https://github.com/RMerl/asuswrt-merlin.ng
+git clone https://github.com/Asuswrt-Merlin/asuswrt-merlin.ng
 cd asuswrt-merlin.ng
 git checkout ca72a61f8bc         # 3006.102.10 (v3.6.0+; a7ebfa133a for v3.5.0 and older)
 
@@ -60,10 +60,11 @@ git am --keep-cr /path/to/AM-Reaper/patches/[0-9]*.patch
 # 129 MB as a patch. It ships as a hash-pinned archive; unpack it after the series is applied:
 sha256sum -c /path/to/AM-Reaper/overlays/openssl-3.5-source.sha256   # run in that overlays/ dir
 tar -xzf /path/to/AM-Reaper/overlays/openssl-3.5-source.tar.gz         # from the tree root
-# From v3.1.8 the vendor WLCSM blob pair (libnvram.so + libwlcsm.so, ASUS stock 42015) ships as
-# overlays/wlcsm-42015-blobs.tar.gz. The series already carries it for the RT-BE96U tree; for a
-# sibling, copy the two files over that model's router-sysdep.<model>/{wlan/nvram,wlcsm}/prebuilt/
-# copies exactly as build-scripts/ci/container_build.sh does (verify the .sha256 first).
+# The vendor WLCSM blob pair (libnvram.so + libwlcsm.so): the 3006.102.10 base carries ASUS's
+# 40585 pair. A model whose platform tree predates it (every 3006.102.8 model) takes ASUS stock
+# 42015's pair from overlays/wlcsm-42015-blobs.tar.gz: copy the two files over that model's
+# router-sysdep.<model>/{wlan/nvram,wlcsm}/prebuilt/ copies exactly as
+# build-scripts/ci/container_build.sh does (verify the .sha256 first).
 
 # 3. Hash the corresponding source and compare to the manifest
 git rev-parse HEAD:release/src/router
@@ -111,7 +112,7 @@ build-commit column will never match, by design.
 
 > Generated from [`../provenance/manifest.json`](../provenance/manifest.json) rather than
 > transcribed. This table lists rungs through v2.4.3; the manifest itself is the complete, current
-> ledger (through v2.7.7). Note the patch ranges for **v2.1.0 – v2.1.5** are the **post-repair** numbers: the
+> ledger (through the current rung). Note the patch ranges for **v2.1.0 – v2.1.5** are the **post-repair** numbers: the
 > 2026-08-09 series repair restored three never-extracted commits and shifted everything after
 > `0245` by +3, so an older copy of this table showing `0289`/`0310`/`0322` was describing the same
 > releases under the pre-repair numbering.
@@ -126,15 +127,15 @@ fixes) were exported and **verified** to reproduce the trees above — applying
 19 carry-forward patches (`0291`–`0309`) retain their original Asuswrt-Merlin
 authorship; the Reaper-authored patches use the Reaper identity. CI reproduces
 every tree on each run. **The exported series leads the fleet:** the series runs
-to `0867` <!--@patchcount--> (v3.6.2 <!--@treever-->, RT-BE96U-only), while the newest **published** release is
-v3.1.0 <!--@pubver-->. The RT-BE86U /
-RT-BE88U / GT-BE98 / GT-BE98 Pro images (published since v2.7.6) and, from v3.1.4,
-the GT-BE19000's are produced by
-porting the shared code onto each per-model branch (banner / target.mak / blob
-overlay); the patch series is RT-BE96U-only, so the tree hash above is the
-RT-BE96U reference and the siblings are not independently patch-reproducible
-(their image SHAs are in each `SHA256SUMS-<MODEL>-Reaper_<version>.txt` on the
-release ladder).
+to `1036` <!--@patchcount--> (v3.8.3 <!--@treever-->, RT-BE96U-only), while the newest **published** release is
+v3.1.0 <!--@pubver-->. The sibling images (RT-BE86U / RT-BE88U / GT-BE98 /
+GT-BE98 Pro published since v2.7.6, the GT-BE19000 from v3.1.4, the ZenWiFi BQ16 from
+v3.3.2 and the BQ16 Pro from v3.3.4) are produced from their line's series plus the
+model's identity overlay (`overlays/<MODEL>.patch`: banner / target.mak / blob overlay;
+the GT-BE98, GT-BE19000, BQ16 and BQ16 Pro also take a platform archive). The series is
+the RT-BE96U tree, so the tree hash above is the RT-BE96U reference and the siblings carry
+no tree hash of their own (their image SHAs are in each
+`SHA256SUMS-<MODEL>-Reaper_<version>.txt` on the release ladder).
 
 ## Build & verification logs
 

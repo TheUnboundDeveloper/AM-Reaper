@@ -73,7 +73,8 @@ static void logmessage(const char *tag, const char *fmt, ...)
 {
 	va_list ap; va_start(ap, fmt); printf("LOG %s: ", tag); vprintf(fmt, ap); printf("\n"); va_end(ap);
 }
-''' + cut("static const struct { int bit; const char *id, *url; } presets[] = {", "};\n") \
+''' + open(os.path.join(SRC, "shared", "reaper_lists.h"), encoding="utf-8").read() \
+    + cut("static const struct { int bit; const char *id, *url; } presets[] = {", "};\n") \
     + "#define NPRESETS (int)(sizeof(presets) / sizeof(presets[0]))\n" \
     + cut("static int sh_name_ok(const char *s)") + cut("static void sh_url_host(const char *u, char *h, size_t n)") \
     + cut("static void sh_add(char **b, size_t *len, size_t *cap, const char *fmt, ...)") \

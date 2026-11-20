@@ -1,0 +1,1887 @@
+From 83d23c58f3f4be9b58f9f7bc2d704619e6612d11 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Sun, 15 Nov 2026 21:30:13 -0500
+Subject: [PATCH] Wallguard: Unbreak by device, stored lists kept current, and
+ the page in tabs
+
+- Unbreak keeps an hour of blocked lookups (it kept the last 500 for all devices), matches a
+  device by its MAC or its current addresses, leaves out names that are allowed now, and shows a
+  CNAME block as "<asked> (blocked via <listed>)". After Allow the row says it takes effect for
+  new lookups.
+- Lists kept on a USB store: a list downloaded before the store was mounted stayed in RAM while
+  the store kept the older copy, so every rebuild rejected the stored copies. The newest copy is
+  used and moved to the store, checked after the copy.
+- A rebuild that was skipped, or used fewer lists than chosen, is reported on the page.
+- The page is in five tabs: Overview (Fix a device, Pause with a 10-minute choice, Why?, counters,
+  warnings), Lists, Rules, Devices (one row per device: profile, blocked lookups in the last 15
+  minutes, Fix and Pause; it replaces the assignment table) and Activity (live view with a device
+  filter, statistics). New query: blocked lookups per device for the last 1 to 60 minutes.
+- Texts in all 25 language packs.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ release/src/router/httpd/web.c              |  15 +
+ release/src/router/wallguard/wallguard.sh   | 166 ++++++-
+ release/src/router/www/BR.dict              |  23 +
+ release/src/router/www/CN.dict              |  23 +
+ release/src/router/www/CZ.dict              |  23 +
+ release/src/router/www/DA.dict              |  23 +
+ release/src/router/www/DE.dict              |  23 +
+ release/src/router/www/EN.dict              |  23 +
+ release/src/router/www/ES.dict              |  23 +
+ release/src/router/www/FI.dict              |  23 +
+ release/src/router/www/FR.dict              |  23 +
+ release/src/router/www/HU.dict              |  23 +
+ release/src/router/www/IT.dict              |  23 +
+ release/src/router/www/JP.dict              |  23 +
+ release/src/router/www/KR.dict              |  23 +
+ release/src/router/www/MS.dict              |  23 +
+ release/src/router/www/NL.dict              |  23 +
+ release/src/router/www/NO.dict              |  23 +
+ release/src/router/www/PL.dict              |  23 +
+ release/src/router/www/RO.dict              |  23 +
+ release/src/router/www/RU.dict              |  23 +
+ release/src/router/www/Reaper_Wallguard.asp | 460 +++++++++++++++-----
+ release/src/router/www/SL.dict              |  23 +
+ release/src/router/www/SV.dict              |  23 +
+ release/src/router/www/TH.dict              |  23 +
+ release/src/router/www/TR.dict              |  23 +
+ release/src/router/www/TW.dict              |  23 +
+ release/src/router/www/UK.dict              |  23 +
+ 28 files changed, 1088 insertions(+), 128 deletions(-)
+
+diff --git a/release/src/router/httpd/web.c b/release/src/router/httpd/web.c
+index bd1783b9fe..e9a3622719 100644
+--- a/release/src/router/httpd/web.c
++++ b/release/src/router/httpd/web.c
+@@ -27872,6 +27872,21 @@ do_reaper_wallguard_cgi(char *url, FILE *stream)
+ 		sh_popen(stream, cmd, "{\"ok\":1,\"names\":[]}");
+ 		return;
+ 	}
++	/* reaper 2026-11-15 (Wallguard page, Devices tab): blocked lookups per device in the last 1-60 minutes
++	   (wallguard.sh devcounts). Only the checked number reaches the command line. */
++	if (!strcmp(action, "devcounts")) {
++		char *mins = get_cgi("minutes");
++		int m = 15;
++		if (mins) {
++			if (!*mins || strlen(mins) > 2 || strspn(mins, "0123456789") != strlen(mins) || (m = atoi(mins)) < 1 || m > 60) {
++				websWrite(stream, "{\"ok\":0,\"ek\":\"RSHD_E2\"}");
++				return;
++			}
++		}
++		snprintf(cmd, sizeof(cmd), "sh " SH_SCRIPT " devcounts %d 2>/dev/null", m);
++		sh_popen(stream, cmd, "{\"ok\":1,\"devs\":[]}");
++		return;
++	}
+ 	if (!strcmp(action, "allow")) {
+ 		char *name = get_cgi("name"), *dur = get_cgi("dur"), n[256], *cur, *next;
+ 		int ex;
+diff --git a/release/src/router/wallguard/wallguard.sh b/release/src/router/wallguard/wallguard.sh
+index 4dc5226d5a..4012259152 100644
+--- a/release/src/router/wallguard/wallguard.sh
++++ b/release/src/router/wallguard/wallguard.sh
+@@ -26,6 +26,7 @@
+ #   fold     move dnsmasq's blocked-lookup records into the counters
+ #   stats    fold, then print the status JSON for the page
+ #   unbreak <ip-or-mac> <minutes>   recent blocked names for one device, as JSON
++#   devcounts <minutes>   blocked lookups per device in the last 1-60 minutes, as JSON (the page's Devices tab)
+ #   live     the newest lookups of the live view, as JSON
+ #   reset    clear the counters
+ #   safe     refresh the safe-search file now (rc, when a profile first asks for it)
+@@ -47,6 +48,10 @@ KT=${WALLGUARD_KEYTMP:-/tmp/reaper}	# root-only: the curl config that carries an
+ SC=${WALLGUARDC:-/usr/sbin/wallguardc}
+ CTR=$D/counters
+ REC=$D/recent
++# reaper 2026-11-15 (D5): what recent keeps for Unbreak - an hour of blocked lookups, at most 20,000 records (~1.5 MB of RAM)
++RECKEEP=${WALLGUARD_REC_SECS:-3600}
++RECMAX=${WALLGUARD_REC_MAX:-20000}
++case "$RECKEEP$RECMAX" in *[!0-9]*) RECKEEP=3600; RECMAX=20000 ;; esac
+ 
+ # 2026-10-25 (release review X-2): each list is capped at 32 MB, but nine presets and eight custom lists
+ # together could fill the RAM disk. The lists kept in RAM (a USB store takes them out of it) stay under
+@@ -108,11 +113,23 @@ st_get() {
+   fi
+   echo "$ST/$1"
+ }
+-# the usable copy of list <id>: the checked RAM copy of the stored one, else the downloaded one
++# the usable copy of list <id>: the downloaded one still in RAM, else the checked RAM copy of the stored one.
++# reaper 2026-11-15 (D9, field): the stored copy was asked first. A list downloaded while the USB volume was not
++# up yet (the boot update runs seconds before the store mounts) or whose write failed stays in RAM with its NEW
++# sha256 in lists.sum, the volume keeps the OLDER copy - so every later build fetched that older copy, logged
++# "does not match its last download" for every list and fell back to RAM. A RAM copy is always the newest (offload
++# records its sum and removes it only once the stored copy checks out); build moves it to the volume (st_push).
+ list_path() {
+-  st_get "$1" && return 0
+   [ -s "$L/$1" ] && [ ! -L "$L/$1" ] && { echo "$L/$1"; return 0; }
+-  return 1
++  st_get "$1"
++}
++# reaper 2026-11-15 (D9): a RAM copy whose sum is the one recorded goes to the USB volume now (put, read back,
++# checked, then dropped from RAM) - no sum is written, nothing on /jffs changes. Any failure keeps it in RAM.
++st_push() {
++  [ -n "$S" ] && [ -s "$L/$1" ] && [ ! -L "$L/$1" ] || return 1
++  r=$(sum_rec "$1"); [ -n "$r" ] && [ "$(sum_of "$L/$1")" = "$r" ] || return 1
++  rm -f "$ST/$1"
++  "$RS" put "$S" wallguard/lists "$1" "$L/$1" 2>/dev/null && st_get "$1" >/dev/null && rm -f "$L/$1"
+ }
+ # a list just downloaded to RAM: record its sha256; with a USB store, write it there (rstore put),
+ # read it back and check it, then drop the downloaded copy. Any failure keeps the list in RAM.
+@@ -281,7 +298,7 @@ build() {
+   # one build at a time (rc's background rebuilds, Unbreak's Allow, the update): two at once wrote the
+   # same table file (review 2026-10-21); waits, so the later rule change still lands
+   exec 8>"$D/build.lock"
+-  lock_wait 8 300 || { log "another block table build is still running - this one was skipped"; return 1; }
++  lock_wait 8 300 || { log "another block table build is still running - this one was skipped"; bstat lock; return 1; }
+   # 2026-11-06 (owner): Advanced rules - the AdGuard-syntax box, compiled beside the table (the engine reads
+   # $D/adv); rc writes $D/clients (device and profile names -> MACs) and $D/safe before every build
+   if [ -s "$J/adv" ]; then
+@@ -293,15 +310,21 @@ build() {
+   else
+     rm -f "$D/adv" "$D/adv.json"
+   fi
+-  args=; miss=
++  args=; miss=; _bw=0; _bu=0; _bn=
+   [ -f "$D/feeds" ] || : > "$D/feeds"
+   [ -n "${S+x}" ] || S=$(st_lists)
+   while read -r bit id url kind opt; do
+     feed_ok "$bit" "$id" "$url" "$kind" "$opt" || continue
++    [ "$kind" != s ] && _bw=$((_bw + 1))
++    st_push "$id"	# reaper 2026-11-15 (D9): a list still in RAM moves to the USB volume
+     if p=$(list_path "$id"); then
+       args="$args --list $bit:$id:$p"
+-    elif [ "$kind" != s ] && awk -v i="$id" '$1 == i && $3 > 0 {f=1} END {exit !f}' "$D/state" 2>/dev/null; then
+-      miss="$miss $id"
++      [ "$kind" != s ] && _bu=$((_bu + 1))
++    else
++      [ "$kind" != s ] && _bn="$_bn $id"
++      if [ "$kind" != s ] && awk -v i="$id" '$1 == i && $3 > 0 {f=1} END {exit !f}' "$D/state" 2>/dev/null; then
++        miss="$miss $id"
++      fi
+     fi
+   done < "$D/feeds"
+   # a list that was downloaded before and has no usable copy now (its USB volume is not mounted):
+@@ -309,6 +332,7 @@ build() {
+   if [ -n "$miss" ] && [ -s "$D/db" ]; then
+     log "list(s)$miss have no usable copy (USB volume not mounted, or the copy changed) - the block table in use stays until they are back or downloaded again"
+     rm -rf "$ST"
++    bstat miss "$miss"
+     return 1
+   fi
+   now=$(date +%s)
+@@ -325,12 +349,24 @@ build() {
+        --allow "$D/allow24" --allow "$D/safe" $args; then
+     log "block table built: $(grep -o '"names":[0-9]*' "$D/build.json" | head -1 | cut -d: -f2) names"
+     rm -rf "$ST"
++    bstat "" "$_bn"
+   else
+     log "the block table could not be built - the previous one stays in use"
+     rm -rf "$ST"
++    bstat fail "$_bn"
+     return 1
+   fi
+ }
++# reaper 2026-11-15 (D7): a skipped rebuild left only a syslog line - the page went on showing the old table as
++# current. What the last build did goes to $D/build.st (RAM), which stats hands the page as "bstat":
++# skip = "" built | lock another build held the lock | miss a list downloaded before has no usable copy | fail;
++# want / used = the subscribed downloads and how many had a usable copy; none = the ids without one.
++# bstat <skip> [ids]   (ids are feed ids, [a-z0-9_] - feed_ok checked them)
++bstat() {
++  _bi=$(echo $2)	# one space between ids, none at the ends
++  printf '{"t":%d,"skip":"%s","want":%d,"used":%d,"none":"%s"}\n' "$(date +%s)" "$1" "${_bw:-0}" "${_bu:-0}" "$_bi" \
++    > "$D/build.st.tmp" && mv "$D/build.st.tmp" "$D/build.st"
++}
+ 
+ # 2026-10-26 (owner, _r41 metal): a list server that Warden's router-traffic filter (rwarden_self) drops - a
+ # picked country, the ban list or a threat feed - failed as a bare "download failed" (OISD on OVH France).
+@@ -635,9 +671,15 @@ fold() {
+                           else if ($1 == "DEV" && ($2 ~ ipre || $2 ~ macre) && $5 ~ ipre) { dc[$2] = $3; dt[$2] = $4; di[$2] = $5 }
+                           else if ($1 == "LIST") lc[$2] = $3; next }
+     /^# dropped [0-9]+$/ { dr += $3; next }
+-    NF != 6 || $1 !~ /^[0-9]+$/ || $2 !~ ipre || $3 !~ /^[0-9a-f]+$/ || ($4 != "q" && $4 != "c") || ($5 != "-" && $5 !~ macre) || $6 !~ re { next }
++    # reaper 2026-11-15: "time ip bits reason mac name", and for reason c a 7th field - the listed chain name that
++    # caused the block (- when unknown); field 6 is then the name the device asked for
++    (NF != 6 && NF != 7) || $1 !~ /^[0-9]+$/ || $2 !~ ipre || $3 !~ /^[0-9a-f]+$/ || ($4 != "q" && $4 != "c") || ($5 != "-" && $5 !~ macre) || $6 !~ re { next }
++    NF == 7 && ($4 != "c" || ($7 != "-" && $7 !~ re)) { next }
++    # a CNAME block counts under the listed chain entry, never the asked name: the asker picks that one, and a
++    # wildcard CNAME could invent names without end (the asked name stays in recent, for Unbreak)
+     { tot++; if ($4 == "c") cn++
+-      nc[$6]++; nb[$6] = $3; nt[$6] = $1
++      nm = (NF == 7 && $7 != "-") ? $7 : $6
++      nc[nm]++; nb[nm] = $3; nt[nm] = $1
+       dev = ($5 != "-") ? $5 : $2; dc[dev]++; dt[dev] = $1; di[dev] = $2
+       bits = hexv($3); for (b = 0; b < 31; b++) { if (bits % 2 == 1) lc[b]++; bits = int(bits / 2) }
+       print > REC }
+@@ -659,7 +701,10 @@ fold() {
+     cat "$REC.add" >> "$REC"
+     store_peek shh >/dev/null && cat "$REC.add" >> "$D/hist.q"
+     rm -f "$REC.add"
+-    tail -n 500 "$REC" > "$REC.t" && mv "$REC.t" "$REC"
++    # reaper 2026-11-15 (D5, field): the last 500 records of ALL devices were kept - 70 min on a quiet network, a few
++    # minutes on a busy one, so Unbreak's 15 min for one device came back short. Now the last RECKEEP seconds (an
++    # hour), at most RECMAX records (RAM only: $D is /tmp, and nothing here is ever banked on /jffs)
++    tail -n "$RECMAX" "$REC" | awk -v since="$(( $(date +%s) - RECKEEP ))" '$1 >= since' > "$REC.t" && mv "$REC.t" "$REC"
+   fi
+   hist_bg
+   # bank on /jffs at most hourly (NAND wear)
+@@ -711,6 +756,7 @@ stats() {
+   q=${1:-0}; b=${2:-0}; c=${3:-0}
+   awk -v q="$q" -v b="$b" -v c="$c" -v now="$(date +%s)" -v re="$NAMERE" -v ipre="$IPRE" -v macre="$MACRE" \
+       -v built="$( [ -f "$D/build.json" ] && cat "$D/build.json" || echo null)" \
++      -v bst="$( [ -f "$D/build.st" ] && [ ! -L "$D/build.st" ] && head -n 1 "$D/build.st")" \
+       -v hist="$HS" -v histvol="$HV" -v bypass="$(dns_bypass)" \
+       -v store="$(b=$(store_peek shl) && case "$b" in "${RSTORE_MNT_D:-/tmp/mnt}"/*) b=${b%/.reaper}; echo "${b##*/}" ;; esac)" \
+       -v live="$( [ -f "$D/live.on" ] && echo $(( 3600 - ($(date +%s) - $(date -r "$D/live.on" +%s)) )) || echo 0)" '
+@@ -728,7 +774,9 @@ stats() {
+     END {
+       gsub(/[^A-Za-z0-9 ._-]/, "", store); gsub(/[^A-Za-z0-9 ._-]/, "", histvol)
+       gsub(/[^0-9a-fA-F.: ]/, "", bypass); sub(/ +$/, "", bypass)
+-      printf "{\"ok\":1,\"now\":%d,\"queries\":%d,\"blocked_live\":%d,\"cname_live\":%d,\"since\":%d,\"total\":%d,\"cname\":%d,\"dropped\":%d,\"live\":%d,\"build\":%s,\"store\":\"%s\",\"hist\":\"%s\",\"histvol\":\"%s\",\"bypass\":\"%s\",", now, q, b, c, since, tot, cn, dr, (live > 0 ? live : 0), built, store, hist, histvol, bypass
++      # reaper 2026-11-15 (D7): the last build status line (bstat), only in the one shape bstat writes
++      if (bst !~ /^[{]"t":[0-9]+,"skip":"(lock|miss|fail)?","want":[0-9]+,"used":[0-9]+,"none":"[a-z0-9_ ]*"[}]$/) bst = "null"
++      printf "{\"ok\":1,\"now\":%d,\"queries\":%d,\"blocked_live\":%d,\"cname_live\":%d,\"since\":%d,\"total\":%d,\"cname\":%d,\"dropped\":%d,\"live\":%d,\"build\":%s,\"bstat\":%s,\"store\":\"%s\",\"hist\":\"%s\",\"histvol\":\"%s\",\"bypass\":\"%s\",", now, q, b, c, since, tot, cn, dr, (live > 0 ? live : 0), built, bst, store, hist, histvol, bypass
+       printf "\"feeds\":["
+       for (i = 1; i <= nf; i++) { id = order[i]
+         printf "%s{\"id\":\"%s\",\"bit\":%d,\"kind\":\"%s\",\"st\":\"%s\",\"ok\":%d,\"at\":%d,\"blocked\":%d,\"warden\":\"%s\",\"wip\":\"%s\"}", (i > 1 ? "," : ""), id, fb[id], fk[id], (id in st ? st[id] : "new"), ok[id], at[id], lc[fb[id]], wd[id], wip[id] }
+@@ -742,23 +790,98 @@ stats() {
+   ' "$D/state" "$D/feeds" "$CTR" 2>/dev/null || echo '{"ok":0}'
+ }
+ 
++# reaper 2026-11-15 (D4): the addresses a MAC holds now - the neighbour table (IPv4 and IPv6) and dnsmasq's leases.
++# Records whose MAC field is "-" (the engine wrote "-" for every record before 2026-11-15, and still does when the
++# neighbour is unknown) are matched to the device through these. Prints them space separated, lower case.
++mac_ips() {
++  { ip neigh show 2>/dev/null; ip -6 neigh show 2>/dev/null; arp -an 2>/dev/null
++    [ -f "${WALLGUARD_LEASES:-/var/lib/misc/dnsmasq.leases}" ] && cat "${WALLGUARD_LEASES:-/var/lib/misc/dnsmasq.leases}"
++  } | tr 'A-Z' 'a-z' | awk -v m="$1" -v ipre="$IPRE" '
++    # ip neigh: "<addr> dev <if> lladdr <mac> <state>"; arp -an: "? (<addr>) at <mac> [ether] on <if>";
++    # leases: "<expiry> <mac> <addr> <host> <id>"
++    { a = ""
++      for (i = 1; i < NF; i++) if ($i == "lladdr" && $(i + 1) == m) a = $1
++      if ($1 == "?" && $4 == m) { a = $2; gsub(/[()]/, "", a) }
++      if ($2 == m && $1 ~ /^[0-9]+$/) a = $3
++      if (a ~ ipre && a ~ /[.:]/ && !(a in s)) { s[a] = 1; printf "%s ", a } }'
++}
++
+ unbreak() {
+-  dev=$1; mins=${2:-15}
++  # reaper 2026-11-15 (D4): the page sends the MAC as the device list holds it - records carry it in lower case
++  dev=$(printf '%s' "$1" | tr 'A-Z' 'a-z'); mins=${2:-15}
+   case "$mins" in ''|*[!0-9]*|??????*) mins=15 ;; esac	# review 2026-11-03: shell arithmetic below - digits only, whoever calls
+   fold
+-  awk -v dev="$dev" -v since="$(( $(date +%s) - mins * 60 ))" -v re="$NAMERE" '
+-    NF == 6 && $1 >= since && ($2 == dev || $5 == dev) && $6 ~ re { c[$6]++; t[$6] = $1; b[$6] = $3 }
++  ips=; echo "$dev" | grep -q "$MACRE" && ips=$(mac_ips "$dev")
++  # reaper 2026-11-15 (D6, field): Allow looked like it did nothing - the page asked again and the same records
++  # came back. A name allowed now (My rules allow list, or a 24 h allow still running; an allow covers its
++  # subdomains, as wallguardc builds it) is left out: it is answered for every new lookup once the table is rebuilt.
++  _ua=$D/unbreak.allow.$$
++  { [ -f "$J/allow" ] && [ ! -L "$J/allow" ] && cat "$J/allow"
++    [ -f "$J/allow24" ] && [ ! -L "$J/allow24" ] && awk -v n="$(date +%s)" '$1 > n {print $2}' "$J/allow24"
++  } 2>/dev/null | tr 'A-Z' 'a-z' > "$_ua"
++  # records are "time ip bits reason mac name" and, for reason c (a CNAME block), "... name via": the device asked
++  # for name, the listed chain name via caused the block. Matched by the MAC, or by an address the MAC holds now
++  # when the record carries no MAC; a record with ANOTHER device's MAC never matches an address it reused.
++  awk -v dev="$dev" -v ips=" $ips" -v since="$(( $(date +%s) - mins * 60 ))" -v re="$NAMERE" '
++    function allowed(n,   p, k) { p = n
++      while (p != "") { if (p in al) return 1; k = index(p, "."); if (!k) return 0; p = substr(p, k + 1) }
++      return 0 }
++    FILENAME == ARGV[1] { a = $1; sub(/^\*\./, "", a); sub(/\.$/, "", a); if (a != "") al[a] = 1; next }
++    (NF == 6 || (NF == 7 && $4 == "c")) && $1 >= since && $6 ~ re && ($2 == dev || $5 == dev || ($5 == "-" && index(ips, " " $2 " "))) {
++      c[$6]++; t[$6] = $1; b[$6] = $3; if (NF == 7 && $7 != "-" && $7 ~ re) v[$6] = $7 }
+     END { printf "{\"ok\":1,\"names\":["; i = 0
+-          for (n in c) printf "%s{\"d\":\"%s\",\"n\":%d,\"t\":%d,\"bits\":\"%s\"}", (i++ ? "," : ""), n, c[n], t[n], b[n]
+-          printf "]}\n" }' "$REC" 2>/dev/null || echo '{"ok":1,"names":[]}'
++          for (n in c) { if (allowed(n) || ((n in v) && allowed(v[n]))) continue
++            printf "%s{\"d\":\"%s\",\"n\":%d,\"t\":%d,\"bits\":\"%s\",\"via\":\"%s\"}", (i++ ? "," : ""), n, c[n], t[n], b[n], v[n] }
++          printf "]}\n" }' "$_ua" "$( [ -f "$REC" ] && echo "$REC" || echo /dev/null)" 2>/dev/null || echo '{"ok":1,"names":[]}'
++  rm -f "$_ua"
++}
++
++# reaper 2026-11-15 (Wallguard page, Devices tab): the address -> MAC pairs known now, from the same sources as mac_ips
++# (neighbour tables, arp, dnsmasq's leases); one "<addr> <mac>" line per address, the first source wins.
++ip_macs() {
++  { ip neigh show 2>/dev/null; ip -6 neigh show 2>/dev/null; arp -an 2>/dev/null
++    [ -f "${WALLGUARD_LEASES:-/var/lib/misc/dnsmasq.leases}" ] && cat "${WALLGUARD_LEASES:-/var/lib/misc/dnsmasq.leases}"
++  } | tr 'A-Z' 'a-z' | awk -v ipre="$IPRE" -v macre="$MACRE" '
++    { a = ""; m = ""
++      for (i = 1; i < NF; i++) if ($i == "lladdr") { a = $1; m = $(i + 1) }
++      if ($1 == "?" && $3 == "at") { a = $2; gsub(/[()]/, "", a); m = $4 }
++      if ($1 ~ /^[0-9]+$/ && NF >= 3) { a = $3; m = $2 }
++      if (a ~ ipre && a ~ /[.:]/ && m ~ macre && !(a in s)) { s[a] = 1; print a, m } }'
++}
++
++# reaper 2026-11-15 (Wallguard page, Devices tab): blocked lookups per device in the last <minutes> (1-60), from recent
++# ("time ip bits reason mac name [via]"). A record with MAC "-" (older records) counts under the MAC its address belongs
++# to now, else under the address. {"ok":1,"mins":N,"devs":[{"dev":"<mac or address>","n":<count>,"t":<last>}]}
++devcounts() {
++  mins=${1:-15}
++  case "$mins" in ''|*[!0-9]*|???*) mins=15 ;; esac
++  [ "$mins" -ge 1 ] && [ "$mins" -le 60 ] || mins=15
++  fold
++  _im=$D/devcounts.ip.$$
++  ip_macs > "$_im" 2>/dev/null
++  awk -v since="$(( $(date +%s) - mins * 60 ))" -v mins="$mins" -v ipre="$IPRE" -v macre="$MACRE" -v re="$NAMERE" '
++    FILENAME == ARGV[1] { im[$1] = $2; next }
++    (NF == 6 || (NF == 7 && $4 == "c")) && $1 ~ /^[0-9]+$/ && $1 >= since && $2 ~ ipre && ($5 == "-" || $5 ~ macre) && $6 ~ re {
++      d = ($5 != "-") ? $5 : (($2 in im) ? im[$2] : $2); c[d]++; if ($1 > t[d]) t[d] = $1 }
++    END { printf "{\"ok\":1,\"mins\":%d,\"devs\":[", mins; i = 0
++          for (d in c) if (i < 256) printf "%s{\"dev\":\"%s\",\"n\":%d,\"t\":%d}", (i++ ? "," : ""), d, c[d], t[d]
++          printf "]}\n" }' "$_im" "$( [ -f "$REC" ] && echo "$REC" || echo /dev/null)" 2>/dev/null || echo '{"ok":1,"devs":[]}'
++  rm -f "$_im"
+ }
+ 
+ live() {
++  # reaper 2026-11-15: "time ip qtype verdict name" (no MAC field), and for verdict c (a CNAME block, written when
++  # the reply arrives) a 6th field, the listed chain entry (- when unknown). The query itself was recorded first
++  # (- or p): the later c record replaces it - the same address and name, one row
+   run_cat "$RUN/live.1" "$RUN/live" | tail -n 300 | awk -v re="$NAMERE" -v ipre="$IPRE" '
+-    BEGIN { printf "{\"ok\":1,\"rows\":["; i = 0 }
+-    NF == 5 && $1 ~ /^[0-9]+$/ && $2 ~ ipre && $3 ~ /^[0-9]+$/ && $5 ~ re && $4 ~ /^[-abps]$/ {
+-      printf "%s{\"t\":%d,\"ip\":\"%s\",\"q\":%d,\"v\":\"%s\",\"d\":\"%s\"}", (i++ ? "," : ""), $1, $2, $3, $4, $5 }
+-    END { printf "]}\n" }'
++    (NF == 5 || (NF == 6 && $4 == "c" && ($6 == "-" || $6 ~ re))) && $1 ~ /^[0-9]+$/ && $2 ~ ipre && $3 ~ /^[0-9]+$/ && $5 ~ re && $4 ~ /^[-abpsc]$/ {
++      k = $2 " " $5
++      if ($4 == "c" && (k in last)) gone[last[k]] = 1
++      n++; last[k] = n
++      row[n] = sprintf("{\"t\":%d,\"ip\":\"%s\",\"q\":%d,\"v\":\"%s\",\"d\":\"%s\",\"via\":\"%s\"}", $1, $2, $3, $4, $5, (NF == 6 && $6 != "-" ? $6 : "")) }
++    END { printf "{\"ok\":1,\"rows\":["; i = 0
++          for (j = 1; j <= n; j++) if (!(j in gone)) printf "%s%s", (i++ ? "," : ""), row[j]
++          printf "]}\n" }'
+ }
+ 
+ reset() {
+@@ -775,6 +898,7 @@ case "$1" in
+   fold) fold ;;
+   stats) stats ;;
+   unbreak) unbreak "$2" "$3" ;;
++  devcounts) devcounts "$2" ;;
+   live) live ;;
+   reset) reset ;;
+   safe) safesearch ;;
+@@ -782,5 +906,5 @@ case "$1" in
+   retry) retry ;;
+   # 2026-10-27: Dreadwatch's own sources fetch through here (rc/rwarden.c rw_dsrc) - one code path for both tools
+   fetch) case "$6" in custom[1-8]) ;; *) exit 2 ;; esac; [ $# -eq 6 ] || exit 2; FKEYS=$5; fetch "$2" "$3" "$CURLC" "$4" "$6"; exit $? ;;
+-  *) echo "usage: $0 update|build|sync|fold|stats|unbreak <dev> <min>|live|reset|safe|restore|retry|fetch <out> <url> <options> <keyfile> custom<n>" >&2; exit 2 ;;
++  *) echo "usage: $0 update|build|sync|fold|stats|unbreak <dev> <min>|devcounts <min>|live|reset|safe|restore|retry|fetch <out> <url> <options> <keyfile> custom<n>" >&2; exit 2 ;;
+ esac
+diff --git a/release/src/router/www/BR.dict b/release/src/router/www/BR.dict
+index 4054e423e9..f9d8788201 100644
+--- a/release/src/router/www/BR.dict
++++ b/release/src/router/www/BR.dict
+@@ -9134,6 +9134,29 @@ RSHD_181=As regras avançadas passam de 40.000 caracteres. Encurte-as ou mova um
+ RSHD_182=%1 caractere(s) invisível(is) removido(s) das regras avançadas antes de salvar (caracteres de largura zero, marcas de ordem de bytes, marcas de direção, espaços incomuns).
+ RSHD_183=Atualizar
+ RSHD_184=%1 permitidos
++RSHD_185=%1 (bloqueado via %2)
++RSHD_186=Permitido - vale para novas consultas
++RSHD_187=Permitir libera %1 - ele foi bloqueado porque sua cadeia CNAME leva a %2, um nome listado.
++RSHD_188=A última reconstrução (%2) foi ignorada: %1 não tem cópia utilizável (volume USB não montado, ou a cópia mudou). A tabela de bloqueio anterior continua em uso até a cópia voltar ou ser baixada de novo.
++RSHD_189=A última reconstrução (%1) foi ignorada: outra ainda estava em andamento. Salve novamente para tentar outra vez.
++RSHD_190=A última reconstrução (%1) falhou - a tabela de bloqueio anterior continua em uso. O log do sistema informa o motivo.
++RSHD_191=A tabela de bloqueio em uso foi criada com %1 de %2 listas assinadas - ainda sem cópia utilizável de: %3.
++RSHD_192=Visão geral
++RSHD_193=Regras
++RSHD_194=Dispositivos
++RSHD_195=Atividade
++RSHD_196=1 problema
++RSHD_197=%1 problemas
++RSHD_198=Consertar um dispositivo
++RSHD_199=10 minutos
++RSHD_200=Consertar
++RSHD_201=Pausar 10 min
++RSHD_202=Bloqueadas, 15 min
++RSHD_203=Sem perfil próprio
++RSHD_204=Mostrar listas
++RSHD_205=Todos os dispositivos
++RSHD_206=Cada dispositivo e rede de convidados, o perfil que usa e o que foi bloqueado para ele nos últimos 15 minutos. Alterações de perfil valem quando você salva; Consertar e Pausar agem na hora.
++RSHD_207=Escolha um perfil para bloquear nele serviços como TikTok ou Roblox, limitar isso a certos horários e ativar a pesquisa segura. Os dispositivos recebem o perfil na aba Dispositivos.
+ RDWT_69=Pergunta ao resolvedor deste roteador por um nome da lista; a resposta deve ser NXDOMAIN. A própria consulta de teste é contada, como este roteador.
+ RENC_66=Sem confiança pública: não se encadeia a uma raiz pública neste roteador (falta um certificado intermediário no arquivo, ou é de um emissor de teste), por isso dispositivos que verificam o nome o recusam. Emita-o novamente em %1.
+ RENC_67=DNS-over-TLS e DNS-over-QUIC para servidores externos (porta 853)
+diff --git a/release/src/router/www/CN.dict b/release/src/router/www/CN.dict
+index 57a4cd5a96..49d49a682a 100644
+--- a/release/src/router/www/CN.dict
++++ b/release/src/router/www/CN.dict
+@@ -9134,6 +9134,29 @@ RSHD_181=高级规则超过 40,000 个字符。请缩短，或将长列表移到
+ RSHD_182=保存前已从高级规则中移除 %1 个不可见字符（零宽字符、字节顺序标记、方向标记、特殊空格）。
+ RSHD_183=更新
+ RSHD_184=%1 个允许
++RSHD_185=%1（经由 %2 拦截）
++RSHD_186=已允许 - 对新的查询生效
++RSHD_187=允许将放行 %1 - 它被拦截是因为其 CNAME 链指向列表中的名称 %2。
++RSHD_188=上次重建（%2）已跳过：%1 没有可用副本（USB 卷未挂载，或副本已更改）。在副本恢复或重新下载之前，继续使用之前的拦截表。
++RSHD_189=上次重建（%1）已跳过：另一次构建仍在运行。请再次保存以重试。
++RSHD_190=上次重建（%1）失败 - 继续使用之前的拦截表。原因见系统日志。
++RSHD_191=当前使用的拦截表由 %2 个已订阅列表中的 %1 个构建 - 以下列表尚无可用副本：%3。
++RSHD_192=概览
++RSHD_193=规则
++RSHD_194=设备
++RSHD_195=活动
++RSHD_196=1 个问题
++RSHD_197=%1 个问题
++RSHD_198=修复设备
++RSHD_199=10 分钟
++RSHD_200=修复
++RSHD_201=暂停 10 分钟
++RSHD_202=已拦截（15 分钟）
++RSHD_203=无专属配置文件
++RSHD_204=查看列表
++RSHD_205=所有设备
++RSHD_206=每台设备和访客网络、它使用的配置文件，以及最近 15 分钟内为它拦截的内容。配置文件的更改在保存后生效；“修复”和“暂停”立即生效。
++RSHD_207=选择一个配置文件，为它拦截 TikTok 或 Roblox 等服务、将拦截限制在指定时段，并开启安全搜索。设备在“设备”选项卡中获得配置文件。
+ RDWT_69=向本路由器的解析器查询列表中的一个名称；应答必须是 NXDOMAIN。测试查询本身也会以本路由器的名义计数。
+ RENC_66=非公开信任：在本路由器上无法链接到公共根证书（文件中缺少中间证书，或来自测试签发机构），因此会校验名称的设备会拒绝它。请在 %1 中重新签发。
+ RENC_67=发往外部服务器的 DNS-over-TLS 和 DNS-over-QUIC（端口 853）
+diff --git a/release/src/router/www/CZ.dict b/release/src/router/www/CZ.dict
+index 8e79102607..31e3798e35 100644
+--- a/release/src/router/www/CZ.dict
++++ b/release/src/router/www/CZ.dict
+@@ -9134,6 +9134,29 @@ RSHD_181=Pokročilá pravidla mají více než 40 000 znaků. Zkraťte je nebo p
+ RSHD_182=Před uložením bylo z pokročilých pravidel odstraněno %1 neviditelných znaků (znaky nulové šířky, značky pořadí bajtů, směrové značky, neobvyklé mezery).
+ RSHD_183=Aktualizovat
+ RSHD_184=%1 povoleno
++RSHD_185=%1 (blokováno přes %2)
++RSHD_186=Povoleno - platí pro nové dotazy
++RSHD_187=Povolit propustí %1 - bylo blokováno, protože jeho řetězec CNAME vede na %2, uvedený název.
++RSHD_188=Poslední přestavba (%2) byla přeskočena: pro %1 není použitelná kopie (svazek USB není připojen nebo se kopie změnila). Předchozí blokovací tabulka zůstává v provozu, dokud se kopie nevrátí nebo nestáhne znovu.
++RSHD_189=Poslední přestavba (%1) byla přeskočena: jiná ještě běžela. Pro opakování znovu uložte.
++RSHD_190=Poslední přestavba (%1) selhala - předchozí blokovací tabulka zůstává v provozu. Důvod uvádí systémový protokol.
++RSHD_191=Používaná blokovací tabulka byla sestavena z %1 z %2 odebíraných seznamů - zatím bez použitelné kopie: %3.
++RSHD_192=Přehled
++RSHD_193=Pravidla
++RSHD_194=Zařízení
++RSHD_195=Aktivita
++RSHD_196=1 problém
++RSHD_197=Problémy: %1
++RSHD_198=Opravit zařízení
++RSHD_199=10 minut
++RSHD_200=Opravit
++RSHD_201=Pozastavit na 10 min
++RSHD_202=Blokováno, 15 min
++RSHD_203=Bez vlastního profilu
++RSHD_204=Zobrazit seznamy
++RSHD_205=Všechna zařízení
++RSHD_206=Každé zařízení a síť pro hosty, profil, který používá, a co mu bylo zablokováno za posledních 15 minut. Změny profilu platí po uložení; Opravit a Pozastavit působí ihned.
++RSHD_207=Vyberte profil, kterému chcete blokovat služby jako TikTok nebo Roblox, omezit to na určité časy a zapnout bezpečné vyhledávání. Zařízení dostávají profil na kartě Zařízení.
+ RDWT_69=Zeptá se resolveru tohoto routeru na název ze seznamu; odpověď musí být NXDOMAIN. I samotný testovací dotaz se započítá, jako tento router.
+ RENC_66=Není veřejně důvěryhodný: na tomto routeru nevede k veřejné kořenové autoritě (v souboru chybí mezilehlý certifikát, nebo jde o testovacího vydavatele), takže zařízení, která ověřují název, ho odmítnou. Vystavte ho znovu v %1.
+ RENC_67=DNS-over-TLS a DNS-over-QUIC k cizím serverům (port 853)
+diff --git a/release/src/router/www/DA.dict b/release/src/router/www/DA.dict
+index c220184176..eeffc284ec 100644
+--- a/release/src/router/www/DA.dict
++++ b/release/src/router/www/DA.dict
+@@ -9134,6 +9134,29 @@ RSHD_181=De avancerede regler er længere end 40.000 tegn. Forkort dem, eller fl
+ RSHD_182=%1 usynligt tegn (tegn) blev fjernet fra de avancerede regler før gem (nulbreddetegn, byte order marks, retningsmærker, usædvanlige mellemrum).
+ RSHD_183=Opdater
+ RSHD_184=%1 tilladt
++RSHD_185=%1 (blokeret via %2)
++RSHD_186=Tilladt - gælder for nye opslag
++RSHD_187=Tillad lukker %1 igennem - det blev blokeret, fordi dets CNAME-kæde fører til %2, et listet navn.
++RSHD_188=Den seneste genopbygning (%2) blev sprunget over: %1 har ingen brugbar kopi (USB-drevet er ikke monteret, eller kopien er ændret). Den forrige blokeringstabel bruges, indtil kopien er tilbage eller hentet igen.
++RSHD_189=Den seneste genopbygning (%1) blev sprunget over: en anden kørte stadig. Gem igen for at prøve igen.
++RSHD_190=Den seneste genopbygning (%1) mislykkedes - den forrige blokeringstabel bruges fortsat. Systemloggen fortæller hvorfor.
++RSHD_191=Blokeringstabellen i brug er bygget af %1 af %2 abonnerede lister - endnu ingen brugbar kopi af: %3.
++RSHD_192=Oversigt
++RSHD_193=Regler
++RSHD_194=Enheder
++RSHD_195=Aktivitet
++RSHD_196=1 problem
++RSHD_197=%1 problemer
++RSHD_198=Ret en enhed
++RSHD_199=10 minutter
++RSHD_200=Ret
++RSHD_201=Pause 10 min
++RSHD_202=Blokeret, 15 min
++RSHD_203=Ingen egen profil
++RSHD_204=Vis lister
++RSHD_205=Alle enheder
++RSHD_206=Hver enhed og hvert gæstenetværk, den profil den bruger, og hvad der blev blokeret for den de sidste 15 minutter. Profilændringer gælder, når du gemmer; Ret og Pause virker med det samme.
++RSHD_207=Vælg en profil for at blokere tjenester som TikTok eller Roblox for den, begrænse det til bestemte tider og slå sikker søgning til. Enheder får deres profil under fanen Enheder.
+ RDWT_69=Spørger denne routers resolver om et navn på listen; svaret skal være NXDOMAIN. Selve testopslaget tælles også med, som denne router.
+ RENC_66=Ikke offentligt betroet: det kan ikke kædes til en offentlig rod på denne router (et mellemliggende certifikat mangler i filen, eller det er fra en testudsteder), så enheder, der kontrollerer navnet, afviser det. Udsted det igen under %1.
+ RENC_67=DNS-over-TLS og DNS-over-QUIC til servere udefra (port 853)
+diff --git a/release/src/router/www/DE.dict b/release/src/router/www/DE.dict
+index 77b989491f..a59bbd88b8 100644
+--- a/release/src/router/www/DE.dict
++++ b/release/src/router/www/DE.dict
+@@ -9134,6 +9134,29 @@ RSHD_181=Die erweiterten Regeln sind länger als 40.000 Zeichen. Kürzen Sie sie
+ RSHD_182=%1 unsichtbare(s) Zeichen wurde(n) vor dem Speichern aus den erweiterten Regeln entfernt (Zeichen ohne Breite, Byte-Order-Marks, Richtungszeichen, ungewöhnliche Leerzeichen).
+ RSHD_183=Aktualisieren
+ RSHD_184=%1 erlaubt
++RSHD_185=%1 (blockiert über %2)
++RSHD_186=Erlaubt - gilt für neue Abfragen
++RSHD_187=Erlauben lässt %1 durch - es wurde blockiert, weil seine CNAME-Kette zu %2 führt, einem gelisteten Namen.
++RSHD_188=Der letzte Neuaufbau (%2) wurde übersprungen: Für %1 gibt es keine nutzbare Kopie (USB-Laufwerk nicht eingehängt oder Kopie verändert). Die bisherige Sperrtabelle bleibt in Gebrauch, bis die Kopie wieder da ist oder neu geladen wurde.
++RSHD_189=Der letzte Neuaufbau (%1) wurde übersprungen: Ein anderer Aufbau lief noch. Zum Wiederholen erneut speichern.
++RSHD_190=Der letzte Neuaufbau (%1) ist fehlgeschlagen - die bisherige Sperrtabelle bleibt in Gebrauch. Das Systemprotokoll nennt den Grund.
++RSHD_191=Die aktive Sperrtabelle wurde aus %1 von %2 abonnierten Listen gebaut - noch keine nutzbare Kopie von: %3.
++RSHD_192=Übersicht
++RSHD_193=Regeln
++RSHD_194=Geräte
++RSHD_195=Aktivität
++RSHD_196=1 Problem
++RSHD_197=%1 Probleme
++RSHD_198=Problem an einem Gerät beheben
++RSHD_199=10 Minuten
++RSHD_200=Beheben
++RSHD_201=10 Min. pausieren
++RSHD_202=Blockiert, 15 Min.
++RSHD_203=Kein eigenes Profil
++RSHD_204=Listen anzeigen
++RSHD_205=Alle Geräte
++RSHD_206=Jedes Gerät und jedes Gastnetzwerk, das Profil, das es nutzt, und was in den letzten 15 Minuten dafür blockiert wurde. Profiländerungen gelten nach dem Speichern; Beheben und Pause wirken sofort.
++RSHD_207=Wählen Sie ein Profil, um dafür Dienste wie TikTok oder Roblox zu sperren, das auf bestimmte Zeiten zu beschränken und die sichere Suche einzuschalten. Geräte erhalten ihr Profil auf dem Reiter Geräte.
+ RDWT_69=Fragt den Resolver dieses Routers nach einem Namen auf der Liste; die Antwort muss NXDOMAIN sein. Die Testanfrage selbst wird gezählt, als dieser Router.
+ RENC_66=Nicht öffentlich vertrauenswürdig: Auf diesem Router führt keine Kette zu einem öffentlichen Stammzertifikat (in der Datei fehlt ein Zwischenzertifikat, oder es stammt von einem Test-Aussteller), daher lehnen Geräte, die den Namen prüfen, es ab. Stellen Sie es unter %1 neu aus.
+ RENC_67=DNS-over-TLS und DNS-over-QUIC zu fremden Servern (Port 853)
+diff --git a/release/src/router/www/EN.dict b/release/src/router/www/EN.dict
+index 6cc3314829..1482e3e398 100644
+--- a/release/src/router/www/EN.dict
++++ b/release/src/router/www/EN.dict
+@@ -9134,6 +9134,29 @@ RSHD_181=The Advanced rules are longer than 40,000 characters. Shorten them, or
+ RSHD_182=%1 invisible character(s) were removed from the Advanced rules before saving (zero-width characters, byte-order marks, direction marks, odd spaces).
+ RSHD_183=Update
+ RSHD_184=%1 allowed
++RSHD_185=%1 (blocked via %2)
++RSHD_186=Allowed - takes effect for new lookups
++RSHD_187=Allow lets %1 through - it was blocked because its CNAME chain leads to %2, a listed name.
++RSHD_188=The last rebuild (%2) was skipped: %1 has no usable copy (USB volume not mounted, or its copy changed). The previous block table stays in use until the copy is back or downloaded again.
++RSHD_189=The last rebuild (%1) was skipped: another build was still running. Save again to retry.
++RSHD_190=The last rebuild (%1) failed - the previous block table stays in use. The system log says why.
++RSHD_191=The block table in use was built from %1 of %2 subscribed lists - no usable copy yet of: %3.
++RSHD_192=Overview
++RSHD_193=Rules
++RSHD_194=Devices
++RSHD_195=Activity
++RSHD_196=1 problem
++RSHD_197=%1 problems
++RSHD_198=Fix a device
++RSHD_199=10 minutes
++RSHD_200=Fix
++RSHD_201=Pause 10 min
++RSHD_202=Blocked, 15 min
++RSHD_203=No profile of its own
++RSHD_204=Show lists
++RSHD_205=All devices
++RSHD_206=Every device and guest network, the profile it uses and what was blocked for it in the last 15 minutes. Profile changes take effect when you save; Fix and Pause act at once.
++RSHD_207=Pick a profile to block services such as TikTok or Roblox for it, limit that to set times and switch on safe search. Devices get their profile on the Devices tab.
+ RDWT_69=Asks this router's resolver for a name on the list; the answer must be NXDOMAIN. The test lookup itself is counted, as this router.
+ RENC_66=Not publicly trusted: it does not chain to a public root on this router (an intermediate certificate missing from the file, or a test issuer), so devices that check the name refuse it. Issue it again under %1.
+ RENC_67=DNS-over-TLS and DNS-over-QUIC to outside servers (port 853)
+diff --git a/release/src/router/www/ES.dict b/release/src/router/www/ES.dict
+index 943040ce11..4a6e7c7267 100644
+--- a/release/src/router/www/ES.dict
++++ b/release/src/router/www/ES.dict
+@@ -9134,6 +9134,29 @@ RSHD_181=Las reglas avanzadas superan los 40.000 caracteres. Acórtelas o trasla
+ RSHD_182=Se quitaron %1 carácter(es) invisible(s) de las reglas avanzadas antes de guardar (caracteres de ancho cero, marcas de orden de bytes, marcas de dirección, espacios inusuales).
+ RSHD_183=Actualizar
+ RSHD_184=%1 permitidos
++RSHD_185=%1 (bloqueado vía %2)
++RSHD_186=Permitido - se aplica a las nuevas consultas
++RSHD_187=Permitir deja pasar %1 - estaba bloqueado porque su cadena CNAME lleva a %2, un nombre de la lista.
++RSHD_188=La última reconstrucción (%2) se omitió: %1 no tiene una copia utilizable (volumen USB no montado o copia modificada). La tabla de bloqueo anterior sigue en uso hasta que la copia vuelva o se descargue de nuevo.
++RSHD_189=La última reconstrucción (%1) se omitió: otra seguía en curso. Guarde de nuevo para reintentar.
++RSHD_190=La última reconstrucción (%1) falló - la tabla de bloqueo anterior sigue en uso. El registro del sistema indica el motivo.
++RSHD_191=La tabla de bloqueo en uso se creó con %1 de %2 listas suscritas - aún sin copia utilizable de: %3.
++RSHD_192=Resumen
++RSHD_193=Reglas
++RSHD_194=Dispositivos
++RSHD_195=Actividad
++RSHD_196=1 problema
++RSHD_197=%1 problemas
++RSHD_198=Arreglar un dispositivo
++RSHD_199=10 minutos
++RSHD_200=Arreglar
++RSHD_201=Pausar 10 min
++RSHD_202=Bloqueadas, 15 min
++RSHD_203=Sin perfil propio
++RSHD_204=Ver listas
++RSHD_205=Todos los dispositivos
++RSHD_206=Cada dispositivo y red de invitados, el perfil que usa y lo que se le bloqueó en los últimos 15 minutos. Los cambios de perfil se aplican al guardar; Arreglar y Pausar actúan al momento.
++RSHD_207=Elija un perfil para bloquearle servicios como TikTok o Roblox, limitarlo a ciertas horas y activar la búsqueda segura. Los dispositivos reciben su perfil en la pestaña Dispositivos.
+ RDWT_69=Pregunta al resolvedor de este router por un nombre de la lista; la respuesta debe ser NXDOMAIN. La consulta de prueba también se cuenta, como este router.
+ RENC_66=Sin confianza pública: en este router no se encadena a una raíz pública (falta un certificado intermedio en el archivo, o es de un emisor de prueba), así que los dispositivos que comprueban el nombre lo rechazan. Emítalo de nuevo en %1.
+ RENC_67=DNS-over-TLS y DNS-over-QUIC hacia servidores externos (puerto 853)
+diff --git a/release/src/router/www/FI.dict b/release/src/router/www/FI.dict
+index b20dd37960..b5669c702d 100644
+--- a/release/src/router/www/FI.dict
++++ b/release/src/router/www/FI.dict
+@@ -9134,6 +9134,29 @@ RSHD_181=Lisäsäännöt ovat yli 40 000 merkkiä. Lyhennä niitä tai siirrä p
+ RSHD_182=Lisäsäännöistä poistettiin ennen tallennusta %1 näkymätöntä merkkiä (nollaleveät merkit, tavujärjestysmerkit, suuntamerkit, epätavalliset välilyönnit).
+ RSHD_183=Päivitä
+ RSHD_184=%1 sallittua
++RSHD_185=%1 (estetty kautta %2)
++RSHD_186=Sallittu - koskee uusia hakuja
++RSHD_187=Salli päästää %1 läpi - se estettiin, koska sen CNAME-ketju johtaa nimeen %2, joka on listalla.
++RSHD_188=Viimeisin uudelleenkoonti (%2) ohitettiin: listasta %1 ei ole käyttökelpoista kopiota (USB-taltiota ei ole liitetty tai kopio on muuttunut). Edellinen estotaulu pysyy käytössä, kunnes kopio palaa tai ladataan uudelleen.
++RSHD_189=Viimeisin uudelleenkoonti (%1) ohitettiin: toinen koonti oli vielä käynnissä. Tallenna uudelleen yrittääksesi uudestaan.
++RSHD_190=Viimeisin uudelleenkoonti (%1) epäonnistui - edellinen estotaulu pysyy käytössä. Järjestelmäloki kertoo syyn.
++RSHD_191=Käytössä oleva estotaulu koottiin %1 / %2 tilatusta listasta - käyttökelpoista kopiota ei vielä ole: %3.
++RSHD_192=Yleiskatsaus
++RSHD_193=Säännöt
++RSHD_194=Laitteet
++RSHD_195=Toiminta
++RSHD_196=1 ongelma
++RSHD_197=%1 ongelmaa
++RSHD_198=Korjaa laite
++RSHD_199=10 minuuttia
++RSHD_200=Korjaa
++RSHD_201=Tauko 10 min
++RSHD_202=Estetty, 15 min
++RSHD_203=Ei omaa profiilia
++RSHD_204=Näytä luettelot
++RSHD_205=Kaikki laitteet
++RSHD_206=Jokainen laite ja vierasverkko, sen käyttämä profiili ja mitä sille on estetty viimeisten 15 minuutin aikana. Profiilimuutokset tulevat voimaan tallennettaessa; Korjaa ja Tauko toimivat heti.
++RSHD_207=Valitse profiili, jolle estetään palveluja kuten TikTok tai Roblox, rajaa esto tiettyihin aikoihin ja ota turvallinen haku käyttöön. Laitteet saavat profiilinsa Laitteet-välilehdellä.
+ RDWT_69=Kysyy tämän reitittimen nimipalvelijalta luettelossa olevaa nimeä; vastauksen on oltava NXDOMAIN. Myös testikysely itse lasketaan, tämän reitittimen nimissä.
+ RENC_66=Ei julkisesti luotettu: tämä reititin ei saa sille ketjua julkiseen juurivarmenteeseen (tiedostosta puuttuu välivarmenne, tai se on testimyöntäjältä), joten nimen tarkistavat laitteet hylkäävät sen. Myönnä se uudelleen kohdassa %1.
+ RENC_67=DNS-over-TLS ja DNS-over-QUIC ulkopuolisiin palvelimiin (portti 853)
+diff --git a/release/src/router/www/FR.dict b/release/src/router/www/FR.dict
+index ef02cc1d44..d662f8191e 100644
+--- a/release/src/router/www/FR.dict
++++ b/release/src/router/www/FR.dict
+@@ -9134,6 +9134,29 @@ RSHD_181=Les règles avancées dépassent 40 000 caractères. Raccourcissez-les
+ RSHD_182=%1 caractère(s) invisible(s) ont été retirés des règles avancées avant l'enregistrement (caractères sans largeur, marques d'ordre des octets, marques de direction, espaces inhabituels).
+ RSHD_183=Mettre à jour
+ RSHD_184=%1 autorisés
++RSHD_185=%1 (bloqué via %2)
++RSHD_186=Autorisé - s'applique aux nouvelles requêtes
++RSHD_187=Autoriser laisse passer %1 - il était bloqué car sa chaîne CNAME mène à %2, un nom listé.
++RSHD_188=La dernière reconstruction (%2) a été ignorée : %1 n'a pas de copie utilisable (volume USB non monté, ou copie modifiée). La table de blocage précédente reste en service jusqu'au retour de la copie ou à un nouveau téléchargement.
++RSHD_189=La dernière reconstruction (%1) a été ignorée : une autre était encore en cours. Enregistrez à nouveau pour réessayer.
++RSHD_190=La dernière reconstruction (%1) a échoué - la table de blocage précédente reste en service. Le journal système indique pourquoi.
++RSHD_191=La table de blocage en service a été construite à partir de %1 des %2 listes abonnées - pas encore de copie utilisable pour : %3.
++RSHD_192=Vue d'ensemble
++RSHD_193=Règles
++RSHD_194=Appareils
++RSHD_195=Activité
++RSHD_196=1 problème
++RSHD_197=%1 problèmes
++RSHD_198=Dépanner un appareil
++RSHD_199=10 minutes
++RSHD_200=Dépanner
++RSHD_201=Pause 10 min
++RSHD_202=Bloquées, 15 min
++RSHD_203=Pas de profil propre
++RSHD_204=Voir les listes
++RSHD_205=Tous les appareils
++RSHD_206=Chaque appareil et réseau invité, le profil qu'il utilise et ce qui a été bloqué pour lui ces 15 dernières minutes. Les changements de profil s'appliquent à l'enregistrement ; Dépanner et Pause agissent tout de suite.
++RSHD_207=Choisissez un profil pour lui bloquer des services comme TikTok ou Roblox, limiter cela à certaines heures et activer la recherche sécurisée. Les appareils reçoivent leur profil dans l'onglet Appareils.
+ RDWT_69=Demande un nom de la liste au résolveur de ce routeur ; la réponse doit être NXDOMAIN. La requête de test est elle-même comptée, au nom de ce routeur.
+ RENC_66=Non approuvé publiquement : ce routeur ne peut pas le relier à une racine publique (un certificat intermédiaire manque dans le fichier, ou il vient d'un émetteur de test), donc les appareils qui vérifient le nom le refusent. Émettez-le à nouveau sous %1.
+ RENC_67=DNS-over-TLS et DNS-over-QUIC vers des serveurs extérieurs (port 853)
+diff --git a/release/src/router/www/HU.dict b/release/src/router/www/HU.dict
+index 5cfc785fb4..70c35100bd 100644
+--- a/release/src/router/www/HU.dict
++++ b/release/src/router/www/HU.dict
+@@ -9134,6 +9134,29 @@ RSHD_181=A speciális szabályok hosszabbak 40 000 karakternél. Rövidítse ők
+ RSHD_182=Mentés előtt %1 láthatatlan karakter került ki a speciális szabályokból (nulla szélességű karakterek, bájtsorrendjelek, irányjelek, szokatlan szóközök).
+ RSHD_183=Frissítés
+ RSHD_184=%1 engedélyezett
++RSHD_185=%1 (blokkolva ezen keresztül: %2)
++RSHD_186=Engedélyezve - az új lekérdezésekre érvényes
++RSHD_187=Az Engedélyezés átengedi ezt: %1 - azért lett blokkolva, mert a CNAME-lánca ide vezet: %2, ami listán szerepel.
++RSHD_188=Az utolsó újraépítés (%2) kimaradt: ehhez nincs használható másolat: %1 (az USB-kötet nincs csatolva, vagy a másolat megváltozott). Az előző tiltótábla marad használatban, amíg a másolat vissza nem kerül vagy újra le nem töltődik.
++RSHD_189=Az utolsó újraépítés (%1) kimaradt: egy másik még futott. Mentsen újra az ismétléshez.
++RSHD_190=Az utolsó újraépítés (%1) sikertelen - az előző tiltótábla marad használatban. Az ok a rendszernaplóban olvasható.
++RSHD_191=A használt tiltótábla %2 előfizetett listából %1 alapján készült - még nincs használható másolat ezekről: %3.
++RSHD_192=Áttekintés
++RSHD_193=Szabályok
++RSHD_194=Eszközök
++RSHD_195=Tevékenység
++RSHD_196=1 probléma
++RSHD_197=%1 probléma
++RSHD_198=Eszköz javítása
++RSHD_199=10 perc
++RSHD_200=Javítás
++RSHD_201=Szünet 10 percre
++RSHD_202=Blokkolva, 15 perc
++RSHD_203=Nincs saját profil
++RSHD_204=Listák megjelenítése
++RSHD_205=Minden eszköz
++RSHD_206=Minden eszköz és vendéghálózat, az általa használt profil, és hogy mit blokkoltunk neki az elmúlt 15 percben. A profilváltozások mentéskor lépnek életbe; a Javítás és a Szünet azonnal hat.
++RSHD_207=Válasszon profilt, hogy blokkolja számára az olyan szolgáltatásokat, mint a TikTok vagy a Roblox, ezt adott időszakokra korlátozza, és bekapcsolja a biztonságos keresést. Az eszközök az Eszközök lapon kapják meg a profiljukat.
+ RDWT_69=Megkérdez egy listán szereplő nevet a router feloldójától; a válasznak NXDOMAIN-nek kell lennie. Maga a tesztlekérdezés is számít, ennek a routernek a nevében.
+ RENC_66=Nem nyilvánosan megbízható: ezen a routeren nem vezethető vissza nyilvános gyökérhez (a fájlból hiányzik egy köztes tanúsítvány, vagy teszt kiállítótól származik), ezért a nevet ellenőrző eszközök elutasítják. Állítsa ki újra itt: %1.
+ RENC_67=DNS-over-TLS és DNS-over-QUIC külső szerverek felé (853-as port)
+diff --git a/release/src/router/www/IT.dict b/release/src/router/www/IT.dict
+index 05ada4b6ae..2f625b60de 100644
+--- a/release/src/router/www/IT.dict
++++ b/release/src/router/www/IT.dict
+@@ -9134,6 +9134,29 @@ RSHD_181=Le regole avanzate superano i 40.000 caratteri. Accorciale o sposta un
+ RSHD_182=%1 carattere/i invisibile/i rimosso/i dalle regole avanzate prima del salvataggio (caratteri a larghezza zero, byte order mark, segni di direzione, spazi insoliti).
+ RSHD_183=Aggiorna
+ RSHD_184=%1 consentiti
++RSHD_185=%1 (bloccato tramite %2)
++RSHD_186=Consentito - vale per le nuove richieste
++RSHD_187=Consenti fa passare %1 - era bloccato perché la sua catena CNAME porta a %2, un nome in elenco.
++RSHD_188=L'ultima ricostruzione (%2) è stata saltata: %1 non ha una copia utilizzabile (volume USB non montato, o copia modificata). La tabella di blocco precedente resta in uso finché la copia non torna o viene scaricata di nuovo.
++RSHD_189=L'ultima ricostruzione (%1) è stata saltata: un'altra era ancora in corso. Salva di nuovo per riprovare.
++RSHD_190=L'ultima ricostruzione (%1) non è riuscita - la tabella di blocco precedente resta in uso. Il registro di sistema indica il motivo.
++RSHD_191=La tabella di blocco in uso è stata creata da %1 di %2 elenchi sottoscritti - ancora nessuna copia utilizzabile di: %3.
++RSHD_192=Panoramica
++RSHD_193=Regole
++RSHD_194=Dispositivi
++RSHD_195=Attività
++RSHD_196=1 problema
++RSHD_197=%1 problemi
++RSHD_198=Ripara un dispositivo
++RSHD_199=10 minuti
++RSHD_200=Ripara
++RSHD_201=Pausa 10 min
++RSHD_202=Bloccate, 15 min
++RSHD_203=Nessun profilo proprio
++RSHD_204=Mostra elenchi
++RSHD_205=Tutti i dispositivi
++RSHD_206=Ogni dispositivo e rete ospite, il profilo che usa e cosa gli è stato bloccato negli ultimi 15 minuti. Le modifiche ai profili valgono al salvataggio; Ripara e Pausa agiscono subito.
++RSHD_207=Scegli un profilo per bloccargli servizi come TikTok o Roblox, limitarlo a certi orari e attivare la ricerca sicura. I dispositivi ricevono il profilo nella scheda Dispositivi.
+ RDWT_69=Chiede un nome dell'elenco al resolver di questo router; la risposta deve essere NXDOMAIN. Anche la richiesta di prova viene contata, come questo router.
+ RENC_66=Non attendibile pubblicamente: su questo router non risale a una radice pubblica (nel file manca un certificato intermedio, oppure proviene da un emittente di prova), quindi i dispositivi che verificano il nome lo rifiutano. Emettilo di nuovo in %1.
+ RENC_67=DNS-over-TLS e DNS-over-QUIC verso server esterni (porta 853)
+diff --git a/release/src/router/www/JP.dict b/release/src/router/www/JP.dict
+index 782a589782..437ebbb6c7 100644
+--- a/release/src/router/www/JP.dict
++++ b/release/src/router/www/JP.dict
+@@ -9134,6 +9134,29 @@ RSHD_181=詳細ルールが 40,000 文字を超えています。短くするか
+ RSHD_182=保存前に詳細ルールから不可視文字を %1 個削除しました（ゼロ幅文字、バイト順マーク、方向マーク、特殊な空白）。
+ RSHD_183=更新
+ RSHD_184=%1 件を許可
++RSHD_185=%1（%2 経由でブロック）
++RSHD_186=許可済み - 新しい問い合わせから有効
++RSHD_187=許可すると %1 が通過します - CNAME チェーンがリスト掲載名 %2 につながるためブロックされていました。
++RSHD_188=前回の再構築（%2）はスキップされました：%1 に使用できるコピーがありません（USB ボリューム未マウント、またはコピーが変更された）。コピーが戻るか再ダウンロードされるまで、以前のブロックテーブルを使い続けます。
++RSHD_189=前回の再構築（%1）はスキップされました：別の構築がまだ実行中でした。再試行するにはもう一度保存してください。
++RSHD_190=前回の再構築（%1）に失敗しました - 以前のブロックテーブルを使い続けます。理由はシステムログにあります。
++RSHD_191=使用中のブロックテーブルは購読中の %2 リストのうち %1 から構築されました - まだ使用できるコピーがないもの：%3。
++RSHD_192=概要
++RSHD_193=ルール
++RSHD_194=デバイス
++RSHD_195=アクティビティ
++RSHD_196=問題 1 件
++RSHD_197=問題 %1 件
++RSHD_198=デバイスを修復
++RSHD_199=10 分
++RSHD_200=修復
++RSHD_201=10 分間停止
++RSHD_202=ブロック数（15 分）
++RSHD_203=専用プロファイルなし
++RSHD_204=リストを表示
++RSHD_205=すべてのデバイス
++RSHD_206=各デバイスとゲストネットワーク、使用しているプロファイル、過去 15 分間にブロックされた内容です。プロファイルの変更は保存時に反映され、「修復」と「一時停止」はすぐに動作します。
++RSHD_207=プロファイルを選んで、TikTok や Roblox などのサービスをブロックし、その時間帯を限定し、セーフサーチをオンにします。デバイスのプロファイルは「デバイス」タブで設定します。
+ RDWT_69=このルーターのリゾルバーにリスト内の名前を問い合わせます。応答は NXDOMAIN でなければなりません。テストの問い合わせ自体もこのルーターとして数えられます。
+ RENC_66=公的に信頼されていません：このルーターでは公的なルート証明書までチェーンをたどれません（ファイルに中間証明書がないか、テスト用の発行元です）。名前を確認するデバイスは拒否します。%1 で再発行してください。
+ RENC_67=外部サーバーへの DNS-over-TLS と DNS-over-QUIC（ポート 853）
+diff --git a/release/src/router/www/KR.dict b/release/src/router/www/KR.dict
+index f176812f09..471535ba63 100644
+--- a/release/src/router/www/KR.dict
++++ b/release/src/router/www/KR.dict
+@@ -9134,6 +9134,29 @@ RSHD_181=고급 규칙이 40,000자를 넘습니다. 줄이거나 긴 목록을
+ RSHD_182=저장하기 전에 고급 규칙에서 보이지 않는 문자 %1개를 제거했습니다(폭 없는 문자, 바이트 순서 표시, 방향 표시, 특수 공백).
+ RSHD_183=업데이트
+ RSHD_184=%1개 허용
++RSHD_185=%1 (%2 경유 차단)
++RSHD_186=허용됨 - 새 조회부터 적용
++RSHD_187=허용하면 %1 이(가) 통과됩니다 - CNAME 체인이 목록에 있는 이름 %2(으)로 이어져 차단되었습니다.
++RSHD_188=마지막 재구성(%2)을 건너뛰었습니다: %1 에 사용할 수 있는 사본이 없습니다(USB 볼륨이 마운트되지 않았거나 사본이 변경됨). 사본이 돌아오거나 다시 다운로드될 때까지 이전 차단 테이블을 계속 사용합니다.
++RSHD_189=마지막 재구성(%1)을 건너뛰었습니다: 다른 구성이 아직 실행 중이었습니다. 다시 시도하려면 다시 저장하세요.
++RSHD_190=마지막 재구성(%1)에 실패했습니다 - 이전 차단 테이블을 계속 사용합니다. 이유는 시스템 로그에 있습니다.
++RSHD_191=사용 중인 차단 테이블은 구독한 %2개 목록 중 %1개로 구성되었습니다 - 아직 사용할 수 있는 사본이 없는 목록: %3.
++RSHD_192=개요
++RSHD_193=규칙
++RSHD_194=기기
++RSHD_195=활동
++RSHD_196=문제 1개
++RSHD_197=문제 %1개
++RSHD_198=기기 문제 해결
++RSHD_199=10분
++RSHD_200=해결
++RSHD_201=10분 일시 중지
++RSHD_202=차단됨(15분)
++RSHD_203=전용 프로필 없음
++RSHD_204=목록 보기
++RSHD_205=모든 기기
++RSHD_206=각 기기와 게스트 네트워크, 사용하는 프로필, 최근 15분 동안 차단된 항목입니다. 프로필 변경은 저장할 때 적용되며, 해결과 일시 중지는 즉시 적용됩니다.
++RSHD_207=프로필을 선택해 TikTok이나 Roblox 같은 서비스를 차단하고, 차단을 특정 시간으로 제한하고, 세이프서치를 켭니다. 기기의 프로필은 기기 탭에서 지정합니다.
+ RDWT_69=이 라우터의 리졸버에 목록의 이름을 조회합니다. 응답은 NXDOMAIN이어야 합니다. 테스트 조회 자체도 이 라우터로 계산됩니다.
+ RENC_66=공개적으로 신뢰되지 않음: 이 라우터에서 공개 루트까지 체인을 확인할 수 없습니다(파일에 중간 인증서가 없거나 테스트 발급 기관의 인증서입니다). 이름을 확인하는 기기는 거부합니다. %1에서 다시 발급하세요.
+ RENC_67=외부 서버로의 DNS-over-TLS 및 DNS-over-QUIC(포트 853)
+diff --git a/release/src/router/www/MS.dict b/release/src/router/www/MS.dict
+index cfd1aa5ab3..94555f2cc9 100644
+--- a/release/src/router/www/MS.dict
++++ b/release/src/router/www/MS.dict
+@@ -9134,6 +9134,29 @@ RSHD_181=Peraturan lanjutan melebihi 40,000 aksara. Pendekkannya atau pindahkan
+ RSHD_182=%1 aksara halimunan telah dibuang daripada peraturan lanjutan sebelum disimpan (aksara lebar sifar, tanda tertib bait, tanda arah, ruang luar biasa).
+ RSHD_183=Kemas kini
+ RSHD_184=%1 dibenarkan
++RSHD_185=%1 (disekat melalui %2)
++RSHD_186=Dibenarkan - berkuat untuk carian baharu
++RSHD_187=Benarkan melepaskan %1 - ia disekat kerana rantaian CNAME-nya menuju ke %2, nama yang tersenarai.
++RSHD_188=Bina semula terakhir (%2) dilangkau: %1 tiada salinan yang boleh digunakan (volum USB tidak dilekapkan, atau salinan telah berubah). Jadual sekatan sebelumnya kekal digunakan sehingga salinan kembali atau dimuat turun semula.
++RSHD_189=Bina semula terakhir (%1) dilangkau: binaan lain masih berjalan. Simpan semula untuk mencuba lagi.
++RSHD_190=Bina semula terakhir (%1) gagal - jadual sekatan sebelumnya kekal digunakan. Log sistem menyatakan sebabnya.
++RSHD_191=Jadual sekatan yang digunakan dibina daripada %1 daripada %2 senarai yang dilanggan - belum ada salinan yang boleh digunakan bagi: %3.
++RSHD_192=Gambaran keseluruhan
++RSHD_193=Peraturan
++RSHD_194=Peranti
++RSHD_195=Aktiviti
++RSHD_196=1 masalah
++RSHD_197=%1 masalah
++RSHD_198=Baiki peranti
++RSHD_199=10 minit
++RSHD_200=Baiki
++RSHD_201=Jeda 10 min
++RSHD_202=Disekat, 15 min
++RSHD_203=Tiada profil sendiri
++RSHD_204=Tunjukkan senarai
++RSHD_205=Semua peranti
++RSHD_206=Setiap peranti dan rangkaian tetamu, profil yang digunakannya dan apa yang disekat untuknya dalam 15 minit terakhir. Perubahan profil berkuat kuasa apabila anda menyimpan; Baiki dan Jeda bertindak serta-merta.
++RSHD_207=Pilih profil untuk menyekat perkhidmatan seperti TikTok atau Roblox baginya, hadkan itu pada waktu tertentu dan hidupkan carian selamat. Peranti mendapat profilnya di tab Peranti.
+ RDWT_69=Menanya penyelesai penghala ini tentang satu nama dalam senarai; jawapannya mesti NXDOMAIN. Carian ujian itu sendiri turut dikira, sebagai penghala ini.
+ RENC_66=Tidak dipercayai secara umum: penghala ini tidak dapat merangkaikannya kepada akar awam (sijil perantaraan tiada dalam fail, atau ia daripada pengeluar ujian), jadi peranti yang menyemak nama menolaknya. Keluarkannya semula di bawah %1.
+ RENC_67=DNS-over-TLS dan DNS-over-QUIC ke pelayan luar (port 853)
+diff --git a/release/src/router/www/NL.dict b/release/src/router/www/NL.dict
+index 11c372f09d..a0d69019ec 100644
+--- a/release/src/router/www/NL.dict
++++ b/release/src/router/www/NL.dict
+@@ -9134,6 +9134,29 @@ RSHD_181=De geavanceerde regels zijn langer dan 40.000 tekens. Kort ze in of zet
+ RSHD_182=%1 onzichtbaar teken (tekens) uit de geavanceerde regels verwijderd vóór het opslaan (tekens zonder breedte, byte-order marks, richtingstekens, ongebruikelijke spaties).
+ RSHD_183=Bijwerken
+ RSHD_184=%1 toegestaan
++RSHD_185=%1 (geblokkeerd via %2)
++RSHD_186=Toegestaan - geldt voor nieuwe opvragingen
++RSHD_187=Toestaan laat %1 door - het werd geblokkeerd omdat de CNAME-keten naar %2 leidt, een vermelde naam.
++RSHD_188=De laatste herbouw (%2) is overgeslagen: van %1 is geen bruikbare kopie (USB-volume niet gekoppeld, of de kopie is gewijzigd). De vorige blokkeertabel blijft in gebruik tot de kopie terug is of opnieuw is gedownload.
++RSHD_189=De laatste herbouw (%1) is overgeslagen: een andere liep nog. Sla opnieuw op om het nog eens te proberen.
++RSHD_190=De laatste herbouw (%1) is mislukt - de vorige blokkeertabel blijft in gebruik. Het systeemlogboek vermeldt waarom.
++RSHD_191=De gebruikte blokkeertabel is gebouwd uit %1 van %2 geabonneerde lijsten - nog geen bruikbare kopie van: %3.
++RSHD_192=Overzicht
++RSHD_193=Regels
++RSHD_194=Apparaten
++RSHD_195=Activiteit
++RSHD_196=1 probleem
++RSHD_197=%1 problemen
++RSHD_198=Apparaat repareren
++RSHD_199=10 minuten
++RSHD_200=Repareren
++RSHD_201=10 min pauzeren
++RSHD_202=Geblokkeerd, 15 min
++RSHD_203=Geen eigen profiel
++RSHD_204=Lijsten tonen
++RSHD_205=Alle apparaten
++RSHD_206=Elk apparaat en gastnetwerk, het profiel dat het gebruikt en wat er de afgelopen 15 minuten voor werd geblokkeerd. Profielwijzigingen gelden na opslaan; Repareren en Pauzeren werken meteen.
++RSHD_207=Kies een profiel om er diensten zoals TikTok of Roblox voor te blokkeren, dat tot bepaalde tijden te beperken en veilig zoeken aan te zetten. Apparaten krijgen hun profiel op het tabblad Apparaten.
+ RDWT_69=Vraagt de resolver van deze router naar een naam op de lijst; het antwoord moet NXDOMAIN zijn. De testopvraging zelf wordt geteld, als deze router.
+ RENC_66=Niet publiek vertrouwd: deze router kan het niet koppelen aan een publieke root (er ontbreekt een tussencertificaat in het bestand, of het komt van een testuitgever), dus apparaten die de naam controleren weigeren het. Vraag het onder %1 opnieuw aan.
+ RENC_67=DNS-over-TLS en DNS-over-QUIC naar externe servers (poort 853)
+diff --git a/release/src/router/www/NO.dict b/release/src/router/www/NO.dict
+index 1aa12d0f9e..8be45be664 100644
+--- a/release/src/router/www/NO.dict
++++ b/release/src/router/www/NO.dict
+@@ -9134,6 +9134,29 @@ RSHD_181=De avanserte reglene er lengre enn 40 000 tegn. Kort dem ned, eller fly
+ RSHD_182=%1 usynlig(e) tegn ble fjernet fra de avanserte reglene før lagring (nullbreddetegn, byte order marks, retningsmerker, uvanlige mellomrom).
+ RSHD_183=Oppdater
+ RSHD_184=%1 tillatt
++RSHD_185=%1 (blokkert via %2)
++RSHD_186=Tillatt - gjelder for nye oppslag
++RSHD_187=Tillat slipper %1 gjennom - det ble blokkert fordi CNAME-kjeden fører til %2, et listet navn.
++RSHD_188=Siste gjenoppbygging (%2) ble hoppet over: %1 har ingen brukbar kopi (USB-volumet er ikke montert, eller kopien er endret). Den forrige blokkeringstabellen brukes til kopien er tilbake eller lastet ned på nytt.
++RSHD_189=Siste gjenoppbygging (%1) ble hoppet over: en annen pågikk fortsatt. Lagre igjen for å prøve på nytt.
++RSHD_190=Siste gjenoppbygging (%1) mislyktes - den forrige blokkeringstabellen brukes fortsatt. Systemloggen sier hvorfor.
++RSHD_191=Blokkeringstabellen i bruk er bygget fra %1 av %2 abonnerte lister - ennå ingen brukbar kopi av: %3.
++RSHD_192=Oversikt
++RSHD_193=Regler
++RSHD_194=Enheter
++RSHD_195=Aktivitet
++RSHD_196=1 problem
++RSHD_197=%1 problemer
++RSHD_198=Fiks en enhet
++RSHD_199=10 minutter
++RSHD_200=Fiks
++RSHD_201=Pause 10 min
++RSHD_202=Blokkert, 15 min
++RSHD_203=Ingen egen profil
++RSHD_204=Vis lister
++RSHD_205=Alle enheter
++RSHD_206=Hver enhet og hvert gjestenettverk, profilen den bruker, og hva som ble blokkert for den de siste 15 minuttene. Profilendringer gjelder når du lagrer; Fiks og Pause virker med en gang.
++RSHD_207=Velg en profil for å blokkere tjenester som TikTok eller Roblox for den, begrense det til bestemte tider og slå på trygt søk. Enhetene får profilen sin på fanen Enheter.
+ RDWT_69=Spør denne ruterens resolver om et navn på listen; svaret må være NXDOMAIN. Selve testoppslaget telles også, som denne ruteren.
+ RENC_66=Ikke offentlig klarert: denne ruteren kan ikke kjede det til en offentlig rot (et mellomliggende sertifikat mangler i filen, eller det er fra en testutsteder), så enheter som sjekker navnet avviser det. Utsted det på nytt under %1.
+ RENC_67=DNS-over-TLS og DNS-over-QUIC til servere utenfra (port 853)
+diff --git a/release/src/router/www/PL.dict b/release/src/router/www/PL.dict
+index bada9db90f..fcf3076be4 100644
+--- a/release/src/router/www/PL.dict
++++ b/release/src/router/www/PL.dict
+@@ -9134,6 +9134,29 @@ RSHD_181=Reguły zaawansowane mają ponad 40 000 znaków. Skróć je albo przeni
+ RSHD_182=Przed zapisaniem usunięto z reguł zaawansowanych %1 niewidocznych znaków (znaki o zerowej szerokości, znaczniki kolejności bajtów, znaczniki kierunku, nietypowe spacje).
+ RSHD_183=Aktualizuj
+ RSHD_184=%1 dozwolonych
++RSHD_185=%1 (zablokowano przez %2)
++RSHD_186=Dozwolone - działa dla nowych zapytań
++RSHD_187=Zezwól przepuszcza %1 - zostało zablokowane, bo jego łańcuch CNAME prowadzi do %2, nazwy z listy.
++RSHD_188=Ostatnia przebudowa (%2) została pominięta: brak użytecznej kopii %1 (wolumin USB niezamontowany lub kopia zmieniona). Poprzednia tabela blokad pozostaje w użyciu, dopóki kopia nie wróci lub nie zostanie pobrana ponownie.
++RSHD_189=Ostatnia przebudowa (%1) została pominięta: inna jeszcze trwała. Zapisz ponownie, aby spróbować jeszcze raz.
++RSHD_190=Ostatnia przebudowa (%1) nie powiodła się - poprzednia tabela blokad pozostaje w użyciu. Przyczynę podaje dziennik systemowy.
++RSHD_191=Używana tabela blokad powstała z %1 z %2 subskrybowanych list - wciąż brak użytecznej kopii: %3.
++RSHD_192=Przegląd
++RSHD_193=Reguły
++RSHD_194=Urządzenia
++RSHD_195=Aktywność
++RSHD_196=1 problem
++RSHD_197=Problemy: %1
++RSHD_198=Napraw urządzenie
++RSHD_199=10 minut
++RSHD_200=Napraw
++RSHD_201=Wstrzymaj na 10 min
++RSHD_202=Zablokowane, 15 min
++RSHD_203=Bez własnego profilu
++RSHD_204=Pokaż listy
++RSHD_205=Wszystkie urządzenia
++RSHD_206=Każde urządzenie i sieć gości, profil, którego używa, i co zostało dla niego zablokowane w ostatnich 15 minutach. Zmiany profilu obowiązują po zapisaniu; Napraw i Wstrzymaj działają od razu.
++RSHD_207=Wybierz profil, aby blokować w nim usługi takie jak TikTok czy Roblox, ograniczyć to do określonych godzin i włączyć bezpieczne wyszukiwanie. Urządzenia dostają profil na karcie Urządzenia.
+ RDWT_69=Pyta resolwer tego routera o nazwę z listy; odpowiedź musi być NXDOMAIN. Samo zapytanie testowe też jest liczone, jako ten router.
+ RENC_66=Niezaufany publicznie: na tym routerze nie prowadzi do publicznego certyfikatu głównego (w pliku brakuje certyfikatu pośredniego albo pochodzi od wystawcy testowego), więc urządzenia sprawdzające nazwę go odrzucają. Wystaw go ponownie w %1.
+ RENC_67=DNS-over-TLS i DNS-over-QUIC do zewnętrznych serwerów (port 853)
+diff --git a/release/src/router/www/RO.dict b/release/src/router/www/RO.dict
+index a8bd094a65..7a0c67d673 100644
+--- a/release/src/router/www/RO.dict
++++ b/release/src/router/www/RO.dict
+@@ -9134,6 +9134,29 @@ RSHD_181=Regulile avansate depășesc 40.000 de caractere. Scurtați-le sau muta
+ RSHD_182=Au fost eliminate %1 caractere invizibile din regulile avansate înainte de salvare (caractere de lățime zero, marcaje de ordine a octeților, marcaje de direcție, spații neobișnuite).
+ RSHD_183=Actualizează
+ RSHD_184=%1 permise
++RSHD_185=%1 (blocat prin %2)
++RSHD_186=Permis - se aplică noilor interogări
++RSHD_187=Permite lasă să treacă %1 - a fost blocat deoarece lanțul său CNAME duce la %2, un nume din listă.
++RSHD_188=Ultima reconstruire (%2) a fost omisă: %1 nu are o copie utilizabilă (volumul USB nu este montat sau copia s-a schimbat). Tabela de blocare anterioară rămâne în uz până când copia revine sau este descărcată din nou.
++RSHD_189=Ultima reconstruire (%1) a fost omisă: alta încă rula. Salvați din nou pentru a reîncerca.
++RSHD_190=Ultima reconstruire (%1) a eșuat - tabela de blocare anterioară rămâne în uz. Jurnalul de sistem arată motivul.
++RSHD_191=Tabela de blocare în uz a fost construită din %1 din %2 liste abonate - încă fără copie utilizabilă pentru: %3.
++RSHD_192=Prezentare generală
++RSHD_193=Reguli
++RSHD_194=Dispozitive
++RSHD_195=Activitate
++RSHD_196=1 problemă
++RSHD_197=%1 probleme
++RSHD_198=Repară un dispozitiv
++RSHD_199=10 minute
++RSHD_200=Repară
++RSHD_201=Pauză 10 min
++RSHD_202=Blocate, 15 min
++RSHD_203=Fără profil propriu
++RSHD_204=Arată listele
++RSHD_205=Toate dispozitivele
++RSHD_206=Fiecare dispozitiv și rețea de oaspeți, profilul pe care îl folosește și ce i s-a blocat în ultimele 15 minute. Modificările de profil se aplică la salvare; Repară și Pauză acționează imediat.
++RSHD_207=Alegeți un profil pentru a-i bloca servicii precum TikTok sau Roblox, a limita asta la anumite ore și a activa căutarea sigură. Dispozitivele primesc profilul în fila Dispozitive.
+ RDWT_69=Întreabă rezolvatorul acestui router despre un nume de pe listă; răspunsul trebuie să fie NXDOMAIN. Interogarea de test este și ea numărată, ca acest router.
+ RENC_66=Fără încredere publică: pe acest router nu se leagă de o rădăcină publică (lipsește un certificat intermediar din fișier sau provine de la un emitent de test), deci dispozitivele care verifică numele îl refuză. Emiteți-l din nou în %1.
+ RENC_67=DNS-over-TLS și DNS-over-QUIC către servere externe (portul 853)
+diff --git a/release/src/router/www/RU.dict b/release/src/router/www/RU.dict
+index 978b5be149..157cbc4070 100644
+--- a/release/src/router/www/RU.dict
++++ b/release/src/router/www/RU.dict
+@@ -9134,6 +9134,29 @@ RSHD_181=Расширенные правила длиннее 40 000 симво
+ RSHD_182=Перед сохранением из расширенных правил удалено невидимых символов: %1 (символы нулевой ширины, метки порядка байтов, знаки направления, нестандартные пробелы).
+ RSHD_183=Обновить
+ RSHD_184=%1 разрешено
++RSHD_185=%1 (заблокировано через %2)
++RSHD_186=Разрешено - действует для новых запросов
++RSHD_187=«Разрешить» пропускает %1 - имя было заблокировано, потому что его цепочка CNAME ведёт к %2, имени из списка.
++RSHD_188=Последняя пересборка (%2) пропущена: для %1 нет пригодной копии (том USB не смонтирован или копия изменилась). Прежняя таблица блокировки остаётся в работе, пока копия не вернётся или не будет загружена снова.
++RSHD_189=Последняя пересборка (%1) пропущена: ещё шла другая. Сохраните снова, чтобы повторить.
++RSHD_190=Последняя пересборка (%1) не удалась - прежняя таблица блокировки остаётся в работе. Причина указана в системном журнале.
++RSHD_191=Действующая таблица блокировки собрана из %1 из %2 подписанных списков - пока нет пригодной копии: %3.
++RSHD_192=Обзор
++RSHD_193=Правила
++RSHD_194=Устройства
++RSHD_195=Активность
++RSHD_196=1 проблема
++RSHD_197=Проблем: %1
++RSHD_198=Починить устройство
++RSHD_199=10 минут
++RSHD_200=Починить
++RSHD_201=Пауза 10 мин
++RSHD_202=Заблокировано, 15 мин
++RSHD_203=Без своего профиля
++RSHD_204=Показать списки
++RSHD_205=Все устройства
++RSHD_206=Каждое устройство и гостевая сеть, используемый профиль и что было для них заблокировано за последние 15 минут. Изменения профилей вступают в силу при сохранении; «Починить» и «Пауза» действуют сразу.
++RSHD_207=Выберите профиль, чтобы блокировать для него такие сервисы, как TikTok или Roblox, ограничить это определённым временем и включить безопасный поиск. Профиль устройствам назначается на вкладке «Устройства».
+ RDWT_69=Запрашивает у резолвера этого роутера имя из списка; ответ должен быть NXDOMAIN. Сам проверочный запрос тоже учитывается - как этот роутер.
+ RENC_66=Не является общедоверенным: на этом роутере его не удаётся связать с публичным корневым сертификатом (в файле нет промежуточного сертификата или он выдан тестовым центром), поэтому устройства, проверяющие имя, отклоняют его. Выпустите его заново в разделе %1.
+ RENC_67=DNS-over-TLS и DNS-over-QUIC к внешним серверам (порт 853)
+diff --git a/release/src/router/www/Reaper_Wallguard.asp b/release/src/router/www/Reaper_Wallguard.asp
+index 2c2b15736a..4ca510b35f 100644
+--- a/release/src/router/www/Reaper_Wallguard.asp
++++ b/release/src/router/www/Reaper_Wallguard.asp
+@@ -84,6 +84,17 @@ label.chip{gap:7px;padding:5px 11px 5px 7px;border:1px solid var(--line-soft);bo
+ .day.on{color:var(--bone);border-color:var(--crimson-deep);background:rgba(225,6,0,.16)}
+ .desc.warn{color:var(--amber)}
+ .v-s{color:var(--jade)}
++/* reaper 2026-11-15 (owner, concept B): the Firewall page's tab row (.win / .tab / .cdot come from rp.css), Save at its
++   right end, a "N problems" count on Lists, the help fly-out button; wide tables pan inside their own box */
++.wins{display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin:0 0 16px}
++.win .wcnt{margin-left:8px;font-family:var(--body);font-size:10.5px;letter-spacing:0;text-transform:none;color:var(--amber)}
++.win.on .wcnt{color:var(--bone)}
++.wins .savebar{margin-left:auto;display:flex;gap:8px;align-items:center;flex-wrap:wrap}
++.helpq{width:24px;height:24px;border-radius:50%;padding:0;background:var(--panel-2);border:1px solid var(--line-soft);color:var(--bone-dim);font-family:var(--body);font-size:13px;font-weight:600;line-height:22px;cursor:pointer}
++.helpq:hover{border-color:var(--crimson);color:var(--bone)}
++.tblw{max-width:100%;overflow-x:auto}
++.tbl td select{max-width:220px}
++.flyout ol.steps{padding-left:20px}
+ </style>
+ </head>
+ <body>
+@@ -94,9 +105,24 @@ label.chip{gap:7px;padding:5px 11px 5px 7px;border:1px solid var(--line-soft);bo
+   <span class="ver"><#RSHD_01#></span>
+   <span class="statuspill" id="pill"><#RSHD_03#></span>
+   <span class="mastertg"><#RSHD_06#> <span class="tg" id="tgon"></span></span>
++  <!-- reaper 2026-11-15 (owner, concept B): How to use / How it works moved to the fly-out -->
++  <button type="button" class="helpq" id="helpbtn" title="<#RSHD_90#>" aria-label="<#RSHD_90#>" aria-controls="flyout">?</button>
+ </div>
+ <p class="lede"><#RSHD_07#></p>
+ 
++<!-- reaper 2026-11-15 (owner, concept B): five tabs in the Firewall page's tab row; a tab holding an unsaved change gets
++     the amber dot, the Lists tab says how many lists the last build lacked; Save sits at the right end -->
++<div class="wins" id="wins" role="tablist">
++  <div class="win" data-t="overview" role="tab" tabindex="0"><#RSHD_192#><span class="cdot"></span></div>
++  <div class="win" data-t="lists" role="tab" tabindex="0"><#RSHD_21#><span class="wcnt" id="listprob"></span><span class="cdot"></span></div>
++  <div class="win" data-t="rules" role="tab" tabindex="0"><#RSHD_193#><span class="cdot"></span></div>
++  <div class="win" data-t="devices" role="tab" tabindex="0"><#RSHD_194#><span class="cdot"></span></div>
++  <div class="win" data-t="activity" role="tab" tabindex="0"><#RSHD_195#><span class="cdot"></span></div>
++  <span class="savebar"><button class="btn primary" data-act="save"><#RWDN_28#></button></span>
++</div>
++
++<!-- ============================= OVERVIEW ============================= -->
++<div class="tab" id="tab_overview" role="tabpanel">
+ <div class="warnbanner" id="banner">
+   <svg viewBox="0 0 24 24"><path d="M12 3l9 16H3z"/><path d="M12 10v4M12 17h.01"/></svg>
+   <div id="bannertext"></div>
+@@ -106,6 +132,11 @@ label.chip{gap:7px;padding:5px 11px 5px 7px;border:1px solid var(--line-soft);bo
+   <svg viewBox="0 0 24 24"><path d="M12 3l9 16H3z"/><path d="M12 10v4M12 17h.01"/></svg>
+   <div id="bypasstext"></div>
+ </div>
++<!-- reaper 2026-11-15: the build warning of the Lists tab (#buildwarn), repeated here -->
++<div class="warnbanner" id="buildban">
++  <svg viewBox="0 0 24 24"><path d="M12 3l9 16H3z"/><path d="M12 10v4M12 17h.01"/></svg>
++  <div><div id="buildbantext"></div><div style="margin-top:8px"><button type="button" class="btn ghost small" data-act="golists"><#RSHD_204#></button></div></div>
++</div>
+ 
+ <div class="stats">
+   <div class="stat"><div class="n" id="s_q">-</div><div class="l"><#RSHD_10#></div></div>
+@@ -116,23 +147,39 @@ label.chip{gap:7px;padding:5px 11px 5px 7px;border:1px solid var(--line-soft);bo
+ </div>
+ 
+ <div class="card">
+-  <h2><#RSHD_15#></h2>
+-  <ol class="steps">
+-    <li><#RSHD_16#></li>
+-    <li><#RSHD_17#></li>
+-    <li><#RSHD_18#></li>
+-    <li><#RSHD_19#></li>
+-    <li><#RSHD_20#></li>
+-    <li><#RSHD_98#></li>
+-  </ol>
++  <h2><#RSHD_198#> <span class="dim">&middot; <#RSHD_63#></span></h2>
++  <div class="desc"><#RSHD_64#></div>
++  <div class="row"><select id="ubdev" style="min-width:260px;max-width:100%"></select></div>
++  <div class="tblw"><table class="tbl"><thead><tr><th><#RDWT_16#></th><th class="num"><#RDWT_11#></th><th><#RDWT_17#></th><th style="width:220px"></th></tr></thead><tbody id="ubbody"></tbody></table></div>
+ </div>
+ 
++<div class="duo">
++  <div class="card">
++    <h2><#RSHD_56#></h2>
++    <div class="row">
++      <select id="ptarget" style="min-width:200px;max-width:100%"></select>
++      <select id="pmins"><option value="5"><#RSHD_58#></option><option value="10" selected><#RSHD_199#></option><option value="60"><#RSHD_59#></option><option value="six"><#RSHD_60#></option></select>
++      <button type="button" class="btn ghost" data-act="pause"><#RSHD_56#></button>
++      <button type="button" class="btn ghost" data-act="resume"><#RSHD_61#></button>
++    </div>
++    <ul id="pauses"></ul>
++  </div>
++  <div class="card">
++    <h2><#RSHD_68#></h2>
++    <div class="row"><input type="text" id="whyname" placeholder="<#RSHD_69#>"><button type="button" class="btn ghost" data-act="why"><#RSHD_70#></button></div>
++    <div class="result" id="whyres"></div>
++  </div>
++</div>
++</div>
++
++<!-- ============================= LISTS ============================= -->
++<div class="tab" id="tab_lists" role="tabpanel">
+ <div class="card">
+   <h2><#RSHD_21#></h2>
+-  <table class="tbl">
++  <div class="tblw"><table class="tbl">
+     <thead><tr><th><#RSHD_22#></th><th style="width:44px"></th><th class="num"><#RSHD_23#></th><th class="num"><#RSHD_24#></th><th><#RSHD_25#></th><th><#RSHD_26#></th><th></th></tr></thead>
+     <tbody id="listbody"></tbody>
+-  </table>
++  </table></div>
+   <div class="dim" id="hiddenline" style="margin:8px 0 0"></div>
+   <div class="desc" style="margin-top:12px"><#RSHD_156#></div>
+   <!-- 2026-10-26 (owner): your own sources - a plain list, or a supplier's API (POST body, key header, JSON field) -->
+@@ -154,8 +201,18 @@ label.chip{gap:7px;padding:5px 11px 5px 7px;border:1px solid var(--line-soft);bo
+   </div>
+   <div class="row"><button type="button" class="btn ghost" data-act="addsrc"><#RSHD_138#></button><button type="button" class="btn ghost" data-act="update"><#RSHD_36#></button><span class="dim" id="buildline"></span></div>
+   <div class="desc" id="storeline" style="margin-top:8px"></div>
++  <!-- reaper 2026-11-15 (D7): a rebuild that was skipped, or a table built from fewer lists than are subscribed -->
++  <div class="desc warn" id="buildwarn" style="display:none"></div>
++</div>
++
++<div class="card">
++  <h2><#RSHD_87#></h2>
++  <div class="row"><select id="mode" aria-label="<#RSHD_87#>"><option value="null"><#RSHD_88#></option><option value="nx"><#RSHD_89#></option></select></div>
++</div>
+ </div>
+ 
++<!-- ============================= RULES ============================= -->
++<div class="tab" id="tab_rules" role="tabpanel">
+ <div class="card">
+   <h2><#RSHD_39#></h2>
+   <div class="duo" style="margin:8px 0 0">
+@@ -178,7 +235,7 @@ label.chip{gap:7px;padding:5px 11px 5px 7px;border:1px solid var(--line-soft);bo
+ <div class="card">
+   <h2><#RSHD_164#></h2>
+   <div class="desc"><#RSHD_165#></div>
+-  <table class="tbl"><thead><tr><th><#RSHD_166#></th><th><#RSHD_167#></th><th style="width:120px"><#RSHD_168#></th><th style="width:80px"></th></tr></thead><tbody id="rwbody"></tbody></table>
++  <div class="tblw"><table class="tbl"><thead><tr><th><#RSHD_166#></th><th><#RSHD_167#></th><th style="width:120px"><#RSHD_168#></th><th style="width:80px"></th></tr></thead><tbody id="rwbody"></tbody></table></div>
+   <div class="row">
+     <input type="text" id="rw_name" maxlength="255" placeholder="nas.home.arpa" aria-label="<#RSHD_166#>" autocomplete="off">
+     <input type="text" id="rw_ans" maxlength="253" placeholder="192.168.50.20" aria-label="<#RSHD_167#>" autocomplete="off">
+@@ -194,83 +251,86 @@ label.chip{gap:7px;padding:5px 11px 5px 7px;border:1px solid var(--line-soft);bo
+   </ul>
+ </div>
+ 
++<!-- reaper 2026-11-15 (concept B): a profile's blocked services, schedule and safe search - the editor that opened under
++     the profile grid; the grid's Edit button (Devices tab) opens it here -->
+ <div class="card">
+-  <h2><#RSHD_43#></h2>
+-  <div class="desc"><#RSHD_44#></div>
+-  <table class="tbl"><thead id="profhead"></thead><tbody id="profbody"></tbody></table>
++  <h2><#RSHD_100#></h2>
++  <div class="desc"><#RSHD_207#></div>
++  <div class="row"><select id="svcprof" style="min-width:220px;max-width:100%" aria-label="<#RSHD_53#>"></select></div>
+   <div class="pedit" id="pedit"></div>
+-  <div class="row"><input type="text" id="newprof" maxlength="30" placeholder="<#RSHD_48#>"><button type="button" class="btn ghost" data-act="addprof"><#RSHD_47#></button></div>
+-  <h3 style="font-size:12.5px;margin-top:14px"><#RSHD_50#></h3>
+-  <table class="tbl"><thead><tr><th><#RSHD_51#> / <#RSHD_52#></th><th><#RSHD_53#></th><th style="width:80px"></th></tr></thead><tbody id="assignbody"></tbody></table>
+-  <div class="row">
+-    <select id="newtarget" style="min-width:240px"></select>
+-    <select id="newpid"></select>
+-    <button type="button" class="btn ghost" data-act="addasg"><#RSHD_54#></button>
+-  </div>
++</div>
+ </div>
+ 
+-<div class="actions" style="margin-bottom:16px">
+-  <span class="dim"><#RSHD_87#></span>
+-  <select id="mode"><option value="null"><#RSHD_88#></option><option value="nx"><#RSHD_89#></option></select>
+-  <button class="btn primary" data-act="save"><#RWDN_28#></button>
++<!-- ============================= DEVICES ============================= -->
++<div class="tab" id="tab_devices" role="tabpanel">
++<!-- reaper 2026-11-15 (concept B): one row per device and guest network; its profile menu writes the assignments
++     ("mac <MAC> <id>" / "net <idx> <id>") the separate assignment table used to -->
++<div class="card">
++  <h2><#RSHD_50#></h2>
++  <div class="desc"><#RSHD_206#></div>
++  <div class="tblw"><table class="tbl"><thead><tr><th><#RSHD_51#> / <#RSHD_52#></th><th><#RSHD_53#></th><th class="num"><#RSHD_202#></th><th><#RSHD_26#></th><th></th></tr></thead><tbody id="devrows"></tbody></table></div>
+ </div>
+ 
+-<div class="duo">
+-  <div class="card">
+-    <h2><#RSHD_56#></h2>
+-    <div class="row">
+-      <select id="ptarget" style="min-width:200px"></select>
+-      <select id="pmins"><option value="5"><#RSHD_58#></option><option value="60"><#RSHD_59#></option><option value="six"><#RSHD_60#></option></select>
+-      <button type="button" class="btn ghost" data-act="pause"><#RSHD_56#></button>
+-      <button type="button" class="btn ghost" data-act="resume"><#RSHD_61#></button>
+-    </div>
+-    <ul id="pauses"></ul>
+-  </div>
+-  <div class="card">
+-    <h2><#RSHD_68#></h2>
+-    <div class="row"><input type="text" id="whyname" placeholder="<#RSHD_69#>"><button type="button" class="btn ghost" data-act="why"><#RSHD_70#></button></div>
+-    <div class="result" id="whyres"></div>
+-  </div>
++<div class="card">
++  <h2><#RSHD_43#></h2>
++  <div class="desc"><#RSHD_44#></div>
++  <div class="tblw"><table class="tbl"><thead id="profhead"></thead><tbody id="profbody"></tbody></table></div>
++  <div class="row"><input type="text" id="newprof" maxlength="30" placeholder="<#RSHD_48#>"><button type="button" class="btn ghost" data-act="addprof"><#RSHD_47#></button></div>
++</div>
+ </div>
+ 
++<!-- ============================= ACTIVITY ============================= -->
++<div class="tab" id="tab_activity" role="tabpanel">
+ <div class="card">
+-  <h2><#RSHD_63#></h2>
+-  <div class="desc"><#RSHD_64#></div>
+-  <div class="row"><select id="ubdev" style="min-width:260px"></select></div>
+-  <table class="tbl"><thead><tr><th><#RDWT_16#></th><th class="num"><#RDWT_11#></th><th><#RDWT_17#></th><th style="width:220px"></th></tr></thead><tbody id="ubbody"></tbody></table>
++  <h2><#RSHD_78#></h2>
++  <div class="desc"><#RSHD_79#></div>
++  <div class="row"><button type="button" class="btn ghost" id="livebtn"><#RSHD_80#></button><select id="livedev" style="display:none;max-width:100%" aria-label="<#RSHD_51#>"><option value=""><#RSHD_205#></option></select><span class="dim" id="liveleft"></span></div>
++  <div class="tblw"><table class="tbl" id="livetbl" style="display:none"><thead><tr><th><#RDWT_21#></th><th><#RDWT_19#></th><th><#RDWT_16#></th><th><#RSHD_26#></th></tr></thead><tbody id="livebody"></tbody></table></div>
+ </div>
+ 
+ <div class="duo">
+   <div class="card">
+     <h2><#RSHD_76#></h2>
+-    <table class="tbl"><thead><tr><th><#RDWT_16#></th><th class="num"><#RDWT_11#></th><th><#RDWT_17#></th></tr></thead><tbody id="topbody"></tbody></table>
++    <div class="tblw"><table class="tbl"><thead><tr><th><#RDWT_16#></th><th class="num"><#RDWT_11#></th><th><#RDWT_17#></th></tr></thead><tbody id="topbody"></tbody></table></div>
+   </div>
+   <div class="card">
+     <h2><#RSHD_77#></h2>
+-    <table class="tbl"><thead><tr><th><#RDWT_19#></th><th class="num"><#RDWT_11#></th><th><#RDWT_17#></th></tr></thead><tbody id="devbody"></tbody></table>
++    <div class="tblw"><table class="tbl"><thead><tr><th><#RDWT_19#></th><th class="num"><#RDWT_11#></th><th><#RDWT_17#></th></tr></thead><tbody id="devbody"></tbody></table></div>
+   </div>
+ </div>
+-
+-<div class="card">
+-  <h2><#RSHD_78#></h2>
+-  <div class="desc"><#RSHD_79#></div>
+-  <div class="row"><button type="button" class="btn ghost" id="livebtn"><#RSHD_80#></button><span class="dim" id="liveleft"></span></div>
+-  <table class="tbl" id="livetbl" style="display:none"><thead><tr><th><#RDWT_21#></th><th><#RDWT_19#></th><th><#RDWT_16#></th><th><#RSHD_26#></th></tr></thead><tbody id="livebody"></tbody></table>
++<div class="actions" style="margin-bottom:16px"><button type="button" class="btn ghost small" data-act="reset"><#RDWT_28#></button></div>
+ </div>
+ 
+-<div class="card">
+-  <h2><#RSHD_90#></h2>
+-  <ul>
+-    <li><#RSHD_91#></li>
+-    <li><#RSHD_92#></li>
+-    <li><#RSHD_93#></li>
+-    <li><#RSHD_94#></li>
+-    <li><#RSHD_99#></li>
+-  </ul>
+-  <div style="margin-top:10px"><button type="button" class="btn ghost small" data-act="reset"><#RDWT_28#></button></div>
+ </div>
+ 
+-</div>
++<!-- reaper 2026-11-15 (concept B): the help fly-out (rp.css .scrim / .flyout) - How to use and How it works, which
++     were the first and last cards -->
++<div class="scrim" id="scrim"></div>
++<aside class="flyout" id="flyout" aria-label="<#RSHD_90#>">
++  <div class="fhead"><h2><#RSHD_00#></h2><span class="fclose" id="flyclose" role="button" tabindex="0" aria-label="<#CTL_close#>">&times;</span></div>
++  <div class="fbody">
++    <details open><summary><#RSHD_15#></summary>
++      <div class="fc"><ol class="steps">
++        <li><#RSHD_16#></li>
++        <li><#RSHD_17#></li>
++        <li><#RSHD_18#></li>
++        <li><#RSHD_19#></li>
++        <li><#RSHD_20#></li>
++        <li><#RSHD_98#></li>
++      </ol></div>
++    </details>
++    <details open><summary><#RSHD_90#></summary>
++      <div class="fc"><ul>
++        <li><#RSHD_91#></li>
++        <li><#RSHD_92#></li>
++        <li><#RSHD_93#></li>
++        <li><#RSHD_94#></li>
++        <li><#RSHD_99#></li>
++      </ul></div>
++    </details>
++    <div class="fc" style="padding-top:14px"><a href="https://github.com/TheUnboundDeveloper/AM-Reaper/blob/main/docs/REAPER-GUIDE.md#433-wallguard" target="_blank" rel="noopener noreferrer"><#RABT_43#></a></div>
++  </div>
++</aside>
+ 
+ <div class="applying" id="applying"><div class="abox"><h2 id="ap_t"><#Reaper_c_applying#></h2><p id="ap_p"><#RSHD_97#></p></div></div>
+ 
+@@ -335,7 +395,7 @@ function shNum(n){ return Number(n || 0).toLocaleString(); }
+ function shWhen(t){ return t > 0 ? new Date(t * 1000).toLocaleString() : DASH; }
+ function shCell(tr, text, cls){ var td = document.createElement('td'); td.textContent = text; if(cls) td.className = cls; tr.appendChild(td); return td; }
+ /* 2026-11-09: the blocked-name tables say nothing was blocked; the settings and live tables say they are empty */
+-var SH_EMPTY = {rwbody: 1, assignbody: 1, livebody: 1};
++var SH_EMPTY = {rwbody: 1, devrows: 1, livebody: 1};
+ function shRows(id, rows, cols, fill){
+   var tb = $(id); tb.textContent = '';
+   if(!rows.length){ var tr = document.createElement('tr'), td = shCell(tr, SH_EMPTY[id] ? `<#IPConnection_VSList_Norule#>` : `<#RDWT_23#>`, 'empty'); td.colSpan = cols; tb.appendChild(tr); return; }
+@@ -376,6 +436,11 @@ function shDevices(){
+     var k = String(d.dev).toLowerCase();
+     if(/^([0-9a-f]{2}:){5}[0-9a-f]{2}$/.test(k) && !seen[k]){ seen[k] = 1; out.push({mac: k, name: ReaperNames.byMac(k, '') || d.ip}); }
+   });
++  /* 2026-11-15 (concept B): and the devices on the network now (the client list ReaperNames fetched) */
++  ((shCl && shCl.maclist) || []).forEach(function(m){
++    var k = String(m).toLowerCase(), c = shCl[m] || {};
++    if(/^([0-9a-f]{2}:){5}[0-9a-f]{2}$/.test(k) && !seen[k]){ seen[k] = 1; out.push({mac: k, name: ReaperNames.byMac(k, '') || c.ip || k}); }
++  });
+   return out;
+ }
+ function shNetworks(){
+@@ -521,11 +586,18 @@ function shTime(w, k){
+   var i = document.createElement('input'); i.type = 'time'; i.value = w[k].slice(0, 2) + ':' + w[k].slice(2);
+   i.addEventListener('change', function(){ if(/^\d\d:\d\d$/.test(i.value)) w[k] = i.value.replace(':', ''); }); return i;
+ }
+-function shEdit(pid){ editPid = (editPid === pid) ? null : pid; shPaintProfiles(); }
++/* 2026-11-15 (concept B): the editor sits on the Rules tab; Edit in the profile grid (Devices tab) opens it there */
++function shEdit(pid){ editPid = pid; shPaintProfiles(); shTab('rules'); try{ $('svcprof').focus(); }catch(e){} }
+ function shFlags(pid, f){ if(f) cfg.saf[pid] = f; else delete cfg.saf[pid]; shPaintProfiles(); }
+ /* one profile's blocked services, schedule and safe search */
+ function shPaintEditor(){
+-  var box = $('pedit'); box.textContent = '';
++  var box = $('pedit'), ps = $('svcprof'); box.textContent = '';
++  /* 2026-11-15 (concept B): the profile picker in front of the editor */
++  ps.textContent = '';
++  [['', DASH]].concat((cfg ? cfg.prof : []).map(function(p){ return [p.id, shProfName(p.id)]; })).forEach(function(o){
++    var op = document.createElement('option'); op.value = o[0]; op.textContent = o[1]; ps.appendChild(op);
++  });
++  ps.value = editPid || '';
+   if(!editPid || !cfg){ box.style.display = 'none'; return; }
+   box.style.display = 'block';
+   var pid = editPid, sel = cfg.svc[pid] || [], wins = cfg.sch[pid] || [], fl = cfg.saf[pid] || 0;
+@@ -594,7 +666,7 @@ function shPaint(){
+   $('adv').value = String(cfg.adv || ''); shPaintAdv();
+   var a24 = String(cfg.allow24 || '').split('\n').map(function(l){ var p = l.split(' '); return p[1] ? p[1] + ' (' + shWhen(+p[0]) + ')' : ''; }).filter(function(x){ return x; });
+   $('allow24box').style.display = a24.length ? '' : 'none'; $('allow24').textContent = a24.join(', ');
+-  shPaintLists(); shPaintProfiles(); shPaintAssign(); shPaintTargets(); shPaintPauses(); shPaintRewrites();
++  shPaintLists(); shPaintProfiles(); shPaintTargets(); shPaintPauses(); shPaintRewrites();
+ }
+ /* 2026-11-06 (owner): what the last build made of the Advanced rules (wallguardc adv's report) - text only */
+ function shPaintAdv(){
+@@ -724,32 +796,102 @@ function shPaintProfiles(){
+     tr.appendChild(tdx);
+     tb.appendChild(tr);
+   });
+-  var sel = $('newpid'); sel.textContent = '';
+-  all.forEach(function(p){ var o = document.createElement('option'); o.value = p.id; o.textContent = p.id === 'default' ? `<#RSHD_45#>` : p.name; sel.appendChild(o); });
+-  shPaintEditor();
+-}
+-function shPaintAssign(){
+-  var names = {}; cfg.prof.forEach(function(p){ names[p.id] = p.id === 'default' ? `<#RSHD_45#>` : p.name; }); names.bypass = `<#RSHD_46#>`;
+-  var nets = {}; shNetworks().forEach(function(n){ nets[n.idx] = n.name; });
+-  shRows('assignbody', cfg.asg, 3, function(tr, a){
+-    shCell(tr, a.kind === 'mac' ? `<#RSHD_51#>` + ': ' + shDevLabel(a.key) : `<#RSHD_52#>` + ': ' + (nets[a.key] || a.key));
+-    shCell(tr, names[a.pid] || a.pid);
+-    var td = document.createElement('td'); td.appendChild(shBtn(`<#RSHD_55#>`, function(){ cfg.asg = cfg.asg.filter(function(q){ return q !== a; }); shPaintAssign(); }, 1)); tr.appendChild(td);
++  shPaintEditor(); shPaintDevs();
++}
++/* reaper 2026-11-15 (owner, concept B): the Devices tab - one row per device and guest network, replacing the separate
++   assignment table. The profile menu writes the same data that table did (cfg.asg: "mac <MAC> <id>" / "net <idx> <id>";
++   "no profile of its own" removes the row's line), saved with Save. Beside it: the blocked lookups of the last 15
++   minutes (wallguard.sh devcounts), the device's pause and its profile's services; Fix opens Fix a device for it,
++   Pause pauses it 10 minutes at once. Names: ReaperNames (Name, else Hostname - the router-wide rule). */
++var shCnt = null, shCl = null, shSigCnt = '';
++function shAsg(kind, key){ return cfg.asg.filter(function(a){ return a.kind === kind && a.key === key; })[0] || null; }
++function shSetAsg(kind, key, pid){
++  cfg.asg = cfg.asg.filter(function(a){ return !(a.kind === kind && a.key === key); });
++  if(pid) cfg.asg.push({kind: kind, key: key, pid: pid});
++}
++/* the line under a device's name: its address now and its MAC (the MAC only once when it is also the name) */
++function shDevAddr(mac, name){
++  var c = shCl && (shCl[mac.toUpperCase()] || shCl[mac]), ip = c && c.ip ? String(c.ip) : '';
++  if(name === mac) return ip;
++  return ip ? ip + ' \u00b7 ' + mac : mac;
++}
++function shDevRows(){
++  var rows = [], seen = {}, nets = {};
++  function add(r){ if(seen[r.key]) return; seen[r.key] = 1; r.n = (shCnt && shCnt[r.key]) || 0; rows.push(r); }
++  shDevices().forEach(function(d){ add({kind: 'mac', key: d.mac, name: ReaperNames.byMac(d.mac, d.name)}); });
++  cfg.asg.forEach(function(a){ if(a.kind === 'mac') add({kind: 'mac', key: a.key, name: ReaperNames.byMac(a.key, a.key)}); });
++  (cfg.pause || []).forEach(function(x){ var k = String(x.t).toLowerCase(); if(k !== 'all') add({kind: 'mac', key: k, name: ReaperNames.byMac(k, k)}); });
++  Object.keys(shCnt || {}).forEach(function(k){
++    add(/^([0-9a-f]{2}:){5}[0-9a-f]{2}$/.test(k) ? {kind: 'mac', key: k, name: ReaperNames.byMac(k, k)} : {kind: 'ip', key: k, name: ReaperNames.byIp(k, k)});
++  });
++  rows.sort(function(a, b){ return (b.n - a.n) || String(a.name).toLowerCase().localeCompare(String(b.name).toLowerCase()); });
++  shNetworks().forEach(function(n){ nets[n.idx] = 1; rows.push({kind: 'net', key: n.idx, name: n.name}); });
++  cfg.asg.forEach(function(a){ if(a.kind === 'net' && !nets[a.key]){ nets[a.key] = 1; rows.push({kind: 'net', key: a.key, name: a.key}); } });
++  return rows;
++}
++function shPaintDevs(){
++  var tb = $('devrows'), ae = document.activeElement;
++  if(!cfg) return;
++  /* review 2026-10-24 (Q-C2-1), kept: the 15 s poll never rebuilds a profile menu the operator has open */
++  if(ae && ae.tagName === 'SELECT' && tb.contains(ae)) return;
++  var opts = [['', `<#RSHD_203#>`]].concat(cfg.prof.map(function(p){ return [p.id, shProfName(p.id)]; })).concat([['bypass', `<#RSHD_46#>`]]);
++  var until = {};
++  (cfg.pause || []).forEach(function(x){ until[String(x.t).toLowerCase()] = x.until; });
++  shRows('devrows', shDevRows(), 5, function(tr, r){
++    var a = r.kind === 'ip' ? null : shAsg(r.kind, r.key), tn = shCell(tr, r.name), tp = document.createElement('td'), st, sum, ac, sel;
++    tn.appendChild(shEl('span', 'sub', r.kind === 'net' ? `<#RSHD_52#>` : r.kind === 'mac' ? shDevAddr(r.key, r.name) : (r.name !== r.key ? r.key : '')));
++    if(r.kind === 'ip'){ tp.textContent = DASH; tp.className = 'dim'; }
++    else {
++      sel = shSelect(opts, a ? a.pid : '', function(v){ shSetAsg(r.kind, r.key, v); shPaintDevs(); });
++      sel.setAttribute('aria-label', `<#RSHD_53#>`); tp.appendChild(sel);
++    }
++    tr.appendChild(tp);
++    shCell(tr, (r.kind === 'net' || !shCnt) ? DASH : shNum(r.n), r.n ? 'num' : 'num dim');
++    st = shCell(tr, '', 'dim');
++    if(r.kind === 'mac' && until[r.key]) st.appendChild(shEl('span', 'v-p', `<#RSHD_62#>`.replace('%1', shWhen(until[r.key]))));
++    sum = (a && a.pid !== 'bypass') ? shSummary(a.pid) : DASH;
++    if(sum !== DASH) st.appendChild(shEl('span', null, (st.firstChild ? ' ' : '') + sum));
++    if(!st.firstChild) st.textContent = DASH;
++    ac = shCell(tr, '', 'acts');
++    if(r.kind !== 'net') ac.appendChild(shBtn(`<#RSHD_200#>`, function(){ shFix(r.key); }, 1));
++    if(r.kind === 'mac') ac.appendChild(until[r.key] ? shBtn(`<#RSHD_61#>`, function(){ shResume(r.key); }, 1) : shBtn(`<#RSHD_201#>`, function(){ shPause(r.key, 10); }, 1));
++  });
++}
++/* Fix on a Devices row: Fix a device (Unbreak) on the Overview, with that device picked */
++function shFix(key){
++  var u = $('ubdev');
++  if(!Array.prototype.some.call(u.options, function(o){ return o.value === key; })){ var o = document.createElement('option'); o.value = key; o.textContent = shDevLabel(key); u.appendChild(o); }
++  u.value = key; shTab('overview'); shUnbreak();
++  try{ u.focus(); }catch(e){}
++}
++/* the blocked lookups per device in the last 15 minutes - asked only while a tab that shows them is open */
++function shCounts(){
++  if(!cfg || (shCur !== 'devices' && shCur !== 'overview')) return;
++  shReq('GET', 'action=devcounts&minutes=15', null, function(j){
++    if(!j || !j.ok || !cfg) return;
++    var c = {}, sig;
++    (j.devs || []).forEach(function(d){ var k = String(d.dev || '').toLowerCase(); if(k) c[k] = (c[k] || 0) + (+d.n || 0); });
++    sig = JSON.stringify(c);
++    if(shCnt && sig === shSigCnt) return;
++    shSigCnt = sig; shCnt = c; shPaintDevs(); shPaintTargets();
+   });
+ }
+ function shPaintTargets(){
+-  /* review 2026-10-24 (Q-C2-1): the 15 s status poll rebuilds these menus - every chosen target survives it */
+-  var t = $('newtarget'), p = $('ptarget'), u = $('ubdev'), kt = t.value, kp = p.value, keep = u.value;
+-  [t, p, u].forEach(function(s){ s.textContent = ''; });
++  /* review 2026-10-24 (Q-C2-1): the 15 s status poll rebuilds these menus - every chosen target survives it
++     (2026-11-15: the assignment menu is gone - each Devices row has its own profile menu, drawn from cfg.asg) */
++  var p = $('ptarget'), u = $('ubdev'), kp = p.value, keep = u.value, ub = [];
++  [p, u].forEach(function(s){ s.textContent = ''; });
+   function opt(sel, v, label){ var o = document.createElement('option'); o.value = v; o.textContent = label; sel.appendChild(o); }
+   opt(p, 'all', `<#RSHD_57#>`);
+   opt(u, '', DASH);
+-  shDevices().forEach(function(d){ var l = d.name + ' (' + d.mac + ')'; opt(t, 'mac ' + d.mac, `<#RSHD_51#>` + ': ' + l); opt(p, d.mac, l); opt(u, d.mac, l); });
+-  shNetworks().forEach(function(n){ opt(t, 'net ' + n.idx, `<#RSHD_52#>` + ': ' + n.name); });
+-  ((stat && stat.devices) || []).forEach(function(d){ if(!/^([0-9a-f]{2}:){5}/.test(d.dev)) opt(u, d.dev, shDevLabel(d.dev)); });
+-  if(kt) t.value = kt;
++  shDevices().forEach(function(d){ var l = d.name + ' (' + d.mac + ')'; opt(p, d.mac, l); ub.push([d.mac, l]); });
++  ((stat && stat.devices) || []).forEach(function(d){ if(!/^([0-9a-f]{2}:){5}/.test(d.dev)) ub.push([d.dev, shDevLabel(d.dev)]); });
++  /* 2026-11-15 (concept B): Fix a device lists first the devices with blocked lookups in the last 15 minutes, with the count */
++  ub.forEach(function(o){ o[2] = (shCnt && shCnt[o[0]]) || 0; });
++  ub.sort(function(a, b){ return b[2] - a[2]; }).forEach(function(o){ opt(u, o[0], o[2] ? o[1] + ' \u00b7 ' + shNum(o[2]) + ' ' + VERD.b : o[1]); });
+   if(kp) p.value = kp;
+   if(keep) u.value = keep;
++  if(keep && u.value !== keep){ opt(u, keep, shDevLabel(keep)); u.value = keep; }
+ }
+ function shPaintPauses(){
+   var ul = $('pauses'); ul.textContent = '';
+@@ -765,11 +907,6 @@ function shAddProfile(){
+   while(id === 'default' || id === 'bypass' || cfg.prof.some(function(p){ return p.id === id; })) id = base + (n++);
+   cfg.prof.push({id: id, mask: 1, name: name}); $('newprof').value = ''; shPaintProfiles();
+ }
+-function shAddAssign(){
+-  var t = $('newtarget').value.split(' '), pid = $('newpid').value; if(t.length !== 2 || !pid) return;
+-  cfg.asg = cfg.asg.filter(function(a){ return !(a.kind === t[0] && a.key === t[1]); });
+-  cfg.asg.push({kind: t[0], key: t[1], pid: pid}); shPaintAssign();
+-}
+ 
+ /* ---- report */
+ var shSigLists = '', shSigTargets = '';
+@@ -787,6 +924,7 @@ function shRender(j){
+   $('bannertext').textContent = bt; $('banner').style.display = bt ? 'flex' : 'none';
+   var by = (on && stat && stat.bypass) ? String(stat.bypass).split(' ').join(', ') : '';
+   $('bypasstext').textContent = by ? `<#RSHD_133#>`.replace('%1', by) : ''; $('bypass').style.display = by ? 'flex' : 'none';
++  shBuildWarn(on);
+   if(!stat) return;
+   $('s_q').textContent = shNum(stat.queries);
+   $('s_b').textContent = shNum(stat.total);
+@@ -805,6 +943,28 @@ function shRender(j){
+   }
+   if(stat.live > 0 && !liveTimer) shLiveStart(); else if(!(stat.live > 0) && liveTimer) shLiveStop(true);
+ }
++/* reaper 2026-11-15 (D7, field): with the lists on USB a rebuild was skipped when a list had no usable copy, and
++   the only trace was a syslog line - wallguard.sh now reports the last build (stats "bstat") and it is said here */
++function shBuildWarn(on){
++  var s = on && stat && stat.bstat, t = '';
++  function names(ids){
++    return String(ids || '').split(' ').filter(function(x){ return x; }).map(function(id){
++      var m = /^custom(\d)$/.exec(id), c = m && cfg ? cfg.customs.filter(function(x){ return x.slot === +m[1]; })[0] : null;
++      return c ? shSrcLabel(c) : (PRESET[id] ? PRESET[id][0] : id);
++    }).join(', ');
++  }
++  if(s){
++    if(s.skip === 'miss') t = `<#RSHD_188#>`.replace('%1', names(s.none)).replace('%2', shWhen(s.t));
++    else if(s.skip === 'lock') t = `<#RSHD_189#>`.replace('%1', shWhen(s.t));
++    else if(s.skip === 'fail') t = `<#RSHD_190#>`.replace('%1', shWhen(s.t));
++    else if(s.used < s.want) t = `<#RSHD_191#>`.replace('%1', s.used).replace('%2', s.want).replace('%3', names(s.none));
++  }
++  $('buildwarn').textContent = t; $('buildwarn').style.display = t ? '' : 'none';
++  /* 2026-11-15 (concept B): the same warning heads the Overview, and the Lists tab says how many lists it concerns */
++  $('buildbantext').textContent = t; $('buildban').style.display = t ? 'flex' : 'none';
++  var np = t ? (String(s.none || '').split(' ').filter(function(x){ return x; }).length || 1) : 0;
++  $('listprob').textContent = np ? (np === 1 ? `<#RSHD_196#>` : `<#RSHD_197#>`.replace('%1', np)) : '';
++}
+ /* 2026-10-21: where the lists and the blocked-lookup history are kept (Long-Term Storage) */
+ function shStoreLine(st){
+   var el = $('storeline'), a = shEl('a', null, `<#RDST_00#>`);
+@@ -812,19 +972,30 @@ function shStoreLine(st){
+   el.textContent = (st.store ? `<#RSHD_131#>`.replace('%1', st.store) : `<#RSHD_132#>`) + (ht ? ' ' + ht : '') + ' ';
+   a.href = 'Reaper_Storage.asp'; el.appendChild(a);
+ }
+-function shStatus(cb){ shReq('GET', 'action=status', null, function(j){ shRender(j); if(typeof cb === 'function') cb(); }); }
+-function shConfig(cb){ shReq('GET', 'action=config', null, function(j){ if(j && j.ok){ shParseConfig(j); shPaint(); ReaperPending.arm(); } if(cb) cb(); }); }
++function shStatus(cb){ shReq('GET', 'action=status', null, function(j){ shRender(j); shCounts(); if(typeof cb === 'function') cb(); }); }
++/* 2026-11-15 (concept B): a pause or resume changes only the pause list - when nothing else in the router's config
++   changed, the page keeps its unsaved edits (a Devices row's profile menu sits beside its Pause button) */
++var shCfgSig = '';
++function shCfgKey(j){ var o = {}, k; for(k in j) if(k !== 'pause' && k !== 'ss') o[k] = j[k]; return JSON.stringify(o); }
++function shConfig(cb){ shReq('GET', 'action=config', null, function(j){
++  if(j && j.ok){
++    var sig = shCfgKey(j);
++    if(cfg && sig === shCfgSig){ cfg.pause = j.pause || []; cfg.ss = j.ss || {}; shPaintPauses(); shPaintDevs(); }
++    else { shCfgSig = sig; shParseConfig(j); shPaint(); ReaperPending.arm(); shArm(); }
++  }
++  if(cb) cb(); }); }
+ 
+ /* ---- actions */
+ ReaperBusy.words(`<#RBSY_1#>`, `<#RBSY_2#>`, `<#RBSY_3#>`);	/* 2026-11-13: busy feedback words */
+ function shAct(a){ var fin = ReaperBusy.startLast(); shReq('GET', 'action=' + a, null, function(j){ if(!j || !j.ok){ fin(false); shErr(j); } else setTimeout(function(){ shStatus(function(){ fin(true); }); }, 1500); }); }
+-function shPause(){
+-  var t = $('ptarget').value, m = $('pmins').value;
++function shPause(t, m){
++  /* 2026-11-15 (concept B): a Devices row pauses its own device (t, m); the Pause card reads its two menus */
++  if(typeof t !== 'string'){ t = $('ptarget').value; m = $('pmins').value; }
+   if(m === 'six'){ var d = new Date(), s = new Date(d); s.setHours(6, 0, 0, 0); if(s <= d) s.setDate(s.getDate() + 1); m = Math.max(1, Math.round((s - d) / 60000)); }
+   var fin = ReaperBusy.startLast();
+   shReq('GET', 'action=pause&target=' + encodeURIComponent(t) + '&minutes=' + m, null, function(j){ if(!j || !j.ok){ fin(false); shErr(j); } else shConfig(function(){ shStatus(function(){ fin(true); }); }); });
+ }
+-function shResume(){ var fin = ReaperBusy.startLast(); shReq('GET', 'action=resume&target=' + encodeURIComponent($('ptarget').value), null, function(j){ if(!j || !j.ok){ fin(false); shErr(j); } else shConfig(function(){ shStatus(function(){ fin(true); }); }); }); }
++function shResume(){ var fin = ReaperBusy.startLast(); shReq('GET', 'action=resume&target=' + encodeURIComponent(typeof arguments[0] === 'string' ? arguments[0] : $('ptarget').value), null, function(j){ if(!j || !j.ok){ fin(false); shErr(j); } else shConfig(function(){ shStatus(function(){ fin(true); }); }); }); }
+ function shWhy(){
+   var n = $('whyname').value.trim().toLowerCase(), box = $('whyres'); if(!n) return;
+   box.textContent = '...';
+@@ -853,29 +1024,59 @@ function shUnbreak(){
+     var tb = $('ubbody'); tb.textContent = '';
+     if(!rows.length){ var tr = document.createElement('tr'), td = shCell(tr, `<#RSHD_67#>`, 'empty'); td.colSpan = 4; tb.appendChild(tr); return; }
+     rows.forEach(function(r){
+-      var tr = document.createElement('tr'); shCell(tr, r.d, 'mono'); shCell(tr, shNum(r.n), 'num'); shCell(tr, shWhen(r.t), 'dim');
++      /* reaper 2026-11-15: a CNAME block (r.via) shows the name the device asked for and the listed name its chain
++         led to; Allow is offered for the asked name, which then overrides the CNAME block */
++      var tr = document.createElement('tr'); shCell(tr, r.via ? `<#RSHD_185#>`.replace('%1', r.d).replace('%2', r.via) : r.d, 'mono'); shCell(tr, shNum(r.n), 'num'); shCell(tr, shWhen(r.t), 'dim');
++      tr.setAttribute('data-ub', r.d);
+       var td = document.createElement('td'), own = shSvcOwner(r.bits);
+       if(own) td.appendChild(shEl('span', 'dim', `<#RSHD_126#>`.replace('%1', shProfName(own))));
+       else {
+         td.appendChild(shBtn(`<#RSHD_65#>`, function(){ shAllow(r.d, '24h'); }, 1)); td.appendChild(document.createTextNode(' '));
+         td.appendChild(shBtn(`<#RSHD_66#>`, function(){ shAllow(r.d, 'always'); }, 1));
++        if(r.via) td.appendChild(shEl('span', 'sub', `<#RSHD_187#>`.replace('%1', r.d).replace('%2', r.via)));
+       }
+       tr.appendChild(td); tb.appendChild(tr);
+     });
+   });
+ }
+-function shAllow(name, dur){ var fin = ReaperBusy.startLast(); shPost({action: 'allow', name: name, dur: dur}, function(j){ if(!j || !j.ok){ fin(false); shErr(j); } else { shConfig(); setTimeout(function(){ fin(true); shUnbreak(); }, 2500); } }); }
++/* reaper 2026-11-15 (D6, field): Allow looked like it did nothing - the page asked Unbreak again 2.5 s later and the
++   same records came back under the same name. The row now says at once that the name is allowed; Unbreak leaves
++   out the names allowed now from then on (wallguard.sh). */
++function shUbMark(name){
++  Array.prototype.forEach.call($('ubbody').querySelectorAll('tr[data-ub]'), function(tr){
++    if(tr.getAttribute('data-ub') !== name) return;
++    var td = tr.lastChild; td.textContent = ''; td.appendChild(shEl('span', 'v-a', `<#RSHD_186#>`));
++  });
++}
++function shAllow(name, dur){ var fin = ReaperBusy.startLast(); shPost({action: 'allow', name: name, dur: dur}, function(j){ if(!j || !j.ok){ fin(false); shErr(j); } else { fin(true); shUbMark(name); shConfig(); } }); }
++/* 2026-11-15 (concept B): the live view's device filter is the page's own - the router still sends every lookup, and the
++   menu offers the addresses seen so far */
++var liveRows = [], liveSeen = {};
++function shLiveDevs(){
++  var sel = $('livedev'), keep = sel.value, add = false;
++  liveRows.forEach(function(r){ if(!liveSeen[r.ip]){ liveSeen[r.ip] = 1; add = true; } });
++  if(!add) return;
++  while(sel.options.length > 1) sel.remove(1);
++  Object.keys(liveSeen).map(function(ip){ return [ip, shDevLabel(ip)]; }).sort(function(a, b){ return a[1].localeCompare(b[1]); }).forEach(function(x){
++    var o = document.createElement('option'); o.value = x[0]; o.textContent = x[1]; sel.appendChild(o);
++  });
++  sel.value = keep;
++}
++function shLivePaint(){
++  var f = $('livedev').value, rows = (f ? liveRows.filter(function(r){ return r.ip === f; }) : liveRows).slice(-150).reverse();
++  /* reaper 2026-11-15: verdict c = blocked through a CNAME chain (r.via: the listed name it led to) */
++  shRows('livebody', rows, 4, function(tr, r){ if(r.v === 'c') r.v = 'b'; shCell(tr, new Date(r.t * 1000).toLocaleTimeString(), 'dim'); shCell(tr, shDevLabel(r.ip)); shCell(tr, r.via ? `<#RSHD_185#>`.replace('%1', r.d).replace('%2', r.via) : r.d, 'mono'); var c = shCell(tr, VERD[r.v] || r.v); c.className = 'v-' + r.v; });
++}
+ function shLiveStart(){
+-  $('livetbl').style.display = ''; $('livebtn').textContent = `<#RSHD_81#>`;
++  $('livetbl').style.display = ''; $('livedev').style.display = ''; $('livebtn').textContent = `<#RSHD_81#>`;
+   function tick(){ shReq('GET', 'action=live', null, function(j){
+-    var rows = ((j && j.rows) || []).slice(-150).reverse();
+-    shRows('livebody', rows, 4, function(tr, r){ shCell(tr, new Date(r.t * 1000).toLocaleTimeString(), 'dim'); shCell(tr, shDevLabel(r.ip)); shCell(tr, r.d, 'mono'); var c = shCell(tr, VERD[r.v] || r.v); c.className = 'v-' + r.v; });
++    liveRows = (j && j.rows) || []; shLiveDevs(); shLivePaint();
+   }); if(stat && stat.live > 0) $('liveleft').textContent = `<#RSHD_86#>`.replace('%1', Math.ceil(stat.live / 60)); }
+   tick(); liveTimer = setInterval(tick, 3000);
+ }
+ function shLiveStop(quiet){
+   if(liveTimer) clearInterval(liveTimer); liveTimer = null;
+-  $('livetbl').style.display = 'none'; $('livebtn').textContent = `<#RSHD_80#>`; $('liveleft').textContent = '';
++  $('livetbl').style.display = 'none'; $('livedev').style.display = 'none'; $('livebtn').textContent = `<#RSHD_80#>`; $('liveleft').textContent = '';
+   if(!quiet) shReq('GET', 'action=live&op=off', null, function(){});
+ }
+ function shLive(){
+@@ -988,8 +1189,51 @@ function shSave(){
+   });
+ }
+ /* the page's controls (were inline onclick= / onchange= attributes) */
+-var ACT = {update: function(){ shAct('update'); }, addsrc: function(){ shSrcOpen(null); }, addprof: shAddProfile, addasg: shAddAssign, save: shSave, addrw: shAddRewrite,
+-           pause: shPause, resume: shResume, why: shWhy, reset: shReset};
++var ACT = {update: function(){ shAct('update'); }, addsrc: function(){ shSrcOpen(null); }, addprof: shAddProfile, save: shSave, addrw: shAddRewrite,
++           pause: shPause, resume: shResume, why: shWhy, reset: shReset, golists: function(){ shTab('lists'); }};
++/* ---- reaper 2026-11-15 (owner, concept B): the tabs - the Firewall page's tab row (#wins .win[data-t] over
++   .tab#tab_<name>); the last tab is remembered per browser (localStorage, when the browser keeps it) */
++var TABS = ['overview', 'lists', 'rules', 'devices', 'activity'], shCur = 'overview';
++function shTab(t){
++  if(TABS.indexOf(t) < 0) t = 'overview';
++  shCur = t;
++  TABS.forEach(function(x){ $('tab_' + x).classList.toggle('on', x === t); });
++  rp.wins().forEach(function(w){ var on = w.getAttribute('data-t') === t; w.classList.toggle('on', on); w.setAttribute('aria-selected', on ? 'true' : 'false'); });
++  try{ localStorage.setItem('reaper_wg_tab', t); }catch(e){}
++  if(t === 'devices' || t === 'overview') shCounts();
++}
++$('wins').addEventListener('click', function(e){ var w = e.target.closest ? e.target.closest('.win') : null; if(w) shTab(w.getAttribute('data-t')); });
++$('wins').addEventListener('keydown', function(e){
++  var w = e.target.closest ? e.target.closest('.win') : null;
++  if(w && (e.key === 'Enter' || e.key === ' ')){ e.preventDefault(); shTab(w.getAttribute('data-t')); }
++});
++/* the amber dot on a tab whose settings differ from what was loaded (the same snapshot as the unsaved-changes pill;
++   the master switch sits above the tabs and has no dot) */
++var TABKEY = {lists: 'lists', keys: 'lists', mode: 'lists', block: 'rules', allow: 'rules', adv: 'rules', rewrite: 'rules',
++              services: 'rules', sched: 'rules', safe: 'rules', profiles: 'devices', assign: 'devices'};
++var shBase = null, shDotT = 0;
++function shDots(){
++  var s, on = {};
++  shDotT = 0;
++  if(!cfg || !shBase) return;
++  s = shSnap();
++  Object.keys(s).forEach(function(k){ if(TABKEY[k] && String(s[k]) !== String(shBase[k])) on[TABKEY[k]] = 1; });
++  rp.wins().forEach(function(w){ w.classList.toggle('dirty', !!on[w.getAttribute('data-t')]); });
++}
++function shArm(){ shBase = cfg ? shSnap() : null; shDots(); }
++['input', 'change', 'click', 'keyup'].forEach(function(ev){ document.addEventListener(ev, function(){ if(!shDotT) shDotT = setTimeout(shDots, 0); }, true); });
++/* the help fly-out (How to use, How it works) */
++function shHelp(open){
++  $('flyout').classList.toggle('open', !!open); $('scrim').classList.toggle('open', !!open);
++  if(open) try{ $('flyclose').focus(); }catch(e){}
++}
++$('helpbtn').addEventListener('click', function(){ shHelp(true); });
++$('scrim').addEventListener('click', function(){ shHelp(false); });
++$('flyclose').addEventListener('click', function(){ shHelp(false); });
++$('flyclose').addEventListener('keydown', function(e){ if(e.key === 'Enter' || e.key === ' '){ e.preventDefault(); shHelp(false); } });
++document.addEventListener('keydown', function(e){ if(e.key === 'Escape' && $('flyout').classList.contains('open')) shHelp(false); });
++$('svcprof').addEventListener('change', function(){ editPid = this.value || null; shPaintEditor(); });
++$('livedev').addEventListener('change', function(){ shLivePaint(); });
+ document.addEventListener('click', function(e){
+   var b = e.target && e.target.closest ? e.target.closest('[data-act]') : null;
+   if(b && ACT[b.getAttribute('data-act')]) ACT[b.getAttribute('data-act')]();
+@@ -1007,7 +1251,9 @@ shPaint();
+ /* 2026-10-30: Save writes the lists, profiles, assignments and schedules edited here - say when that is owed
+    (the baseline is taken each time the router's config is loaded, in shConfig) */
+ ReaperPending.watch({at: document.querySelector('[data-act="save"]'), btnClass: 'btn ghost', snap: shSnap, label: `<#RADM_77#>`, discard: `<#Discard#>`});
+-ReaperNames.refresh(NV.clients, function(){ shConfig(shStatus); });
++(function(){ var t0 = ''; try{ t0 = localStorage.getItem('reaper_wg_tab') || ''; }catch(e){} shTab(t0); })();
++/* 2026-11-15: the client list that comes back gives the Devices rows their addresses */
++ReaperNames.refresh(NV.clients, function(cl){ shCl = cl; shConfig(shStatus); });
+ /* review 2026-10-24 (Q-C2-4): no poll while the tab is hidden; a tab that comes back polls at once */
+ setInterval(function(){ if(!document.hidden) shStatus(); }, 15000);
+ document.addEventListener('visibilitychange', function(){ if(!document.hidden) shStatus(); });
+diff --git a/release/src/router/www/SL.dict b/release/src/router/www/SL.dict
+index f77455213e..e1f66e785d 100644
+--- a/release/src/router/www/SL.dict
++++ b/release/src/router/www/SL.dict
+@@ -9134,6 +9134,29 @@ RSHD_181=Napredna pravila so daljša od 40.000 znakov. Skrajšajte jih ali prema
+ RSHD_182=Pred shranjevanjem je bilo iz naprednih pravil odstranjenih %1 nevidnih znakov (znaki ničelne širine, oznake vrstnega reda bajtov, smerne oznake, nenavadni presledki).
+ RSHD_183=Posodobi
+ RSHD_184=%1 dovoljenih
++RSHD_185=%1 (blokirano prek %2)
++RSHD_186=Dovoljeno - velja za nova poizvedovanja
++RSHD_187=Dovoli spusti %1 skozi - blokirano je bilo, ker njegova veriga CNAME vodi do %2, imena s seznama.
++RSHD_188=Zadnja vnovična gradnja (%2) je bila preskočena: za %1 ni uporabne kopije (nosilec USB ni priklopljen ali se je kopija spremenila). Prejšnja tabela blokiranja ostane v uporabi, dokler se kopija ne vrne ali ni znova prenesena.
++RSHD_189=Zadnja vnovična gradnja (%1) je bila preskočena: druga je še tekla. Za ponovni poskus znova shranite.
++RSHD_190=Zadnja vnovična gradnja (%1) ni uspela - prejšnja tabela blokiranja ostane v uporabi. Razlog je v sistemskem dnevniku.
++RSHD_191=Tabela blokiranja v uporabi je zgrajena iz %1 od %2 naročenih seznamov - še brez uporabne kopije: %3.
++RSHD_192=Pregled
++RSHD_193=Pravila
++RSHD_194=Naprave
++RSHD_195=Dejavnost
++RSHD_196=1 težava
++RSHD_197=Težave: %1
++RSHD_198=Popravi napravo
++RSHD_199=10 minut
++RSHD_200=Popravi
++RSHD_201=Premor 10 min
++RSHD_202=Blokirano, 15 min
++RSHD_203=Brez lastnega profila
++RSHD_204=Pokaži sezname
++RSHD_205=Vse naprave
++RSHD_206=Vsaka naprava in omrežje za goste, profil, ki ga uporablja, in kaj je bilo zanjo blokirano v zadnjih 15 minutah. Spremembe profilov veljajo ob shranjevanju; Popravi in Premor delujeta takoj.
++RSHD_207=Izberite profil, da zanj blokirate storitve, kot sta TikTok ali Roblox, to omejite na določene čase in vklopite varno iskanje. Naprave dobijo profil na zavihku Naprave.
+ RDWT_69=Razreševalnik tega usmerjevalnika vpraša po imenu s seznama; odgovor mora biti NXDOMAIN. Tudi sama preizkusna poizvedba se šteje, kot ta usmerjevalnik.
+ RENC_66=Ni javno zaupanja vredno: ta usmerjevalnik ga ne more povezati z javnim korenskim potrdilom (v datoteki manjka vmesno potrdilo ali pa je od preizkusnega izdajatelja), zato ga naprave, ki preverjajo ime, zavrnejo. Pod %1 ga izdajte znova.
+ RENC_67=DNS-over-TLS in DNS-over-QUIC do zunanjih strežnikov (vrata 853)
+diff --git a/release/src/router/www/SV.dict b/release/src/router/www/SV.dict
+index 3dfa95229f..9455146746 100644
+--- a/release/src/router/www/SV.dict
++++ b/release/src/router/www/SV.dict
+@@ -9134,6 +9134,29 @@ RSHD_181=De avancerade reglerna är längre än 40 000 tecken. Korta dem eller f
+ RSHD_182=%1 osynligt tecken (tecken) togs bort från de avancerade reglerna före sparandet (nollbreddstecken, byteordningsmärken, riktningsmarkörer, ovanliga mellanslag).
+ RSHD_183=Uppdatera
+ RSHD_184=%1 tillåtna
++RSHD_185=%1 (blockerad via %2)
++RSHD_186=Tillåten - gäller för nya uppslag
++RSHD_187=Tillåt släpper igenom %1 - den blockerades eftersom dess CNAME-kedja leder till %2, ett listat namn.
++RSHD_188=Den senaste ombyggnaden (%2) hoppades över: %1 saknar användbar kopia (USB-volymen är inte monterad, eller kopian har ändrats). Den tidigare blockeringstabellen används tills kopian är tillbaka eller hämtats igen.
++RSHD_189=Den senaste ombyggnaden (%1) hoppades över: en annan pågick fortfarande. Spara igen för att försöka på nytt.
++RSHD_190=Den senaste ombyggnaden (%1) misslyckades - den tidigare blockeringstabellen används fortfarande. Systemloggen anger varför.
++RSHD_191=Blockeringstabellen som används byggdes av %1 av %2 prenumererade listor - ännu ingen användbar kopia av: %3.
++RSHD_192=Översikt
++RSHD_193=Regler
++RSHD_194=Enheter
++RSHD_195=Aktivitet
++RSHD_196=1 problem
++RSHD_197=%1 problem
++RSHD_198=Åtgärda en enhet
++RSHD_199=10 minuter
++RSHD_200=Åtgärda
++RSHD_201=Pausa 10 min
++RSHD_202=Blockerat, 15 min
++RSHD_203=Ingen egen profil
++RSHD_204=Visa listor
++RSHD_205=Alla enheter
++RSHD_206=Varje enhet och gästnätverk, profilen den använder och vad som blockerades för den de senaste 15 minuterna. Profiländringar gäller när du sparar; Åtgärda och Pausa verkar direkt.
++RSHD_207=Välj en profil för att blockera tjänster som TikTok eller Roblox för den, begränsa det till vissa tider och slå på säker sökning. Enheterna får sin profil på fliken Enheter.
+ RDWT_69=Frågar den här routerns resolver efter ett namn på listan; svaret måste vara NXDOMAIN. Själva testuppslaget räknas också, som den här routern.
+ RENC_66=Inte offentligt betrott: den här routern kan inte kedja det till en offentlig rot (ett mellanliggande certifikat saknas i filen, eller så kommer det från en testutfärdare), så enheter som kontrollerar namnet nekar det. Utfärda det igen under %1.
+ RENC_67=DNS-over-TLS och DNS-over-QUIC till servrar utifrån (port 853)
+diff --git a/release/src/router/www/TH.dict b/release/src/router/www/TH.dict
+index ee942a294c..fc5836f902 100644
+--- a/release/src/router/www/TH.dict
++++ b/release/src/router/www/TH.dict
+@@ -9134,6 +9134,29 @@ RSHD_181=กฎขั้นสูงยาวเกิน 40,000 ตัวอั
+ RSHD_182=ลบอักขระที่มองไม่เห็น %1 ตัวออกจากกฎขั้นสูงก่อนบันทึก (อักขระความกว้างศูนย์ เครื่องหมายลำดับไบต์ เครื่องหมายทิศทาง ช่องว่างแบบพิเศษ)
+ RSHD_183=อัปเดต
+ RSHD_184=อนุญาต %1 รายการ
++RSHD_185=%1 (ถูกบล็อกผ่าน %2)
++RSHD_186=อนุญาตแล้ว - มีผลกับการค้นหาใหม่
++RSHD_187=อนุญาตจะปล่อยให้ %1 ผ่าน - ถูกบล็อกเพราะสาย CNAME ของมันนำไปยัง %2 ซึ่งเป็นชื่อในรายการ
++RSHD_188=ข้ามการสร้างใหม่ครั้งล่าสุด (%2): %1 ไม่มีสำเนาที่ใช้ได้ (ไม่ได้เมานต์ไดรฟ์ USB หรือสำเนาถูกเปลี่ยน) ตารางบล็อกเดิมยังคงใช้งานจนกว่าสำเนาจะกลับมาหรือดาวน์โหลดใหม่
++RSHD_189=ข้ามการสร้างใหม่ครั้งล่าสุด (%1): ยังมีการสร้างอื่นทำงานอยู่ บันทึกอีกครั้งเพื่อลองใหม่
++RSHD_190=การสร้างใหม่ครั้งล่าสุด (%1) ล้มเหลว - ตารางบล็อกเดิมยังคงใช้งาน ดูสาเหตุในบันทึกระบบ
++RSHD_191=ตารางบล็อกที่ใช้อยู่สร้างจาก %1 จาก %2 รายการที่สมัครไว้ - ยังไม่มีสำเนาที่ใช้ได้ของ: %3
++RSHD_192=ภาพรวม
++RSHD_193=กฎ
++RSHD_194=อุปกรณ์
++RSHD_195=กิจกรรม
++RSHD_196=ปัญหา 1 รายการ
++RSHD_197=ปัญหา %1 รายการ
++RSHD_198=แก้ไขอุปกรณ์
++RSHD_199=10 นาที
++RSHD_200=แก้ไข
++RSHD_201=หยุดชั่วคราว 10 นาที
++RSHD_202=ถูกบล็อก, 15 นาที
++RSHD_203=ไม่มีโปรไฟล์ของตัวเอง
++RSHD_204=แสดงรายการ
++RSHD_205=อุปกรณ์ทั้งหมด
++RSHD_206=อุปกรณ์และเครือข่ายผู้เยี่ยมชมแต่ละรายการ โปรไฟล์ที่ใช้ และสิ่งที่ถูกบล็อกในช่วง 15 นาทีที่ผ่านมา การเปลี่ยนโปรไฟล์มีผลเมื่อบันทึก ส่วน แก้ไข และ หยุดชั่วคราว ทำงานทันที
++RSHD_207=เลือกโปรไฟล์เพื่อบล็อกบริการอย่าง TikTok หรือ Roblox ให้โปรไฟล์นั้น จำกัดเฉพาะช่วงเวลาที่กำหนด และเปิดการค้นหาปลอดภัย อุปกรณ์ได้รับโปรไฟล์ที่แท็บ อุปกรณ์
+ RDWT_69=ถามตัวแก้ชื่อของเราเตอร์นี้หาชื่อหนึ่งในรายการ คำตอบต้องเป็น NXDOMAIN การค้นหาทดสอบเองก็ถูกนับในนามเราเตอร์นี้
+ RENC_66=ไม่ได้รับความเชื่อถือแบบสาธารณะ: เราเตอร์นี้เชื่อมโยงไปยังใบรับรองรากสาธารณะไม่ได้ (ไฟล์ขาดใบรับรองระดับกลาง หรือมาจากผู้ออกใบรับรองสำหรับทดสอบ) อุปกรณ์ที่ตรวจสอบชื่อจึงปฏิเสธ ออกใบรับรองใหม่ที่ %1
+ RENC_67=DNS-over-TLS และ DNS-over-QUIC ไปยังเซิร์ฟเวอร์ภายนอก (พอร์ต 853)
+diff --git a/release/src/router/www/TR.dict b/release/src/router/www/TR.dict
+index 6a067f30d5..e2fc48f717 100644
+--- a/release/src/router/www/TR.dict
++++ b/release/src/router/www/TR.dict
+@@ -9134,6 +9134,29 @@ RSHD_181=Gelişmiş kurallar 40.000 karakterden uzun. Kısaltın veya uzun bir l
+ RSHD_182=Kaydetmeden önce gelişmiş kurallardan %1 görünmez karakter kaldırıldı (sıfır genişlikli karakterler, bayt sırası işaretleri, yön işaretleri, alışılmadık boşluklar).
+ RSHD_183=Güncelle
+ RSHD_184=%1 izin verildi
++RSHD_185=%1 (%2 üzerinden engellendi)
++RSHD_186=İzin verildi - yeni sorgular için geçerli
++RSHD_187=İzin ver %1 adını geçirir - CNAME zinciri listedeki %2 adına çıktığı için engellenmişti.
++RSHD_188=Son yeniden oluşturma (%2) atlandı: %1 için kullanılabilir kopya yok (USB birimi bağlı değil veya kopya değişti). Kopya geri gelene ya da yeniden indirilene kadar önceki engelleme tablosu kullanılmaya devam eder.
++RSHD_189=Son yeniden oluşturma (%1) atlandı: başka bir oluşturma hâlâ sürüyordu. Yeniden denemek için tekrar kaydedin.
++RSHD_190=Son yeniden oluşturma (%1) başarısız oldu - önceki engelleme tablosu kullanılmaya devam ediyor. Nedeni sistem günlüğündedir.
++RSHD_191=Kullanılan engelleme tablosu, abone olunan %2 listenin %1 tanesinden oluşturuldu - henüz kullanılabilir kopyası olmayanlar: %3.
++RSHD_192=Genel bakış
++RSHD_193=Kurallar
++RSHD_194=Cihazlar
++RSHD_195=Etkinlik
++RSHD_196=1 sorun
++RSHD_197=%1 sorun
++RSHD_198=Bir cihazı düzelt
++RSHD_199=10 dakika
++RSHD_200=Düzelt
++RSHD_201=10 dk duraklat
++RSHD_202=Engellenen, 15 dk
++RSHD_203=Kendi profili yok
++RSHD_204=Listeleri göster
++RSHD_205=Tüm cihazlar
++RSHD_206=Her cihaz ve misafir ağı, kullandığı profil ve son 15 dakikada onun için engellenenler. Profil değişiklikleri kaydettiğinizde geçerli olur; Düzelt ve Duraklat hemen etki eder.
++RSHD_207=TikTok veya Roblox gibi hizmetleri engellemek, bunu belirli saatlerle sınırlamak ve güvenli aramayı açmak için bir profil seçin. Cihazlar profillerini Cihazlar sekmesinde alır.
+ RDWT_69=Bu yönlendiricinin çözücüsüne listedeki bir adı sorar; yanıt NXDOMAIN olmalıdır. Sınama sorgusunun kendisi de bu yönlendirici olarak sayılır.
+ RENC_66=Herkese açık olarak güvenilmiyor: bu yönlendirici onu herkese açık bir köke bağlayamıyor (dosyada bir ara sertifika eksik ya da bir test sağlayıcısından geliyor), bu yüzden adı denetleyen cihazlar onu reddeder. %1 altında yeniden alın.
+ RENC_67=Dış sunuculara DNS-over-TLS ve DNS-over-QUIC (bağlantı noktası 853)
+diff --git a/release/src/router/www/TW.dict b/release/src/router/www/TW.dict
+index 92a2fed20a..f68f1cfe4a 100644
+--- a/release/src/router/www/TW.dict
++++ b/release/src/router/www/TW.dict
+@@ -9134,6 +9134,29 @@ RSHD_181=進階規則超過 40,000 個字元。請縮短，或將長清單移到
+ RSHD_182=儲存前已從進階規則中移除 %1 個不可見字元（零寬字元、位元組順序標記、方向標記、特殊空白）。
+ RSHD_183=更新
+ RSHD_184=%1 個允許
++RSHD_185=%1（經由 %2 封鎖）
++RSHD_186=已允許 - 對新的查詢生效
++RSHD_187=允許會放行 %1 - 它遭封鎖是因為其 CNAME 鏈指向清單中的名稱 %2。
++RSHD_188=上次重建（%2）已略過：%1 沒有可用的副本（USB 磁碟區未掛載，或副本已變更）。在副本恢復或重新下載之前，繼續使用先前的封鎖表。
++RSHD_189=上次重建（%1）已略過：另一次建置仍在執行。請再次儲存以重試。
++RSHD_190=上次重建（%1）失敗 - 繼續使用先前的封鎖表。原因請見系統記錄。
++RSHD_191=目前使用的封鎖表由 %2 個已訂閱清單中的 %1 個建置 - 以下清單尚無可用副本：%3。
++RSHD_192=總覽
++RSHD_193=規則
++RSHD_194=裝置
++RSHD_195=活動
++RSHD_196=1 個問題
++RSHD_197=%1 個問題
++RSHD_198=修復裝置
++RSHD_199=10 分鐘
++RSHD_200=修復
++RSHD_201=暫停 10 分鐘
++RSHD_202=已封鎖（15 分鐘）
++RSHD_203=無專屬設定檔
++RSHD_204=查看清單
++RSHD_205=所有裝置
++RSHD_206=每台裝置與訪客網路、它使用的設定檔，以及最近 15 分鐘內為它封鎖的內容。設定檔的變更在儲存後生效；「修復」與「暫停」會立即生效。
++RSHD_207=選擇一個設定檔，為它封鎖 TikTok 或 Roblox 等服務、將封鎖限制在指定時段，並開啟安全搜尋。裝置在「裝置」分頁中取得設定檔。
+ RDWT_69=向本路由器的解析器查詢清單中的一個名稱；回應必須是 NXDOMAIN。測試查詢本身也會以本路由器的名義計數。
+ RENC_66=未受公開信任：本路由器無法將它串連到公開根憑證（檔案中缺少中繼憑證，或來自測試簽發機構），因此會檢查名稱的裝置會拒絕它。請在 %1 中重新簽發。
+ RENC_67=送往外部伺服器的 DNS-over-TLS 與 DNS-over-QUIC（連接埠 853）
+diff --git a/release/src/router/www/UK.dict b/release/src/router/www/UK.dict
+index 6840e09178..5172002ea9 100644
+--- a/release/src/router/www/UK.dict
++++ b/release/src/router/www/UK.dict
+@@ -9134,6 +9134,29 @@ RSHD_181=Розширені правила довші за 40 000 символі
+ RSHD_182=Перед збереженням із розширених правил вилучено невидимих символів: %1 (символи нульової ширини, мітки порядку байтів, знаки напрямку, нестандартні пробіли).
+ RSHD_183=Оновити
+ RSHD_184=%1 дозволено
++RSHD_185=%1 (заблоковано через %2)
++RSHD_186=Дозволено - діє для нових запитів
++RSHD_187=«Дозволити» пропускає %1 - ім'я було заблоковано, бо його ланцюжок CNAME веде до %2, імені зі списку.
++RSHD_188=Останнє перебудування (%2) пропущено: для %1 немає придатної копії (том USB не змонтовано або копія змінилася). Попередня таблиця блокування лишається в роботі, доки копія не повернеться або не буде завантажена знову.
++RSHD_189=Останнє перебудування (%1) пропущено: ще тривало інше. Збережіть знову, щоб повторити.
++RSHD_190=Останнє перебудування (%1) не вдалося - попередня таблиця блокування лишається в роботі. Причину вказано в системному журналі.
++RSHD_191=Чинну таблицю блокування зібрано з %1 із %2 підписаних списків - поки немає придатної копії: %3.
++RSHD_192=Огляд
++RSHD_193=Правила
++RSHD_194=Пристрої
++RSHD_195=Активність
++RSHD_196=1 проблема
++RSHD_197=Проблем: %1
++RSHD_198=Виправити пристрій
++RSHD_199=10 хвилин
++RSHD_200=Виправити
++RSHD_201=Пауза 10 хв
++RSHD_202=Заблоковано, 15 хв
++RSHD_203=Без власного профілю
++RSHD_204=Показати списки
++RSHD_205=Усі пристрої
++RSHD_206=Кожен пристрій і гостьова мережа, профіль, який вони використовують, і що для них було заблоковано за останні 15 хвилин. Зміни профілів набувають чинності після збереження; «Виправити» і «Пауза» діють одразу.
++RSHD_207=Виберіть профіль, щоб блокувати для нього такі сервіси, як TikTok або Roblox, обмежити це певним часом і ввімкнути безпечний пошук. Профіль пристроям призначається на вкладці «Пристрої».
+ RDWT_69=Запитує в резолвера цього роутера ім'я зі списку; відповідь має бути NXDOMAIN. Сам перевірний запит теж рахується - як цей роутер.
+ RENC_66=Не є загальнодовіреним: на цьому роутері його не вдається пов'язати з публічним кореневим сертифікатом (у файлі бракує проміжного сертифіката або його видав тестовий центр), тому пристрої, що перевіряють ім'я, відхиляють його. Випустіть його заново в розділі %1.
+ RENC_67=DNS-over-TLS і DNS-over-QUIC до зовнішніх серверів (порт 853)
+-- 
+2.25.1
+

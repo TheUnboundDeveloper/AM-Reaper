@@ -1,0 +1,490 @@
+From 273c2f2fbe125e3d8fed1f7a7b31f77e8b182326 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Sun, 15 Nov 2026 17:48:08 -0500
+Subject: [PATCH] DHCP leases are kept across a restart
+
+- The lease lists live in RAM, so after a restart the router knew none of them: a device still
+  holding a lease that did not ask again (a PC cabled to an AiMesh node) was missing from DHCP
+  Leases and showed no name on Encrypted DNS until it renewed. The lease files of every network
+  and the store of the names devices announce are now saved to the router's flash (when the set
+  changes, hourly, and at reboot) and put back before each DHCP server starts on a fresh boot.
+  This dnsmasq keeps the seconds left in its file, so no clock is needed; a malformed copy is
+  refused.
+- The name store no longer files a reserved device's reservation name as the name the device sent.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ release/src/router/rc/Makefile            |   1 +
+ release/src/router/rc/init.c              |   4 +
+ release/src/router/rc/rc.c                |   1 +
+ release/src/router/rc/rwatch.c            |   3 +
+ release/src/router/rc/sdn.c               |   3 +
+ release/src/router/rc/services.c          |  36 ++-
+ release/src/router/shared/Makefile        |   1 +
+ release/src/router/shared/reaper_leases.c | 296 ++++++++++++++++++++++
+ release/src/router/shared/shared.h        |   6 +
+ 9 files changed, 348 insertions(+), 3 deletions(-)
+ create mode 100644 release/src/router/shared/reaper_leases.c
+
+diff --git a/release/src/router/rc/Makefile b/release/src/router/rc/Makefile
+index 516589c49b..340afacc5b 100644
+--- a/release/src/router/rc/Makefile
++++ b/release/src/router/rc/Makefile
+@@ -1852,6 +1852,7 @@ endif
+ 	@cd $(INSTALLDIR)/sbin && ln -sf rc reaper_bwfloor
+ 	@cd $(INSTALLDIR)/sbin && ln -sf rc reaper_usb_release
+ 	@cd $(INSTALLDIR)/sbin && ln -sf rc reaper_aimesh_sync
++	@cd $(INSTALLDIR)/sbin && ln -sf rc reaper_leases	# 2026-11-15: lease files survive a restart
+ # 2026-11-12: httpd starts /sbin/reaper_sdn_settle (applets dispatch by basename only - see reaper_lockrun)
+ 	@cd $(INSTALLDIR)/sbin && ln -sf rc reaper_sdn_settle
+ 	@cd $(INSTALLDIR)/sbin && ln -sf rc rdnshc
+diff --git a/release/src/router/rc/init.c b/release/src/router/rc/init.c
+index 9e89cc937c..8c2154bcf9 100644
+--- a/release/src/router/rc/init.c
++++ b/release/src/router/rc/init.c
+@@ -27139,6 +27139,10 @@ int init_main(int argc, char *argv[])
+ 		case SIGINT:		/* STOP */
+ 		case SIGTERM:		/* REBOOT */
+ 			stop_mcsd();
++			/* reaper 2026-11-15 (owner): keep the DHCP leases across the restart - saved while dnsmasq still
++			 * runs, put back before it starts again (shared/reaper_leases.c). Reboot and halt only. */
++			if (state == SIGTERM /* REBOOT */ || state == SIGQUIT /* HALT */)
++				reaper_leases_save(1);
+ #if defined(RTCONFIG_USB_MODEM) && (defined(RTCONFIG_JFFS2) || defined(RTCONFIG_BRCM_NAND_JFFS2) || defined(RTCONFIG_UBIFS) || defined(RTCONFIG_JFFS_PARTITION))
+ 		_dprintf("modem data: save the data during the signal %d.\n", state);
+ 		eval("/usr/sbin/modem_status.sh", "bytes+");
+diff --git a/release/src/router/rc/rc.c b/release/src/router/rc/rc.c
+index e78086bed9..3f24304392 100644
+--- a/release/src/router/rc/rc.c
++++ b/release/src/router/rc/rc.c
+@@ -3015,6 +3015,7 @@ static const applets_t applets[] = {
+ 	{ "reaper_usb_release",	reaper_usb_release_main		},
+ 	/* 2026-11-01: refresh the shared AiMesh node set from cfg_relist (rc/reaper_aimesh.c) */
+ 	{ "reaper_aimesh_sync",	reaper_aimesh_sync_main		},
++	{ "reaper_leases",		reaper_leases_main		},	/* 2026-11-15: rwatch saves the lease files */
+ 	/* 2026-11-05: Let's Encrypt by DNS validation - request / renew, install as the imported certificate (rc/reaper_ledns.c) */
+ 	{ "reaper_ledns",		reaper_ledns_main			},
+ 	{ "console",			console_main				},
+diff --git a/release/src/router/rc/rwatch.c b/release/src/router/rc/rwatch.c
+index 3fc6b00469..a77b411da5 100644
+--- a/release/src/router/rc/rwatch.c
++++ b/release/src/router/rc/rwatch.c
+@@ -91,6 +91,9 @@ static void rwatch_gen(void)
+ 	  /* 2026-11-01: the shared AiMesh node set (rc/reaper_aimesh.c) follows the registry even with
+ 	   * Gatekeeper off - gkd, the registry watcher, runs only with Gatekeeper on */
+ 	  "[ -x /sbin/reaper_aimesh_sync ] && /sbin/reaper_aimesh_sync >/dev/null 2>&1\n"
++	  /* 2026-11-15 (owner): the DHCP lease files survive a restart - saved when the set of leases changed, else
++	   * hourly (shared/reaper_leases.c); a power cut loses at most that much */
++	  "[ -x /sbin/reaper_leases ] && /sbin/reaper_leases save >/dev/null 2>&1\n"
+ 	  "\n"
+ 	  "# reaper v1.9.1 (Rung B): durable-store resolver - MIRRORS rdev_store_base()\n"
+ 	  "# in httpd/web.c (keep the two in lockstep). Re-resolved every tick so a USB\n"
+diff --git a/release/src/router/rc/sdn.c b/release/src/router/rc/sdn.c
+index 6e6fd1a86f..4bf76aab24 100644
+--- a/release/src/router/rc/sdn.c
++++ b/release/src/router/rc/sdn.c
+@@ -1397,6 +1397,9 @@ static int _handle_sdn_dnsmasq(const MTLAN_T *pmtl, const int action)
+ 					reaper_guest_dot_start(pmtl);
+ 				if (!_gen_sdn_dnsmasq_conf(pmtl, config_path, sizeof(config_path)))
+ 				{
++					char lpath[64];	/* reaper 2026-11-15: this network's leases saved before a restart (shared/reaper_leases.c) */
++					snprintf(lpath, sizeof(lpath), "/var/lib/misc/dnsmasq-%d.leases", pmtl->sdn_t.sdn_idx);
++					reaper_leases_restore(lpath);
+ 					eval("dnsmasq", "-C", config_path, "--log-async");
+ 				}
+ #ifdef RTCONFIG_DNSPRIVACY
+diff --git a/release/src/router/rc/services.c b/release/src/router/rc/services.c
+index ab7395508c..ecafe6da85 100644
+--- a/release/src/router/rc/services.c
++++ b/release/src/router/rc/services.c
+@@ -2640,6 +2640,10 @@ void start_dnsmasq(void)
+ 	start_stubby();
+ #endif
+ #endif
++	/* reaper 2026-11-15 (owner): a fresh boot puts back the leases and announced names saved before the restart
++	 * (shared/reaper_leases.c); a no-op once the live files exist */
++	reaper_leases_restore("/var/lib/misc/dnsmasq.leases");
++	reaper_leases_restore("/var/lib/misc/reaper_hostnames");
+ 	eval("dnsmasq", "--log-async");
+ 
+ #ifdef RTCONFIG_MULTILAN_CFG
+@@ -2730,6 +2734,26 @@ void reload_dnsmasq(void)
+ }
+ #endif
+ 
++/* 2026-11-15: is name the reservation name of mac (dhcp_staticlist "<MAC>IP>DNS>name"), case-insensitive */
++static int reaper_resv_name_is(const char *mac, const char *name)
++{
++	char *b = strdup(nvram_safe_get("dhcp_staticlist")), *rec, *sv = NULL;
++	int hit = 0;
++
++	for (rec = b ? strtok_r(b, "<", &sv) : NULL; rec && !hit; rec = strtok_r(NULL, "<", &sv)) {
++		char *f[4] = { rec, NULL, NULL, NULL }, *p = rec;
++		int k;
++		for (k = 1; k < 4 && (p = strchr(p, '>')) != NULL; k++) {
++			*p++ = 0;
++			f[k] = p;
++		}
++		if (f[3] && *f[3] && !strcasecmp(f[0], mac) && !strcasecmp(f[3], name))
++			hit = 1;
++	}
++	free(b);
++	return hit;
++}
++
+ int dnsmasq_script_main(int argc, char **argv)
+ {
+ 	/* reaper v3.1.1: keep the hostname the client ANNOUNCED (option 12). dnsmasq
+@@ -2748,9 +2772,15 @@ int dnsmasq_script_main(int argc, char **argv)
+ 			const char *m6 = getenv("DNSMASQ_MAC");
+ 			mac = (m6 && isValidMacAddress(m6)) ? m6 : NULL;
+ 		}
+-		if (mac)
+-			reaper_dhcpname_record(mac, (sup && *sup) ? sup : (argc >= 5 ? argv[4] : ""),
+-					       is6 ? NULL : getenv("DNSMASQ_VENDOR_CLASS"));
++		if (mac) {
++			/* 2026-11-15 (owner's device-label rule): the store holds what the CLIENT sent. Without option 12
++			 * the lease name is used - unless it is the name the admin typed with the device's reservation,
++			 * which dnsmasq writes there (dhcp-host): that is the admin's Name, not the client's hostname. */
++			const char *ln = (argc >= 5 && argv[4]) ? argv[4] : "";
++			if (!(sup && *sup) && *ln && reaper_resv_name_is(mac, ln))
++				ln = "";
++			reaper_dhcpname_record(mac, (sup && *sup) ? sup : ln, is6 ? NULL : getenv("DNSMASQ_VENDOR_CLASS"));
++		}
+ 	}
+ 	// TODO : call function directly
+ #if defined(RTCONFIG_TR069) && !defined(RTCONFIG_TR181)
+diff --git a/release/src/router/shared/Makefile b/release/src/router/shared/Makefile
+index 1f456cd973..cf975c99ad 100644
+--- a/release/src/router/shared/Makefile
++++ b/release/src/router/shared/Makefile
+@@ -236,6 +236,7 @@ OBJS += stun.o
+ OBJS += scripts.o
+ OBJS += gk_rl.o	# reaper v2.6.3: Gatekeeper device list store (/jffs, not nvram)
+ OBJS += reaper_dhcpname.o	# reaper v3.1.1: announced DHCP hostnames, kept apart from the lease file
++OBJS += reaper_leases.o	# reaper 2026-11-15: lease files and announced names survive a restart
+ OBJS += reaper_jfile.o	# reaper v2.6.7: generic /jffs text store + Policy Routing rule list
+ OBJS += reaper_nd.o	# reaper 2026-10-07 IPv6 (0c): LAN IPv6 neighbour cache shared by httpd, gkd and rtrafd
+ OBJS += reaper_tmpsafe.o	# reaper 2026-10-09 audit V3: private /tmp directories, fresh files, script checks
+diff --git a/release/src/router/shared/reaper_leases.c b/release/src/router/shared/reaper_leases.c
+new file mode 100644
+index 0000000000..eb8a60b550
+--- /dev/null
++++ b/release/src/router/shared/reaper_leases.c
+@@ -0,0 +1,296 @@
++/* SPDX-License-Identifier: GPL-2.0-only
++ * Copyright (C) 2026 the Reaper project maintainer
++ * Part of the Reaper hardened Asuswrt-Merlin build. See LICENSE / LICENSE.reaper.
++ *
++ * reaper_leases.c - the DHCP lease files survive a restart (owner, 2026-11-15).
++ *
++ * dnsmasq keeps its leases in /var/lib/misc (RAM). After a restart it knew none of them, so a device that still held
++ * a valid lease - one that did not rejoin, e.g. a PC cabled to an AiMesh node - was missing from every page that
++ * reads the lease file (DHCP Leases, Encrypted DNS, Devices names) until it renewed, up to half a lease later. The
++ * owner: "If a device has a DHCP lease and is still active on the network it must be displayed."
++ *
++ * This build of dnsmasq (router Makefile: -DHAVE_BROKEN_RTC -DHAVE_LEASEFILE_EXPIRE) writes the SECONDS LEFT of each
++ * lease, not an expiry date, and adds them to its uptime when it reads the file. So a copy saved before the restart
++ * is valid as it stands after it, with no clock - the router has no battery clock and boots with a wrong date. A
++ * restored lease carries the time it had when it was saved; the time the router was off is not taken off (it
++ * cannot be measured before NTP), so a device that left meanwhile keeps its row for at most one lease time.
++ *
++ * Kept in /jffs/reaper/leases (root, 0700): each dnsmasq lease file (main network dnsmasq.leases, each Guest Network
++ * Pro / VLAN network's dnsmasq-<n>.leases) and the store of the names devices announce (reaper_hostnames,
++ * shared/reaper_dhcpname.c). Written:
++ *   - when the set of leases changes (a lease created or removed; dnsmasq rewrites its file only then),
++ *   - at least once an hour while leases exist (fresh seconds-left values),
++ *   - once when rc starts a reboot, before the services stop (init.c).
++ * rwatch's 5-minute tick runs `reaper_leases save`. Flash writes: a few per hour at most.
++ * Restored only when the live file does not exist yet (a fresh boot: /var is RAM), just before that dnsmasq starts.
++ *
++ * Gatekeeper: nothing here touches its device list. Gatekeeper's own readers take names from the lease files and
++ * never admit a device from one (gkd find_dev, not touch_dev); its enable-time baseline keeps every existing state.
++ * A restored file holds what the router itself handed out before the restart, checked line by line first.
++ */
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++#include <ctype.h>
++#include <errno.h>
++#include <fcntl.h>
++#include <signal.h>
++#include <unistd.h>
++#include <dirent.h>
++#include <sys/stat.h>
++#include <sys/types.h>
++
++#include "shutils.h"
++#include "shared.h"
++#include "reaper_tmpsafe.h"
++
++#define RLS_DIR		"/jffs/reaper/leases"
++#define RLS_LIVE	"/var/lib/misc"
++#define RLS_NAMES	"reaper_hostnames"
++#define RLS_STAMP	"/tmp/reaper/leases.saved"	/* uptime of the last write */
++#define RLS_REFRESH	3600				/* seconds between refresh writes while leases exist */
++#define RLS_MAX		(96 * 1024)			/* a lease file of ~700 devices; anything bigger is not ours */
++#define RLS_LINE	512
++
++/* the files kept: dnsmasq.leases, dnsmasq-<digits>.leases, reaper_hostnames */
++int reaper_leases_name_ok(const char *n)
++{
++	size_t l, i;
++
++	if (!n)
++		return 0;
++	if (!strcmp(n, "dnsmasq.leases") || !strcmp(n, RLS_NAMES))
++		return 1;
++	l = strlen(n);
++	if (l < 16 || l > 40 || strncmp(n, "dnsmasq-", 8) || strcmp(n + l - 7, ".leases"))
++		return 0;
++	for (i = 8; i < l - 7; i++)
++		if (!isdigit((unsigned char)n[i]))
++			return 0;
++	return 1;
++}
++
++/* a regular file (never a symlink), at most RLS_MAX bytes; NULL otherwise. *len = bytes read. */
++static char *rls_slurp(const char *path, size_t *len)
++{
++	struct stat st;
++	char *b;
++	ssize_t r;
++	size_t got = 0;
++	int fd;
++
++	*len = 0;
++	if (lstat(path, &st) != 0 || !S_ISREG(st.st_mode) || st.st_size < 0 || st.st_size > RLS_MAX)
++		return NULL;
++	if ((fd = open(path, O_RDONLY | O_NOFOLLOW)) < 0)
++		return NULL;
++	if (!(b = malloc((size_t)st.st_size + 1))) {
++		close(fd);
++		return NULL;
++	}
++	while (got < (size_t)st.st_size && (r = read(fd, b + got, (size_t)st.st_size - got)) != 0) {
++		if (r < 0) {
++			if (errno == EINTR)
++				continue;
++			break;
++		}
++		got += (size_t)r;
++	}
++	close(fd);
++	b[got] = 0;
++	*len = got;
++	return b;
++}
++
++/* one line of a dnsmasq lease file: "<seconds> <hw> <addr> <name> <client-id>" (5 fields, the first all digits),
++ * or the IPv6 server line "duid <hex>". The name store: tab-separated, the first field a MAC. Printable ASCII. */
++static int rls_line_ok(int names, const char *s, size_t n)
++{
++	size_t i, f = 1;
++
++	if (n == 0 || n >= RLS_LINE)
++		return 0;
++	for (i = 0; i < n; i++)
++		if (!((unsigned char)s[i] >= 0x20 && (unsigned char)s[i] <= 0x7e) && !(names && s[i] == '\t'))
++			return 0;
++	if (names) {
++		for (i = 0; i < n && s[i] != '\t'; i++)
++			;
++		return i == 17 && s[2] == ':' && s[5] == ':' && s[8] == ':' && s[11] == ':' && s[14] == ':';
++	}
++	if (n > 5 && !strncmp(s, "duid ", 5))
++		return 1;
++	for (i = 0; i < n && isdigit((unsigned char)s[i]); i++)
++		;
++	if (i == 0 || i > 10 || i >= n || s[i] != ' ')
++		return 0;
++	for (; i < n; i++)
++		if (s[i] == ' ') {
++			if (i + 1 >= n || s[i + 1] == ' ')
++				return 0;
++			f++;
++		}
++	return f == 5;
++}
++
++/* every line well formed (an empty file is fine) */
++int reaper_leases_valid(const char *name, const char *buf, size_t len)
++{
++	int names = !strcmp(name, RLS_NAMES);
++	const char *p = buf, *e = buf + len, *nl;
++
++	while (p < e) {
++		nl = memchr(p, '\n', (size_t)(e - p));
++		if (!nl)
++			return 0;		/* dnsmasq ends every line */
++		if (!rls_line_ok(names, p, (size_t)(nl - p)))
++			return 0;
++		p = nl + 1;
++	}
++	return 1;
++}
++
++/* the part of a file that says WHICH leases exist: a lease line without its seconds, a name line without its time.
++ * Two files with the same key hold the same set. Caller frees. */
++static char *rls_key(const char *name, const char *buf, size_t len)
++{
++	int names = !strcmp(name, RLS_NAMES);
++	char *k = malloc(len + 1), *o = k;
++	const char *p = buf, *e = buf + len, *nl, *a, *z;
++
++	if (!k)
++		return NULL;
++	while (p < e) {
++		nl = memchr(p, '\n', (size_t)(e - p));
++		if (!nl)
++			nl = e;
++		a = p;
++		z = nl;
++		if (names) {
++			const char *t = z;
++			while (t > a && t[-1] != '\t')
++				t--;
++			if (t > a)
++				z = t - 1;		/* drop the last field (the time of the event) */
++		} else if (isdigit((unsigned char)*a)) {
++			while (a < z && *a != ' ')
++				a++;			/* drop the seconds */
++		}
++		memcpy(o, a, (size_t)(z - a));
++		o += z - a;
++		*o++ = '\n';
++		p = nl + 1;
++	}
++	*o = 0;
++	return k;
++}
++
++/* Put the saved copy of a live file in place, before its dnsmasq starts. Only when the live file does not exist
++ * (a fresh boot). 1 restored, 0 nothing to do, -1 refused (a saved copy that is not well formed stays unused). */
++int reaper_leases_restore(const char *live)
++{
++	const char *name;
++	char saved[300];
++	struct stat st;
++	size_t len;
++	char *b;
++	int r;
++
++	if (!live || strncmp(live, RLS_LIVE "/", sizeof(RLS_LIVE)) || !(name = strrchr(live, '/')) || !reaper_leases_name_ok(++name))
++		return -1;
++	if (lstat(live, &st) == 0 || errno != ENOENT)
++		return 0;
++	snprintf(saved, sizeof(saved), "%s/%s", RLS_DIR, name);
++	if (!(b = rls_slurp(saved, &len)))
++		return 0;
++	if (!reaper_leases_valid(name, b, len)) {
++		logmessage("reaper", "DHCP: the saved %s is not well formed - not restored", name);
++		free(b);
++		return -1;
++	}
++	mkdir(RLS_LIVE, 0755);
++	r = reaper_write_atomic(live, b, len, !strcmp(name, RLS_NAMES) ? 0600 : 0644);
++	if (r == 0 && len) {
++		int n = 0;
++		const char *p;
++		for (p = b; *p; p++)
++			n += (*p == '\n');
++		logmessage("reaper", "DHCP: %d %s from before the restart put back (%s)", n,
++			   !strcmp(name, RLS_NAMES) ? "announced name(s)" : "lease(s)", name);
++	}
++	free(b);
++	return r == 0 ? 1 : -1;
++}
++
++static long rls_stamp_get(void)
++{
++	char b[32] = "";
++	f_read_string(RLS_STAMP, b, sizeof(b));
++	return atol(b);
++}
++
++/* Save the live files that changed (or all of them: force, or the hourly refresh). 0 nothing written, n files
++ * written, -1 the folder could not be made. */
++int reaper_leases_save(int force)
++{
++	DIR *d;
++	struct dirent *de;
++	char live[300], saved[300], *lb, *sb, *lk, *sk;
++	size_t ll, sl;
++	long now = (long)uptime(), last = rls_stamp_get();
++	int due = force || last <= 0 || now < last || now - last >= RLS_REFRESH, changed = 0, n = 0, any = 0;
++
++	if (reaper_secure_dir("/jffs/reaper", 0755) != 0 || reaper_secure_dir(RLS_DIR, 0700) != 0)
++		return -1;
++	if (!(d = opendir(RLS_LIVE)))
++		return 0;
++	/* pass 1: has the set of any file changed since it was saved */
++	while ((de = readdir(d)) != NULL && !changed) {
++		if (!reaper_leases_name_ok(de->d_name))
++			continue;
++		snprintf(live, sizeof(live), "%s/%s", RLS_LIVE, de->d_name);
++		snprintf(saved, sizeof(saved), "%s/%s", RLS_DIR, de->d_name);
++		if (!(lb = rls_slurp(live, &ll)))
++			continue;
++		any += ll > 0;
++		sb = rls_slurp(saved, &sl);
++		lk = rls_key(de->d_name, lb, ll);
++		sk = sb ? rls_key(de->d_name, sb, sl) : NULL;
++		if (!lk || !sk || strcmp(lk, sk))
++			changed = 1;
++		free(lb); free(sb); free(lk); free(sk);
++	}
++	closedir(d);
++	if (!changed && !(due && any))
++		return 0;
++	/* the seconds left are written by dnsmasq on SIGUSR2 (HAVE_LEASEFILE_EXPIRE); give it a moment */
++	killall("dnsmasq", SIGUSR2);
++	usleep(400 * 1000);
++	if (!(d = opendir(RLS_LIVE)))
++		return 0;
++	while ((de = readdir(d)) != NULL) {
++		if (!reaper_leases_name_ok(de->d_name))
++			continue;
++		snprintf(live, sizeof(live), "%s/%s", RLS_LIVE, de->d_name);
++		snprintf(saved, sizeof(saved), "%s/%s", RLS_DIR, de->d_name);
++		if (!(lb = rls_slurp(live, &ll)))
++			continue;
++		if (reaper_leases_valid(de->d_name, lb, ll) && reaper_write_changed(saved, lb, ll, 0600) == 0)
++			n++;
++		free(lb);
++	}
++	closedir(d);
++	reaper_secure_dir("/tmp/reaper", 0700);
++	snprintf(live, sizeof(live), "%ld\n", now);
++	reaper_write_atomic(RLS_STAMP, live, strlen(live), 0600);
++	return n;
++}
++
++/* applet: reaper_leases save [force] */
++int reaper_leases_main(int argc, char **argv)
++{
++	if (argc >= 2 && !strcmp(argv[1], "save"))
++		return reaper_leases_save(argc >= 3 && !strcmp(argv[2], "force")) < 0;
++	fprintf(stderr, "usage: reaper_leases save [force]\n");
++	return 2;
++}
+diff --git a/release/src/router/shared/shared.h b/release/src/router/shared/shared.h
+index 5d72aa159b..c2e285a31f 100644
+--- a/release/src/router/shared/shared.h
++++ b/release/src/router/shared/shared.h
+@@ -3648,6 +3648,12 @@ extern void gk_rl_migrate(void);	/* one-shot nvram -> file (start_gk) */
+  * lease-change script; gkd and httpd read it as the name fallback. */
+ extern int reaper_dhcpname_record(const char *mac, const char *host, const char *vendor);	/* 0 ok, -1 not a MAC / not saved */
+ extern int reaper_dhcpname_get(const char *mac, char *out, size_t n);	/* 1 + name, or 0 + "" */
++/* 2026-11-15 (owner): the DHCP lease files and the announced names survive a restart (shared/reaper_leases.c) */
++extern int reaper_leases_name_ok(const char *n);
++extern int reaper_leases_valid(const char *name, const char *buf, size_t len);
++extern int reaper_leases_restore(const char *live);	/* 1 put back, 0 nothing to do, -1 refused */
++extern int reaper_leases_save(int force);		/* files written, 0 none, -1 no folder */
++extern int reaper_leases_main(int argc, char **argv);	/* applet: reaper_leases save [force] */
+ /* reaper 2026-10-07 IPv6 (0c): the LAN IPv6 neighbour cache (shared/reaper_nd.c) - the
+  * IPv6 counterpart of /proc/net/arp for httpd, gkd and rtrafd. */
+ #include "reaper_nd.h"
+-- 
+2.25.1
+

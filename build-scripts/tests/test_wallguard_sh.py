@@ -133,10 +133,67 @@ try:
         check("[%s] W-1: every list download failed - a My-rules table is built and the pending mark is set, logged" % tag,
               os.path.exists(os.path.join(D, "db")) and os.path.exists(os.path.join(D, "pending"))
               and "no block list could be downloaded" in logtxt())
+        check("[%s] 2026-11-07: ...the mark holds the epoch of the next try, 10 min out, one try counted" % tag,
+              abs(int(open(os.path.join(D, "pending")).read()) - time.time() - 600) < 30 and open(os.path.join(D, "tries")).read().strip() == "1")
+        run("update")
+        check("[%s] 2026-11-07: a second failure doubles the wait (20 min, 2 tries) and the log says so" % tag,
+              abs(int(open(os.path.join(D, "pending")).read()) - time.time() - 1200) < 30 and open(os.path.join(D, "tries")).read().strip() == "2"
+              and "tried again in 20 min" in logtxt(), logtxt()[-200:])
         os.remove(os.path.join(srv, "one.txt.fail"))
         run("update")
         check("[%s] W-1: the next good update clears the mark" % tag,
-              not os.path.exists(os.path.join(D, "pending")) and os.path.isfile(os.path.join(wl, "one")))
+              not os.path.exists(os.path.join(D, "pending")) and not os.path.exists(os.path.join(D, "tries")) and os.path.isfile(os.path.join(wl, "one")))
+
+        # ---- 2026-11-07 (field: a 03:00 reboot left the lists owed until the 05:15 run). The WAN gate, the mark
+        # for ANY owed list, retry = the owed lists only, $D/only / ONLY = a subset, sync = the new lists only
+        def stat_of(): return {l.split()[0]: l.split() for l in open(os.path.join(D, "state")).read().splitlines()}
+        def run_env(extra, *a):
+            cmd = (["sh", SH_FILE] if shell == "sh" else [BB, "ash", SH_FILE]) + list(a)
+            return subprocess.run(cmd, capture_output=True, text=True, env=dict(env, **extra), timeout=120)
+        open(os.path.join(srv, "three.txt"), "w").write("||three.example^\n")
+        open(os.path.join(D, "feeds"), "w").write("2 one https://test/one.txt p\n20 two https://test/two.txt c\n21 three https://test/three.txt c\n")
+        r = run_env({"WALLGUARD_WAN": "0"}, "update")
+        check("[%s] WAN down: nothing fetched, the mark says 0 (at WAN up), logged; the table in use stays" % tag,
+              r.returncode == 0 and open(os.path.join(D, "pending")).read().strip() == "0" and not os.path.exists(os.path.join(wl, "three"))
+              and "the internet is not up yet" in logtxt() and os.path.exists(os.path.join(D, "db")), (r.stderr, logtxt()[-200:]))
+        before = stat_of()
+        time.sleep(1.1)
+        run("retry")
+        st = stat_of()
+        check("[%s] retry: only the owed lists come down (two, three fetched; one's state line carried over untouched), the mark cleared" % tag,
+              st["one"] == before["one"] and st["two"][1] == "ok" and st["three"][1] == "ok" and os.path.isfile(os.path.join(wl, "three"))
+              and not os.path.exists(os.path.join(D, "pending")) and json.load(open(os.path.join(D, "build.json")))["names"] == 6, (before, st))
+        check("[%s] retry with nothing owed: a no-op that clears a stale mark" % tag,
+              (open(os.path.join(D, "pending"), "w").write("0") or True) and run("retry").returncode == 0 and not os.path.exists(os.path.join(D, "pending")))
+        before = stat_of(); time.sleep(1.1)
+        open(os.path.join(D, "only"), "w").write("two\n")
+        run("update"); st = stat_of()
+        check("[%s] $D/only (a row's Update button): that list alone is fetched, the file consumed, the others untouched" % tag,
+              int(st["two"][3]) > int(before["two"][3]) and st["one"] == before["one"] and st["three"] == before["three"] and not os.path.exists(os.path.join(D, "only")), (before, st))
+        os.symlink("/etc/hostname", os.path.join(D, "only"))
+        before = stat_of(); time.sleep(1.1); run("update"); st = stat_of()
+        check("[%s] a link planted at only is never read (a full update ran), and it is removed" % tag,
+              all(int(st[k][3]) > int(before[k][3]) for k in ("one", "two", "three")) and not os.path.lexists(os.path.join(D, "only")), (before, st))
+        open(os.path.join(srv, "four.txt"), "w").write("@@||allowonly.example^|\n@@|exactallow.example^\n! comment\n")
+        open(os.path.join(D, "feeds"), "a").write("22 four https://test/four.txt c\n")
+        before = stat_of(); time.sleep(1.1); run("sync"); st = stat_of()
+        check("[%s] sync: a list ticked for the first time is fetched alone (the three already down untouched)" % tag,
+              st["four"][1] == "ok" and all(st[k] == before[k] for k in ("one", "two", "three")) and "list(s) four not downloaded yet" in logtxt(), (before, st))
+        bj = json.load(open(os.path.join(D, "build.json")))
+        check("[%s] an allow-only list (the AdGuard DNS exceptions list) passes the D-1 gate and its allows are in the table" % tag,
+              [s for s in bj["sources"] if s["id"] == "four"][0]["allows"] == 2 and bj["allow"] >= 2, bj)
+        # metal _r1 (2026-11-07): a list whose copy became usable after the table was built (the USB store mounted later):
+        # nothing is owed, so retry clears the mark - and must build from the copy instead of leaving the table without it
+        open(os.path.join(D, "feeds"), "a").write("23 five https://test/five.txt c\n")
+        open(os.path.join(wl, "five"), "w").write("||five.example^\n")
+        open(os.path.join(D, "state"), "a").write("five missing 0 1\n")
+        open(os.path.join(D, "pending"), "w").write("0\n")
+        r = run("retry"); bj = json.load(open(os.path.join(D, "build.json")))
+        check("[%s] retry with nothing owed: the mark goes, the table is rebuilt with the copy that arrived, nothing fetched (state line untouched)" % tag,
+              r.returncode == 0 and not os.path.exists(os.path.join(D, "pending")) and any(x["id"] == "five" and x["names"] == 1 for x in bj["sources"])
+              and "five missing 0 1" in open(os.path.join(D, "state")).read(), (r.stderr, bj))
+        open(os.path.join(D, "feeds"), "w").write("2 one https://test/one.txt p\n")
+        run("update")
         # X-2: the lists kept in RAM stay under the cap together (one.txt 32 B is in RAM, two.txt 21 B would pass 40 B);
         # nothing is fetched while memory is short, and the copy already held stays
         env["WALLGUARD_RAM_CAP"] = "40"

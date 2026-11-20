@@ -93,6 +93,10 @@ try:
         elif name == "PPBR_BLOG_SKIP": val = '"%s"' % SKIP
         elif name == "PPBR_CACHE": val = '"%s/jffs"' % td
         defs.append("#define %s %s" % (name, val))
+    # 2026-11-01: the shared AiMesh node set's name comes from rc.h (rc/reaper_aimesh.c)
+    with open(os.path.join(os.path.dirname(pbr), "rc.h"), encoding="utf-8", errors="replace") as f:
+        m = re.search(r'^#define\s+REAPER_AIMESH_SET\s+("[^"]+")', f.read(), re.M)
+    if m: defs.append("#define REAPER_AIMESH_SET %s" % m.group(1))
     m = re.search(r"typedef struct \{\s*int enable;\s*char \*rulelist;[^}]*\} ppbr_cfg_t;", source)
     if not m: die("ppbr_cfg_t typedef not found")
     cfg_t = m.group(0)
@@ -110,11 +114,15 @@ try:
 static FILE *LOG;
 void logmessage(const char *tag, const char *fmt, ...) { va_list ap; va_start(ap, fmt); fprintf(LOG, "%%s: ", tag); vfprintf(LOG, fmt, ap); fputc('\n', LOG); va_end(ap); fflush(LOG); }
 static const char *NV[][2] = { {"wgc1_enforce","1"}, {"wgc1_enable","1"}, {"vpn_client2_enforce","0"}, {"wgc2_enforce","1"}, {"wgc2_enable","0"}, {NULL,NULL} };
-static const char *nvget(const char *k) { int i; for (i = 0; NV[i][0]; i++) if (!strcmp(NV[i][0], k)) return NV[i][1]; return ""; }
+/* 2026-11-16: a value in the environment (NV_<key>) wins, for the Killswitch truth table below */
+static const char *nvget(const char *k) { int i; char e[64]; const char *v; snprintf(e, sizeof(e), "NV_%%s", k); if ((v = getenv(e)) != NULL) return v;
+	for (i = 0; NV[i][0]; i++) { if (!strcmp(NV[i][0], k)) return NV[i][1]; }
+	return ""; }
 int nvram_get_int(const char *k) { return atoi(nvget(k)); }
+const char *nvram_safe_get(const char *k) { return nvget(k); }
 int nvram_match(const char *k, const char *v) { return !strcmp(nvget(k), v); }
 int ipv6_enabled(void) { return 1; }
-int ovpn_is_client_enabled(int unit) { return 1; }
+int ovpn_is_client_enabled(int unit) { return getenv("OV_DISABLED") ? 0 : 1; }
 char *reaper_fw_list_get(const char *which) { return ""; }
 int _vstrsep(char *buf, const char *sep, ...) { va_list ap; char **p; int n = 0; va_start(ap, sep); while ((p = va_arg(ap, char **)) != NULL) { *p = strsep(&buf, sep); if (!*p) break; n++; } va_end(ap); return n; }
 #define vstrsep(buf, sep, args...) _vstrsep(buf, sep, args, NULL)
@@ -133,7 +141,13 @@ static int ppbr_resolve_object(const char *name, char *out, size_t ol) { snprint
     ]
     MAIN = r'''
 int main(int argc, char **argv) {
-	ppbr_cfg_t c; LOG = fopen(argv[3], "a");
+	ppbr_cfg_t c;
+	if (argc > 2 && !strcmp(argv[1], "--target")) {	/* 2026-11-16: ppbr_target() alone: "<known> <failclosed>" */
+		int code = 0, fc = 0, wg = 0; const char *tb = NULL;
+		int r = ppbr_target(argv[2], &code, &tb, &fc, &wg);
+		printf("%d %d\n", r, fc); return 0;
+	}
+	LOG = fopen(argv[3], "a");
 	c.enable = 1; c.rulelist = argv[1];
 	int r = ppbr_gen(argv[2], 0, &c);
 	printf("gen=%d\n", r); return r == 1 ? 0 : 1;
@@ -172,6 +186,15 @@ int main(int argc, char **argv) {
         'esac; exit 0\n')
     fake("iptables", XT.replace("TBL", "iptables").replace("FAM", "4"))
     fake("ip6tables", XT.replace("TBL", "ip6tables").replace("FAM", "6"))
+    # 2026-11-18 (review C-E2): the chain's rules arrive as one `iptables-restore --noflush` payload per
+    # family. The fake writes each payload line to the trace in the form the single calls had, so every check
+    # below reads the same rules in the same order; FAKE_RESTORE_FAIL makes it refuse (the rule-by-rule path).
+    RST = ('[ -n "$FAKE_RESTORE_FAIL" ] && { cat > /dev/null; echo "refused" >&2; exit 1; }\n'
+           'echo "TBL-restore $*" >> "$FAKE_TRACE"; t=""\n'
+           'while IFS= read -r l; do case "$l" in "*"*) t="${l#\\*}";; COMMIT|"") ;; *) echo "TBL -t $t $l" >> "$FAKE_TRACE";; esac; done\n'
+           'exit 0\n')
+    fake("iptables-restore", RST.replace("TBL", "iptables"))
+    fake("ip6tables-restore", RST.replace("TBL", "ip6tables"))
     fake("ipset", 'echo "ipset $*" >> "$FAKE_TRACE"; exit 0\n')
     fake("fc", 'echo "fc $*" >> "$FAKE_TRACE"; exit 0\n')
     fake("logger", 'echo "logger $*" >> "$FAKE_LOG"; exit 0\n')
@@ -264,9 +287,22 @@ int main(int argc, char **argv) {
           S.count("-m conntrack --ctdir REPLY -j RETURN") == 1
           and S.find("-F $C") < rep < S.find("--restore-mark"), "")
 
+    # 2026-11-01: an AiMesh node's own traffic is never policy-routed - the shared set is refreshed,
+    # created, and matched right after the REPLY RETURN, before any restore or mark
+    am = S.find("-m set --match-set reaper_aimesh src -j RETURN")
+    check("AiMesh nodes RETURN right after replies, ahead of every restore (one rule per family loop)",
+          S.count("-m set --match-set reaper_aimesh src -j RETURN") == 1 and rep < am < S.find("--restore-mark"), "")
+    check("the shared node set is refreshed and created before the chain is built",
+          0 <= S.find("[ -x /sbin/reaper_aimesh_sync ] && /sbin/reaper_aimesh_sync") < S.find("ipset create reaper_aimesh hash:mac -exist")
+          < S.find("-N $C"), "")
+
     # run with wgc1 present
     rc, T, FL, F = run(script, wg_up=True)
     check("wg up: script exits 0", rc == 0, T[-800:])
+    check("wg up: the node set is created and both families match it",
+          "ipset create reaper_aimesh hash:mac -exist" in T
+          and "iptables -t mangle -A REAPER_PBR_N -m set --match-set reaper_aimesh src -j RETURN" in T
+          and "ip6tables -t mangle -A REAPER_PBR_N -m set --match-set reaper_aimesh src -j RETURN" in T, T[-1200:])
     check("wg up: restores issued for both families",
           "iptables -t mangle -A REAPER_PBR_N -m connmark --mark 0x60000/0x000F0000 -j CONNMARK --restore-mark --nfmask 0x000F0000 --ctmask 0x000F0000" in T
           and "ip6tables -t mangle -A REAPER_PBR_N -m connmark --mark 0x20000/0x000F0000 -j CONNMARK --restore-mark" in T
@@ -358,6 +394,59 @@ int main(int argc, char **argv) {
           F["skipnets"] is not None and "192.0.2.10/32 pending" in F["skipnets"] and "192.168.50.0/24 new" in F["skipnets"], repr(F["skipnets"]))
     check("wg down: says the bypass is installed when the client starts", "skip-bypass not installed yet (installed when the client starts)" in FL, FL)
     check("wg down: the mark and routing rules still go in", "lookup wgc1 pref 9006" in T and "-s 192.0.2.10 -j MARK" in T, "")
+
+    # 2026-11-18 (review C-E2): one iptables-restore per family carries the chain; a refusal runs the script
+    # again rule by rule. The first three runs above went through the fake restore:
+    rc, T, FL, F = run(script, wg_up=True)
+    check("batched: one restore per family, --noflush, and no single -A call reaches the tool",
+          T.count("iptables-restore --noflush") == 1 and T.count("ip6tables-restore --noflush") == 1
+          and T.index("iptables-restore --noflush") < T.index("iptables -t mangle -A REAPER_PBR_N"), T[:600])
+    _p4 = [l for l in T.splitlines() if l.startswith("iptables -t mangle -A REAPER_PBR_N ")]
+    _p6 = [l for l in T.splitlines() if l.startswith("ip6tables -t mangle -A REAPER_PBR_N ")]
+    # IPv4: reply RETURN, node RETURN, 3 restores, marked RETURN, 4 selector rules, save-mark
+    check("batched: the chain's own lines and the counted rules are all in the payload, save-mark last",
+          len(_p4) == 11 and "--ctdir REPLY" in _p4[0] and "--save-mark" in _p4[-1]
+          and len(_p6) >= 8 and "--ctdir REPLY" in _p6[0] and "--save-mark" in _p6[-1], "\n".join(_p4 + _p6))
+    check("batched: the queue files are gone afterwards", not [n for n in os.listdir(PDIR) if n.startswith("batch.")], repr(os.listdir(PDIR)))
+    # refused: started by its path (as rc starts it), the script re-runs itself with PBR_NOBATCH=1
+    for n in ("trace", "flog"):
+        with open(os.path.join(td, n), "w"): pass
+    env["FAKE_RESTORE_FAIL"] = "1"
+    p = subprocess.run(["sh", script], capture_output=True, text=True, env=env, cwd=td)
+    del env["FAKE_RESTORE_FAIL"]
+    with open(os.path.join(td, "trace")) as f: T = f.read()
+    with open(os.path.join(td, "flog")) as f: FL = f.read()
+    check("restore refused: it is logged with the tool's own words and the script loads rule by rule",
+          "batched rule load refused (refused) - loading rule by rule" in FL
+          and "iptables -t mangle -A REAPER_PBR_N -m mark --mark 0x0/0x000F0000 -s 192.0.2.10 -j MARK --set-xmark 0x60000/0x000F0000" in T
+          and "ip6tables -t mangle -A REAPER_PBR_N -m mark --mark 0x0/0x000F0000 -m set --match-set rwfw6_myobj dst -j MARK --set-xmark 0xB0000/0x000F0000" in T
+          and "tables-restore" not in T, FL + T[:800])
+    check("restore refused: the rule-by-rule run still counts what was meant to load (6 mark rules)",
+          (open(os.path.join(PDIR, "expect")).read().strip() if os.path.exists(os.path.join(PDIR, "expect")) else "") == "6", "")
+    check("restore refused: the object sets are not rebuilt a second time and no queue file is left",
+          "export PBR_NOBATCH=1 PBR_SETS_DONE=1" in S and not [n for n in os.listdir(PDIR) if n.startswith("batch.")], "")
+
+    # 2026-11-16 (review): an OpenVPN client's Killswitch counts only while its tunnel carries the default route -
+    # Redirect "all" (1) or "VPN Director" (2) on a TUN client. With Redirect "No" (0) or TAP the client's table holds
+    # pushed routes only, and the prohibit refused Internet traffic while the tunnel was UP.
+    def target(tgt, **nv):
+        env = dict(os.environ)
+        off = nv.pop("off", False)
+        for k, v in nv.items(): env["NV_" + k] = v
+        if off: env["OV_DISABLED"] = "1"
+        return subprocess.run([exe, "--target", tgt], capture_output=True, text=True, env=env).stdout.strip()
+    KS = dict(vpn_client3_enforce="1", vpn_client3_if="tun")
+    check("Killswitch: on with Redirect all", target("OVPN3", vpn_client3_rgw="1", **KS) == "1 1")
+    check("Killswitch: on with VPN Director", target("OVPN3", vpn_client3_rgw="2", **KS) == "1 1")
+    check("Killswitch: NOT with Redirect No (the tunnel's table has no default route)", target("OVPN3", vpn_client3_rgw="0", **KS) == "1 0")
+    check("Killswitch: NOT with an unset or unknown Redirect value", target("OVPN3", **KS) == "1 0" and target("OVPN3", vpn_client3_rgw="3", **KS) == "1 0")
+    check("Killswitch: NOT on a TAP client", target("OVPN3", vpn_client3_rgw="1", vpn_client3_enforce="1", vpn_client3_if="tap") == "1 0")
+    check("Killswitch: NOT for a switched-off client", target("OVPN3", vpn_client3_rgw="1", off=True, **KS) == "1 0")
+    check("Killswitch: off stays off", target("OVPN3", vpn_client3_rgw="1", vpn_client3_enforce="0", vpn_client3_if="tun") == "1 0")
+    check("Killswitch: a WireGuard client is unchanged (enforce + enabled)",
+          target("WGC1") == "1 1" and target("WGC2") == "1 0" and target("WGC1", wgc1_enable="0") == "1 0")
+    check("the gate reads the client's own keys", 'snprintf(nv, sizeof(nv), "vpn_client%c_rgw", t[4]);' in source
+          and 'snprintf(nv, sizeof(nv), "vpn_client%c_if", t[4]);' in source)
 
     if fails:
         print("\n%d check(s) failed:\n  " % len(fails) + "\n  ".join(fails)); sys.exit(1)

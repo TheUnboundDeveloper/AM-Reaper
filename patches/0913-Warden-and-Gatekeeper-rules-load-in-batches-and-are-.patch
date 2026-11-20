@@ -1,0 +1,338 @@
+From 2294c0d02c7ea8c30c9165b4b3ec429b406ccee3 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Thu, 5 Nov 2026 20:37:34 -0500
+Subject: [PATCH] Warden and Gatekeeper: rules load in batches and are torn
+ down once
+
+- Gatekeeper builds its chains with one iptables-restore --noflush per stack and table instead of
+  a command per rule; a refused payload is logged once and replayed rule by rule, so a bad rule
+  still fails alone and is counted. ebtables keeps its own per-rule path.
+- Warden runs its teardown as one shell text, the same one apply.sh uses before its batched build.
+- Both: stop is one teardown, and a start keeps the chains only when apply.sh runs at once
+  (routing up, the feature on, a firewall build since boot); a deferred or failed apply tears them
+  down, as stop-then-apply did. Re-arming is one teardown, not two.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ release/src/router/rc/gatekeeper.c |  83 +++++++++++++++++++---
+ release/src/router/rc/rwarden.c    | 110 +++++++++++++++--------------
+ 2 files changed, 132 insertions(+), 61 deletions(-)
+
+diff --git a/release/src/router/rc/gatekeeper.c b/release/src/router/rc/gatekeeper.c
+index 02e2e00e1a6..e0b02002024 100644
+--- a/release/src/router/rc/gatekeeper.c
++++ b/release/src/router/rc/gatekeeper.c
+@@ -394,6 +394,48 @@ static void gk_emit_relist(FILE *f)
+ }
+ #endif /* RTCONFIG_CFGSYNC */
+ 
++/* The per-rule iptables/ip6tables wrappers (see the 2026-09-17 note in gk_gen_apply). One macro because apply.sh
++ * defines them twice: at the top, and again after the batched build below has finished with its own shim. No '%'. */
++#define GK_SH_WRAPPERS \
++  "iptables()  { case \" $* \" in *\" -A \"*|*\" -I \"*) _rt_add /usr/sbin/iptables \"$@\";;  *) /usr/sbin/iptables \"$@\";; esac; }\n" \
++  "ip6tables() { case \" $* \" in *\" -A \"*|*\" -I \"*) _rt_add /usr/sbin/ip6tables \"$@\";; *) /usr/sbin/ip6tables \"$@\";; esac; }\n"
++
++/* Batch B (2026-11-05, code review 2026-08-18 section 2.1): the build used to be one iptables process per rule -
++ * five per approved device, ~15 per internet-only device plus its per-network DNS and v6-prefix rules, two more per
++ * AiMesh MAC, ~20 for the quarantine tail - each a full read-modify-write of the table, on every restart_gk, gkd
++ * heal and firewall rebuild. Warden's build moved to iptables-restore on 2026-09-28; this is the same shape.
++ * While the chains are built, iptables/ip6tables are shadowed by a shim that COLLECTS -N/-A, per stack AND per
++ * table (filter: REAPER_GKF/GKI; nat: REAPER_GKN), into files - files, not shell variables, so a pipeline subshell
++ * can add too. _gk_commit then hands each payload to <tool>-restore --noflush, which rebuilds only the chains it
++ * declares (a declared chain is created, or flushed if it survived the teardown) and leaves every other chain
++ * alone. If a payload is refused - one bad line refuses the whole table - it is logged once and replayed rule by
++ * rule through _rt_add, i.e. exactly the old path: each rule that still fails is retried, logged and counted in
++ * GK_FAIL (gkd heal_lost_rules) as before. ebtables (REAPER_GK) is a different tool and stays per rule.
++ * Any other verb passes straight through. The shim and the commit carry '%': fputs only. */
++#define GK_SH_BATCH_BEGIN \
++  "GKB=" GK_DIR "/batch; rm -f \"$GKB\".*\n" \
++  "_gkq() { _f=$1; shift; _l=''; for _a in \"$@\"; do case \"$_a\" in ''|*[!A-Za-z0-9_./:,+=@%-]*) _l=\"$_l \\\"$_a\\\"\";; *) _l=\"$_l $_a\";; esac; done; echo \"${_l# }\" >> \"$_f\"; }\n" \
++  "_gkb() { _s=$1; _b=$2; shift 2; _t=filter; if [ \"$1\" = -t ]; then _t=$2; shift 2; fi; case \"$1\" in -N) echo \":$2 - [0:0]\" >> \"$GKB.$_s.$_t.h\";; -A) _gkq \"$GKB.$_s.$_t.r\" \"$@\";; *) if [ \"$_t\" = filter ]; then /usr/sbin/$_b \"$@\"; else /usr/sbin/$_b -t \"$_t\" \"$@\"; fi;; esac; }\n" \
++  "iptables()  { _gkb 4 iptables \"$@\"; }\n" \
++  "ip6tables() { _gkb 6 ip6tables \"$@\"; }\n"
++#define GK_SH_BATCH_COMMIT \
++  "_gk_commit() {\n" \
++  "  _s=$1; _b=$2; _t=$3; _o=''; [ \"$_t\" = filter ] || _o=\"-t $_t\"\n" \
++  "  [ -s \"$GKB.$_s.$_t.h\" ] || return 0\n" \
++  "  { echo \"*$_t\"; cat \"$GKB.$_s.$_t.h\"; cat \"$GKB.$_s.$_t.r\" 2>/dev/null; echo COMMIT; } > \"$GKB.$_s.$_t\"\n" \
++  "  _e=$(/usr/sbin/$_b-restore --noflush < \"$GKB.$_s.$_t\" 2>&1) && return 0\n" \
++  "  logger -t gatekeeper \"batched $_b $_t rebuild refused ($_e) - replaying rule by rule\"\n" \
++  "  while read -r _c; do _n=${_c#:}; _n=${_n%% *}; /usr/sbin/$_b $_o -N \"$_n\" 2>/dev/null; /usr/sbin/$_b $_o -F \"$_n\" 2>/dev/null; done < \"$GKB.$_s.$_t.h\"\n" \
++  "  [ -f \"$GKB.$_s.$_t.r\" ] && while read -r _r; do eval \"_rt_add /usr/sbin/$_b $_o $_r\"; done < \"$GKB.$_s.$_t.r\"\n" \
++  "  return 0\n" \
++  "}\n" \
++  GK_SH_WRAPPERS \
++  "_gk_commit 4 iptables filter\n" \
++  "_gk_commit 4 iptables nat\n" \
++  "_gk_commit 6 ip6tables filter\n" \
++  "_gk_commit 6 ip6tables nat\n" \
++  "rm -f \"$GKB\".*\n"
++
+ static void gk_gen_apply(void)
+ {
+ 	FILE *f;
+@@ -490,8 +532,7 @@ static void gk_gen_apply(void)
+ 	   * straight through. The count is left in a file for the watchdog. */
+ 	  "GK_FAIL=0\n"
+ 	  "_rt_add() { \"$@\" 2>/dev/null && return 0; usleep 50000 2>/dev/null; \"$@\" 2>/dev/null && return 0; GK_FAIL=$((GK_FAIL+1)); logger -t gatekeeper \"rule add failed twice: $*\"; return 1; }\n"
+-	  "iptables()  { case \" $* \" in *\" -A \"*|*\" -I \"*) _rt_add /usr/sbin/iptables \"$@\";;  *) /usr/sbin/iptables \"$@\";; esac; }\n"
+-	  "ip6tables() { case \" $* \" in *\" -A \"*|*\" -I \"*) _rt_add /usr/sbin/ip6tables \"$@\";; *) /usr/sbin/ip6tables \"$@\";; esac; }\n"
++	  GK_SH_WRAPPERS
+ 	  "ebtables()  { case \" $* \" in *\" -A \"*|*\" -I \"*) _rt_add /usr/sbin/ebtables \"$@\";;  *) /usr/sbin/ebtables \"$@\";; esac; }\n"
+ 		   "LANIF=\"$(_nv lan_ifname)\"\n"
+ 		   "LANIP=\"$(_nv lan_ipaddr)\"\n"
+@@ -582,8 +623,10 @@ static void gk_gen_apply(void)
+ 		   "while iptables -D SDN_FI -m conntrack --ctstate DNAT -d $LANIP -p tcp --dport 80 -j ACCEPT 2>/dev/null; do :; done\n"
+ 		   /* 2026-10-20 (F-6): a sinkhole from the previous apply goes too - it is
+ 		    * started again below only in quarantine mode */
+-		   GK_SINK_KILL
+-		   "# ---- build ----\n"
++		   GK_SINK_KILL, gkifs, gknets);
++	/* batch B: from here to the commit below, -N/-A are collected, not run (GK_SH_BATCH_BEGIN) */
++	fputs(GK_SH_BATCH_BEGIN, f);
++	fputs("# ---- build ----\n"
+ 		   "for T in iptables ip6tables; do\n"
+ 		   "  $T -N REAPER_GKF\n"
+ 		   "  $T -N REAPER_GKI\n"
+@@ -598,7 +641,7 @@ static void gk_gen_apply(void)
+ 		   "done\n"
+ 		   "iptables -t nat -N REAPER_GKN\n"
+ 		   "ip6tables -t nat -N REAPER_GKN\n"
+-		   "ebtables -N REAPER_GK -P RETURN\n", gkifs, gknets);
++		   "ebtables -N REAPER_GK -P RETURN\n", f);
+ 
+ #ifdef RTCONFIG_CFGSYNC
+ 	/* AiMesh infrastructure first: ahead of per-device rules AND the
+@@ -708,6 +751,9 @@ static void gk_gen_apply(void)
+ 	 * rules engine, so the rules engine's ACCEPTs can no longer bypass a
+ 	 * quarantine (reaper_hook.h). The per-interface list is handed over via
+ 	 * GK_IFS_FILE. nat and ebtables are different tables: unchanged. */
++	/* batch B: commit the collected build (one restore per stack and table), then the per-rule wrappers are back
++	 * for the hooks below, which are -I and must act at once */
++	fputs(GK_SH_BATCH_COMMIT, f);
+ 	fprintf(f, "# ---- hooks ----\n"
+ 		   "printf '%%s' \"$GKIFS\" > " GK_IFS_FILE "\n"
+ 		   "for I in $GKIFS; do\n"
+@@ -782,11 +828,23 @@ static void gk_teardown_rules(void)
+ 		"fc flush 2>/dev/null");
+ }
+ 
++static void gk_stop(int teardown);
++
+ void stop_gk(void)
++{
++	gk_stop(1);
++}
++
++/* stop_gk()'s body. teardown = 0 (batch B, 2026-11-05) is start_gk() about to run apply.sh at once: that script
++ * removes the same hooks and chains itself (its "# ---- teardown ----" block, which also reaps the sinkhole) right
++ * before it rebuilds them, so the C teardown here was the second of two per arm - and it left every device
++ * un-gated for the length of the regeneration in between. Every other caller still tears down here. */
++static void gk_stop(int teardown)
+ {
+ 	if (pids("gkd"))
+ 		killall_tk("gkd");
+-	gk_teardown_rules();
++	if (teardown)
++		gk_teardown_rules();
+ 	unlink(GK_APPLY);
+ 	unlink(GK_SINK_CONF);	/* 2026-10-20 (F-6): the process went with the teardown */
+ 	unlink(GK_SINK_BIN);
+@@ -815,7 +873,12 @@ static int gk_apply_locked(void)
+ 
+ void start_gk(void)
+ {
+-	stop_gk();
++	/* batch B (2026-11-05): ONE teardown per arm. When apply.sh runs below - routing on, Gatekeeper on, no
++	 * settings restore pending: the same tests that lead there - its own teardown removes the chains right before
++	 * the rebuild, so the stop keeps them. A deferred apply tears down below instead: the state stop-then-apply left. */
++	int gk_arming = is_routing_enabled() && nvram_match("gk_enable", "1") && !f_exists("/jffs/reaper/restore_pending.json");
++
++	gk_stop(!gk_arming);
+ 	if (!is_routing_enabled())
+ 		return;
+ 	if (!nvram_match("gk_enable", "1"))
+@@ -842,8 +905,12 @@ void start_gk(void)
+ 	/* apply.sh exits non-zero when the LAN bridge is not up yet (cold boot):
+ 	 * that is expected, not an error - gkd's self-heal and the firewall hook
+ 	 * re-run the same script and arm enforcement the moment the bridge appears. */
+-	if (gk_apply_locked() != 0)
++	if (gk_apply_locked() != 0) {
++		/* batch B: apply.sh defers BEFORE its teardown, so the chains gk_stop(0) kept are still up - remove them */
++		if (gk_arming)
++			gk_teardown_rules();
+ 		logmessage("gatekeeper", "LAN not ready at boot - enforcement deferred, will arm automatically once the bridge is up");
++	}
+ 	xstart("gkd");
+ 	/* review 2026-11-03: the waiting page needs the plain-HTTP instance, which an HTTPS-only GUI does not run -
+ 	 * start_httpd starts it for the captive page (an instance already running is left alone) */
+diff --git a/release/src/router/rc/rwarden.c b/release/src/router/rc/rwarden.c
+index 134d9e35b52..bf1b6c3265c 100644
+--- a/release/src/router/rc/rwarden.c
++++ b/release/src/router/rc/rwarden.c
+@@ -494,37 +494,35 @@ static void rw_emit_ban_conntrack(FILE *f)
+ 	free(list);
+ }
+ 
++/* The Warden teardown, ONE text with two runners (batch B, 2026-11-05): apply.sh carries it (on the
++ * restart_firewall path it is the only teardown) and rw_teardown_rules() hands the same string to one sh for
++ * stop / disable / shutdown. It used to be written twice - here as 36 doSystem() calls, one shell each, and
++ * again in rw_gen_apply() - with a comment asking that the two be kept in step by hand.
++ * Order: the entry chains are unhooked first (REAPER_WARDEN references RW_OUT and RW_DROP; RW_SELF
++ * references RW_SDROP), then the referencing chains, then the drop targets - else -X fails on a
++ * still-referenced chain. Both stacks. v2.6.2: jumps live in the shared front chains (reaper_hook.h); the
++ * direct base-chain deletes stay for the upgrade path. Loops, not single -D: a raced apply could have left two
++ * jumps, and one survivor kept the chain referenced (-X failed) and re-hooked with stale rules. A chain
++ * missed here survives a stop and is re-hooked with stale rules. No '%': it is written with fputs too. */
++#define RW_SH_TEARDOWN \
++  "for T in iptables ip6tables; do\n" \
++  "  while $T -D " REAPER_HOOK_IN " -j REAPER_WARDEN 2>/dev/null; do :; done\n" \
++  "  while $T -D " REAPER_HOOK_FWD " -j REAPER_WARDEN 2>/dev/null; do :; done\n" \
++  "  while $T -D " REAPER_HOOK_OUT " -j RW_SELF 2>/dev/null; do :; done\n" \
++  "  while $T -D INPUT -j REAPER_WARDEN 2>/dev/null; do :; done\n" \
++  "  while $T -D FORWARD -j REAPER_WARDEN 2>/dev/null; do :; done\n" \
++  "  while $T -D OUTPUT -j RW_SELF 2>/dev/null; do :; done\n" \
++  "  $T -F REAPER_WARDEN 2>/dev/null; $T -X REAPER_WARDEN 2>/dev/null\n" \
++  "  $T -F RW_SELF 2>/dev/null; $T -X RW_SELF 2>/dev/null\n" \
++  "  $T -F RW_OUT 2>/dev/null; $T -X RW_OUT 2>/dev/null\n" \
++  "  $T -F RW_SDROP 2>/dev/null; $T -X RW_SDROP 2>/dev/null\n" \
++  "  $T -F RW_ODROP 2>/dev/null; $T -X RW_ODROP 2>/dev/null\n" \
++  "  $T -F RW_DROP 2>/dev/null; $T -X RW_DROP 2>/dev/null\n" \
++  "done\n"
++
+ static void rw_teardown_rules(void)
+ {
+-	/* Unhook the entry chains first (REAPER_WARDEN references RW_OUT and
+-	 * RW_DROP; RW_SELF references RW_SDROP), then the referencing chains, then
+-	 * the drop targets - else -X fails on a still-referenced chain. Both stacks.
+-	 * Keep this list in step with the teardown loop in rw_gen_apply(): a chain
+-	 * missed here survives a stop and is re-hooked with stale rules. */
+-	const char *ipt[2] = { "iptables", "ip6tables" };
+-	int i;
+-	for (i = 0; i < 2; i++) {
+-		/* v2.6.2: front-chain jumps first, legacy direct jumps for the
+-		 * upgrade path; loops so a raced duplicate cannot survive */
+-		doSystem("while %s -D " REAPER_HOOK_IN " -j REAPER_WARDEN 2>/dev/null; do :; done", ipt[i]);
+-		doSystem("while %s -D " REAPER_HOOK_FWD " -j REAPER_WARDEN 2>/dev/null; do :; done", ipt[i]);
+-		doSystem("while %s -D " REAPER_HOOK_OUT " -j RW_SELF 2>/dev/null; do :; done", ipt[i]);
+-		doSystem("while %s -D INPUT -j REAPER_WARDEN 2>/dev/null; do :; done", ipt[i]);
+-		doSystem("while %s -D FORWARD -j REAPER_WARDEN 2>/dev/null; do :; done", ipt[i]);
+-		doSystem("while %s -D OUTPUT -j RW_SELF 2>/dev/null; do :; done", ipt[i]);
+-		doSystem("%s -F REAPER_WARDEN 2>/dev/null", ipt[i]);
+-		doSystem("%s -X REAPER_WARDEN 2>/dev/null", ipt[i]);
+-		doSystem("%s -F RW_SELF 2>/dev/null", ipt[i]);
+-		doSystem("%s -X RW_SELF 2>/dev/null", ipt[i]);
+-		doSystem("%s -F RW_OUT 2>/dev/null", ipt[i]);
+-		doSystem("%s -X RW_OUT 2>/dev/null", ipt[i]);
+-		doSystem("%s -F RW_SDROP 2>/dev/null", ipt[i]);
+-		doSystem("%s -X RW_SDROP 2>/dev/null", ipt[i]);
+-		doSystem("%s -F RW_ODROP 2>/dev/null", ipt[i]);
+-		doSystem("%s -X RW_ODROP 2>/dev/null", ipt[i]);
+-		doSystem("%s -F RW_DROP 2>/dev/null", ipt[i]);
+-		doSystem("%s -X RW_DROP 2>/dev/null", ipt[i]);
+-	}
++	system(RW_SH_TEARDOWN);
+ }
+ 
+ /* emit the per-country set-create lines for both stacks (validated CC list). */
+@@ -925,26 +923,9 @@ static void rw_gen_apply(void)
+ 	 * So the slow part now runs first, and the chain is torn down and rebuilt in
+ 	 * the few milliseconds it actually needs. fold.sh (top of the script) still
+ 	 * banks the counters before any of it. */
+-	/* ---- teardown ---- both stacks (dispatch chain before its RW_DROP dep) */
+-	fprintf(f,
+-	  "for T in iptables ip6tables; do\n"
+-	  /* v2.6.2: jumps live in the shared front chains (reaper_hook.h); the
+-	   * direct base-chain deletes stay for the upgrade path. Loops, not single
+-	   * -D: a raced apply could have left two jumps, and one survivor kept the
+-	   * chain referenced (-X failed) and re-hooked with stale rules. */
+-	  "  while $T -D " REAPER_HOOK_IN " -j REAPER_WARDEN 2>/dev/null; do :; done\n"
+-	  "  while $T -D " REAPER_HOOK_FWD " -j REAPER_WARDEN 2>/dev/null; do :; done\n"
+-	  "  while $T -D " REAPER_HOOK_OUT " -j RW_SELF 2>/dev/null; do :; done\n"
+-	  "  while $T -D INPUT -j REAPER_WARDEN 2>/dev/null; do :; done\n"
+-	  "  while $T -D FORWARD -j REAPER_WARDEN 2>/dev/null; do :; done\n"
+-	  "  while $T -D OUTPUT -j RW_SELF 2>/dev/null; do :; done\n"
+-	  "  $T -F REAPER_WARDEN 2>/dev/null; $T -X REAPER_WARDEN 2>/dev/null\n"
+-	  "  $T -F RW_SELF 2>/dev/null; $T -X RW_SELF 2>/dev/null\n"
+-	  "  $T -F RW_OUT 2>/dev/null; $T -X RW_OUT 2>/dev/null\n"
+-	  "  $T -F RW_SDROP 2>/dev/null; $T -X RW_SDROP 2>/dev/null\n"
+-	  "  $T -F RW_ODROP 2>/dev/null; $T -X RW_ODROP 2>/dev/null\n"
+-	  "  $T -F RW_DROP 2>/dev/null; $T -X RW_DROP 2>/dev/null\n"
+-	  "done\n");
++	/* ---- teardown ---- both stacks (dispatch chain before its RW_DROP dep); the text is RW_SH_TEARDOWN,
++	 * the same one rw_teardown_rules() runs (batch B) */
++	fputs(RW_SH_TEARDOWN, f);
+ 	/* 2026-09-28: collect the build below into one restore payload per stack.
+ 	 * fputs, not fprintf: the shim carries literal '%' characters. */
+ 	fputs(RW_SH_BATCH_BEGIN, f);
+@@ -2239,7 +2220,19 @@ static void rw_gen_dns(void)
+ 		unlink(RW_DNSSH ".tmp");
+ }
+ 
++static void rw_stop(int teardown);
++
+ void stop_rwarden(void)
++{
++	rw_stop(1);
++}
++
++/* stop_rwarden()'s body. teardown = 0 (batch B, 2026-11-05) is start_rwarden() about to run apply.sh at
++ * once: that script removes the same chains itself (RW_SH_TEARDOWN) right before it rebuilds them, so the C
++ * teardown here was the second of two per arm - and it left the box with no Warden chain for the whole set
++ * create and cache replay in between. Every other caller (disable, shutdown, a deferred or failed apply)
++ * still tears down here. */
++static void rw_stop(int teardown)
+ {
+ 	/* reaper 2026-08-11 field fix: bank the live packet counters BEFORE the
+ 	   chains that hold them are destroyed. This is THE fix for "hit counts are
+@@ -2269,7 +2262,8 @@ void stop_rwarden(void)
+ 		else if (sh && lstat(sh, &fst) == 0)
+ 			logmessage("rwarden", "refusing to run %s: not a root-owned 0700 file", sh);
+ 	}
+-	rw_teardown_rules();
++	if (teardown)
++		rw_teardown_rules();
+ 	eval("cru", "d", "rwarden");
+ 	eval("cru", "d", "rwarden_ck");
+ 	unlink(RW_APPLY);
+@@ -2574,7 +2568,7 @@ static void rw_dns_sync(void)
+ 
+ void start_rwarden(void)
+ {
+-	int warden;
++	int warden, arm_now;
+ 
+ 	rw_list_migrate();	/* v2.7.9: one-shot nvram -> /jffs, before any list is read */
+ 	rw_seed_allow();	/* 2026-10-19: one-shot, after the migration, before apply reads the list */
+@@ -2589,7 +2583,12 @@ void start_rwarden(void)
+ 	 * service yet behaves exactly as before. */
+ 	if (nvram_match("rwarden_dir", "out"))
+ 		nvram_set("rwarden_dir", "both");
+-	stop_rwarden();
++	/* batch B (2026-11-05): ONE teardown per arm. When apply.sh runs below at once - routing on, Warden on, a
++	 * firewall build since boot: the same tests that lead there - its own RW_SH_TEARDOWN removes the chains
++	 * right before the rebuild, so the stop keeps them (and Warden stays armed through the set create and the
++	 * cache replay). A deferred or failed apply tears down below instead: the state stop-then-apply left. */
++	arm_now = is_routing_enabled() && nvram_match("rwarden_enable", "1") && f_exists(REAPER_FW_BUILT_MARK);
++	rw_stop(!arm_now);
+ 	rw_dns_sync();		/* 2026-10-19: before the early returns - it handles the off case itself */
+ 	if (!is_routing_enabled())
+ 		return;
+@@ -2631,8 +2630,13 @@ void start_rwarden(void)
+ 	/* apply.sh exits non-zero when the LAN is not up yet (cold boot): expected,
+ 	 * not an error - the firewall hook re-runs the same script and arms the
+ 	 * moment the LAN appears (the Gatekeeper cold-boot deferral pattern). */
+-	else if (warden && (!reaper_script_ok(RW_APPLY) || system("sh " RW_APPLY) != 0))
++	else if (warden && (!reaper_script_ok(RW_APPLY) || system("sh " RW_APPLY) != 0)) {
++		/* batch B: apply.sh defers BEFORE its teardown, so the chains rw_stop(0) kept are still up -
++		 * remove them, as the old stop-then-apply had */
++		if (arm_now)
++			rw_teardown_rules();
+ 		logmessage("rwarden", "LAN not ready at boot - protection deferred, re-arms on firewall hook");
++	}
+ 	/* schedule feed refresh (default daily 04:30) unless user set rwarden_sched.
+ 	 * cru convention (rc/wireguard.c): schedule + command are ONE quoted arg. */
+ 	{
+-- 
+2.25.1
+

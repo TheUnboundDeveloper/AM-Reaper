@@ -1,0 +1,349 @@
+From 36ec19f566c3b3ade358afef42a8f0aa1c1e1c5e Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Mon, 2 Nov 2026 09:49:53 -0500
+Subject: [PATCH] rc: one shared AiMesh node list for Gatekeeper, the rules
+ engine, Policy Routing and rwatch
+
+AiMesh nodes are infrastructure, not clients. Gatekeeper has exempted them since v2.7.3 and was
+the only surface that did: the rules engine (Service Intercept rewrites a service for every LAN
+source, and a node is a LAN source) and Policy Routing carried no exemption, so one broad rule
+could cut a node off.
+- rc/reaper_aimesh.c (new): reaper_aimesh_macs(), Gatekeeper's cfg_relist parser moved unchanged
+  (a host harness ran the old and the new gk_emit_relist on six fixtures: byte-identical output;
+  the over-cap log is now one summary line), and the applet reaper_aimesh_sync, which refreshes
+  the hash:mac set reaper_aimesh by staging and swap under a file lock (/sbin link, rc.c applet
+  table, rc.h externs with REAPER_AIMESH_SET / REAPER_AIMESH_MAX 64, rc/Makefile OBJS).
+- gatekeeper.c uses the shared parser and syncs the set. reaper_fw.c syncs and creates it when
+  the rules run and returns AiMesh sources at the top of REAPER_FWI / REAPER_FWF (after the head)
+  and in nat REAPER_FWN, IPv4 and IPv6. reaper_pbr.c returns them after the REPLY return. rwatch
+  refreshes the set on each tick.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ release/src/router/rc/Makefile        |   3 +
+ release/src/router/rc/gatekeeper.c    |  64 ++++++---------
+ release/src/router/rc/rc.c            |   2 +
+ release/src/router/rc/rc.h            |   4 +
+ release/src/router/rc/reaper_aimesh.c | 107 ++++++++++++++++++++++++++
+ release/src/router/rc/reaper_fw.c     |  12 +++
+ release/src/router/rc/reaper_pbr.c    |   7 +-
+ release/src/router/rc/rwatch.c        |   3 +
+ 8 files changed, 159 insertions(+), 43 deletions(-)
+ create mode 100644 release/src/router/rc/reaper_aimesh.c
+
+diff --git a/release/src/router/rc/Makefile b/release/src/router/rc/Makefile
+index 754d6c24ead..3d235db64c9 100644
+--- a/release/src/router/rc/Makefile
++++ b/release/src/router/rc/Makefile
+@@ -461,6 +461,8 @@ OBJS += reaper_hook.o
+ # reaper v2.5.x: ipset-based policy routing (VPN Director PBR). Unconditional
+ # like reaper_fw.o; runtime-gated by reaper_pbr_enable, which defaults to 0.
+ OBJS += reaper_pbr.o
++# 2026-11-01: the shared AiMesh node list (Gatekeeper, the rules engine, Policy Routing, rwatch)
++OBJS += reaper_aimesh.o
+ # reaper v1.8.8: watchdog - WAN/DNS/Warden/accelerator health probe -> syslog
+ OBJS += rwatch.o
+ OBJS += amaspark.o
+@@ -1842,6 +1844,7 @@ endif
+ 	@cd $(INSTALLDIR)/sbin && ln -sf rc reaper_punct
+ 	@cd $(INSTALLDIR)/sbin && ln -sf rc reaper_bwfloor
+ 	@cd $(INSTALLDIR)/sbin && ln -sf rc reaper_usb_release
++	@cd $(INSTALLDIR)/sbin && ln -sf rc reaper_aimesh_sync
+ 	@cd $(INSTALLDIR)/sbin && ln -sf rc rdnshc
+ 	@cd $(INSTALLDIR)/sbin && ln -sf rc rv6names
+ 
+diff --git a/release/src/router/rc/gatekeeper.c b/release/src/router/rc/gatekeeper.c
+index 033a0df9ba5..098af8ac534 100644
+--- a/release/src/router/rc/gatekeeper.c
++++ b/release/src/router/rc/gatekeeper.c
+@@ -361,50 +361,30 @@ static void gk_gen_sink(const char *gkifs)
+  * (gkd.c amas_watch). */
+ static void gk_emit_relist(FILE *f)
+ {
+-	char *lists[2];
+-	char seen[64][18];
+-	int nseen = 0, i, li;
++	char seen[REAPER_AIMESH_MAX][18];
++	int nseen, dropped = 0, i;
+ 
+-	lists[0] = get_cfg_relist(0);
+-	lists[1] = get_cfg_relist(1);
++	/* 2026-11-01: the registry parser is shared (rc/reaper_aimesh.c), so the rules engine and Policy
++	 * Routing exempt exactly the MACs Gatekeeper does. Their shared set is refreshed here too: gkd re-runs
++	 * this script whenever the registry changes. */
++	nseen = reaper_aimesh_macs(seen, REAPER_AIMESH_MAX, &dropped);
+ 	fprintf(f, "# ---- AiMesh infrastructure (cfg_relist): never held at the gate ----\n");
+-	for (li = 0; li < 2; li++) {
+-		char *p = lists[li];
+-		if (!p) continue;
+-		for (; *p; p++) {
+-			char mac[18];
+-			int dup = 0;
+-			if (!isxdigit((unsigned char)p[0])) continue;
+-			if (strlen(p) < 17) break;
+-			memcpy(mac, p, 17);
+-			mac[17] = '\0';
+-			if (!gk_valid_mac(mac)) continue;
+-			for (i = 0; i < nseen; i++)
+-				if (strcasecmp(seen[i], mac) == 0) { dup = 1; break; }
+-			if (!dup && nseen >= 64)
+-				/* The registry outgrew the exemption table. Beyond this the
+-				 * remaining node STA MACs fall through to the quarantine tail -
+-				 * which is exactly the AiMesh incident this function exists to
+-				 * prevent - and it used to happen with no diagnostic at all.
+-				 * Owner decision (2026-08-26): keep the cap, log the truncation. */
+-				logmessage("gatekeeper", "cfg_relist exemption table full at 64 - AiMesh MAC %s NOT exempted (a large tri-band mesh can exceed this)", mac);
+-			if (!dup && nseen < 64) {
+-				strlcpy(seen[nseen], mac, sizeof(seen[0]));
+-				nseen++;
+-				fprintf(f,
+-					"for T in iptables ip6tables; do\n"
+-					"  $T -A REAPER_GKI -m mac --mac-source %s -j RETURN\n"
+-					"  $T -A REAPER_GKF -m mac --mac-source %s -j RETURN\n"
+-					"done\n"
+-					"for T in iptables ip6tables; do $T -t nat -A REAPER_GKN -m mac --mac-source %s -j RETURN; done\n"
+-					"ebtables -A REAPER_GK -s %s -j RETURN\n",
+-					mac, mac, mac, mac);
+-			}
+-			p += 16;	/* the loop's ++ completes the 17-char skip */
+-		}
+-	}
+-	free(lists[0]);
+-	free(lists[1]);
++	fprintf(f, "[ -x /sbin/reaper_aimesh_sync ] && /sbin/reaper_aimesh_sync >/dev/null 2>&1\n");
++	if (dropped)
++		/* The registry outgrew the exemption table. Beyond this the remaining node
++		 * STA MACs fall through to the quarantine tail - which is exactly the AiMesh
++		 * incident this function exists to prevent. Owner decision (2026-08-26):
++		 * keep the cap, log the truncation. */
++		logmessage("gatekeeper", "cfg_relist exemption table full at %d - %d AiMesh MAC(s) NOT exempted (a large tri-band mesh can exceed this)", REAPER_AIMESH_MAX, dropped);
++	for (i = 0; i < nseen; i++)
++		fprintf(f,
++			"for T in iptables ip6tables; do\n"
++			"  $T -A REAPER_GKI -m mac --mac-source %s -j RETURN\n"
++			"  $T -A REAPER_GKF -m mac --mac-source %s -j RETURN\n"
++			"done\n"
++			"for T in iptables ip6tables; do $T -t nat -A REAPER_GKN -m mac --mac-source %s -j RETURN; done\n"
++			"ebtables -A REAPER_GK -s %s -j RETURN\n",
++			seen[i], seen[i], seen[i], seen[i]);
+ 	fprintf(f, "echo %d > " GK_DIR "/relist.n\n", nseen);
+ 	if (nseen)
+ 		fprintf(f, "logger -t gatekeeper 'AiMesh registry: %d infrastructure MAC(s) exempt'\n", nseen);
+diff --git a/release/src/router/rc/rc.c b/release/src/router/rc/rc.c
+index 53dbc49535c..f3bdf7f7c92 100644
+--- a/release/src/router/rc/rc.c
++++ b/release/src/router/rc/rc.c
+@@ -3006,6 +3006,8 @@ static const applets_t applets[] = {
+ 	{ "reaper_bwfloor",		reaper_bwfloor_main			},
+ 	/* v3.3.2: release the USB volumes before a flash ejects them (rc/reaper_usbrel.c) */
+ 	{ "reaper_usb_release",	reaper_usb_release_main		},
++	/* 2026-11-01: refresh the shared AiMesh node set from cfg_relist (rc/reaper_aimesh.c) */
++	{ "reaper_aimesh_sync",	reaper_aimesh_sync_main		},
+ 	{ "console",			console_main				},
+ #ifdef DEBUG_RCTEST
+ 	{ "rc",				rctest_main				},
+diff --git a/release/src/router/rc/rc.h b/release/src/router/rc/rc.h
+index f39e05b0259..fae112e6165 100644
+--- a/release/src/router/rc/rc.h
++++ b/release/src/router/rc/rc.h
+@@ -3147,6 +3147,10 @@ extern void stop_rdnshc(void);
+ extern int rv6names_main(int argc, char *argv[]);	/* 2026-10-08: IPv6 device names (rc/rv6names.c) */
+ extern void start_rv6names(void);
+ extern void stop_rv6names(void);
++extern int reaper_aimesh_sync_main(int argc, char *argv[]);	/* 2026-11-01: refresh the shared AiMesh node set (rc/reaper_aimesh.c) */
++extern int reaper_aimesh_macs(char macs[][18], int max, int *dropped);	/* the cfg_relist parser every enforcement surface shares */
++#define REAPER_AIMESH_SET "reaper_aimesh"	/* hash:mac, matched `src` by the rules engine and Policy Routing */
++#define REAPER_AIMESH_MAX 64
+ extern int reaper_lockrun_main(int argc, char *argv[]);	/* v2.7.3: heal scripts under the firewall fcntl lock (rc/rwatch.c) */
+ extern void stop_rexport(void);	/* reaper v2.2.2 analytics exporter: push health.json to Splunk/Datadog/etc. (rc/rexport.c) */
+ extern void start_rexport(void);
+diff --git a/release/src/router/rc/reaper_aimesh.c b/release/src/router/rc/reaper_aimesh.c
+new file mode 100644
+index 00000000000..337e2228d35
+--- /dev/null
++++ b/release/src/router/rc/reaper_aimesh.c
+@@ -0,0 +1,107 @@
++/*
++ * rc/reaper_aimesh.c - the one AiMesh node list every Reaper enforcement surface reads (2026-11-01).
++ *
++ * AiMesh nodes are infrastructure, not clients. cfg_server's pairing registry, cfg_relist /
++ * cfg_relist_x (`<reMac>maclist2g>maclist5g>ts` / `<reMac>maclist6g>..`, records joined by '<'),
++ * holds each node's LAN MAC and every per-band STA MAC it connects with. Gatekeeper has exempted
++ * them since v2.7.3; until now it was the only surface that knew AiMesh existed - the rules engine
++ * (Service Intercept rewrites a service for EVERY LAN source, and a node is a LAN source) and
++ * Policy Routing carried no exemption, so one broad operator rule could cut a node off.
++ *
++ *  - reaper_aimesh_macs(): the parser, moved unchanged from gatekeeper.c gk_emit_relist(): every
++ *    MAC-shaped token in both lists, strict check (the MAC reaches a root-run script unquoted),
++ *    case-insensitive de-dup, at most `max` kept and the overflow counted for the caller to log.
++ *  - reaper_aimesh_sync (applet, /sbin symlink - `rc <applet>` does not dispatch): refreshes the
++ *    shared hash:mac set REAPER_AIMESH_SET from the registry as it is NOW. A staging set is filled
++ *    and swapped in under a lock, so a chain matching `-m set --match-set reaper_aimesh src -j
++ *    RETURN` never sees it half-filled and two callers never interleave. The consumers' scripts run
++ *    it when they start - an apply script re-run by restart_firewall must not put back the node list
++ *    from when it was generated - and rwatch runs it every tick, so a node that joins while
++ *    Gatekeeper is off (gkd, the registry watcher, runs only with Gatekeeper on) is exempt within
++ *    one tick. Gatekeeper keeps its per-MAC rules (ebtables has no set match) from the same parser.
++ */
++#include "rc.h"
++#include <ctype.h>
++
++#define AIMESH_STAGE  REAPER_AIMESH_SET "_n"
++#define AIMESH_COUNT  "/tmp/reaper/aimesh.n"
++
++/* strict MAC check - the same rule as gatekeeper.c gk_valid_mac / httpd / gkd */
++static int aimesh_valid_mac(const char *m)
++{
++	int i;
++	if (!m || strlen(m) != 17) return 0;
++	for (i = 0; i < 17; i++) {
++		if ((i % 3) == 2) { if (m[i] != ':') return 0; }
++		else if (!isxdigit((unsigned char)m[i])) return 0;
++	}
++	return 1;
++}
++
++int reaper_aimesh_macs(char macs[][18], int max, int *dropped)
++{
++	char *lists[2];
++	int n = 0, over = 0, i, li;
++
++	lists[0] = get_cfg_relist(0);
++	lists[1] = get_cfg_relist(1);
++	for (li = 0; li < 2; li++) {
++		char *p = lists[li];
++		if (!p) continue;
++		for (; *p; p++) {
++			char mac[18];
++			int dup = 0;
++			if (!isxdigit((unsigned char)p[0])) continue;
++			if (strlen(p) < 17) break;
++			memcpy(mac, p, 17);
++			mac[17] = '\0';
++			if (!aimesh_valid_mac(mac)) continue;
++			for (i = 0; i < n; i++)
++				if (strcasecmp(macs[i], mac) == 0) { dup = 1; break; }
++			if (!dup) {
++				if (n < max) strlcpy(macs[n++], mac, 18);
++				else over++;
++			}
++			p += 16;	/* the loop's ++ completes the 17-char skip */
++		}
++	}
++	free(lists[0]);
++	free(lists[1]);
++	if (dropped) *dropped = over;
++	return n;
++}
++
++int reaper_aimesh_sync_main(int argc, char *argv[])
++{
++	char macs[REAPER_AIMESH_MAX][18], prev[16] = "";
++	int n, i, dropped = 0, lock;
++	FILE *p;
++
++	n = reaper_aimesh_macs(macs, REAPER_AIMESH_MAX, &dropped);
++	lock = file_lock("reaper_aimesh");
++	eval("ipset", "create", REAPER_AIMESH_SET, "hash:mac", "-exist");
++	if ((p = popen("ipset restore -exist", "w")) != NULL) {
++		fprintf(p, "create " AIMESH_STAGE " hash:mac -exist\nflush " AIMESH_STAGE "\n");
++		for (i = 0; i < n; i++)
++			fprintf(p, "add " AIMESH_STAGE " %s\n", macs[i]);
++		pclose(p);
++		eval("ipset", "swap", AIMESH_STAGE, REAPER_AIMESH_SET);
++		eval("ipset", "destroy", AIMESH_STAGE);
++	}
++	file_unlock(lock);
++
++	/* log on change only: rwatch runs this every tick */
++	reaper_secure_dir("/tmp/reaper", 0700);
++	f_read_string(AIMESH_COUNT, prev, sizeof(prev));
++	{
++		char cur[16];
++		snprintf(cur, sizeof(cur), "%d/%d", n, dropped);
++		if (strcmp(prev, cur) != 0) {
++			f_write_string(AIMESH_COUNT, cur, 0, 0);
++			logmessage("reaper_aimesh", "AiMesh registry: %d infrastructure MAC(s) exempt from the rules engine and Policy Routing", n);
++			if (dropped)
++				logmessage("reaper_aimesh", "AiMesh registry has more than %d MACs - %d NOT exempted (a large tri-band mesh can exceed this)", REAPER_AIMESH_MAX, dropped);
++		}
++	}
++	return 0;
++}
+diff --git a/release/src/router/rc/reaper_fw.c b/release/src/router/rc/reaper_fw.c
+index ca1c26ed8c9..9ae287471be 100644
+--- a/release/src/router/rc/reaper_fw.c
++++ b/release/src/router/rc/reaper_fw.c
+@@ -2250,6 +2250,11 @@ static int rfw_gen_apply(const char *path, const rfw_cfg_t *c, int teardown_only
+ 	  "RFWR() { \"$@\" || { RFW_FAIL=$((RFW_FAIL+1)); logger -t reaper_fw \"rule failed: $*\"; }; }\n"
+ 	  "RFW_HARD=0\n"
+ 	  "RFWH() { \"$@\" || { RFW_HARD=$((RFW_HARD+1)); logger -t reaper_fw \"structural step failed: $*\"; }; }\n\n");
++	/* 2026-11-01: AiMesh nodes are infrastructure. The shared node set (rc/reaper_aimesh.c) is refreshed
++	 * from the registry as it is now - this script is re-run by restart_firewall, so it must not carry a
++	 * list from when it was generated - and created even without the applet so the RETURNs below load. */
++	fprintf(f, "[ -x /sbin/reaper_aimesh_sync ] && /sbin/reaper_aimesh_sync >/dev/null 2>&1\n"
++	           "ipset create " REAPER_AIMESH_SET " hash:mac -exist 2>/dev/null\n");
+ 
+ 	rfw_emit_sets(f, c, keep, sizeof(keep));
+ 	fprintf(f, "\n");
+@@ -2272,6 +2277,11 @@ static int rfw_gen_apply(const char *path, const rfw_cfg_t *c, int teardown_only
+ 		           "ip6tables -t nat -N " RFW_CHAIN_HC " 2>/dev/null; RFWH ip6tables -t nat -F " RFW_CHAIN_HC "\n"
+ 		           "ip6tables -t nat -N " RFW_CHAIN_MASQ " 2>/dev/null; "
+ 		           "RFWH ip6tables -t nat -F " RFW_CHAIN_MASQ "\n\n");
++	/* 2026-11-01: a Service Intercept rewrites a service for every LAN source; an AiMesh node is a LAN
++	 * source but infrastructure, so it leaves the nat chain first */
++	if (c->nat && *c->nat)
++		fprintf(f, "RFWR iptables -t nat -A " RFW_CHAIN_NAT " -m set --match-set " REAPER_AIMESH_SET " src -j RETURN\n"
++		           "RFWR ip6tables -t nat -A " RFW_CHAIN_NAT " -m set --match-set " REAPER_AIMESH_SET " src -j RETURN\n\n");
+ 
+ 	for (d = RFW_D_IN; d <= RFW_D_OUT; d++) {
+ 		int v6;
+@@ -2280,6 +2290,8 @@ static int rfw_gen_apply(const char *path, const rfw_cfg_t *c, int teardown_only
+ 			const char *ch  = rfw_chain_of(d);
+ 			fprintf(f, "%s -N %s 2>/dev/null; RFWH %s -F %s\n", ipt, ch, ipt, ch);
+ 			rfw_emit_head(f, v6, d);
++			if (d != RFW_D_OUT)	/* 2026-11-01: AiMesh nodes skip the engine (OUTPUT has no source MAC) */
++				fprintf(f, "RFWR %s -A %s -m set --match-set " REAPER_AIMESH_SET " src -j RETURN\n", ipt, ch);
+ 			rfw_emit_rules(f, c, v6, d);
+ 			if (d == RFW_D_FWD) {
+ 				/* precedence: explicit rules, then the per-device egress
+diff --git a/release/src/router/rc/reaper_pbr.c b/release/src/router/rc/reaper_pbr.c
+index bf2336ae264..368d167673f 100644
+--- a/release/src/router/rc/reaper_pbr.c
++++ b/release/src/router/rc/reaper_pbr.c
+@@ -707,12 +707,17 @@ static int ppbr_gen(const char *path, int teardown_only, const ppbr_cfg_t *cfg)
+ 	 * --save-mark: scoping only the restores would let an unmarked reply save
+ 	 * 0 over the flow's verdict and re-classify every later packet. Unmarked
+ 	 * replies route by `main`, as VPN Director's do (wgcN rp_filter is loose). */
++	/* 2026-11-01: an AiMesh node is infrastructure - its own traffic is never policy-routed (the shared
++	 * node set from rc/reaper_aimesh.c, refreshed here from the registry as it is now) */
+ 	fprintf(f,
++	  "[ -x /sbin/reaper_aimesh_sync ] && /sbin/reaper_aimesh_sync >/dev/null 2>&1\n"
++	  "ipset create " REAPER_AIMESH_SET " hash:mac -exist 2>/dev/null\n"
+ 	  "for T in iptables ip6tables; do\n"
+ 	  "  C=\"$(pbr_chain $T)\"\n"
+ 	  "  $T -t mangle -N $C 2>/dev/null\n"
+ 	  "  $T -t mangle -F $C\n"
+-	  "  $T -t mangle -A $C -m conntrack --ctdir REPLY -j RETURN\n");
++	  "  $T -t mangle -A $C -m conntrack --ctdir REPLY -j RETURN\n"
++	  "  $T -t mangle -A $C -m set --match-set " REAPER_AIMESH_SET " src -j RETURN\n");
+ 	for (i = 1; i < 16; i++)
+ 		if (used[i])
+ 			fprintf(f, "  $T -t mangle -A $C -m connmark --mark 0x%X0000/$MASK -j CONNMARK --restore-mark --nfmask $MASK --ctmask $MASK\n", i);
+diff --git a/release/src/router/rc/rwatch.c b/release/src/router/rc/rwatch.c
+index 5ce42661adb..9ee6d57f3a0 100644
+--- a/release/src/router/rc/rwatch.c
++++ b/release/src/router/rc/rwatch.c
+@@ -88,6 +88,9 @@ static void rwatch_gen(void)
+ 	  REAPER_NV_HELPER
+ 	  REAPER_NVS_HELPER
+ 	  "STATE=" RWATCH_STATE "\n"
++	  /* 2026-11-01: the shared AiMesh node set (rc/reaper_aimesh.c) follows the registry even with
++	   * Gatekeeper off - gkd, the registry watcher, runs only with Gatekeeper on */
++	  "[ -x /sbin/reaper_aimesh_sync ] && /sbin/reaper_aimesh_sync >/dev/null 2>&1\n"
+ 	  "\n"
+ 	  "# reaper v1.9.1 (Rung B): durable-store resolver - MIRRORS rdev_store_base()\n"
+ 	  "# in httpd/web.c (keep the two in lockstep). Re-resolved every tick so a USB\n"
+-- 
+2.25.1
+

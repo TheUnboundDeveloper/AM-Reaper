@@ -12,9 +12,11 @@ WHAT IT CHECKS (static, against the router source tree):
   - rc/services.c start_ddns() refuses any WWW.ASUS.COM* server before the update is built - this
     also covers the AiDisk register path, which hard-codes the server;
   - httpd/web.c enable_remote_control.cgi never writes WWW.ASUS.COM or an asuscomm hostname;
-  - unreg_ASUSDDNS.cgi (row and handler) is compiled out.
-The vendor code behind these paths (rc/asus_ddns.c, the asus branches of start_ddns, the inadyn
-asuscomm plugin, the Warden asuscomm seed) is dead and tracked on the backlog for deletion.
+  - unreg_ASUSDDNS.cgi (row and handler) is gone.
+2026-11-13 (owner): the dead code behind these paths is deleted - asusddns_unregister() and its service
+handlers, the token client rc/asus_ddns.c and its call / declaration / link, the watchdog's ASUS branches,
+Warden's ASUS DDNS seed; the inadyn asuscomm plugins compile to nothing. The boot clean-up and start_ddns()'s
+refusal stay: they are what handles an old backup that still carries an ASUS DDNS setup.
 Exit 0 pass, 1 fail, 77 skipped (no router source tree - argv[1] or REAPER_ROUTER_SRC).
 """
 import os, re, sys
@@ -71,8 +73,27 @@ check("enable_remote_control.cgi never writes WWW.ASUS.COM or an asuscomm hostna
       a >= 0 and 'nvram_set("ddns_server_x", "WWW.ASUS.COM")' not in rcb and "asuscomm.com" not in rcb.replace("<name>.asuscomm.com", ""))
 check("enable_remote_control.cgi enables DDNS only for another provider with a hostname",
       'strncmp(nvram_safe_get("ddns_server_x"), "WWW.ASUS.COM", 12) != 0' in rcb)
-check("unreg_ASUSDDNS.cgi row is compiled out", compiled_out(web, '{ "unreg_ASUSDDNS.cgi*"'))
-check("its handler is compiled out too (no unused static)", compiled_out(web, "do_unreg_ASUSDDNS_cgi(char *url, FILE *stream)"))
+check("unreg_ASUSDDNS.cgi row and handler are deleted (were compiled out until 2026-11-13)",
+      "unreg_ASUSDDNS" not in web)
+
+# ---- 2026-11-13: the dead code itself is deleted (owner: "remove it fully")
+svc = rd("rc/services.c")
+check("asusddns_unregister() and its two service handlers are gone",
+      "asusddns_unregister" not in svc and '"aidisk_asusddns_register"' not in svc)
+check("the ASUS DDNS token client and every call / declaration / link of it are gone",
+      not os.path.exists(os.path.join(SRC, "rc", "asus_ddns.c")) and "update_asus_ddns_token" not in svc
+      and "update_asus_ddns_token" not in rd("rc/rc.c") and "update_asus_ddns_token" not in rd("rc/rc.h")
+      and "asus_ddns" not in rd("rc/Makefile"))
+check("the watchdog has no ASUS DDNS branch left", "WWW.ASUS.COM" not in rd("rc/watchdog.c"))
+check("Warden's ASUS DDNS seed is gone (the Let's Encrypt seed stays)",
+      "RW_ASUSDDNS_IP" not in rd("rc/rwarden.c") and "RW_LE_IPS" in rd("rc/rwarden.c"))
+for pl in ("asuscomm.c", "asuscommv2.c"):
+    t = rd(os.path.join("inadyn", "plugins", pl))
+    check("inadyn %s compiles to nothing (its body inside #ifdef REAPER_ASUSCOMM_PLUGIN, never defined)" % pl,
+          t.startswith("/* reaper 2026-11-13: ASUS DDNS") and "#ifdef REAPER_ASUSCOMM_PLUGIN\n" in t[:600]
+          and t.rstrip().endswith("#endif /* REAPER_ASUSCOMM_PLUGIN */"))
+check("nothing in the router tree defines REAPER_ASUSCOMM_PLUGIN",
+      "REAPER_ASUSCOMM_PLUGIN" not in rd("Makefile") and "REAPER_ASUSCOMM_PLUGIN" not in rd(os.path.join("inadyn", "src", "Makefile.in")))
 
 if fails:
     print("\n".join("FAIL: " + f for f in fails)); sys.exit(1)

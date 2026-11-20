@@ -1,0 +1,906 @@
+From 390be2ccde0d95becd5e92b45984a17b44d079c6 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Thu, 5 Nov 2026 20:37:29 -0500
+Subject: [PATCH] Let's Encrypt: always listed on the DDNS page, and a
+ certificate by DNS validation
+
+- Reaper_DDNS.asp lists Let's Encrypt at all times. It stays greyed, with the existing hint, until
+  DDNS is on with a provider; it used to be hidden then, which read as removed.
+- New: Let's Encrypt via DNS (rc/reaper_ledns.c). The router asks Let's Encrypt with the stock
+  acme.sh and the DNS provider's own upstream script (Cloudflare, deSEC, Duck DNS), so it needs no
+  DDNS, no open port 80 and no inbound traffic, and the name does not have to point at the router.
+  The certificate goes in through the imported-certificate path (le_enable=2 only once the files
+  exist), so the web server, Encrypted DNS and the backups treat it as an uploaded one. A daily
+  cron line renews it; switching off removes the account, the token and the keys. The token
+  reaches acme.sh in its environment only, never a command line or a log. With Warden filtering
+  the router's own traffic, the provider API and Let's Encrypt are let through for the length of a
+  run.
+- acme.sh installs dns_cf, dns_desec and dns_duckdns. nvram reaper_ledns_*; backup section cert.
+Also in these files: rc.h and rc/Makefile carry the conntrack-helper and DNS-rewrite declarations;
+rc/services.c the rewrite include, the helper rules and avahi wide-area off; shared/defaults.c
+nf_ftp=0.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ release/src/router/acme.sh/Makefile    |   2 +
+ release/src/router/rc/Makefile         |   4 +
+ release/src/router/rc/rc.c             |   2 +
+ release/src/router/rc/rc.h             |   5 +
+ release/src/router/rc/reaper_ledns.c   | 461 +++++++++++++++++++++++++
+ release/src/router/rc/services.c       |  15 +-
+ release/src/router/shared/defaults.c   |  11 +
+ release/src/router/www/Reaper_DDNS.asp | 139 ++++++--
+ 8 files changed, 610 insertions(+), 29 deletions(-)
+ create mode 100644 release/src/router/rc/reaper_ledns.c
+
+diff --git a/release/src/router/acme.sh/Makefile b/release/src/router/acme.sh/Makefile
+index 48415a3c9bd..c4c1cc24052 100644
+--- a/release/src/router/acme.sh/Makefile
++++ b/release/src/router/acme.sh/Makefile
+@@ -7,6 +7,8 @@ install:
+ 
+ 	install -m 0700 acme.sh $(INSTALLDIR)/usr/sbin
+ 	install -D -m 0700 dnsapi/dns_asusapi.sh $(INSTALLDIR)/usr/sbin/dnsapi/dns_asusapi.sh
++	# reaper 2026-11-05: Let's Encrypt by DNS validation (rc/reaper_ledns.c) - the providers it offers
++	install -m 0700 dnsapi/dns_cf.sh dnsapi/dns_desec.sh dnsapi/dns_duckdns.sh $(INSTALLDIR)/usr/sbin/dnsapi/
+ 
+ clean:
+ 
+diff --git a/release/src/router/rc/Makefile b/release/src/router/rc/Makefile
+index 15589b594d5..38825d7a909 100644
+--- a/release/src/router/rc/Makefile
++++ b/release/src/router/rc/Makefile
+@@ -484,6 +484,9 @@ OBJS += rdnshc.o
+ OBJS += rv6names.o
+ # reaper v2.2.2: analytics exporter - push per-device health to Splunk/Datadog/etc.
+ OBJS += rexport.o
++# reaper 2026-11-05: Let's Encrypt by DNS validation - no DDNS, no port 80 (body gated on RTCONFIG_LETSENCRYPT)
++OBJS += reaper_ledns.o
++OBJS += reaper_cthelper.o	# 2026-11-05 audit E-13: conntrack helpers by explicit rule only
+ ifeq ($(RTCONFIG_SINGLEIMG_B),y)
+ OBJS += fwupg_flashing.o
+ endif
+@@ -1850,6 +1853,7 @@ endif
+ 	@cd $(INSTALLDIR)/sbin && ln -sf rc reaper_aimesh_sync
+ 	@cd $(INSTALLDIR)/sbin && ln -sf rc rdnshc
+ 	@cd $(INSTALLDIR)/sbin && ln -sf rc rv6names
++	@cd $(INSTALLDIR)/sbin && ln -sf rc reaper_ledns
+ 
+ 	@cd $(INSTALLDIR)/sbin && ln -sf rc free_caches
+ 	@cd $(INSTALLDIR)/sbin && ln -sf rc get_phy_status
+diff --git a/release/src/router/rc/rc.c b/release/src/router/rc/rc.c
+index bd37370f1b6..32d23f3f187 100644
+--- a/release/src/router/rc/rc.c
++++ b/release/src/router/rc/rc.c
+@@ -3008,6 +3008,8 @@ static const applets_t applets[] = {
+ 	{ "reaper_usb_release",	reaper_usb_release_main		},
+ 	/* 2026-11-01: refresh the shared AiMesh node set from cfg_relist (rc/reaper_aimesh.c) */
+ 	{ "reaper_aimesh_sync",	reaper_aimesh_sync_main		},
++	/* 2026-11-05: Let's Encrypt by DNS validation - request / renew, install as the imported certificate (rc/reaper_ledns.c) */
++	{ "reaper_ledns",		reaper_ledns_main			},
+ 	{ "console",			console_main				},
+ #ifdef DEBUG_RCTEST
+ 	{ "rc",				rctest_main				},
+diff --git a/release/src/router/rc/rc.h b/release/src/router/rc/rc.h
+index d195aa15cbf..a17b637608e 100644
+--- a/release/src/router/rc/rc.h
++++ b/release/src/router/rc/rc.h
+@@ -3037,6 +3037,7 @@ extern void edns_doh_update(void);
+ /* reaper 2026-10-21: Wallguard, the ad & tracker blocker (rc/wallguard.c) */
+ extern int wallguard_enabled(void);
+ extern const char *reaper_wallguard_dir(void);
++extern const char *reaper_wallguard_rewrite_conf(void);	/* 2026-11-05: DNS rewrites, every instance */
+ extern void start_wallguard(void);
+ extern void stop_wallguard(void);
+ extern void wallguard_update(void);
+@@ -3155,6 +3156,10 @@ extern int reaper_aimesh_macs(char macs[][18], int max, int *dropped);	/* the cf
+ extern int reaper_lockrun_main(int argc, char *argv[]);	/* v2.7.3: heal scripts under the firewall fcntl lock (rc/rwatch.c) */
+ extern void stop_rexport(void);	/* reaper v2.2.2 analytics exporter: push health.json to Splunk/Datadog/etc. (rc/rexport.c) */
+ extern void start_rexport(void);
++extern void start_reaper_ledns(int now);	/* 2026-11-05: Let's Encrypt by DNS validation (rc/reaper_ledns.c) */
++extern void stop_reaper_ledns(void);
++extern void reaper_ct_helpers(void);	/* 2026-11-05 audit E-13 (rc/reaper_cthelper.c) */
++extern int reaper_ledns_main(int argc, char *argv[]);
+ #ifdef RTCONFIG_REAPER_MCP
+ extern void stop_rmcp(void);	/* reaper v1.4.0 read-only MCP advisor */
+ extern void start_rmcp(void);	/* NOTE: never called from the boot path */
+diff --git a/release/src/router/rc/reaper_ledns.c b/release/src/router/rc/reaper_ledns.c
+new file mode 100644
+index 00000000000..50ab850889b
+--- /dev/null
++++ b/release/src/router/rc/reaper_ledns.c
+@@ -0,0 +1,461 @@
++/* SPDX-License-Identifier: GPL-2.0-only
++ * Copyright (C) 2026 the Reaper project maintainer
++ * Part of the Reaper hardened Asuswrt-Merlin build. See LICENSE / LICENSE.reaper.
++ *
++ * rc/reaper_ledns.c - Let's Encrypt by DNS validation (2026-11-05, owner: "a certificate without DDNS").
++ *
++ * The closed libletsencrypt validates over HTTP (acme.sh --standalone on WAN port 80) for every provider but
++ * asuscomm, and it only starts after a successful DDNS update, so it needs DDNS, an open port 80 and inbound
++ * traffic from Let's Encrypt's validators in several countries. A certificate for the router's own services
++ * (the web interface, Encrypted DNS for the owner's iPhone) needs none of that: Let's Encrypt can check a
++ * temporary TXT record that the router writes through the DNS provider's API, and the name does not have to
++ * point at the router at all.
++ *
++ * reaper_ledns run (the page's Apply via restart_reaper_ledns, and a daily cron line) runs the stock acme.sh
++ * with the provider's own upstream script (dns_cf / dns_desec / dns_duckdns, installed beside dns_asusapi.sh)
++ * in its own home, /jffs/.le_dns (0700), and installs the result through the stock IMPORTED-certificate path:
++ * /jffs/.cert/cert.pem + key.pem, le_enable=2, prepare_cert_in_etc(), the same reload flags the DDNS renewal
++ * path arms. httpd, Encrypted DNS, the certificate panel and the backups then treat it like an uploaded one;
++ * the closed library is never involved. A run that finds the certificate not yet due (acme.sh exit 2) changes
++ * nothing. le_enable is set only once a certificate is on disk: prepare_cert_in_etc() falls back to self-signed
++ * AND deletes /jffs/.cert when le_enable=2 has no usable files.
++ *
++ * Secrets: the API token reaches acme.sh in the environment of this process only (never argv, never a log
++ * line); acme.sh keeps its own copy in /jffs/.le_dns/account.conf. Switching the feature off removes
++ * /jffs/.le_dns (account, token, keys). Warden: with "filter the router's own traffic" on, a blocked country
++ * can cover the provider API (deSEC is in Germany) or Let's Encrypt; for the length of a run the addresses of
++ * those two names are let through (rw_allow / rw_allow6) and removed again, unless they were already allowed.
++ *
++ * nvram: reaper_ledns_enable (switch, default 0), reaper_ledns_provider (cf | desec | duckdns),
++ *        reaper_ledns_domain, reaper_ledns_token; state for the page: reaper_ledns_state (run | ok | fail),
++ *        reaper_ledns_err (the last error line, sanitised), reaper_ledns_when (epoch of the last install).
++ */
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++#include <ctype.h>
++#include <errno.h>
++#include <fcntl.h>
++#include <time.h>
++#include <unistd.h>
++#include <netdb.h>
++#include <sys/file.h>
++#include <sys/socket.h>
++#include <sys/stat.h>
++#include <arpa/inet.h>
++
++#include "rc.h"
++#include <shared.h>
++
++#ifdef RTCONFIG_LETSENCRYPT
++
++#define LD_HOME		"/jffs/.le_dns"
++#define LD_OUT_CERT	LD_HOME "/fullchain.pem"
++#define LD_OUT_KEY	LD_HOME "/key.pem"
++#define LD_LOG		REAPER_TMPDIR "/ledns.log"
++#define LD_LOCK		REAPER_TMPDIR "/ledns.lock"
++#define LD_ACME		"/usr/sbin/acme.sh"
++#define LD_LE_API	"acme-v02.api.letsencrypt.org"
++#define LD_SLEEP	"90"		/* seconds between writing the TXT record and asking Let's Encrypt to look */
++#define LD_TIMEOUT	900		/* one acme.sh run, whole */
++#define LD_MAXIP	16
++
++static const struct ld_prov {
++	const char *id, *hook, *env, *api;
++} ld_provs[] = {
++	{ "cf",      "dns_cf",      "CF_Token",      "api.cloudflare.com" },
++	{ "desec",   "dns_desec",   "DEDYN_TOKEN",   "desec.io" },
++	{ "duckdns", "dns_duckdns", "DuckDNS_Token", "www.duckdns.org" },
++};
++#define LD_NPROV ((int)(sizeof(ld_provs) / sizeof(ld_provs[0])))
++
++static const struct ld_prov *ld_prov_of(const char *id)
++{
++	int i;
++
++	for (i = 0; i < LD_NPROV; i++)
++		if (!strcmp(id, ld_provs[i].id))
++			return &ld_provs[i];
++	return NULL;
++}
++
++/* a host name the provider can hold a TXT record under: lower-case LDH labels of 1-63, at least two of them,
++ * 4-253 bytes, no leading / trailing hyphen. It reaches acme.sh as an argument and names files in its home,
++ * so nothing else passes. DuckDNS only serves its own names. */
++int reaper_ledns_domain_ok(const char *d, const char *prov)
++{
++	size_t n = strlen(d), lab = 0, dots = 0, i;
++	const char *dk = ".duckdns.org";
++
++	if (n < 4 || n > 253)
++		return 0;
++	for (i = 0; i < n; i++) {
++		char c = d[i];
++		if (c == '.') {
++			if (lab == 0 || d[i - 1] == '-')
++				return 0;
++			lab = 0;
++			dots++;
++			continue;
++		}
++		if (!(islower((unsigned char)c) || isdigit((unsigned char)c) || c == '-'))
++			return 0;
++		if (c == '-' && lab == 0)
++			return 0;
++		if (++lab > 63)
++			return 0;
++	}
++	if (lab == 0 || d[n - 1] == '-' || dots == 0)
++		return 0;
++	if (prov && !strcmp(prov, "duckdns") && (n <= strlen(dk) || strcmp(d + n - strlen(dk), dk)))
++		return 0;
++	return 1;
++}
++
++/* the API token: 8-200 of [A-Za-z0-9._-] (Cloudflare, deSEC and DuckDNS tokens all fit); acme.sh writes it
++ * into account.conf inside single quotes, so nothing that could end them passes */
++int reaper_ledns_token_ok(const char *t)
++{
++	size_t n = strlen(t), i;
++
++	if (n < 8 || n > 200)
++		return 0;
++	for (i = 0; i < n; i++)
++		if (!(isalnum((unsigned char)t[i]) || t[i] == '.' || t[i] == '_' || t[i] == '-'))
++			return 0;
++	return 1;
++}
++
++/* the page shows reaper_ledns_err as text: keep it short, printable and free of the token */
++static void ld_state(const char *st, const char *err, int commit)
++{
++	char e[160], *tok = nvram_safe_get("reaper_ledns_token"), *p;
++	size_t i, o = 0;
++
++	for (i = 0; err && err[i] && o + 1 < sizeof(e); i++) {
++		unsigned char c = (unsigned char)err[i];
++		e[o++] = (isalnum(c) || strchr(" .,:;_/()'+-", c)) ? (char)c : ' ';
++	}
++	e[o] = '\0';
++	if (*tok && (p = strstr(e, tok)) != NULL)
++		memset(p, '*', strlen(tok));
++	nvram_set("reaper_ledns_state", st);
++	nvram_set("reaper_ledns_err", e);
++	if (!strcmp(st, "ok")) {
++		char w[24];
++		snprintf(w, sizeof(w), "%ld", (long)time(NULL));
++		nvram_set("reaper_ledns_when", w);
++	}
++	if (commit)
++		nvram_commit();
++}
++
++/* the last error line acme.sh printed ("[date] message"): what the page shows after a failure */
++static void ld_last_error(char *out, size_t cap, int rc)
++{
++	static const char *const words[] = { "error", "fail", "invalid", "unauthorized", "timeout", "timed out" };
++	FILE *f = fopen(LD_LOG, "r");
++	char l[512], lc[512], *m;
++	size_t i;
++	int hit;
++
++	snprintf(out, cap, "acme.sh exit %d", rc);
++	if (!f)
++		return;
++	while (fgets(l, sizeof(l), f)) {
++		l[strcspn(l, "\r\n")] = '\0';
++		for (i = 0; l[i]; i++)
++			lc[i] = (char)tolower((unsigned char)l[i]);
++		lc[i] = '\0';
++		for (hit = 0, i = 0; !hit && i < sizeof(words) / sizeof(words[0]); i++)
++			hit = strstr(lc, words[i]) != NULL;
++		if (!hit)
++			continue;
++		m = l;
++		if (*m == '[' && (m = strchr(l, ']')) != NULL)
++			m++;
++		else
++			m = l;
++		while (*m == ' ')
++			m++;
++		if (*m)
++			snprintf(out, cap, "%s", m);
++	}
++	fclose(f);
++}
++
++/* ---- Warden, for the length of one run ---- */
++struct ld_ip { const char *set; char ip[INET6_ADDRSTRLEN]; };
++
++static int ld_ipset(const char *op, const char *set, const char *ip)
++{
++	char *argv[] = { "ipset", "-q", (char *)op, (char *)set, (char *)ip, NULL };
++
++	return _eval(argv, NULL, 0, NULL);
++}
++
++static int ld_allow(const char *host, struct ld_ip *ips, int n)
++{
++	struct addrinfo hints, *res = NULL, *ai;
++	char ip[INET6_ADDRSTRLEN];
++
++	memset(&hints, 0, sizeof(hints));
++	hints.ai_socktype = SOCK_STREAM;
++	if (getaddrinfo(host, "443", &hints, &res) != 0)
++		return n;
++	for (ai = res; ai && n < LD_MAXIP; ai = ai->ai_next) {
++		const char *set;
++		void *a;
++		int i, dup = 0;
++
++		if (ai->ai_family == AF_INET) {
++			set = "rw_allow";
++			a = &((struct sockaddr_in *)ai->ai_addr)->sin_addr;
++		} else if (ai->ai_family == AF_INET6) {
++			set = "rw_allow6";
++			a = &((struct sockaddr_in6 *)ai->ai_addr)->sin6_addr;
++		} else
++			continue;
++		if (!inet_ntop(ai->ai_family, a, ip, sizeof(ip)))
++			continue;
++		for (i = 0; i < n; i++)
++			if (!strcmp(ips[i].ip, ip))
++				dup = 1;
++		if (dup || ld_ipset("test", set, ip) == 0)	/* already allowed: not ours to remove */
++			continue;
++		if (ld_ipset("add", set, ip) == 0) {
++			ips[n].set = set;
++			snprintf(ips[n].ip, sizeof(ips[n].ip), "%s", ip);
++			logmessage("ledns", "Warden: %s (%s) let through for this certificate request", host, ip);
++			n++;
++		}
++	}
++	freeaddrinfo(res);
++	return n;
++}
++
++static void ld_unallow(struct ld_ip *ips, int n)
++{
++	int i;
++
++	for (i = 0; i < n; i++)
++		ld_ipset("del", ips[i].set, ips[i].ip);
++}
++
++/* ---- install through the imported-certificate path ---- */
++static int ld_same(const char *a, const char *b)
++{
++	FILE *fa = fopen(a, "r"), *fb = fopen(b, "r");
++	int ca, cb, same = 0;
++
++	if (fa && fb) {
++		do {
++			ca = getc(fa);
++			cb = getc(fb);
++		} while (ca == cb && ca != EOF);
++		same = (ca == cb);
++	}
++	if (fa)
++		fclose(fa);
++	if (fb)
++		fclose(fb);
++	return same;
++}
++
++static int ld_copy(const char *src, const char *dst, mode_t mode)
++{
++	char tmp[128];
++	FILE *in, *out;
++	char buf[2048];
++	size_t r;
++	int fd, ok = 1;
++
++	snprintf(tmp, sizeof(tmp), "%s.ledns", dst);
++	unlink(tmp);
++	if ((in = fopen(src, "r")) == NULL)
++		return -1;
++	if ((fd = open(tmp, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW, mode)) < 0 || (out = fdopen(fd, "w")) == NULL) {
++		if (fd >= 0)
++			close(fd);
++		fclose(in);
++		return -1;
++	}
++	while ((r = fread(buf, 1, sizeof(buf), in)) > 0)
++		if (fwrite(buf, 1, r, out) != r)
++			ok = 0;
++	fclose(in);
++	if (fflush(out) != 0 || fsync(fileno(out)) != 0)
++		ok = 0;
++	fclose(out);
++	if (!ok || rename(tmp, dst) != 0) {
++		unlink(tmp);
++		return -1;
++	}
++	return 0;
++}
++
++/* 1 installed, 0 nothing to do, -1 failed */
++static int ld_install(void)
++{
++	if (!nvram_match("reaper_ledns_enable", "1"))
++		return 0;	/* switched off while this run was busy */
++	if (illegal_cert_and_key(LD_OUT_CERT, LD_OUT_KEY))
++		return -1;
++	if (nvram_match("le_enable", "2") && ld_same(LD_OUT_CERT, UPLOAD_CERT) && ld_same(LD_OUT_KEY, UPLOAD_KEY))
++		return 0;
++	mkdir(UPLOAD_CERT_FOLDER, 0700);
++	if (ld_copy(LD_OUT_KEY, UPLOAD_KEY, 0600) != 0 || ld_copy(LD_OUT_CERT, UPLOAD_CERT, 0644) != 0)
++		return -1;
++	/* an end-entity certificate: the root / intermediate pair and what it signed would win over it */
++	unlink(UPLOAD_CACERT);
++	unlink(UPLOAD_CAKEY);
++	unlink(UPLOAD_GEN_CERT);
++	unlink(UPLOAD_GEN_KEY);
++	nvram_set("le_enable", "2");
++	if (prepare_cert_in_etc() > 0) {
++		/* as rc/services.c ddns_updated_main and the prepare_cert verb: httpd loads it after the session */
++		nvram_set("httpds_reload_cert", "2");
++		rednsd_cert_changed();
++#if defined(RTCONFIG_IPV6)
++		if (ipv6_enabled() && nvram_match("misc_http_x", "1"))
++			nvram_set("httpds6_reload_cert", "2");
++#endif
++	}
++	if (!nvram_match("le_enable", "2"))
++		return -1;	/* prepare_cert_in_etc refused the files and fell back to self-signed */
++	return 1;
++}
++
++static int ld_home(void)
++{
++	struct stat st;
++
++	if (mkdir(LD_HOME, 0700) != 0 && errno != EEXIST)
++		return -1;
++	if (lstat(LD_HOME, &st) != 0 || !S_ISDIR(st.st_mode))
++		return -1;
++	if ((st.st_mode & 07777) != 0700)
++		chmod(LD_HOME, 0700);
++	return 0;
++}
++
++static int ld_run(void)
++{
++	char dom[256], tok[256], prov[16], err[200];
++	const struct ld_prov *p;
++	struct ld_ip ips[LD_MAXIP];
++	int lock, nip = 0, rc, r;
++
++	if (!nvram_match("reaper_ledns_enable", "1"))
++		return 0;
++	snprintf(dom, sizeof(dom), "%s", nvram_safe_get("reaper_ledns_domain"));
++	snprintf(tok, sizeof(tok), "%s", nvram_safe_get("reaper_ledns_token"));
++	snprintf(prov, sizeof(prov), "%s", nvram_safe_get("reaper_ledns_provider"));
++	if (!(p = ld_prov_of(prov)) || !reaper_ledns_domain_ok(dom, prov) || !reaper_ledns_token_ok(tok)) {
++		ld_state("fail", "The provider, domain name or API token is missing or not valid", 1);
++		logmessage("ledns", "Let's Encrypt (DNS): not requested - provider, domain name or API token missing or not valid");
++		return 1;
++	}
++	if (reaper_secure_dir(REAPER_TMPDIR, 0700) != 0 || ld_home() != 0)
++		return 1;
++	if ((lock = open(LD_LOCK, O_RDWR | O_CREAT | O_NOFOLLOW | O_CLOEXEC, 0600)) < 0)
++		return 1;
++	if (flock(lock, LOCK_EX | LOCK_NB) != 0) {
++		close(lock);
++		return 0;	/* a run is already busy (Apply during the nightly one): it does the same work */
++	}
++	unlink(LD_LOG);
++	nvram_set("reaper_ledns_state", "run");
++	logmessage("ledns", "Let's Encrypt (DNS): requesting or renewing %s through %s", dom, p->api);
++
++	if (nvram_match("rwarden_enable", "1") && nvram_match("rwarden_self", "1")) {
++		nip = ld_allow(p->api, ips, nip);
++		nip = ld_allow(LD_LE_API, ips, nip);
++	}
++	setenv(p->env, tok, 1);
++	{
++		char *argv[] = { LD_ACME, "--home", LD_HOME, "--config-home", LD_HOME, "--issue", "-d", dom,
++				 "--dns", (char *)p->hook, "--dnssleep", LD_SLEEP, "--keylength", "ec-256",
++				 "--server", "letsencrypt", NULL };
++		rc = _eval(argv, ">" LD_LOG, LD_TIMEOUT, NULL);
++	}
++	if (rc == 0 || rc == 2) {
++		char *argv[] = { LD_ACME, "--home", LD_HOME, "--config-home", LD_HOME, "--install-cert", "-d", dom,
++				 "--ecc", "--fullchain-file", LD_OUT_CERT, "--key-file", LD_OUT_KEY, NULL };
++		if (_eval(argv, ">>" LD_LOG, 120, NULL) != 0)
++			rc = -1;
++	}
++	unsetenv(p->env);
++	ld_unallow(ips, nip);
++
++	if (rc != 0 && rc != 2) {
++		ld_last_error(err, sizeof(err), rc);
++		ld_state("fail", err, 1);
++		logmessage("ledns", "Let's Encrypt (DNS): %s failed - %s", dom, nvram_safe_get("reaper_ledns_err"));
++		close(lock);
++		return 1;
++	}
++	chmod(LD_OUT_KEY, 0600);
++	r = ld_install();
++	if (r < 0) {
++		ld_state("fail", "The new certificate could not be installed", 1);
++		logmessage("ledns", "Let's Encrypt (DNS): %s - the certificate could not be installed", dom);
++	} else if (r > 0) {
++		ld_state("ok", "", 1);
++		logmessage("ledns", "Let's Encrypt (DNS): certificate for %s installed", dom);
++	} else if (!nvram_match("reaper_ledns_state", "ok")) {
++		ld_state("ok", "", 1);	/* already installed and not due: say so once, keep the date */
++	} else
++		nvram_set("reaper_ledns_state", "ok");
++	close(lock);
++	return r < 0;
++}
++
++/* the daily line: a minute and an hour (01-05) from the domain name, so routers do not all ask at once */
++void start_reaper_ledns(int now)
++{
++	char line[96];
++	const char *d;
++	unsigned h = 5381;
++
++	eval("cru", "d", "reaper_ledns");
++	if (!nvram_match("reaper_ledns_enable", "1"))
++		return;
++	for (d = nvram_safe_get("reaper_ledns_domain"); *d; d++)
++		h = h * 33 + (unsigned char)*d;
++	snprintf(line, sizeof(line), "%u %u * * * /sbin/reaper_ledns run", h % 60, 1 + (h / 60) % 5);
++	eval("cru", "a", "reaper_ledns", line);
++	if (now) {
++		char *argv[] = { "/sbin/reaper_ledns", "run", NULL };
++		int pid;
++		_eval(argv, NULL, 0, &pid);
++	}
++}
++
++/* switched off: the cron line goes, and with it acme.sh's home (account key, saved token, keys). The
++ * certificate already installed stays until the page's certificate choice replaces it. */
++void stop_reaper_ledns(void)
++{
++	eval("cru", "d", "reaper_ledns");
++	if (nvram_match("reaper_ledns_enable", "1"))
++		return;
++	eval("rm", "-rf", LD_HOME);
++	nvram_set("reaper_ledns_state", "");
++	nvram_set("reaper_ledns_err", "");
++}
++
++int reaper_ledns_main(int argc, char *argv[])
++{
++	if (argc > 1 && !strcmp(argv[1], "run"))
++		return ld_run();
++	fprintf(stderr, "usage: reaper_ledns run\n");
++	return 1;
++}
++
++#else	/* !RTCONFIG_LETSENCRYPT: acme.sh is not in the image */
++
++void start_reaper_ledns(int now) { (void)now; }
++void stop_reaper_ledns(void) { }
++int reaper_ledns_main(int argc, char *argv[]) { (void)argc; (void)argv; return 1; }
++
++#endif
+diff --git a/release/src/router/rc/services.c b/release/src/router/rc/services.c
+index 00dba4c7452..567f2d7aba1 100644
+--- a/release/src/router/rc/services.c
++++ b/release/src/router/rc/services.c
+@@ -2578,6 +2578,13 @@ void start_dnsmasq(void)
+ 		if (sd)
+ 			fprintf(fp, "wallguard-dir=%s\n", sd);
+ 	}
++	/* 2026-11-05: Wallguard's DNS rewrites (rc/wallguard.c) - whether or not Wallguard is on; only
++	 * while the table has a row (the helper answers NULL otherwise: a missing include is fatal) */
++	{
++		const char *rw = reaper_wallguard_rewrite_conf();
++		if (rw)
++			fprintf(fp, "conf-file=%s\n", rw);
++	}
+ 	/* 2026-10-21: the encrypted-DNS block's DoH provider names (rc/encdns.c) */
+ 	{
+ 		const char *ec = reaper_edns_dns_conf();
+@@ -9473,7 +9480,7 @@ int generate_mdns_config(void)
+ 
+ 	/* Set [wide-area] configuration */
+ 	fprintf(fp, "\n[wide-area]\n");
+-	fprintf(fp, "enable-wide-area=yes\n");
++	fprintf(fp, "enable-wide-area=no\n");	/* reaper: .local only; unicast DNS-SD unused (CVE-2024-52615/52616) */
+ 
+ 	/* Set [rlimits] configuration */
+ 	fprintf(fp, "\n[rlimits]\n");
+@@ -14492,6 +14499,7 @@ start_services(void)
+ #endif
+ #ifdef RTCONFIG_LETSENCRYPT
+ 	start_letsencrypt();
++	start_reaper_ledns(0);	/* reaper 2026-11-05: the daily renewal line only (cru lives in /tmp) */
+ #endif
+ #if defined(RTCONFIG_HMA)
+ 	tpvpn_gen_hma_list();
+@@ -22933,6 +22941,11 @@ retry_wps_enr:
+ 		if(action & RC_SERVICE_STOP) stop_rexport();
+ 		if(action & RC_SERVICE_START) start_rexport();
+ 	}
++	else if (strcmp(script, "reaper_ledns") == 0)	/* reaper 2026-11-05 Let's Encrypt by DNS validation */
++	{
++		if(action & RC_SERVICE_STOP) stop_reaper_ledns();
++		if(action & RC_SERVICE_START) start_reaper_ledns(1);	/* the page's Apply: request now */
++	}
+ #ifdef RTCONFIG_REAPER_MCP
+ 	else if (strcmp(script, "rmcp") == 0)
+ 	{
+diff --git a/release/src/router/shared/defaults.c b/release/src/router/shared/defaults.c
+index abdab4b10c5..646880802cc 100644
+--- a/release/src/router/shared/defaults.c
++++ b/release/src/router/shared/defaults.c
+@@ -3302,6 +3302,15 @@ struct nvram_tuple router_defaults[] = {
+ 	{ "reaper_export_interval",     "300", CKN_STR32,  CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* push cadence, seconds */
+ 	{ "reaper_export_metrics",      "",    CKN_STR256, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* selected metric set */
+ 	{ "reaper_export_scrape_token", "",    CKN_STR256, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* Prometheus scrape bearer */
++	/* reaper 2026-11-05: Let's Encrypt by DNS validation (WAN > DDNS certificate, rc/reaper_ledns.c). Off until
++	 * chosen on the page; the three state keys are written by rc for the page. */
++	{ "reaper_ledns_enable",        "0",   CKN_STR1,   CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* the switch */
++	{ "reaper_ledns_provider",      "cf",  CKN_STR8,   CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* cf | desec | duckdns */
++	{ "reaper_ledns_domain",        "",    CKN_STR256, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* the certificate's name */
++	{ "reaper_ledns_token",         "",    CKN_STR256, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* the DNS provider's API token */
++	{ "reaper_ledns_state",         "",    CKN_STR8,   CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* run | ok | fail */
++	{ "reaper_ledns_err",           "",    CKN_STR256, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* last error line */
++	{ "reaper_ledns_when",          "",    CKN_STR32,  CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* epoch of the last install */
+ 	/* reaper v1.9.1: Device Identity Manager Rung B - unified long-term storage
+ 	 * (Reaper_Storage.asp, System Log group). reaper_store = durable location for
+ 	 * opt-in history datasets: "" / "ram" = RAM only (default, volatile), "jffs" =
+@@ -3511,6 +3520,8 @@ struct nvram_tuple router_defaults[] = {
+ 	{ "fw_enable_x", "1", CKN_STR1, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },
+ 	{ "fw_dos_x", "0", CKN_STR1, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },
+ 	{ "fw_log_x", "none", CKN_STR8, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },
++	/* audit E-13: the FTP ALG for LAN clients going out is off unless switched on (NAT Passthrough) */
++	{ "nf_ftp", "0", CKN_STR1, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },
+ 	{ "fw_pt_pptp", "1", CKN_STR1, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },
+ 	{ "fw_pt_l2tp", "1", CKN_STR1, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },
+ 	{ "fw_pt_ipsec", "1", CKN_STR1, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },
+diff --git a/release/src/router/www/Reaper_DDNS.asp b/release/src/router/www/Reaper_DDNS.asp
+index d6b1247dc13..20cfab2a94a 100644
+--- a/release/src/router/www/Reaper_DDNS.asp
++++ b/release/src/router/www/Reaper_DDNS.asp
+@@ -26,7 +26,11 @@
+        Entware AiCloud install. A certificate-only change runs prepare_cert without restarting DDNS.
+      - DOMAINS.GOOGLE.COM (Google Domains closed) is listed only while it is the saved provider.
+      - The Let's Encrypt terms box is asked for every switch to Let's Encrypt (stock asked only on the asuscomm path).
+-     - The self-signed certificate renewal lives on the System page (Reaper_System.asp certificate panel). -->
++     - The self-signed certificate renewal lives on the System page (Reaper_System.asp certificate panel).
++     - Added 2026-11-05: "Let's Encrypt via DNS" (rc/reaper_ledns.c). Let's Encrypt checks a TXT record the router
++       writes through the DNS provider's API (Cloudflare, deSEC, DuckDNS): no DDNS, no port 80, nothing inbound. rc
++       installs the certificate as the imported one (le_enable=2) once it is on disk; the API token is never
++       written into the page (an empty field keeps the saved one). -->
+ <link rel="stylesheet" href="/reaper/rp.css">
+ <style>
+ /* page-specific rules only; the Reaper look comes from /reaper/rp.css */
+@@ -86,7 +90,11 @@
+   <h2><#DDNS_https_cert#></h2>
+   <div class="sub"><#RDDN_09#></div>
+   <div class="secerr"><#RADM_78#></div>
+-  <div class="frow" id="r_cert"><div class="fl"><#RDDN_10#></div><div class="fc"><select id="s_cert"><option value="1"><#DDNS_https_cert_LetsEncrypt#></option><option value="2"><#DDNS_https_cert_Import#></option><option value="0"><#RDDN_11#></option></select></div><div class="fh" id="h_cert"></div></div>
++  <div class="frow" id="r_cert"><div class="fl"><#RDDN_10#></div><div class="fc"><select id="s_cert"><option value="1"><#DDNS_https_cert_LetsEncrypt#></option><option value="3"><#RDDN_42#></option><option value="2"><#DDNS_https_cert_Import#></option><option value="0"><#RDDN_11#></option></select></div><div class="fh" id="h_cert"></div></div>
++  <div class="frow" id="r_ldprov"><div class="fl"><#RDDN_43#></div><div class="fc"><select id="s_ldprov"><option value="cf">Cloudflare</option><option value="desec">deSEC</option><option value="duckdns">DuckDNS</option></select></div></div>
++  <div class="frow" id="r_lddom"><div class="fl"><#RDDN_44#></div><div class="fc"><input type="text" class="mid mono" id="i_lddom" maxlength="253" autocomplete="off" spellcheck="false"></div><div class="fh"><#RDDN_45#></div></div>
++  <div class="frow" id="r_ldtok"><div class="fl"><#RDDN_46#></div><div class="fc"><input type="password" class="mid mono" id="i_ldtok" maxlength="200" autocomplete="new-password"></div><div class="fh"><#RDDN_47#></div></div>
++  <div class="frow" id="r_ldstat"><div class="fl"><#RDDN_55#></div><div class="fc"><span class="fv" id="v_ldstat"></span></div></div>
+   <div class="frow" id="r_leterms"><div class="fl"></div><div class="fc"><label class="chk"><input type="checkbox" id="c_leterms" checked> <#DDNS_https_cert_LetsEncrypt_agree#></label><a class="link" href="https://letsencrypt.org/repository/" target="_blank" rel="noopener noreferrer"><#RDDN_12#></a></div></div>
+   <form method="post" name="upload_form" id="upload_form" action="upload_cert_key.cgi" target="hidden_frame" enctype="multipart/form-data">
+     <div class="frow upl" id="r_upload"><div class="fl"><#DDNS_https_cert_Import#></div>
+@@ -113,19 +121,7 @@
+   <input type="hidden" name="action_mode" value="apply">
+   <input type="hidden" name="action_script" value="">
+   <input type="hidden" name="action_wait" value="5">
+-  <input type="hidden" name="ddns_enable_x" value="" disabled>
+-  <input type="hidden" name="ddns_wan_unit" value="" disabled>
+-  <input type="hidden" name="ddns_ipv6_update" value="" disabled>
+-  <input type="hidden" name="ddns_server_x" value="" disabled>
+-  <input type="hidden" name="ddns_hostname_x" value="" disabled>
+-  <input type="hidden" name="ddns_username_x" value="" disabled>
+-  <input type="hidden" name="ddns_passwd_x" value="" disabled>
+-  <input type="hidden" name="ddns_wildcard_x" value="" disabled>
+-  <input type="hidden" name="ddns_regular_check" value="" disabled>
+-  <input type="hidden" name="ddns_regular_period" value="" disabled>
+-  <input type="hidden" name="ddns_refresh_x" value="" disabled>
+-  <input type="hidden" name="ddns_replace_status" value="" disabled>
+-  <input type="hidden" name="le_enable" value="" disabled>
++  <!-- settings fields: added by rp.changed at Apply -->
+ </form>
+ 
+ <script>
+@@ -147,9 +143,14 @@ var NV = {
+   ddns_passwd_x: '', ddns_wildcard_x: U('<% nvram_char_to_ascii("","ddns_wildcard_x"); %>'),
+   ddns_regular_check: U('<% nvram_char_to_ascii("","ddns_regular_check"); %>'), ddns_regular_period: U('<% nvram_char_to_ascii("","ddns_regular_period"); %>'),
+   ddns_refresh_x: U('<% nvram_char_to_ascii("","ddns_refresh_x"); %>'), ddns_replace_status: U('<% nvram_char_to_ascii("","ddns_replace_status"); %>'),
+-  le_enable: U('<% nvram_char_to_ascii("","le_enable"); %>')
++  le_enable: U('<% nvram_char_to_ascii("","le_enable"); %>'),
++  reaper_ledns_enable: U('<% nvram_char_to_ascii("","reaper_ledns_enable"); %>'), reaper_ledns_provider: U('<% nvram_char_to_ascii("","reaper_ledns_provider"); %>'),
++  reaper_ledns_domain: U('<% nvram_char_to_ascii("","reaper_ledns_domain"); %>'), reaper_ledns_token: ''
+ };
+ var PASS_SET = '<% nvram_match("ddns_passwd_x", "", "0"); %>' !== '0';
++/* Let's Encrypt via DNS: whether a token is saved (never the token), and the state rc/reaper_ledns.c reports */
++var LDTOK_SET = '<% nvram_match("reaper_ledns_token", "", "0"); %>' !== '0';
++var LDS = {state: U('<% nvram_char_to_ascii("","reaper_ledns_state"); %>'), err: U('<% nvram_char_to_ascii("","reaper_ledns_err"); %>'), when: U('<% nvram_char_to_ascii("","reaper_ledns_when"); %>')};
+ /* registration result: the same nvram stock showed, read without ej nvram_get_ddns (which clears ddns_return_code) */
+ var RC = {code: U('<% nvram_char_to_ascii("","ddns_return_code"); %>'), chk: U('<% nvram_char_to_ascii("","ddns_return_code_chk"); %>')};
+ var DDNS_OLD = U('<% nvram_char_to_ascii("","ddns_old_name"); %>'), DDNS_UPDATED = U('<% nvram_char_to_ascii("","ddns_updated"); %>');
+@@ -179,7 +180,7 @@ function strOk(s){ return !/[^\x20-\x7e]/.test(s) && s.charAt(0) !== '"' && s.ch
+ /* ---------- sections ---------- */
+ var SECTIONS = [], BROKEN = {};
+ function section(panel, init, collect){ SECTIONS.push({panel: panel, init: init, collect: collect}); }
+-var SWITCHES = {ddns_enable_x: 1, ddns_wildcard_x: 1, ddns_regular_check: 1, ddns_ipv6_update: 0};
++var SWITCHES = {ddns_enable_x: 1, ddns_wildcard_x: 1, ddns_regular_check: 1, ddns_ipv6_update: 0, reaper_ledns_enable: 1};
+ 
+ section('p_ddns', function(){
+   var sel = q('s_server'), h = '<option value="">' + rp.esc(`<#Select_menu_default#>`) + '</option>';
+@@ -223,11 +224,31 @@ section('p_ddns', function(){
+ 
+ section('p_cert', function(){
+   if (!sup('HTTPS')){ q('p_cert').classList.add('off'); return; }
+-  if (!sup('letsencrypt')){ var o = q('s_cert').querySelector('option[value="1"]'); if (o) o.parentNode.removeChild(o); }
+-  q('s_cert').value = /^[012]$/.test(NV.le_enable) ? NV.le_enable : '0';
++  /* both Let's Encrypt choices run the image's acme.sh: without RTCONFIG_LETSENCRYPT neither is offered */
++  if (!sup('letsencrypt')) ['1', '3'].forEach(function(v){ var o = q('s_cert').querySelector('option[value="' + v + '"]'); if (o) o.parentNode.removeChild(o); });
++  q('s_cert').value = NV.reaper_ledns_enable === '1' && sup('letsencrypt') ? '3' : (/^[012]$/.test(NV.le_enable) ? NV.le_enable : '0');
+   if (q('s_cert').value === '') q('s_cert').value = '0';
++  q('s_ldprov').value = /^(cf|desec|duckdns)$/.test(NV.reaper_ledns_provider) ? NV.reaper_ledns_provider : 'cf';
++  q('i_lddom').value = NV.reaper_ledns_domain;
++  q('i_ldtok').placeholder = LDTOK_SET ? `<#RDDN_17#>` : '';
+   certInfo(CERT);
+-}, function(c){ if (sup('HTTPS')) c.le_enable = q('s_cert').value; });
++  ldStatus();
++}, function(c){
++  if (!sup('HTTPS')) return;
++  var m = q('s_cert').value;
++  if (m === '3'){
++    /* rc installs the certificate as the imported one (le_enable=2) once it is on disk, not before: with no
++       usable files prepare_cert_in_etc falls back to self-signed and deletes /jffs/.cert */
++    c.reaper_ledns_enable = '1';
++    c.reaper_ledns_provider = q('s_ldprov').value;
++    c.reaper_ledns_domain = val('i_lddom').toLowerCase();
++    if (val('i_ldtok') !== '') c.reaper_ledns_token = val('i_ldtok');
++    if (NV.le_enable === '1') c.le_enable = '0';   /* the DDNS-run Let's Encrypt stops; self-signed until the new one lands */
++  } else {
++    c.le_enable = m;
++    if (sup('letsencrypt')) c.reaper_ledns_enable = '0';
++  }
++});
+ 
+ /* ---------- the stock row rules (change_ddns_setting / ddns_load_body / show_ipv6update_setting) ---------- */
+ function rules(){
+@@ -255,14 +276,20 @@ function sync(){
+   statusRow();
+   statePill();
+ }
+-/* Let's Encrypt is offered while DDNS is on with a provider (stock showed it from change_ddns_setting), or when saved */
++/* Let's Encrypt is always listed. It can be chosen while DDNS is on with a provider (stock showed it from
++   change_ddns_setting), or when saved; until then it is greyed and the hint says what it needs. Stock HID it, which
++   read as "no Let's Encrypt in this firmware" whenever DDNS was off. */
+ function certSync(){
+   if (BROKEN.p_cert || !sup('HTTPS')) return;
+   var sel = q('s_cert'), le = sel.querySelector('option[value="1"]'), leOk = (q('t_ddns').checked && server() !== '') || NV.le_enable === '1', m = sel.value;
+-  if (le){ le.disabled = !leOk; le.hidden = !leOk; if (!leOk && m === '1'){ sel.value = '0'; m = '0'; } }
+-  show('r_leterms', m === '1' && NV.le_enable !== '1');
++  if (le){ le.disabled = !leOk; if (!leOk && m === '1'){ sel.value = '0'; m = '0'; } }
++  show('r_leterms', (m === '1' && NV.le_enable !== '1') || (m === '3' && NV.reaper_ledns_enable !== '1'));
+   show('r_upload', m === '2');
+-  q('h_cert').textContent = m === '1' ? `<#RDDN_27#>` : m === '2' ? `<#RDDN_28#>` : `<#RDDN_29#>`;
++  ['r_ldprov', 'r_lddom', 'r_ldtok'].forEach(function(id){ show(id, m === '3'); });
++  show('r_ldstat', m === '3' && NV.reaper_ledns_enable === '1');
++  var h = m === '1' ? `<#RDDN_27#>` : m === '2' ? `<#RDDN_28#>` : m === '3' ? `<#RDDN_48#>` : `<#RDDN_29#>`;
++  if ((m === '0' || m === '2') && le && !leOk) h += ' ' + `<#RDDN_27#>`;
++  q('h_cert').textContent = h;
+   /* the root/intermediate certificate exists for self-signed, and for an import that was a CA (casignedcert) */
+   show('r_ca', NV.le_enable === '0' || NV.le_enable === '' || (NV.le_enable === '2' && CASIGNED === '1'));
+ }
+@@ -316,6 +343,35 @@ function pollDdns(){
+   try { x.send(); } catch (e) {}
+ }
+ 
++/* ---------- Let's Encrypt via DNS: the request's state (rc/reaper_ledns.c writes it) ---------- */
++function ldStatus(){
++  var s = LDS.state, t;
++  if (s === 'run') t = `<#RDDN_49#>`;
++  else if (s === 'ok') t = `<#RDDN_50#>` + (/^\d+$/.test(LDS.when) ? ' ' + new Date(+LDS.when * 1000).toLocaleString() : '');
++  else if (s === 'fail') t = `<#RDDN_52#>` + ' ' + (LDS.err || '-');
++  else t = `<#RDDN_51#>`;
++  q('v_ldstat').textContent = t;
++  q('v_ldstat').className = 'fv' + (s === 'fail' ? ' warn' : '');
++}
++/* a request takes about two minutes (the TXT record gets 90 s to spread): follow it, reload once it is installed */
++var lpolls = 0;
++function pollLd(){
++  if (LDS.state !== 'run' || lpolls++ > 90) return;
++  var x = new XMLHttpRequest();
++  x.open('GET', '/appGet.cgi?hook=nvram_get%28reaper_ledns_state%29%3bnvram_get%28reaper_ledns_err%29%3bnvram_get%28reaper_ledns_when%29&_=' + Date.now(), true);
++  x.onload = function(){
++    var j = null; try { j = JSON.parse(String(x.responseText || '')); } catch (e) { j = null; }
++    if (j && typeof j.reaper_ledns_state === 'string'){
++      LDS.state = j.reaper_ledns_state; LDS.err = String(j.reaper_ledns_err || ''); LDS.when = String(j.reaper_ledns_when || '');
++      ldStatus();
++      if (LDS.state === 'ok'){ location.reload(); return; }   /* the certificate panel reads the new one on load */
++    }
++    setTimeout(pollLd, 4000);
++  };
++  x.onerror = function(){ setTimeout(pollLd, 6000); };
++  try { x.send(); } catch (e) {}
++}
++
+ /* ---------- certificate details (stock show_cert_details) ---------- */
+ function certInfo(ci){
+   ci = ci || {};
+@@ -412,13 +468,25 @@ function validate(c, changed){
+       }
+     }
+   }
++  /* Let's Encrypt via DNS: the same checks rc/reaper_ledns.c makes (a name it can hold a TXT record under; a token
++     of [A-Za-z0-9._-]); a new provider needs its own token */
++  var ld = false;
++  for (k in changed) if (/^reaper_ledns_/.test(k)) ld = true;
++  if (q('s_cert').value === '3' && ld){
++    var d = val('i_lddom').toLowerCase(), pv = q('s_ldprov').value, tk = val('i_ldtok');
++    if (!/^(?=.{4,253}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/.test(d) || (pv === 'duckdns' && !/\.duckdns\.org$/.test(d)))
++      return bad('i_lddom', `<#RDDN_53#>`);
++    if (tk === '' ? (!LDTOK_SET || pv !== NV.reaper_ledns_provider) : !/^[A-Za-z0-9._-]{8,200}$/.test(tk))
++      return bad('i_ldtok', `<#RDDN_54#>`);
++  }
+   return '';
+ }
+ 
+ /* ---------- apply: the stock submitForm scripts (rc/services.c handle_notifications) ---------- */
+ function plan(changed){
+-  var ddns = false, k, S = [], wait = 5;
++  var ddns = false, ld = false, k, S = [], wait = 5;
+   for (k in changed) if (/^ddns_/.test(k)) ddns = true;
++  for (k in changed) if (/^reaper_ledns_/.test(k)) ld = true;
+   var cert = changed.le_enable !== undefined || UPLOADED, le = (changed.le_enable !== undefined ? changed.le_enable : NV.le_enable) === '1';
+   var on = q('t_ddns').checked;
+   if (on && le && (ddns || cert)){
+@@ -433,17 +501,27 @@ function plan(changed){
+       if (NV.le_enable === '1') S.push('restart_ddns_le');   /* leaving Let's Encrypt: stock restarted its client too */
+     }
+   }
++  /* Let's Encrypt via DNS: rc/reaper_ledns.c requests in the background (about two minutes) and installs the result
++     itself; switched off, the same verb removes its cron line and its acme.sh home */
++  if (ld) S.push('restart_reaper_ledns');
+   /* FTP over TLS serves the same certificate: stock appended prepare_cert;restart_ftpd to every save */
+   if (FTP_TLS && S.length){ if (S.indexOf('prepare_cert') < 0) S.push('prepare_cert'); S.push('restart_ftpd'); wait = 10; }
+-  return {script: S.length ? S.join(';') : 'saveNvram', wait: S.length ? wait : 1, cert: cert, ddns: ddns};
++  return {script: S.length ? S.join(';') : 'saveNvram', wait: S.length ? wait : 1, cert: cert, ddns: ddns, ld: ld && changed.reaper_ledns_enable !== '0'};
+ }
+ function applyAll(){
+   msg('');
+   var c = collect(), changed = diff(c), err = validate(c, changed), p;
+   if (err){ msg(err); return; }
++  if (!count(changed) && !UPLOADED && q('s_cert').value === '3' && NV.reaper_ledns_enable === '1' && (LDS.state === 'fail' || LDS.state === '')){
++    /* Let's Encrypt via DNS saved, last request failed or never ran: Apply asks again (a token permission fixed at
++       the provider changes nothing here) */
++    rp.applying(`<#Reaper_c_applying#>`, `<#RDDN_49#>`);
++    rp.post(document.form, {}, 'restart_reaper_ledns', 5);
++    return;
++  }
+   if (!count(changed) && !UPLOADED){ msg(`<#RADM_63#>`); return; }
+   /* stock: switching to Let's Encrypt without its terms box falls back to the self-signed certificate */
+-  if (changed.le_enable === '1' && !q('c_leterms').checked){
++  if ((changed.le_enable === '1' || changed.reaper_ledns_enable === '1') && !q('c_leterms').checked){
+     if (!confirm(`<#LANHostConfig_x_DDNSLetsEncrypt_Disagree#>`)) return;
+     q('s_cert').value = '0'; certSync(); c = collect(); changed = diff(c);
+     if (!count(changed) && !UPLOADED){ msg(`<#RADM_63#>`); return; }
+@@ -453,7 +531,7 @@ function applyAll(){
+   /* stock check_update: same server, host and address as the last update - ask before forcing another */
+   if (p.ddns && q('t_ddns').checked && DDNS_UPDATED === '1' && WAN_IP && WAN_IP === DDNS_IP.replace(/&#10/g, '')
+       && changed.ddns_server_x === undefined && changed.ddns_hostname_x === undefined && !confirm(`<#LANHostConfig_x_DDNS_update_confirm#>`)) return;
+-  rp.applying(`<#Reaper_c_applying#>`, p.cert ? `<#RDDN_40#>` : `<#RDDN_14#>`);
++  rp.applying(`<#Reaper_c_applying#>`, p.cert ? `<#RDDN_40#>` : p.ld ? `<#RDDN_49#>` : `<#RDDN_14#>`);
+   rp.post(document.form, changed, p.script, p.wait);
+ }
+ /* stock's manual update (onSubmitApply ddnsclient) as an apply that posts no setting */
+@@ -484,10 +562,15 @@ function boot(){
+   document.addEventListener('input', dirty); document.addEventListener('change', dirty);
+   sync(); dirty();
+   setTimeout(pollDdns, 1500);
++  setTimeout(pollLd, 2000);
+   if (!BROKEN.p_cert && sup('HTTPS') && certInfo(CERT)) setTimeout(pollCert, 2000);
+   rp.tips();
+ }
+ boot();
++/* start_apply.htm calls parent.checkDDNSReturnCode() after any restart_ddns* apply (stock
++   Advanced_ASUSDDNS_Content.asp defined it to poll and reload): this page polls by itself and rp.post reloads it,
++   so the hook only has to exist (an uncaught TypeError otherwise) */
++window.checkDDNSReturnCode = function(){};
+ })();
+ </script>
+ </body>
+-- 
+2.25.1
+

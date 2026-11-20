@@ -1,0 +1,109 @@
+From 88ebf192dc856fa58d7aa14028c65f2292bef2a4 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Wed, 18 Nov 2026 17:05:07 -0500
+Subject: [PATCH] SNMP: the agent's file is private; system name, location and
+ contact can be set
+
+- /tmp/snmpd.conf is created new with mode 0600.
+- sysName, sysLocation and sysContact are writable over SNMP, and the agent's saved copies are
+  dropped before each start, so the page's values win; a value set over SNMP lasts until the agent
+  next starts.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ release/src/router/rc/snmpd.c | 48 ++++++++++++++++++++++++++++++++---
+ 1 file changed, 44 insertions(+), 4 deletions(-)
+
+diff --git a/release/src/router/rc/snmpd.c b/release/src/router/rc/snmpd.c
+index b1a2d9a754..f58215a6c2 100644
+--- a/release/src/router/rc/snmpd.c
++++ b/release/src/router/rc/snmpd.c
+@@ -137,6 +137,43 @@ static void snmp_write_access(FILE *fp, const char *user, const char *level)
+ 		nvram_match("snmpd_wan", "1") ? "none" : "reaper_set");
+ }
+ 
++/* reaper 2026-11-17 (review C-7) REAPER-SNMP-PSYS. SET is limited to sysContact, sysName and sysLocation, and
++ * each of the three that had a value on the SNMP page answered notWritable: net-snmp treats a "sysName <v>"
++ * line as "configured, read-only". The values are now written with the agent's own writable tokens
++ * (psysname / psyslocation / psyscontact), which seed the object and leave it open to SET.
++ * The agent saves a writable value in its own file when it stops and reads that file after this one - the
++ * saved copy would then win over a change made on the page. So the three saved lines are dropped before every
++ * start: the page is the source of truth, and a value set over SNMP lasts until the agent is next started
++ * (a change on the SNMP page, a WAN address change with WAN access on, a reboot). */
++static void snmp_drop_saved_sys(const char *path)
++{
++	FILE *in, *out;
++	char tmp[128], line[1024];
++	int bol = 1, skip = 0, dropped = 0;
++
++	if (snprintf(tmp, sizeof(tmp), "%s.new", path) >= (int)sizeof(tmp))
++		return;
++	if (!(in = fopen(path, "r")))
++		return;
++	if (!(out = reaper_fopen_new(tmp, 0600))) {
++		fclose(in);
++		return;
++	}
++	while (fgets(line, sizeof(line), in)) {
++		if (bol) {	/* a long line arrives in pieces: the test is made on its first piece only */
++			skip = !strncasecmp(line, "psysname", 8) || !strncasecmp(line, "psyslocation", 12) ||
++			       !strncasecmp(line, "psyscontact", 11);
++			dropped += skip;
++		}
++		if (!skip)
++			fputs(line, out);
++		bol = strchr(line, '\n') != NULL;
++	}
++	fclose(in);
++	if (fclose(out) != 0 || !dropped || rename(tmp, path) != 0)
++		unlink(tmp);
++}
++
+ void start_snmpd(void)
+ {
+ 	int ret = 0;
+@@ -149,7 +186,9 @@ void start_snmpd(void)
+ 	}
+ 
+ 	// Create config file
+-	fp = fopen("/tmp/snmpd.conf", "w");
++	/* reaper 2026-11-17 (review C-V3): a new file, mode 0600, never through a link - this file carries the
++	 * SNMPv3 authentication and privacy passphrases in clear and was created world-readable */
++	fp = reaper_fopen_new("/tmp/snmpd.conf", 0600);
+ 	if (fp == NULL) {
+ 		cprintf("Can't open /tmp/snmpd.conf!\n");
+ 		return;
+@@ -240,19 +279,19 @@ void start_snmpd(void)
+ 	if(strlen(nvram_safe_get("sysName"))) {
+ 		snmp_sanitize(cval, sizeof(cval), nvram_safe_get("sysName"));
+ 		if(cval[0])
+-			fprintf(fp, "sysName %s\n", cval);
++			fprintf(fp, "psysname %s\n", cval);	/* review C-7: the writable form */
+ 	}
+ 
+ 	if(strlen(nvram_safe_get("sysLocation"))) {
+ 		snmp_sanitize(cval, sizeof(cval), nvram_safe_get("sysLocation"));
+ 		if(cval[0])
+-			fprintf(fp, "sysLocation %s\n", cval);
++			fprintf(fp, "psyslocation %s\n", cval);	/* review C-7: the writable form */
+ 	}
+ 
+ 	if(strlen(nvram_safe_get("sysContact"))) {
+ 		snmp_sanitize(cval, sizeof(cval), nvram_safe_get("sysContact"));
+ 		if(cval[0])
+-			fprintf(fp, "sysContact %s\n", cval);
++			fprintf(fp, "psyscontact %s\n", cval);	/* review C-7: the writable form */
+ 	}
+ 
+ 	append_custom_config("snmpd.conf", fp);
+@@ -260,6 +299,7 @@ void start_snmpd(void)
+ 	use_custom_config("snmpd.conf", "/tmp/snmpd.conf");
+ 	run_postconf("snmpd","/tmp/snmpd.conf");
+ 
++	snmp_drop_saved_sys("/var/net-snmp/snmpd.conf");	/* review 2026-11-17 (C-7): the page's values win */
+ 	// Execute snmp daemon
+ 	ret = eval("snmpd", "-c", "/tmp/snmpd.conf");
+ 
+-- 
+2.25.1
+

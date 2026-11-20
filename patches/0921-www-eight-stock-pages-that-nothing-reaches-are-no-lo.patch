@@ -1,0 +1,67 @@
+From f0055de2cf6b8f1257155922148bd3e598c96bb8 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Fri, 6 Nov 2026 17:29:34 -0500
+Subject: [PATCH] www: eight stock pages that nothing reaches are no longer
+ shipped
+
+aplist.asp and apscan.asp (now Reaper_Survey), automac.asp and start_autodet.asp
+(Reaper_Internet), the three AiProtection_*_m.asp mobile pages (the dashboard) and
+device-map/clients-listview.asp (Reaper_Devices): no menu links them and no shipped page, httpd,
+rc or shared code loads them. httpd bounces each old URL to its Reaper page (reaper_pagemap gone
+rows). Pages with a consumer stay (status.asp, wl_log.asp, detectWAN.asp, the USB device-map
+pages, Guest_network.asp, both remote.asp files, index.asp).
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ release/src/router/httpd/reaper_inject.c |  9 +++++++++
+ release/src/router/www/Makefile          | 14 ++++++++++++++
+ 2 files changed, 23 insertions(+)
+
+diff --git a/release/src/router/httpd/reaper_inject.c b/release/src/router/httpd/reaper_inject.c
+index 28c94bb5623..992683fe97d 100644
+--- a/release/src/router/httpd/reaper_inject.c
++++ b/release/src/router/httpd/reaper_inject.c
+@@ -361,6 +361,15 @@ static const struct reaper_page_row { const char *name, *to; int shipped; } reap
+ 	{ "advanced_wireless_content.asp", "Reaper_WiFiSettings.asp", 1 },
+ 	{ "advanced_wadvanced_content.asp", "Reaper_WiFiSettings.asp", 1 },
+ 	{ "reaper_wifipro.asp", "Reaper_WiFiSettings.asp", 1 },
++	/* reaper 2026-11-06 (audit B-6): unshipped helper pages - see the www/Makefile block */
++	{ "aplist.asp", "Reaper_Survey.asp", 0 },
++	{ "apscan.asp", "Reaper_Survey.asp", 0 },
++	{ "automac.asp", "Reaper_Internet.asp", 0 },
++	{ "start_autodet.asp", "Reaper_Internet.asp", 0 },
++	{ "aiprotection_infecteddevicepreventblock_m.asp", "Main_ReaperDash.asp", 0 },
++	{ "aiprotection_intrusionpreventionsystem_m.asp", "Main_ReaperDash.asp", 0 },
++	{ "aiprotection_malicioussitesblocking_m.asp", "Main_ReaperDash.asp", 0 },
++	{ "clients-listview.asp", "Reaper_Devices.asp", 0 },
+ 	{ NULL, NULL, 0 }
+ };
+ 
+diff --git a/release/src/router/www/Makefile b/release/src/router/www/Makefile
+index 9715491a181..67068d41bfe 100644
+--- a/release/src/router/www/Makefile
++++ b/release/src/router/www/Makefile
+@@ -1315,6 +1315,20 @@ endif
+ 	rm -f $(INSTALLDIR)/www/Main_TrafficMonitor_daily.asp
+ 	rm -f $(INSTALLDIR)/www/Main_TrafficMonitor_monthly.asp
+ 	rm -f $(INSTALLDIR)/www/Main_TrafficMonitor_settings.asp
++# reaper 2026-11-06 (audit B-6): stock pages no menu reaches and nothing loads - no consumer in the shipped www,
++# httpd, rc or shared, none on the AiMesh node whitelist. start_autodet.asp also ran a WAN detection on a plain GET
++# (review 2026-11-03 A-2). httpd bounces each old URL (reaper_pagemap[]). Kept on purpose: both remote.asp files
++# (the gone table matches a basename, and the root one still ships), status.asp / wl_log.asp (Reaper pages read
++# them), device-map/disk*.asp + safely_remove_disk.asp (Reaper_USB), the rest of device-map/, Game* and the full
++# AiProtection pages (menuTree.js still names them) - those go with the native-UI cutover.
++	rm -f $(INSTALLDIR)/www/aplist.asp
++	rm -f $(INSTALLDIR)/www/apscan.asp
++	rm -f $(INSTALLDIR)/www/automac.asp
++	rm -f $(INSTALLDIR)/www/start_autodet.asp
++	rm -f $(INSTALLDIR)/www/AiProtection_InfectedDevicePreventBlock_m.asp
++	rm -f $(INSTALLDIR)/www/AiProtection_IntrusionPreventionSystem_m.asp
++	rm -f $(INSTALLDIR)/www/AiProtection_MaliciousSitesBlocking_m.asp
++	rm -f $(INSTALLDIR)/www/device-map/clients-listview.asp
+ # reaper 2026-11-01 (owner review, native wave): the stock Wireless / LAN tabs the kit pages replace no longer
+ # ship (WPS, WDS, MAC Filter, RADIUS, Roaming Block, MLO, VLAN); httpd bounces each old URL (reaper_pagemap[]).
+ 	rm -f $(INSTALLDIR)/www/Advanced_WWPS_Content.asp
+-- 
+2.25.1
+

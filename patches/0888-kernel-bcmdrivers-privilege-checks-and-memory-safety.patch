@@ -1,0 +1,606 @@
+From 5558fbeafeab351003b8b90006258b95a40af9b0 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Tue, 3 Nov 2026 12:14:49 -0500
+Subject: [PATCH] kernel, bcmdrivers: privilege checks and memory-safety fixes
+ (2026-11-03 review)
+
+- bcm_knvram: the nvram netlink family answers only a sender with CAP_SYS_ADMIN (not
+  CAP_NET_ADMIN, which the nobody dnsmasq keeps); message lengths are bounded by what arrived; the
+  REGISTER name, the GETALL page index and the XFR string are bounded and terminated.
+- proc_cmd.h: the /proc command consoles are owner-write; the command line is always terminated.
+- blog.c: blog_drv_ioctl() requires CAP_SYS_ADMIN before it takes its lock.
+- bcm_mcast: IGMP / MLD snooping control over netlink requires CAP_SYS_ADMIN.
+- Five 4.19 stable backports: CVE-2023-42752 (igmpv3_newpack size cap), CVE-2024-36904
+  (tcp_twsk_unique reference), CVE-2024-56631 (sg_release order), CVE-2024-41012
+  (locks_remove_posix on the fcntl/close race), CVE-2024-47685 (zeroed IPv6 RST header).
+- ipt_TRIGGER: the trigger lock is held from each lookup until the entry is used (the timer could
+  free it in between); the flush frees only entries whose timer it cancelled, outside the lock; no
+  conntrack entry, no DNAT.
+- xt_webstr: per-CPU HTTP state; the data length runs from the TCP data to the end of the linear
+  buffer (IPv4 and IPv6); the terminator scan is bounded before each read.
+- dnsmq: the control writes copy the user buffer with copy_from_user().
+- bcm_bca_usb_xhci: ubus_credits is accepted from 1 to 32 only.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ .../bus/usb/impl1/bcm_bca_usb_xhci.c          |  4 +-
+ .../char/bcm_knvram/impl1/src/wlcsm_netlink.c | 58 ++++++++++++++++-
+ .../char/mcast/impl1/bcm_mcast_netlink.c      |  7 +++
+ .../opensource/include/bcm963xx/proc_cmd.h    |  8 ++-
+ .../kernel/bcmkernel/net/core/blog.c          |  7 +++
+ .../kernel/linux-4.19/drivers/scsi/sg.c       |  4 +-
+ .../kernel/linux-4.19/fs/locks.c              | 12 ++--
+ .../kernel/linux-4.19/net/ipv4/igmp.c         |  5 +-
+ .../linux-4.19/net/ipv4/netfilter/dnsmq.c     |  7 ++-
+ .../net/ipv4/netfilter/ipt_TRIGGER.c          | 63 ++++++++++++-------
+ .../kernel/linux-4.19/net/ipv4/tcp_ipv4.c     |  9 ++-
+ .../net/ipv6/netfilter/nf_reject_ipv6.c       |  5 +-
+ .../linux-4.19/net/netfilter/xt_webstr.c      | 23 ++++---
+ 13 files changed, 162 insertions(+), 50 deletions(-)
+
+diff --git a/release/src-rt-5.04behnd.4916/bcmdrivers/opensource/bus/usb/impl1/bcm_bca_usb_xhci.c b/release/src-rt-5.04behnd.4916/bcmdrivers/opensource/bus/usb/impl1/bcm_bca_usb_xhci.c
+index 92a456bb017..f011b0f491a 100644
+--- a/release/src-rt-5.04behnd.4916/bcmdrivers/opensource/bus/usb/impl1/bcm_bca_usb_xhci.c
++++ b/release/src-rt-5.04behnd.4916/bcmdrivers/opensource/bus/usb/impl1/bcm_bca_usb_xhci.c
+@@ -145,7 +145,9 @@ static void reaper_usb3_tune(struct platform_device *pdev, volatile void __iomem
+         dev_info(&pdev->dev, "usb3 tuning skipped: controller id 0x%08x is not a DWC_usb31\n", id);
+         return;
+     }
+-    if (ubus_credits > 0) {
++    if (ubus_credits > 32) {	/* reaper (review 2026-11-03): rc passes what nvram holds - PCIe masters run 7-12 */
++        dev_warn(&pdev->dev, "usb3 tuning: ubus_credits %d out of range (1-32), left at the default\n", ubus_credits);
++    } else if (ubus_credits > 0) {
+         if (ubus_master_set_token_credits(UBUS_PORT_ID_USB, UBUS_PORT_ID_BIU, ubus_credits) == 0)
+             dev_info(&pdev->dev, "usb3 tuning: UBUS credits USB->BIU set to %d\n", ubus_credits);
+     }
+diff --git a/release/src-rt-5.04behnd.4916/bcmdrivers/opensource/char/bcm_knvram/impl1/src/wlcsm_netlink.c b/release/src-rt-5.04behnd.4916/bcmdrivers/opensource/char/bcm_knvram/impl1/src/wlcsm_netlink.c
+index 435594e0f3b..0953418c703 100644
+--- a/release/src-rt-5.04behnd.4916/bcmdrivers/opensource/char/bcm_knvram/impl1/src/wlcsm_netlink.c
++++ b/release/src-rt-5.04behnd.4916/bcmdrivers/opensource/char/bcm_knvram/impl1/src/wlcsm_netlink.c
+@@ -352,12 +352,34 @@ wlcsm_nl_rcv_skb(struct sk_buff *skb)
+     t_WLCSM_MSG_HDR *msg_hdr;
+     char buffer[WLCSM_NAMEVALUEPAIR_MAX];
+     char *p = NULL;
++    unsigned int avail;
+ 
+     if (skb->len >= NLMSG_SPACE(0)) {
+         if (nlh->nlmsg_len < sizeof(*nlh) || skb->len < nlh->nlmsg_len)
+             return;
+ 
++        /* reaper (review 2026-11-03, E-1): this family is the whole router nvram - get, set,
++         * unset, commit, getall - and any local process can open a NETLINK_WLCSM socket.
++         * Stock trusted every sender, so a non-root daemon (dnsmasq, avahi, lldpd and the
++         * Gatekeeper sink run as nobody) could read every secret or set http_passwd. Every
++         * real client (rc, httpd, the Wi-Fi daemons, the nvram command) is root with the
++         * full capability set. CAP_SYS_ADMIN, not CAP_NET_ADMIN: dnsmasq keeps CAP_NET_ADMIN
++         * after it drops to nobody. A refused sender gets an empty answer, so a client
++         * library waiting for one does not hang. */
++        if (nlh->nlmsg_len < NLMSG_LENGTH(sizeof(t_WLCSM_MSG_HDR)))
++            return;
+         msg_hdr = (t_WLCSM_MSG_HDR *)NLMSG_DATA(nlh);
++        if (!netlink_capable(skb, CAP_SYS_ADMIN)) {
++            if (net_ratelimit())
++                printk(KERN_WARNING "wlcsm: refused nvram message %u from unprivileged pid %u\n",
++                       (unsigned int)msg_hdr->type, nlh->nlmsg_pid);
++            wlcsm_sendup_response(msg_hdr->type,(char *)(msg_hdr+1),0,nlh->nlmsg_pid,0);
++            return;
++        }
++        /* the payload length is the sender's word: never echo or parse more than arrived */
++        avail = skb->len - NLMSG_LENGTH(sizeof(t_WLCSM_MSG_HDR));
++        if (msg_hdr->len > avail)
++            return;
+ 
+         switch(msg_hdr->type) {
+ 
+@@ -393,10 +415,23 @@ wlcsm_nl_rcv_skb(struct sk_buff *skb)
+ 
+         case WLCSM_MSG_REGISTER: {
+             t_WLCSM_MSG_REGISTER *reg=(t_WLCSM_MSG_REGISTER *)(msg_hdr+1);
+-            PROCESS_REG_LIST *process=kmalloc(sizeof(PROCESS_REG_LIST),GFP_KERNEL);
++            PROCESS_REG_LIST *process;
++            unsigned int nlen;
++
++            /* reaper (review 2026-11-03, E-1): reg->len is the sender's and name[] is 256 bytes -
++             * bound the copy by what arrived and by the buffer, and terminate it */
++            if (avail < offsetof(t_WLCSM_MSG_REGISTER, process))
++                break;
++            nlen = reg->len;
++            if (nlen > avail - offsetof(t_WLCSM_MSG_REGISTER, process))
++                nlen = avail - offsetof(t_WLCSM_MSG_REGISTER, process);
++            if (nlen > sizeof(process->name) - 1)
++                nlen = sizeof(process->name) - 1;
++            process=kmalloc(sizeof(PROCESS_REG_LIST),GFP_KERNEL);
+             if(process) {
+                 process->pid= reg->pid;
+-                memcpy(process->name,reg->process,reg->len);
++                memcpy(process->name,reg->process,nlen);
++                process->name[nlen] = '\0';
+                 if(!strcmp(reg->process,"wlmngr"))  g_mngr_pid=reg->pid;
+ #ifdef WLCSM_DEBUG
+                 else if(!strcmp(reg->process,"wldebug")) {
+@@ -467,8 +502,15 @@ wlcsm_nl_rcv_skb(struct sk_buff *skb)
+         }
+         break;
+ 	case WLCSM_MSG_NVRAM_XFR:
++		/* reaper (review 2026-11-03, E-1): nvram_xfr() strcpy()s its argument into a 1024-byte
++		 * buffer - the string must end inside what arrived and fit */
++		if (!memchr((char *)(msg_hdr+1), 0, avail) ||
++		    strnlen((char *)(msg_hdr+1), avail) >= sizeof(buffer)) {
++			wlcsm_sendup_response(msg_hdr->type,(char *)(msg_hdr+1),0,nlh->nlmsg_pid,0);
++			break;
++		}
+ 		if ((p = nvram_xfr((char *)(msg_hdr+1)))) {
+-			strcpy(buffer, p);
++			strlcpy(buffer, p, sizeof(buffer));
+ 			wlcsm_sendup_response(msg_hdr->type,buffer,strlen(buffer),nlh->nlmsg_pid,0);
+ 		} else {
+ 			wlcsm_sendup_response(msg_hdr->type,(char *)(msg_hdr+1),0,nlh->nlmsg_pid,0);
+@@ -485,8 +527,18 @@ wlcsm_nl_rcv_skb(struct sk_buff *skb)
+             int len=0,retlen=0,maxAllowedSize=0,index=0;
+             char *bigbuffer=NULL;
+             maxAllowedSize=NL_PACKET_SIZE-sizeof(struct nlmsghdr)- sizeof(t_WLCSM_MSG_HDR);
++            /* reaper (review 2026-11-03, E-1): two ints must have arrived, and the page index
++             * is the sender's - it becomes a byte offset into the nvram image */
++            if (avail < 2 * sizeof(int)) {
++                wlcsm_sendup_response(WLCSM_MSG_NVRAM_GETALL_DONE,(char *)(msg_hdr+1),0,nlh->nlmsg_pid,0);
++                break;
++            }
+             len=((int *)(msg_hdr+1))[0];
+             index=((int *)(msg_hdr+1))[1];
++            if (index < 0 || index > INT_MAX / maxAllowedSize) {
++                wlcsm_sendup_response(WLCSM_MSG_NVRAM_GETALL_DONE,(char *)(msg_hdr+1),0,nlh->nlmsg_pid,0);
++                break;
++            }
+             bigbuffer=kmalloc(2*maxAllowedSize,GFP_KERNEL);
+             if(bigbuffer) {
+                 retlen=wlcsm_nvram_getall_pos(bigbuffer,maxAllowedSize,index*maxAllowedSize);
+diff --git a/release/src-rt-5.04behnd.4916/bcmdrivers/opensource/char/mcast/impl1/bcm_mcast_netlink.c b/release/src-rt-5.04behnd.4916/bcmdrivers/opensource/char/mcast/impl1/bcm_mcast_netlink.c
+index ec9074bf8a6..2429593291d 100644
+--- a/release/src-rt-5.04behnd.4916/bcmdrivers/opensource/char/mcast/impl1/bcm_mcast_netlink.c
++++ b/release/src-rt-5.04behnd.4916/bcmdrivers/opensource/char/mcast/impl1/bcm_mcast_netlink.c
+@@ -1549,6 +1549,13 @@ static int bcm_mcast_netlink_rcv_msg(struct sk_buff *skb, struct nlmsghdr *nl_ms
+    int type;
+    int err = 0;
+ 
++   /* reaper (review 2026-11-03, E-8): multicast snooping control is mcpd's (root). CAP_SYS_ADMIN, not
++      CAP_NET_ADMIN: the nobody dnsmasq keeps CAP_NET_ADMIN */
++   if ( !netlink_capable(skb, CAP_SYS_ADMIN) )
++   {
++      return -EPERM;
++   }
++
+    type = nl_msgHdr->nlmsg_type;
+    bcm_mcast_dump_buf("Message RX start", (char *)nl_msgHdr, nl_msgHdr->nlmsg_len);
+    if ( type >= BCM_MCAST_MSG_MAX )
+diff --git a/release/src-rt-5.04behnd.4916/bcmdrivers/opensource/include/bcm963xx/proc_cmd.h b/release/src-rt-5.04behnd.4916/bcmdrivers/opensource/include/bcm963xx/proc_cmd.h
+index aae1e5c6c2a..0ba595692a0 100644
+--- a/release/src-rt-5.04behnd.4916/bcmdrivers/opensource/include/bcm963xx/proc_cmd.h
++++ b/release/src-rt-5.04behnd.4916/bcmdrivers/opensource/include/bcm963xx/proc_cmd.h
+@@ -87,8 +87,8 @@ static ssize_t proc_cmd_write(struct file *file, const char __user *buffer,
+ 	table = (struct proc_cmd_table *) file->private_data;
+ 	if ((count <= 1) || (buffer == NULL))
+ 		goto help;
+-	if (count > PROC_CMD_STRING_SIZE)
+-		count = PROC_CMD_STRING_SIZE;
++	if (count > PROC_CMD_STRING_SIZE - 1)	/* reaper (review 2026-11-03): room for the terminator */
++		count = PROC_CMD_STRING_SIZE - 1;
+ 	memset(cmd_line, 0, PROC_CMD_STRING_SIZE);
+ 	if (copy_from_user(cmd_line, buffer, count))
+ 		return count;
+@@ -161,8 +161,10 @@ struct proc_dir_entry *proc_create_cmd(const char *name,
+ 		return NULL;
+ 	if (table->size > PROC_CMD_TABLE_SIZE_MAX)
+ 		return NULL;
++	/* reaper (review 2026-11-03, E-3): owner-only write. These are command consoles (PHY/MDIO
++	 * register writes, MAC registers, frame injection); stock was S_IWUGO = world-writable. */
+ 	return proc_create_data(name,
+-				S_IRUGO | S_IWUGO,
++				S_IRUGO | S_IWUSR,
+ 				parent,
+ 				&proc_cmd_fops,
+ 				table);
+diff --git a/release/src-rt-5.04behnd.4916/kernel/bcmkernel/net/core/blog.c b/release/src-rt-5.04behnd.4916/kernel/bcmkernel/net/core/blog.c
+index 424eda4c055..3ecfceea433 100644
+--- a/release/src-rt-5.04behnd.4916/kernel/bcmkernel/net/core/blog.c
++++ b/release/src-rt-5.04behnd.4916/kernel/bcmkernel/net/core/blog.c
+@@ -40,6 +40,7 @@ written consent.
+ #include <linux/init.h>
+ #include <linux/module.h>
+ #include <linux/vmalloc.h>
++#include <linux/capability.h>	/* reaper (review 2026-11-03, E-4) */
+ #include <linux/bcm_log.h>
+ #include <linux/blog.h>
+ #include <linux/blog_net.h>
+@@ -7896,6 +7897,12 @@ static long blog_drv_ioctl(struct file *filep, unsigned int command,
+     blog_print( "cmd<%d> %s arg<%lu>",
+                 command, blog_drv_ioctl_name[cmd], arg );
+ 
++    /* reaper (review 2026-11-03, E-4): flow-log control is for root's tools only. rc makes the
++     * node 0600; this holds even if a later change loosens that. CAP_SYS_ADMIN because
++     * dnsmasq keeps CAP_NET_ADMIN after it drops to nobody. */
++    if (!capable(CAP_SYS_ADMIN))
++        return -EPERM;
++
+     /* protect the fc linked lists by disabling all interrupts */
+     BLOG_LOCK_BH();
+ 
+diff --git a/release/src-rt-5.04behnd.4916/kernel/linux-4.19/drivers/scsi/sg.c b/release/src-rt-5.04behnd.4916/kernel/linux-4.19/drivers/scsi/sg.c
+index 33958269048..ba1d6ac83d4 100644
+--- a/release/src-rt-5.04behnd.4916/kernel/linux-4.19/drivers/scsi/sg.c
++++ b/release/src-rt-5.04behnd.4916/kernel/linux-4.19/drivers/scsi/sg.c
+@@ -395,7 +395,6 @@ sg_release(struct inode *inode, struct file *filp)
+ 
+ 	mutex_lock(&sdp->open_rel_lock);
+ 	scsi_autopm_put_device(sdp->device);
+-	kref_put(&sfp->f_ref, sg_remove_sfp);
+ 	sdp->open_cnt--;
+ 
+ 	/* possibly many open()s waiting on exlude clearing, start many;
+@@ -407,6 +406,9 @@ sg_release(struct inode *inode, struct file *filp)
+ 		wake_up_interruptible(&sdp->open_wait);
+ 	}
+ 	mutex_unlock(&sdp->open_rel_lock);
++	/* reaper (review 2026-11-03, E-5): CVE-2024-56631, upstream "scsi: sg: Fix
++	 * slab-use-after-free read in sg_release()" - drop the reference after the unlock */
++	kref_put(&sfp->f_ref, sg_remove_sfp);
+ 	return 0;
+ }
+ 
+diff --git a/release/src-rt-5.04behnd.4916/kernel/linux-4.19/fs/locks.c b/release/src-rt-5.04behnd.4916/kernel/linux-4.19/fs/locks.c
+index 28270e74be3..e73ebf84a80 100644
+--- a/release/src-rt-5.04behnd.4916/kernel/linux-4.19/fs/locks.c
++++ b/release/src-rt-5.04behnd.4916/kernel/linux-4.19/fs/locks.c
+@@ -2312,9 +2312,9 @@ int fcntl_setlk(unsigned int fd, struct file *filp, unsigned int cmd,
+ 		f = fcheck(fd);
+ 		spin_unlock(&current->files->file_lock);
+ 		if (f != filp) {
+-			file_lock->fl_type = F_UNLCK;
+-			error = do_lock_file_wait(filp, cmd, file_lock);
+-			WARN_ON_ONCE(error);
++			/* reaper (review 2026-11-03, E-5): CVE-2024-41012, upstream "filelock: Remove
++			 * locks reliably when fcntl/close race is detected" */
++			locks_remove_posix(filp, current->files);
+ 			error = -EBADF;
+ 		}
+ 	}
+@@ -2443,9 +2443,9 @@ int fcntl_setlk64(unsigned int fd, struct file *filp, unsigned int cmd,
+ 		f = fcheck(fd);
+ 		spin_unlock(&current->files->file_lock);
+ 		if (f != filp) {
+-			file_lock->fl_type = F_UNLCK;
+-			error = do_lock_file_wait(filp, cmd, file_lock);
+-			WARN_ON_ONCE(error);
++			/* reaper (review 2026-11-03, E-5): CVE-2024-41012, upstream "filelock: Remove
++			 * locks reliably when fcntl/close race is detected" */
++			locks_remove_posix(filp, current->files);
+ 			error = -EBADF;
+ 		}
+ 	}
+diff --git a/release/src-rt-5.04behnd.4916/kernel/linux-4.19/net/ipv4/igmp.c b/release/src-rt-5.04behnd.4916/kernel/linux-4.19/net/ipv4/igmp.c
+index e5afcad391c..e5ebd3cc00a 100644
+--- a/release/src-rt-5.04behnd.4916/kernel/linux-4.19/net/ipv4/igmp.c
++++ b/release/src-rt-5.04behnd.4916/kernel/linux-4.19/net/ipv4/igmp.c
+@@ -359,8 +359,11 @@ static struct sk_buff *igmpv3_newpack(struct net_device *dev, unsigned int mtu)
+ 	struct flowi4 fl4;
+ 	int hlen = LL_RESERVED_SPACE(dev);
+ 	int tlen = dev->needed_tailroom;
+-	unsigned int size = mtu;
++	unsigned int size;
+ 
++	/* reaper (review 2026-11-03, E-5): CVE-2023-42752, upstream "igmp: limit igmpv3_newpack()
++	 * packet size to IP_MAX_MTU" */
++	size = min(mtu, IP_MAX_MTU);
+ 	while (1) {
+ 		skb = alloc_skb(size + hlen + tlen,
+ 				GFP_ATOMIC | __GFP_NOWARN);
+diff --git a/release/src-rt-5.04behnd.4916/kernel/linux-4.19/net/ipv4/netfilter/dnsmq.c b/release/src-rt-5.04behnd.4916/kernel/linux-4.19/net/ipv4/netfilter/dnsmq.c
+index 681a15a5077..eed3ba53e83 100644
+--- a/release/src-rt-5.04behnd.4916/kernel/linux-4.19/net/ipv4/netfilter/dnsmq.c
++++ b/release/src-rt-5.04behnd.4916/kernel/linux-4.19/net/ipv4/netfilter/dnsmq.c
+@@ -33,6 +33,7 @@
+ #include <linux/netfilter_ipv4/ip_tables.h>
+ #include <linux/proc_fs.h>
+ #include <linux/inet.h>
++#include <linux/uaccess.h>
+ 
+ #define DEBUGP(format, args...)
+ 
+@@ -235,7 +236,8 @@ static int dnsmq_ctrl(struct file *file, const char *buffer, unsigned long lengt
+ 
+ 	// "[dnsmq ip] [dnsmq name]
+ 	if ((length > 0) && (length < 32)) {
+-		memcpy(s, buffer, length);
++		if (copy_from_user(s, buffer, length))	/* reaper (review 2026-11-03): a user pointer - memcpy faulted (PAN) */
++			return -EFAULT;
+ 		s[length] = 0;
+ 		for(i = 0; i < length; i++) {
+ 			if (s[i] == ' ') break;
+@@ -283,7 +285,8 @@ static int dnsmq_ctrl_ipv6(struct file *file, const char *buffer, unsigned long
+ 
+ 	// "[dnsmq ipv6] [dnsmq name]
+ 	if ((length > 0) && (length < 64)) {
+-		memcpy(s, buffer, length);
++		if (copy_from_user(s, buffer, length))	/* reaper (review 2026-11-03): a user pointer - memcpy faulted (PAN) */
++			return -EFAULT;
+ 		s[length] = 0;
+ 		for(i = 0; i < length; i++) {
+ 			if (s[i] == ' ') break;
+diff --git a/release/src-rt-5.04behnd.4916/kernel/linux-4.19/net/ipv4/netfilter/ipt_TRIGGER.c b/release/src-rt-5.04behnd.4916/kernel/linux-4.19/net/ipv4/netfilter/ipt_TRIGGER.c
+index caa42d807d8..60b29fc7347 100644
+--- a/release/src-rt-5.04behnd.4916/kernel/linux-4.19/net/ipv4/netfilter/ipt_TRIGGER.c
++++ b/release/src-rt-5.04behnd.4916/kernel/linux-4.19/net/ipv4/netfilter/ipt_TRIGGER.c
+@@ -61,17 +61,18 @@ static DEFINE_RWLOCK(trigger_lock);
+ #define DEBUGP(format, args...)
+ #endif
+ 
++/* reaper (review 2026-11-03, E-6): the CALLER holds trigger_lock (read) from the lookup until it is done
++ * with the entry. The lock was dropped inside this macro, so the entry could be freed by its timer
++ * (trigger_timeout) while the packet path still used it. Entries are freed only under the write lock. */
+ #define LIST_FIND(head, cmpfn, type, args...)		\
+ ({							\
+ 	const struct list_head *__i, *__j = NULL;	\
+ 							\
+-	read_lock_bh(&trigger_lock);			\
+ 	list_for_each(__i, (head))			\
+ 		if (cmpfn((const type)__i , ## args)) {	\
+ 			__j = __i;			\
+ 			break;				\
+ 		}					\
+-	read_unlock_bh(&trigger_lock);			\
+ 	(type)__j;					\
+ })
+ 
+@@ -92,15 +93,9 @@ static void trigger_timer_refresh(struct ipt_trigger *trig)
+ {
+ 	DEBUGP("%s: mport=%u-%u\n", __FUNCTION__, trig->ports.mport[0], trig->ports.mport[1]);
+ 	NF_CT_ASSERT(trig);
+-	write_lock_bh(&trigger_lock);
+-
+-	/* Need del_timer for race avoidance (may already be dying). */
+-	if (del_timer(&trig->timeout)) {
+-		trig->timeout.expires = jiffies + (TRIGGER_TIMEOUT * HZ);
+-		add_timer(&trig->timeout);
+-	}
+-
+-	write_unlock_bh(&trigger_lock);
++	/* reaper (review 2026-11-03, E-6): called with trigger_lock held for read. Pushes the timeout back only
++	 * while it is pending - one already firing (the entry is dying) is left to finish, as before */
++	mod_timer_pending(&trig->timeout, jiffies + (TRIGGER_TIMEOUT * HZ));
+ }
+ 
+ static void __del_trigger(struct ipt_trigger *trig)
+@@ -146,19 +141,22 @@ static void trigger_timeout(struct timer_list *t)
+ 
+ static void trigger_flush(void)
+ {
+-	struct list_head *cur_item, *tmp_item;
++	struct ipt_trigger *trig, *tmp;
++	LIST_HEAD(dead);
+ 
+ 	DEBUGP("%s\n", __FUNCTION__);
++	/* reaper (review 2026-11-03, E-6): only an entry whose timer this cancels is ours to free - one whose
++	 * timer is already running stays on the list and trigger_timeout frees it (it freed the entry under
++	 * the running timer = double free). The conntrack sweep runs outside the lock. */
+ 	write_lock_bh(&trigger_lock);
+-	list_for_each_safe(cur_item, tmp_item, &trigger_list) {
+-		struct ipt_trigger *trig = (void *)cur_item;
+-
+-		DEBUGP("%s: list_for_each_safe(): %p.\n", __FUNCTION__, trig);
+-		del_timer(&trig->timeout);
++	list_for_each_entry_safe(trig, tmp, &trigger_list, list)
++		if (del_timer(&trig->timeout))
++			list_move(&trig->list, &dead);
++	write_unlock_bh(&trigger_lock);
++	list_for_each_entry_safe(trig, tmp, &dead, list) {
+ 		nf_ct_iterate_cleanup_net(trig->net, ip_ct_kill_triggered, (void *)trig, 0, 0);
+ 		__del_trigger(trig);
+ 	}
+-	write_unlock_bh(&trigger_lock);
+ }
+ 
+ /*
+@@ -190,6 +188,7 @@ static unsigned int trigger_out(struct sk_buff **pskb, const void *targinfo)
+ 	struct tcphdr *tcph = (void *)iph + (iph->ihl << 2);	/* Might be TCP, UDP */
+ 
+ 	/* Check if the trigger range has already existed in 'trigger_list'. */
++	read_lock_bh(&trigger_lock);	/* reaper (E-6): held while the entry is used */
+ 	trig = LIST_FIND(&trigger_list, trigger_out_matched, struct ipt_trigger *, iph->protocol, ntohs(tcph->dest), info);
+ 
+ 	if (trig != NULL) {
+@@ -226,7 +225,9 @@ static unsigned int trigger_out(struct sk_buff **pskb, const void *targinfo)
+ 		 */
+ 		trig->srcip = iph->saddr;
+ #endif
++		read_unlock_bh(&trigger_lock);
+ 	} else {
++		read_unlock_bh(&trigger_lock);
+ 		/* Create new trigger */
+ 		trig = (struct ipt_trigger *)kzalloc(sizeof(struct ipt_trigger), GFP_ATOMIC);
+ 		if (trig == NULL) {
+@@ -280,16 +281,19 @@ static unsigned int trigger_in(struct sk_buff **pskb)
+ 	tcph = (void *)iph + (iph->ihl << 2);	/* Might be TCP, UDP */
+ 
+ 	/* Check if the trigger-ed range has already existed in 'trigger_list'. */
++	read_lock_bh(&trigger_lock);	/* reaper (E-6) */
+ 	trig = LIST_FIND(&trigger_list, trigger_in_matched, struct ipt_trigger *, iph->protocol, ntohs(tcph->dest));
+ 
+ 	if (trig != NULL) {
+ 		DEBUGP("Trigger In: from %pI4, destination port %u\n", &iph->saddr, ntohs(tcph->dest));
+ 		/* Yeah, it exists. We need to update(delay) the destroying timer. */
+ 		trigger_timer_refresh(trig);
++		read_unlock_bh(&trigger_lock);
+ 
+ 		return NF_ACCEPT;	/* Accept it, or the imcoming packet could be 
+ 					   dropped in the FORWARD chain */
+ 	}
++	read_unlock_bh(&trigger_lock);
+ 
+ 	return XT_CONTINUE;	/* Our job is the interception. */
+ }
+@@ -302,28 +306,37 @@ static unsigned int trigger_dnat(struct sk_buff **pskb, unsigned int hooknum)
+ 	struct nf_conn *ct;
+ 	enum ip_conntrack_info ctinfo;
+ 	struct nf_nat_range2 newrange;
++	u_int32_t srcip;
+ 
+ 	iph = ip_hdr(*pskb);
+ 	tcph = (void *)iph + (iph->ihl << 2);	/* Might be TCP, UDP */
+ 
+ 	NF_CT_ASSERT(hooknum == NF_INET_PRE_ROUTING);
++	/* reaper (review 2026-11-03, E-6): no conntrack entry (a rule outside the nat table) - nothing to map */
++	ct = nf_ct_get(*pskb, &ctinfo);
++	if (ct == NULL)
++		return XT_CONTINUE;
+ 	/* Check if the trigger-ed range has already existed in 'trigger_list'. */
++	read_lock_bh(&trigger_lock);	/* reaper (E-6): the entry is read and marked under the lock */
+ 	trig = LIST_FIND(&trigger_list, trigger_in_matched, struct ipt_trigger *, iph->protocol, ntohs(tcph->dest));
+ 
+-	if (trig == NULL || trig->srcip == 0)
++	if (trig == NULL || trig->srcip == 0) {
++		read_unlock_bh(&trigger_lock);
+ 		return XT_CONTINUE;	/* We don't block any packet. */
++	}
+ 
+ 	trig->reply = 1;	/* Confirm there has been a reply connection. */
+-	ct = nf_ct_get(*pskb, &ctinfo);
+-	NF_CT_ASSERT(ct && (ctinfo == IP_CT_NEW));
++	srcip = trig->srcip;
++	read_unlock_bh(&trigger_lock);
++	NF_CT_ASSERT(ctinfo == IP_CT_NEW);
+ 
+-	DEBUGP("Trigger DNAT: %pI4 ", &trig->srcip);
++	DEBUGP("Trigger DNAT: %pI4 ", &srcip);
+ 	nf_ct_dump_tuple_ip(&ct->tuplehash[IP_CT_DIR_ORIGINAL].tuple);
+ 
+ 	/* Alter the destination of imcoming packet. */
+ 	newrange.flags       = NF_NAT_RANGE_MAP_IPS;
+-	newrange.min_addr.ip = trig->srcip;
+-	newrange.max_addr.ip = trig->srcip;
++	newrange.min_addr.ip = srcip;
++	newrange.max_addr.ip = srcip;
+ 
+ 	ct->status |= IPS_TRIGGER;
+ 
+@@ -353,11 +366,13 @@ static unsigned int trigger_refresh(struct sk_buff **pskb)
+ 	iph = ip_hdr(*pskb);
+ 	tcph = (void *)iph + (iph->ihl << 2);	/* Might be TCP, UDP */
+ 
++	read_lock_bh(&trigger_lock);	/* reaper (E-6) */
+ 	trig = LIST_FIND(&trigger_list, trigger_refresh_matched, struct ipt_trigger *, iph->protocol, tcph->source);
+ 	if (trig != NULL) {
+ 		DEBUGP("Trigger Refresh: from %pI4, %u\n", &iph->saddr, ntohs(tcph->source));
+ 		trigger_timer_refresh(trig);
+ 	}
++	read_unlock_bh(&trigger_lock);
+ 
+ 	return XT_CONTINUE;
+ }
+diff --git a/release/src-rt-5.04behnd.4916/kernel/linux-4.19/net/ipv4/tcp_ipv4.c b/release/src-rt-5.04behnd.4916/kernel/linux-4.19/net/ipv4/tcp_ipv4.c
+index 30334ef7dcf..757b7526ddf 100644
+--- a/release/src-rt-5.04behnd.4916/kernel/linux-4.19/net/ipv4/tcp_ipv4.c
++++ b/release/src-rt-5.04behnd.4916/kernel/linux-4.19/net/ipv4/tcp_ipv4.c
+@@ -161,6 +161,13 @@ int tcp_twsk_unique(struct sock *sk, struct sock *sktw, void *twp)
+ 	if (tcptw->tw_ts_recent_stamp &&
+ 	    (!twp || (reuse && time_after32(ktime_get_seconds(),
+ 					    tcptw->tw_ts_recent_stamp)))) {
++		/* reaper (review 2026-11-03, E-5): CVE-2024-36904, upstream "tcp: Use
++		 * refcount_inc_not_zero() in tcp_twsk_unique()". inet_twsk_hashdance() sets
++		 * sk_refcnt after putting twsk and releasing the bucket lock.
++		 */
++		if (unlikely(!refcount_inc_not_zero(&sktw->sk_refcnt)))
++			return 0;
++
+ 		/* In case of repair and re-using TIME-WAIT sockets we still
+ 		 * want to be sure that it is safe as above but honor the
+ 		 * sequence numbers and time stamps set as part of the repair
+@@ -181,7 +188,7 @@ int tcp_twsk_unique(struct sock *sk, struct sock *sktw, void *twp)
+ 			tp->rx_opt.ts_recent	   = tcptw->tw_ts_recent;
+ 			tp->rx_opt.ts_recent_stamp = tcptw->tw_ts_recent_stamp;
+ 		}
+-		sock_hold(sktw);
++
+ 		return 1;
+ 	}
+ 
+diff --git a/release/src-rt-5.04behnd.4916/kernel/linux-4.19/net/ipv6/netfilter/nf_reject_ipv6.c b/release/src-rt-5.04behnd.4916/kernel/linux-4.19/net/ipv6/netfilter/nf_reject_ipv6.c
+index 24858402e37..dcb4214a678 100644
+--- a/release/src-rt-5.04behnd.4916/kernel/linux-4.19/net/ipv6/netfilter/nf_reject_ipv6.c
++++ b/release/src-rt-5.04behnd.4916/kernel/linux-4.19/net/ipv6/netfilter/nf_reject_ipv6.c
+@@ -95,7 +95,10 @@ void nf_reject_ip6_tcphdr_put(struct sk_buff *nskb,
+ 	int needs_ack;
+ 
+ 	skb_reset_transport_header(nskb);
+-	tcph = skb_put(nskb, sizeof(struct tcphdr));
++	/* reaper (review 2026-11-03, E-5): CVE-2024-47685, upstream "netfilter: nf_reject_ipv6:
++	 * fix nf_reject_ip6_tcphdr_put()" - zeroed, or the reserved bits of the RST header carry
++	 * kernel memory to the peer */
++	tcph = skb_put_zero(nskb, sizeof(struct tcphdr));
+ 	/* Truncate to length (no data) */
+ 	tcph->doff = sizeof(struct tcphdr)/4;
+ 	tcph->source = oth->dest;
+diff --git a/release/src-rt-5.04behnd.4916/kernel/linux-4.19/net/netfilter/xt_webstr.c b/release/src-rt-5.04behnd.4916/kernel/linux-4.19/net/netfilter/xt_webstr.c
+index 4a8250b0dc6..3112ddd5eea 100644
+--- a/release/src-rt-5.04behnd.4916/kernel/linux-4.19/net/netfilter/xt_webstr.c
++++ b/release/src-rt-5.04behnd.4916/kernel/linux-4.19/net/netfilter/xt_webstr.c
+@@ -42,6 +42,7 @@
+ #include <linux/ipv6.h>
+ #include <linux/tcp.h>
+ #include <net/sock.h>
++#include <linux/percpu.h>
+ 
+ #define BM_MAX_NLEN 256
+ #define BM_MAX_HLEN 1024
+@@ -107,7 +108,10 @@ typedef struct httpinfo {
+     int urllen;
+ } httpinfo_t;
+ 
+-httpinfo_t htinfo;
++/* reaper (review 2026-11-03, E-9): one per CPU - a single global let two CPUs interleave the host and URL
++ * of different packets. ip(6)t_do_table runs with BH off, so this CPU's copy stays ours for the match */
++static DEFINE_PER_CPU(httpinfo_t, htinfo_pcpu);
++#define htinfo (*this_cpu_ptr(&htinfo_pcpu))
+ 
+ static int strnicmp(const char *cs, const char *ct, size_t count)
+ {
+@@ -164,8 +168,10 @@ static int find_pattern2(const char *data, size_t dlen,
+ 
+ 	/* Here, it means patten match!! */
+ 	*numoff=i + plen;
+-	for (j = *numoff, k = 0; data[j] != term; j++, k++)
+-	    if (j > dlen) return -1 ;	/* no terminal char */
++	/* reaper (review 2026-11-03, E-9): bound before the read - it read data[dlen] and data[dlen + 1] */
++	for (j = *numoff, k = 0; j < dlen && data[j] != term; j++, k++)
++	    ;
++	if (j >= dlen) return -1 ;	/* no terminal char */
+ 
+ 	*numlen = k;
+ 	return 1;
+@@ -219,7 +225,9 @@ static int get_http_info(const struct sk_buff *skb, int flags, httpinfo_t *info)
+     struct iphdr *iph = ip_hdr(skb);
+     struct tcphdr *tcph = (void *)iph + iph->ihl*4;
+     unsigned char *data = (void *)tcph + tcph->doff*4;
+-    unsigned int datalen = (skb)->len - (iph->ihl*4) - (tcph->doff*4);
++    /* reaper (review 2026-11-03, E-9): what lies between the TCP data and the end of the linear buffer - a
++     * data offset past the packet wrapped the old length, and the pointers above reach linear data only */
++    unsigned int datalen = (data < skb_tail_pointer(skb)) ? (unsigned int)(skb_tail_pointer(skb) - data) : 0;
+ 
+     int found, offset;
+     int hostlen, pathlen;
+@@ -286,10 +294,11 @@ static int get_http_info(const struct sk_buff *skb, int flags, httpinfo_t *info)
+ 
+ static int get_http_info6(const struct sk_buff *skb, int flags, httpinfo_t *info)
+ {
+-    struct ipv6hdr *ip6h = ipv6_hdr(skb);
+-    struct tcphdr *tcph = tcp_hdr(skb);
++    struct tcphdr *tcph = tcp_hdr(skb);	/* (its ipv6hdr pointer fed only the old length - review 2026-11-03) */
+     unsigned char *data = (void *)tcph + tcph->doff*4;
+-    unsigned int datalen = ntohs(ip6h->payload_len);
++    /* reaper (review 2026-11-03, E-9): the payload length counted the TCP header (and any extension
++     * header) as data - measured from the TCP data to the end of the linear buffer instead */
++    unsigned int datalen = (data < skb_tail_pointer(skb)) ? (unsigned int)(skb_tail_pointer(skb) - data) : 0;
+ 
+     int found, offset;
+     int hostlen, pathlen;
+-- 
+2.25.1
+

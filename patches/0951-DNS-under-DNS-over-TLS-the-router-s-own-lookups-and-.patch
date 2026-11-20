@@ -1,0 +1,580 @@
+From 25c44d5c72eccd7b112ebbf5bf32feced56a6c18 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Wed, 11 Nov 2026 20:17:05 -0500
+Subject: [PATCH] DNS under DNS-over-TLS: the router's own lookups and the
+ health check
+
+- With DNS-over-TLS on, the router's own lookups (every program reading /tmp/resolv.conf) still
+  went to the WAN servers in plain text. wan.c now points the router's resolver at the local
+  forwarder in that case, as stubby's own profile does; the DNS page restarts it when the profile
+  or the server list changes.
+- The DNS Health Check under DNS-over-TLS asks the watched server over DNS-over-TLS when it is one
+  of the DoT servers, else through the forwarder; no plain probe leaves the router and it moves
+  nothing. Before the clock is set nothing is counted. The DNS Failover page says how it asks; the
+  LAN name check reads Active, Inactive or Fault.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ release/src/router/rc/rdnshc.c             | 283 ++++++++++++++++++++-
+ release/src/router/rc/wan.c                |  62 +++++
+ release/src/router/www/Reaper_DNS.asp      |   6 +-
+ release/src/router/www/Reaper_Failover.asp |  16 +-
+ 4 files changed, 358 insertions(+), 9 deletions(-)
+
+diff --git a/release/src/router/rc/rdnshc.c b/release/src/router/rc/rdnshc.c
+index 8957425351d..a946b4c94d2 100644
+--- a/release/src/router/rc/rdnshc.c
++++ b/release/src/router/rc/rdnshc.c
+@@ -63,6 +63,12 @@
+ #include <sys/sysinfo.h>
+ #include <netinet/in.h>
+ #include <arpa/inet.h>
++#include <ctype.h>
++#include <poll.h>
++#include <time.h>
++#include <openssl/ssl.h>
++#include <openssl/err.h>
++#include <openssl/x509v3.h>	/* 2026-11-10: the DNS-over-TLS probe */
+ #ifdef RTCONFIG_MULTILAN_CFG
+ #include "sdn.h"
+ #endif
+@@ -76,6 +82,17 @@
+ #define HC_RESOLV	"/tmp/resolv.conf"
+ #define HC_MAXLINES	256
+ #define HC_LINE		256
++/* 2026-11-10: the probe under DNS-over-TLS (hc_dot_mode) */
++#ifndef HC_FWD
++#define HC_FWD		"127.0.1.1"	/* the DNS-over-TLS forwarder (stubby), loopback only */
++#endif
++#ifndef HC_FWD_PORT
++#define HC_FWD_PORT	53
++#endif
++#ifndef HC_CABUNDLE
++#define HC_CABUNDLE	"/etc/ssl/certs/ca-certificates.crt"
++#endif
++#define HC_DOT_MULT	3		/* TCP + TLS handshake + the query: three times the admin's timeout */
+ 
+ struct hc_cfg {
+ 	int enable;
+@@ -283,6 +300,200 @@ static int probe_addr(const struct hc_cfg *c, const char *addr, int af)
+ 	return (rc == 0 && an > 0);
+ }
+ 
++/* DNSHC-DOT-BEGIN (host-tested by test_dnshc_dot.py)
++ * 2026-11-10 (owner): with DNS-over-TLS on, the check sends no plain query out of the router.
++ *   'p' = DNS-over-TLS is off: the plain probe on port 53 and the failover, as before;
++ *   't' = it is on and the watched server (either address) is one of its servers: that server is asked over
++ *         DNS-over-TLS on its own port, its certificate checked against the name the row gives (as stubby
++ *         checks it); a row without a name is judged on an encrypted answer alone;
++ *   's' = it is on and the watched server is not one of them: the router's DNS-over-TLS forwarder (stubby) is
++ *         asked over loopback, and reaches its servers encrypted.
++ * DNS-over-TLS counts as on exactly when the router's own lookups use it (rc/wan.c dot_has_upstream): the switch,
++ * router mode, and a row with an IPv4 address, or an IPv6 one while IPv6 is enabled. */
++struct hc_dot {
++	char addr[INET6_ADDRSTRLEN];
++	int af, port;
++	char host[256];
++};
++
++static int hc_dot_mode(const char *target, const char *alt, struct hc_dot *d)
++{
++	char *nv, *nvp, *b, *server, *tlsport, *hostname, *spkipin;
++	unsigned char bin[sizeof(struct in6_addr)];
++	char canon[INET6_ADDRSTRLEN];
++	int on = 0, mode = 0, af, port;
++	size_t i;
++
++	memset(d, 0, sizeof(*d));
++	if (nvram_get_int("dnspriv_enable") != 1 || !is_routing_enabled())
++		return 'p';
++	nv = nvp = strdup(nvram_safe_get("dnspriv_rulelist"));
++	while (nvp && (b = strsep(&nvp, "<")) != NULL) {
++		server = tlsport = hostname = spkipin = NULL;
++		if (vstrsep(b, ">", &server, &tlsport, &hostname, &spkipin) < 4 || !*server)
++			continue;
++		port = *tlsport ? safe_atoi(tlsport) : 853;
++		if (port <= 0 || port > 65535)
++			continue;
++		if (inet_pton(AF_INET, server, bin) == 1)
++			af = AF_INET;
++		else if (inet_pton(AF_INET6, server, bin) == 1 && ipv6_enabled())
++			af = AF_INET6;
++		else
++			continue;
++		on = 1;
++		if (mode == 't' || (af == AF_INET6 && !hc_v6_usable()))
++			continue;	/* the first match wins; an IPv6 row the router cannot reach now is not asked directly */
++		inet_ntop(af, bin, canon, sizeof(canon));
++		if ((target && *target && !strcmp(canon, target)) || (alt && *alt && !strcmp(canon, alt))) {
++			strlcpy(d->addr, canon, sizeof(d->addr));
++			d->af = af;
++			d->port = port;
++			for (i = 0; hostname[i]; i++)
++				if (!(isalnum((unsigned char)hostname[i]) || hostname[i] == '.' || hostname[i] == '-'))
++					break;
++			if (!hostname[i] && i > 0 && i < sizeof(d->host))
++				strlcpy(d->host, hostname, sizeof(d->host));
++			mode = 't';
++		}
++	}
++	free(nv);
++	if (!on)
++		return 'p';
++	return mode ? mode : 's';
++}
++
++static long long hc_ms(void)
++{
++	struct timespec t;
++
++	clock_gettime(CLOCK_MONOTONIC, &t);
++	return (long long)t.tv_sec * 1000 + t.tv_nsec / 1000000;
++}
++
++/* 1 = fd is ready for ev before the deadline, 0 = it is not (time, an error, or a stop) */
++static int hc_wait(int fd, short ev, long long deadline)
++{
++	struct pollfd p;
++	long long left;
++	int r;
++
++	for (;;) {
++		left = deadline - hc_ms();
++		if (left <= 0 || g_stop)
++			return 0;
++		p.fd = fd;
++		p.events = ev;
++		p.revents = 0;
++		r = poll(&p, 1, (int)left);
++		if (r > 0)
++			return !(p.revents & (POLLERR | POLLNVAL)) || ((ev & POLLIN) && (p.revents & POLLIN));
++		if (r == 0 || errno != EINTR)
++			return 0;
++	}
++}
++
++/* an SSL call that wants the socket: wait for it; 0 = give up */
++static int hc_ssl_wait(SSL *s, int r, int fd, long long deadline)
++{
++	int e = SSL_get_error(s, r);
++
++	if (e == SSL_ERROR_WANT_READ)
++		return hc_wait(fd, POLLIN, deadline);
++	if (e == SSL_ERROR_WANT_WRITE)
++		return hc_wait(fd, POLLOUT, deadline);
++	return 0;
++}
++
++static SSL_CTX *hc_ssl_ctx;
++
++/* <name> A IN over DNS-over-TLS (RFC 7858: a 2-byte length, then the message). The rcode of a reply with our id,
++ * -1 for none (no connection, a refused certificate, silence, garbage) - like dns_ask(). */
++static int dot_ask(const struct hc_dot *d, const char *name, int timeout_ms, int *ancount)
++{
++	unsigned char pkt[2 + 512], ans[2 + 4096];
++	struct sockaddr_storage ss;
++	socklen_t slen, sel;
++	unsigned short id;
++	long long dl = hc_ms() + timeout_ms;
++	int fd, len, r, rc = -1, have, want, se = 0;
++	SSL *s = NULL;
++
++	if (ancount) *ancount = 0;
++	if ((len = dns_build(pkt + 2, sizeof(pkt) - 2, name, &id)) < 0) return -1;
++	pkt[0] = (unsigned char)(len >> 8);
++	pkt[1] = (unsigned char)(len & 0xff);
++	if (!dns_sockaddr(&ss, &slen, d->addr, d->af, d->port)) return -1;
++	if (!hc_ssl_ctx) {
++		if (!(hc_ssl_ctx = SSL_CTX_new(TLS_client_method()))) return -1;
++		SSL_CTX_set_min_proto_version(hc_ssl_ctx, TLS1_2_VERSION);
++		/* without the bundle a named server cannot be verified, and its probe is a miss - never a pass */
++		SSL_CTX_load_verify_locations(hc_ssl_ctx, HC_CABUNDLE, NULL);
++	}
++	if ((fd = socket(d->af == AF_INET6 ? AF_INET6 : AF_INET, SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0)) < 0) return -1;
++	if (connect(fd, (struct sockaddr *)&ss, slen) < 0 && errno != EINPROGRESS)
++		goto out;
++	sel = sizeof(se);
++	if (!hc_wait(fd, POLLOUT, dl) || getsockopt(fd, SOL_SOCKET, SO_ERROR, &se, &sel) || se)
++		goto out;
++	if (!(s = SSL_new(hc_ssl_ctx)) || SSL_set_fd(s, fd) != 1)
++		goto out;
++	if (*d->host) {
++		SSL_set_tlsext_host_name(s, (char *)d->host);
++		if (SSL_set1_host(s, d->host) != 1)
++			goto out;
++		SSL_set_verify(s, SSL_VERIFY_PEER, NULL);
++	} else
++		SSL_set_verify(s, SSL_VERIFY_NONE, NULL);
++	while ((r = SSL_connect(s)) != 1)
++		if (!hc_ssl_wait(s, r, fd, dl))
++			goto out;
++	for (have = 0; have < len + 2; ) {
++		if ((r = SSL_write(s, pkt + have, len + 2 - have)) > 0)
++			have += r;
++		else if (!hc_ssl_wait(s, r, fd, dl))
++			goto out;
++	}
++	for (have = 0, want = 2; have < want; ) {
++		if ((r = SSL_read(s, ans + have, want - have)) > 0) {
++			have += r;
++			if (want == 2 && have == 2) {
++				want = 2 + ((ans[0] << 8) | ans[1]);
++				if (want < 2 + 12 || want > (int)sizeof(ans))
++					goto out;
++			}
++		} else if (!hc_ssl_wait(s, r, fd, dl))
++			goto out;
++	}
++	if (ans[2] == (id >> 8) && ans[3] == (id & 0xff) && (ans[4] & 0x80)) {
++		rc = ans[5] & 0x0f;
++		if (ancount) *ancount = (ans[8] << 8) | ans[9];
++	}
++out:
++	if (s) {
++		SSL_shutdown(s);	/* one try; a non-blocking socket may not take it, and nothing waits for it */
++		SSL_free(s);
++	}
++	close(fd);
++	ERR_clear_error();
++	return rc;
++}
++
++/* the probe under DNS-over-TLS: 1 = answered (strict: NOERROR + a record), 0 = not */
++static int probe_dot(const struct hc_cfg *c, int mode, const struct hc_dot *d)
++{
++	int an = 0, rc;
++
++	if (mode == 't')
++		rc = dot_ask(d, c->name, c->timeout_ms * HC_DOT_MULT, &an);
++	else
++		rc = dns_ask(HC_FWD, AF_INET, HC_FWD_PORT, c->name, c->timeout_ms * HC_DOT_MULT, &an);
++	if (rc < 0) return 0;
++	if (!c->strict) return 1;
++	return (rc == 0 && an > 0);
++}
++/* DNSHC-DOT-END */
++
+ /* Does this line name the target as a plain upstream? For the servers-file
+  * that is "server=<ip>" or "server=<ip>#port" (a "server=/domain/<ip>" line
+  * is a domain route and is left where it is); for resolv.conf it is
+@@ -434,6 +645,7 @@ static const char *fam_name(int i) { return i ? "IPv6" : "IPv4"; }
+  * IPv6 face is configured but the router has no usable IPv6 (not probed).
+  * Readers that know only the first three fields keep working. */
+ static char g_f4 = '-', g_f6 = '-';
++static char g_dmode = 'p';	/* 2026-11-10: field 6 - p port 53, t over DNS-over-TLS, s through the DoT forwarder */
+ static void state_set(const char *what, long since, int alive)
+ {
+ 	char st[64];
+@@ -441,7 +653,7 @@ static void state_set(const char *what, long since, int alive)
+ 	if (strcmp(what, "off") == 0)
+ 		snprintf(st, sizeof(st), "%s %ld %d", what, since > 0 ? now_s() - since : 0, alive);
+ 	else
+-		snprintf(st, sizeof(st), "%s %ld %d %c %c", what, since > 0 ? now_s() - since : 0, alive, g_f4, g_f6);
++		snprintf(st, sizeof(st), "%s %ld %d %c %c %c", what, since > 0 ? now_s() - since : 0, alive, g_f4, g_f6, g_dmode);
+ 	nvram_set("reaper_dnshc_state", st);
+ }
+ 
+@@ -766,6 +978,8 @@ int rdnshc_main(int argc, char *argv[])
+ 	int down = 0, misses = 0, hits = 0, last_enabled = -1, i, alive = -1, v6_warned = 0;
+ 	int uplink_down = 0, held = 0;	/* v3.3.4: misses are not counted while the WAN is known down */
+ 	int v6skip_warned = 0;
++	int dmode = 'p', last_dmode = 0;	/* 2026-11-10: hc_dot_mode() this tick / last tick (0 = none yet) */
++	struct hc_dot dt;
+ 	/* 2026-10-08: each face counted on its own with the same thresholds, so one
+ 	 * dead face is moved behind the others while the live one keeps the
+ 	 * server's place. Index 0 = IPv4, 1 = IPv6; fseen = probed at least once. */
+@@ -798,6 +1012,15 @@ int rdnshc_main(int argc, char *argv[])
+ 	}
+ 	cfg_read(&c);
+ 
++	/* 2026-11-10: publish the LAN name resolution state once at start. ld
++	 * begins LDNS_OFF and landns_tick() publishes only on a change, so with
++	 * the check switched off from boot reaper_landns_state was never written
++	 * (it has no default, and the last instance cleared it on exit) and the
++	 * dashboard read the empty value as "not checked yet" instead of
++	 * "switched off". With the check on, the first landns_tick() below
++	 * replaces this with "unk" in the same pass. */
++	landns_publish(&ld, now_s());
++
+ 	while (!g_stop) {
+ 		int enabled, poll;
+ 		int ok4 = -1, ok6 = -1;	/* this tick: 1 answered, 0 silent, -1 not probed */
+@@ -811,6 +1034,7 @@ int rdnshc_main(int argc, char *argv[])
+ 		} else
+ 			v6_warned = 0;
+ 
++		dmode = enabled ? hc_dot_mode(c.target, c.alt, &dt) : 'p';
+ 		if (enabled != last_enabled) {
+ 			if (enabled)
+ 				logmessage(HC_TAG, "DNS Health Check Enabled - watching %s every %d s (query %s, timeout %d ms, %s reply counts; fail over after %d misses, restore after %d hits)%s",
+@@ -821,10 +1045,10 @@ int rdnshc_main(int argc, char *argv[])
+ 
+ 		/* the watched server changed (or the feature went off) while a
+ 		 * demotion is in place: give the old one its place back first */
+-		if ((down || fdown[0] || fdown[1]) && (!enabled || strcmp(watched, c.target) != 0)) {
++		if ((down || fdown[0] || fdown[1]) && (!enabled || strcmp(watched, c.target) != 0 || dmode != 'p')) {
+ 			update_resolvconf();	/* plain stock order: the old server is nobody's to arrange now */
+ 			hc_reload();
+-			logmessage(HC_TAG, "DNS Health Check RESTORED %s to its stock place in the router's DNS list: %s", watched, enabled ? "a different server is being watched now" : "the check was switched off");
++			logmessage(HC_TAG, "DNS Health Check RESTORED %s to its stock place in the router's DNS list: %s", watched, !enabled ? "the check was switched off" : dmode != 'p' ? "DNS-over-TLS is on, so the router's DNS list holds its forwarder and the check moves nothing" : "a different server is being watched now");
+ 			down = 0; misses = hits = 0; since = 0;
+ 			for (i = 0; i < 2; i++) { fmiss[i] = fhit[i] = fdown[i] = fseen[i] = 0; }
+ 			unlink(HC_STATE);
+@@ -843,6 +1067,59 @@ int rdnshc_main(int argc, char *argv[])
+ 		}
+ 		strlcpy(watched, c.target, sizeof(watched));
+ 
++		/* 2026-11-10 (owner): DNS-over-TLS on = no plain probe leaves the router (hc_dot_mode). Status only: with
++		 * DNS-over-TLS the router's DNS list holds its forwarder alone, and the forwarder uses its other servers by
++		 * itself, so nothing is moved, reloaded or gated here (a demotion left from port-53 mode was undone above). */
++		if (dmode != last_dmode) {
++			if (dmode == 't')
++				logmessage(HC_TAG, "DNS Health Check: DNS-over-TLS is on - %s is asked over DNS-over-TLS (port %d%s%s) instead of port 53; failover is left to the DNS-over-TLS forwarder",
++					dt.addr, dt.port, *dt.host ? ", name " : ", no name to check", dt.host);
++			else if (dmode == 's')
++				logmessage(HC_TAG, "DNS Health Check: DNS-over-TLS is on and %s is not one of its servers - the check asks the router's DNS-over-TLS forwarder instead, so no plain query leaves the router; failover is left to the forwarder", c.target);
++			else if (last_dmode)
++				logmessage(HC_TAG, "DNS Health Check: DNS-over-TLS is off - %s is asked on port 53 again", c.target);
++			if (last_dmode) {
++				down = 0; misses = hits = 0; since = now_s(); held = 0;
++				for (i = 0; i < 2; i++) { fmiss[i] = fhit[i] = fdown[i] = fseen[i] = 0; }
++			}
++			last_dmode = dmode;
++		}
++		g_dmode = (char)dmode;
++		if (dmode != 'p') {
++			const char *who = (dmode == 't') ? c.target : "the DNS-over-TLS forwarder";
++			int ok = -1;
++			if (nvram_get_int("ntp_ready") == 1)
++				ok = probe_dot(&c, dmode, &dt);
++			alive = (ok == 1);
++			/* before the clock is set no certificate can be judged: not a miss (ok < 0), as a known-down uplink */
++			uplink_down = !alive && (ok < 0 || nvram_match("link_wan", "0") ||
++				(*nvram_safe_get("wan0_state_t") && nvram_get_int("wan0_state_t") != 2));
++			if (alive) { hits++; misses = 0; }
++			else if (!uplink_down) { misses++; hits = 0; }
++			if (uplink_down && !held) {
++				logmessage(HC_TAG, "DNS Health Check HOLD: %s - misses are not counted until then",
++					ok < 0 ? "the router's clock is not set yet, and DNS-over-TLS cannot be checked before it is" : "the uplink is down");
++				held = 1;
++			} else if (!uplink_down && held) {
++				logmessage(HC_TAG, "DNS Health Check: %s is judged normally again", who);
++				held = 0;
++			}
++			if (!alive && !down && !uplink_down)
++				logmessage(HC_TAG, "DNS Health Check: %s did not answer over DNS-over-TLS within %d ms (miss %d of %d)", who, c.timeout_ms * HC_DOT_MULT, misses, c.fail);
++			if (!down && misses >= c.fail) {
++				down = 1; since = now_s(); hits = 0;
++				logmessage(HC_TAG, "DNS Health Check: %s is NOT answering over DNS-over-TLS (%d misses) - nothing is moved; the DNS-over-TLS forwarder uses its other servers by itself", who, misses);
++			} else if (down && hits >= c.recover) {
++				logmessage(HC_TAG, "DNS Health Check: %s answers over DNS-over-TLS again (%d hits) after %ld s", who, hits, now_s() - since);
++				down = 0; misses = 0; since = now_s();
++			}
++			g_f4 = g_f6 = '-';
++			state_set(down ? "down" : "up", since ? since : (since = now_s()), alive);
++			poll = c.interval;
++			for (i = 0; i < poll && !g_stop; i++) sleep(1);
++			continue;
++		}
++
+ 		/* Both faces, each only over a family that can actually carry a query.
+ 		 * hc_v6_usable() is two local nvram reads, so a router with IPv6 off or
+ 		 * nothing delegated skips v6 without a socket and without a wait; it
+diff --git a/release/src/router/rc/wan.c b/release/src/router/rc/wan.c
+index f4e34af0a7b..320532f654d 100644
+--- a/release/src/router/rc/wan.c
++++ b/release/src/router/rc/wan.c
+@@ -3101,6 +3101,39 @@ void wan_add_resolv_dnsmasq_ipv6(FILE* fp, int wan6_unit)
+ }
+ #endif
+ 
++#ifdef RTCONFIG_DNSPRIVACY
++/* reaper 2026-11-10: does dnspriv_rulelist hold at least one server stubby
++ * will accept (the same tests start_stubby and _start_sdn_stubby apply)?
++ * stubby builds its context from the OS resolver (getdns_context_create(.., 1))
++ * and its config names /tmp/resolv.conf, so with no usable upstream it would
++ * query whatever this file names - and once the router's resolver points at
++ * dnsmasq that is a dnsmasq -> stubby -> dnsmasq loop. */
++static int dot_has_upstream(void)
++{
++	char *nv, *nvp, *b, *server, *tlsport, *hostname, *spkipin;
++	unsigned char addr[sizeof(struct in6_addr)];
++	int ok = 0, port;
++
++	nv = nvp = strdup(nvram_safe_get("dnspriv_rulelist"));
++	while (!ok && nvp && (b = strsep(&nvp, "<")) != NULL) {
++		server = tlsport = hostname = spkipin = NULL;
++		if (vstrsep(b, ">", &server, &tlsport, &hostname, &spkipin) < 4 || *server == '\0')
++			continue;
++		port = *tlsport ? safe_atoi(tlsport) : 0;
++		if (port < 0 || port > 65535)
++			continue;
++		if (inet_pton(AF_INET, server, addr) > 0
++#ifdef RTCONFIG_IPV6
++		 || (ipv6_enabled() && inet_pton(AF_INET6, server, addr) > 0)
++#endif
++		)
++			ok = 1;
++	}
++	free(nv);
++	return ok;
++}
++#endif
++
+ int update_resolvconf(void)
+ {
+ 	FILE *fp, *fp_servers;
+@@ -3117,6 +3150,25 @@ int update_resolvconf(void)
+ #endif
+ #ifdef RTCONFIG_DNSPRIVACY
+ 	int dnspriv_enable = nvram_get_int("dnspriv_enable");
++	/* reaper 2026-11-10: the router's OWN lookups (ntpd, DDNS, list fetches,
++	 * the firmware check - every libc caller) read /tmp/resolv.conf, and with
++	 * DNS-over-TLS on, stock still wrote the plain WAN servers here, so those
++	 * lookups left on :53 unencrypted while every LAN query went dnsmasq ->
++	 * stubby -> TLS. Merlin's "use local caching DNS server as system
++	 * resolver" (dns_local_cache) covered this until 3006.102.1 removed it
++	 * over SDN; the SDN dnsmasq instances run no-resolv + servers-file and
++	 * never read this file, so pointing it at the main dnsmasq on loopback is
++	 * safe. Strict profile: loopback only - glibc moves on to the next
++	 * nameserver after a SERVFAIL, which would send the name out in plain
++	 * text. Opportunistic: the WAN servers stay behind loopback as the
++	 * fallback, the same thing stubby does in that profile. Before the first
++	 * NTP sync stubby runs UDP/TCP (tls_possible = ntp_ready), so the clock
++	 * bootstrap still resolves. Router mode only (lan.c writes this file in
++	 * the other modes), and only with a usable DoT server (dot_has_upstream).
++	 * vpnc_fusion copies nameserver lines from here into resolv.dnsmasq only
++	 * with DoT off, so 127.0.0.1 never becomes a dnsmasq upstream. */
++	int dot_self = dnspriv_enable && is_routing_enabled() && dot_has_upstream();
++	int dot_plain = !dot_self || !nvram_get_int("dnspriv_profile");
+ #endif
+ 
+ #if defined(RTCONFIG_VPNC) && !defined(RTCONFIG_VPN_FUSION)
+@@ -3135,6 +3187,10 @@ int update_resolvconf(void)
+ 		fclose(fp);
+ 		goto error;
+ 	}
++#ifdef RTCONFIG_DNSPRIVACY
++	if (dot_self)
++		fprintf(fp, "nameserver 127.0.0.1\n");
++#endif
+ #if defined(RTCONFIG_IPV6) && (defined(RTAX82_XD6) || defined(RTAX82_XD6S) || defined(XD6_V2) || defined(ET12))
+ 	if (!strncmp(nvram_safe_get("territory_code"), "CH", 2) &&
+ 		ipv6_enabled() &&
+@@ -3170,6 +3226,9 @@ int update_resolvconf(void)
+ 			if (unit != primary_unit)
+ 					continue;
+ 
++#ifdef RTCONFIG_DNSPRIVACY
++			if (dot_plain)
++#endif
+ 			foreach(tmp, (*wan_dns ? wan_dns : wan_xdns), next)
+ 				fprintf(fp, "nameserver %s\n", tmp);
+ 
+@@ -3246,6 +3305,9 @@ int update_resolvconf(void)
+ 				continue;
+ 
+ 			foreach(tmp, (*wan_dns ? wan_dns : wan_xdns), next) {
++#ifdef RTCONFIG_DNSPRIVACY
++				if (dot_plain)
++#endif
+ 				fprintf(fp, "nameserver %s\n", tmp);
+ 				fprintf(fp_servers, "server=%s\n", tmp);
+ #ifdef RTCONFIG_YANDEXDNS
+diff --git a/release/src/router/www/Reaper_DNS.asp b/release/src/router/www/Reaper_DNS.asp
+index b0f9681c1f3..f724e57a654 100644
+--- a/release/src/router/www/Reaper_DNS.asp
++++ b/release/src/router/www/Reaper_DNS.asp
+@@ -17,7 +17,8 @@
+      linked, not repeated. Only the changed settings are posted; nothing is written on load.
+      Restarts (rc citations at applyAll): WAN DNS servers restart_wan_dns <unit> (what the stock WAN page's DNS popup ran,
+      without the WAN restart its Apply did); resolver options and client DNS restart_dnsmasq; the DoT client
+-     restart_stubby (+ restart_wan_dns 0;restart_dnsmasq when it is switched on or off); DNS Director restart_dnsfilter.
++     restart_stubby (+ restart_wan_dns 0;restart_dnsmasq when it is switched on or off; restart_wan_dns 0 also on a
++     profile or server-list change, because the router's own resolver follows them); DNS Director restart_dnsfilter.
+      Deliberate differences from stock:
+      - DNS Director: the three IPv4 custom servers are validated (stock never checked them, B-DNSD-1), a MAC can only
+        have one rule (B-DNSD-2), and the Guest Network Pro profile column is written into a FRESH read of sdn_rl at
+@@ -609,7 +610,8 @@ function applyAll(){
+      without the restart_wan_if the stock Apply ran. Switching DoT also needs it: update_resolvconf writes
+      server=127.0.1.1 (stubby) in place of the WAN servers when dnspriv_enable is on. */
+   [0, 1].forEach(function(u){ if (has('wan' + u + '_dnsenable_x', 'wan' + u + '_dns1_x', 'wan' + u + '_dns2_x')) S.push('restart_wan_dns ' + u); });
+-  if (has('dnspriv_enable') && S.indexOf('restart_wan_dns 0') < 0) S.push('restart_wan_dns 0');
++  /* rc wan.c update_resolvconf: the router's own resolver follows DoT on/off, the profile and the server list */
++  if (has('dnspriv_enable', 'dnspriv_profile', 'dnspriv_rulelist') && S.indexOf('restart_wan_dns 0') < 0) S.push('restart_wan_dns 0');
+   /* rc services.c "dnsfilter": start_dnsmasq(ALL_SDN) + start_firewall - DNS Director's DNAT rules and dnsmasq tags */
+   var dd = has('dnsfilter_enable_x', 'dnsfilter_mode', 'dnsfilter_custom1', 'dnsfilter_custom2', 'dnsfilter_custom3', 'dnsfilter_custom61',
+     'dnsfilter_custom62', 'dnsfilter_custom63', 'sdn_rl') || DD_KEYS.some(function(x){ return has(x); });
+diff --git a/release/src/router/www/Reaper_Failover.asp b/release/src/router/www/Reaper_Failover.asp
+index 61066a7a088..8e95f1f015a 100644
+--- a/release/src/router/www/Reaper_Failover.asp
++++ b/release/src/router/www/Reaper_Failover.asp
+@@ -140,6 +140,8 @@ body::after{content:"";position:fixed;inset:0;pointer-events:none;z-index:0;
+ .stline .v{color:var(--bone);font-size:12.5px}
+ .stline .v.down{color:var(--crimson)}
+ .stline.st6{margin-top:6px}
++/* 2026-11-10: under DNS-over-TLS - how the check asks, and that it moves nothing */
++.dotnote{font-size:11.5px;color:var(--steel);line-height:1.5;margin:8px 2px 0;max-width:80ch}
+ .stline .v.dim{color:var(--steel)}
+ .stline .held{margin-left:auto;font-family:var(--hdr);font-weight:600;font-size:12px;letter-spacing:.06em;color:var(--bone-dim);font-variant-numeric:tabular-nums}
+ 
+@@ -258,6 +260,7 @@ body::after{content:"";position:fixed;inset:0;pointer-events:none;z-index:0;
+     <span class="k"><#RDHC_47#></span>
+     <span class="v" id="st6_v">&mdash;</span>
+   </div>
++  <p class="dotnote" id="st_dot" hidden></p>
+ </div>
+ 
+ <div class="tier">dnsmasq</div>
+@@ -376,9 +379,11 @@ var T = {
+   applying: `<#RDHC_36#>`, apply: `<#CTL_apply#>`,
+   v6disabled: `<#RDHC_48#>`, v6none: `<#RDHC_49#>`, v6answering: `<#RDHC_50#>`,
+   faceDown: `<#RDHC_51#>`, v6unusable: `<#RDHC_52#>`, disabled: `<#CTL_Disabled#>`,
++  /* 2026-11-10: under DNS-over-TLS (state field 6: t = the server over DoT, s = the DoT forwarder) */
++  dotUp: `<#RDHC_65#>`, dotDown: `<#RDHC_66#>`, dotDirect: `<#RDHC_67#>`, dotFwd: `<#RDHC_68#>`,
+   /* 2026-10-10: the LAN name resolution check's status (same words as the dashboard tooltip) */
+   ldWorking: `<#RDSH_92#>`, ldFailing: `<#RDSH_93#>`, ldUnk: `<#RDSH_94#>`, ldHeld: `<#RDSH_96#>`,
+-  ldSilent: `<#RDSH_99#>`, badDomain: `<#RDHC_64#>`
++  ldSilent: `<#RDSH_99#>`, badDomain: `<#RDHC_64#>`, ldOff: `<#RDSH_95#>`
+ };
+ var V6ON = (IPV6 !== '' && IPV6 !== 'disabled');
+ var busy = 0, pollT = null;
+@@ -398,6 +403,7 @@ function render(state, enable){
+   var st = String(state || '').split(' '), mode = st[0], chip = $id('chip_state');
+   var running = (enable === '1' && mode !== '' && mode !== 'off');
+   var v = $id('st_v'), h = $id('st_held');
++  var dm = st[5] || 'p', dot = running && (dm === 't' || dm === 's');
+   $id('ls1').className = 'lstep' + (running ? ' live' : '');
+   $id('ls2').className = 'lstep' + (running && mode === 'down' ? ' armed' : '');
+   $id('ls3').className = 'lstep' + (running && mode === 'down' ? ' live' : '');
+@@ -406,14 +412,16 @@ function render(state, enable){
+     v.className = 'v'; v.textContent = T.notRunning; h.textContent = '';
+   } else if(mode === 'down'){
+     chip.className = 'chip down'; $id('chip_state_v').textContent = T.down;
+-    v.className = 'v down'; v.textContent = T.notAnswering; h.textContent = held(st[1]);
++    v.className = 'v down'; v.textContent = dot ? T.dotDown : T.notAnswering; h.textContent = held(st[1]);
+   } else {
+     chip.className = 'chip up'; $id('chip_state_v').textContent = T.up;
+     /* field 4: the IPv4 face alone can be held back while IPv6 answers */
+     var down4 = (st[3] === '0');
+-    v.className = 'v' + (down4 ? ' down' : ''); v.textContent = down4 ? T.faceDown : T.answering; h.textContent = held(st[1]);
++    v.className = 'v' + (down4 ? ' down' : ''); v.textContent = down4 ? T.faceDown : (dot ? T.dotUp : T.answering); h.textContent = held(st[1]);
+   }
+   render6(st, running, mode);
++  var dn = $id('st_dot');
++  if(dn){ dn.hidden = !dot; dn.textContent = !dot ? '' : (dm === 't' ? T.dotDirect : T.dotFwd); }
+   var tg = ORIG.target || '\u2014';
+   $id('chip_target_v').textContent = tg; $id('chip_target_v').title = tg;
+ }
+@@ -446,7 +454,7 @@ function renderLd(state){
+   var v = $id('ld_v'); if(!v) return;
+   var p = String(state || '').split(' '), st = p[0], silent = (p[2] && p[2] !== '-') ? p[2].split(',').join(', ') : '';
+   var txt, cls = 'v';
+-  if(ORIG.landns !== '1' || st === 'off' || st === ''){ txt = T.notRunning; cls = 'v dim'; }
++  if(ORIG.landns !== '1' || st === 'off' || st === ''){ txt = T.ldOff; cls = 'v dim'; }
+   else if(st === 'fail' || st === 'svc' || st === 'dfail'){ txt = T.ldFailing + ' (' + held(p[1]) + ')' + (silent ? ' - ' + T.ldSilent + ' ' + silent : ''); cls = 'v down'; }
+   else if(st === 'ok') txt = T.ldWorking;
+   else if(st === 'wan'){ txt = T.ldHeld; cls = 'v dim'; }
+-- 
+2.25.1
+

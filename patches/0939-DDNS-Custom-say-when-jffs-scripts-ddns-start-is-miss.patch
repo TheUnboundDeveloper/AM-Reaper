@@ -1,0 +1,158 @@
+From 557dcef4d0959d1ba9f40b006c4e61660cb64ff6 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Mon, 9 Nov 2026 20:27:45 -0500
+Subject: [PATCH] DDNS Custom: say when /jffs/scripts/ddns-start is missing;
+ diag v1.3.55
+
+- DDNS on Custom runs exactly /jffs/scripts/ddns-start. A tester's ddns-start.sh never ran, so no
+  update was sent and Let's Encrypt never issued, with nothing saying why. The DDNS page now says
+  when the file is missing (and names a near-miss to rename) or not executable (RDDN_56..58), and
+  that browsers are not served the certificate while the web interface is HTTP only (RDDN_59).
+- reaper_diag v1.3.54 judges only the hook names the firmware runs in section 13 (a log or helper
+  file there is listed as not a hook name, no finding; a symlinked hook is listed); v1.3.55 warns
+  when DDNS is Custom and ddns-start is missing, naming a near-miss file.
+The Let's Encrypt part (services.c) and httpd's probe (web.c) are committed with the firewall log
+change.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ release/src/router/others/reaper_diag  | 43 +++++++++++++++++++++++---
+ release/src/router/www/Reaper_DDNS.asp | 11 ++++++-
+ release/src/router/www/Reaper_Diag.asp |  2 +-
+ 3 files changed, 49 insertions(+), 7 deletions(-)
+
+diff --git a/release/src/router/others/reaper_diag b/release/src/router/others/reaper_diag
+index 547314a1c04..061ca261a0c 100644
+--- a/release/src/router/others/reaper_diag
++++ b/release/src/router/others/reaper_diag
+@@ -1,6 +1,10 @@
+ #!/bin/sh
+ # ============================================================================
+-#  REAPER-DIAG v1.3.53 (2026-10-30) - sanitized one-shot diagnostic bundle
++#  REAPER-DIAG v1.3.55 (2026-11-08) - sanitized one-shot diagnostic bundle
++#  v1.3.55 warns in section 13 when DDNS is Custom and /jffs/scripts/ddns-start does not exist, and names a
++#  near-miss file (ddns-start.sh) to rename: the router runs only that exact name.
++#  v1.3.54 judges only the hook names the firmware runs in section 13: a log, note or helper file in /jffs/scripts
++#  is listed as not a hook name, with no finding (it had been told to chmod +x), and a symlinked hook is listed.
+ #  v1.3.53 keeps two address-shaped names readable that came out as [EXT-IP-n]: the speed-test engine's
+ #  four-part version (printed in 10b as "3.8.0 build 235") and a WDS link's interface name (wds1.1.1.0).
+ #  v1.3.51 reports each custom script in section 13: executable, line endings, how its last run ended and
+@@ -173,7 +177,7 @@
+ #  not add an unbounded command here.
+ # ============================================================================
+ PATH=/sbin:/bin:/usr/sbin:/usr/bin
+-VER="REAPER-DIAG v1.3.53"
++VER="REAPER-DIAG v1.3.55"
+ T0="$(date +%s 2>/dev/null)"
+ MODEL="$(nvram get productid 2>/dev/null)"
+ EXTNO="$(nvram get extendno 2>/dev/null)"
+@@ -1601,10 +1605,17 @@ sec "13. ADDONS / JFFS"
+ JS="$(nvram get jffs2_scripts 2>/dev/null)"
+ echo "  custom scripts (System > Enable JFFS custom scripts and configs): $( [ "$JS" = 1 ] && echo on || echo off )"
+ _ns=0
++# v1.3.54 (2026-11-07, GT-BE98 field): only the names rc runs (run_custom_script, run_postconf) are hooks. Any other
++# file there (cloudflare_ddns.log, ddns-start.debug) was told it never runs and to chmod +x - it is listed as not a
++# hook name, with no finding. A symlinked hook is listed too: rc stat()s the name, so the link is followed and runs.
++_HOOKS="ddns-start dhcpc-event firewall-start init-start nat-start openvpn-event post-mount pre-mount qos-start service-event service-event-end services-start services-stop unmount update-notification wan-event wan-start wgclient-start wgclient-stop wgserver-start wgserver-stop zcip-event"
+ for f in /jffs/scripts/*; do
+-  [ -f "$f" ] && [ ! -L "$f" ] || continue
+-  n="${f##*/}"; _ns=$((_ns + 1))
++  [ -f "$f" ] || continue
++  n="${f##*/}"
+   case "$n" in *[!A-Za-z0-9._-]*) echo "  script (name with unusual characters) skipped"; continue;; esac
++  case " $_HOOKS " in *" $n "*) ;; *) case "$n" in *.postconf) ;; *) echo "  file $n: not a hook name - the firmware never runs it itself (a helper, log or note a script may use)"; continue;; esac;; esac
++  _lk=""; [ -L "$f" ] && _lk=" (a link)"
++  _ns=$((_ns + 1))
+   x=no; [ -x "$f" ] && x=yes
+   cr=no; head -n 1 "$f" 2>/dev/null | grep -q "$(printf '\r')" && cr=yes
+   L="$(grep -a 'custom_script' /tmp/syslog.log 2>/dev/null | sed 's/$/ /' | grep -a -F -e "/jffs/scripts/$n " -e "/jffs/scripts/$n)" -e "Found $n," | tail -n 1)"
+@@ -1620,7 +1631,7 @@ for f in /jffs/scripts/*; do
+     *)                      last="?";;
+   esac
+   ol=none; [ -s "/tmp/reaper/script-$n.log" ] && ol="$(wc -c < "/tmp/reaper/script-$n.log") B kept"
+-  echo "  script $n: executable=$x crlf=$cr last=$last output=$ol"
++  echo "  script $n$_lk: executable=$x crlf=$cr last=$last output=$ol"
+   [ "$x" = no ] && finding WARN "/jffs/scripts/$n is not executable, so it never runs - chmod +x /jffs/scripts/$n (see 13)"
+   [ "$cr" = yes ] && finding WARN "/jffs/scripts/$n has Windows line endings, so it cannot start - save it with Unix (LF) line endings (see 13)"
+   case "$last" in failed*|stopped*|ended*) finding WARN "/jffs/scripts/$n $last on its last run - what it printed is in /tmp/reaper/script-$n.log (see 13)";; esac
+@@ -1629,6 +1640,28 @@ done
+ for n in firewall-start nat-start services-start services-stop wan-event wan-start init-start dhcpc-event post-mount pre-mount unmount service-event ddns-start openvpn-event qos-start; do
+   [ -f "/jffs/$n" ] && [ ! -f "/jffs/scripts/$n" ] && finding WARN "/jffs/$n is never run - custom scripts live in /jffs/scripts/ (see 13)"
+ done
++# v1.3.55 (2026-11-08, RT-BE88U field): DDNS on Custom runs exactly /jffs/scripts/ddns-start (shared/scripts.c). The
++# tester saved it as ddns-start.sh, so no update was ever sent and nothing said why. A near-miss name is named; a backup
++# copy (.bak .orig .old ~) is not offered as the one to rename.
++if [ "$(nvram get ddns_enable_x 2>/dev/null)" = 1 ] && [ "$(nvram get ddns_server_x 2>/dev/null)" = CUSTOM ]; then
++  if [ -f /jffs/scripts/ddns-start ]; then
++    echo "  DDNS Custom: /jffs/scripts/ddns-start present"
++  else
++    _dm=""
++    for f in /jffs/scripts/[Dd][Dd][Nn][Ss]*; do
++      [ -f "$f" ] || continue
++      n="${f##*/}"
++      case "$n" in *[!A-Za-z0-9._-]*|*.bak|*.orig|*.old|*~) continue;; esac
++      case "$(echo "$n" | tr 'A-Z_' 'a-z-')" in ddns-start*) _dm="$n"; break;; esac
++    done
++    echo "  DDNS Custom: /jffs/scripts/ddns-start MISSING${_dm:+ (found $_dm)}"
++    if [ -n "$_dm" ]; then
++      finding WARN "DDNS is Custom but /jffs/scripts/ddns-start does not exist - the router runs only that exact name, never $_dm: rename it to ddns-start (no extension) and chmod +x (see 13)"
++    else
++      finding WARN "DDNS is Custom but /jffs/scripts/ddns-start does not exist, so no DDNS update is ever sent (see 13)"
++    fi
++  fi
++fi
+ echo "  entware: $( [ -d /opt/bin ] && echo present || echo absent )"
+ echo "  amtm-ish mounts: $(mount 2>/dev/null | grep -c /tmp/mnt)"
+ 
+diff --git a/release/src/router/www/Reaper_DDNS.asp b/release/src/router/www/Reaper_DDNS.asp
+index 20cfab2a94a..19026d51db4 100644
+--- a/release/src/router/www/Reaper_DDNS.asp
++++ b/release/src/router/www/Reaper_DDNS.asp
+@@ -162,6 +162,14 @@ var FTP_TLS = U('<% nvram_char_to_ascii("","enable_ftp"); %>') === '1' && U('<%
+ var JFFS_SCRIPTS = U('<% nvram_char_to_ascii("","jffs2_on"); %>') === '1' && U('<% nvram_char_to_ascii("","jffs2_scripts"); %>') === '1';
+ var LE = {state: U('<% nvram_char_to_ascii("","le_state"); %>'), sb: U('<% nvram_char_to_ascii("","le_sbstate_t"); %>'), aux: U('<% nvram_char_to_ascii("","le_auxstate_t"); %>')};
+ var CERT = {}; try { CERT = [<% httpd_cert_info(); %>][0] || {}; } catch (e) {}
++/* 2026-11-08 (field RT-BE88U): whether /jffs/scripts/ddns-start is there and executable (httpd reaper_ddns_script):
++   s 0 = missing (near = a ddns-start* file that is, such as ddns-start.sh), 1 = not executable, 2 = ready */
++var DSCRIPT = {}; try { DSCRIPT = [<% reaper_ddns_script(); %>][0] || {}; } catch (e) {}
++function ddnsScriptNote(){
++  if (DSCRIPT.s === 0) return ' ' + `<#RDDN_56#>` + (DSCRIPT.near ? ' ' + `<#RDDN_57#>` + ' ' + rp.esc(DSCRIPT.near) : '');
++  if (DSCRIPT.s === 1) return ' ' + `<#RDDN_58#>`;
++  return '';
++}
+ 
+ var LB = sup('dualwan') && WANS_MODE === 'lb' && DUALWAN !== '' && DUALWAN.split(' ').indexOf('none') < 0;
+ /* asuscomm is gone from this firmware: a saved one is "not configured" and never posted back */
+@@ -271,7 +279,7 @@ function sync(){
+   q('l_pass').textContent = v === 'WWW.TUNNELBROKER.NET' ? `<#RDDN_22#>` : `<#LANHostConfig_x_DDNSPassword_itemname#>`;
+   q('l_host').textContent = v === 'WWW.TUNNELBROKER.NET' ? `<#RDDN_23#>` : `<#LANHostConfig_x_DDNSHostNames_itemname#>`;
+   q('h_pass').textContent = PASS_SET ? `<#RDDN_24#>` : '';
+-  note('customnote', R.on && v === 'CUSTOM' ? (`<#RDDN_25#>` + (JFFS_SCRIPTS ? '' : ' ' + `<#RDDN_26#>`)) : '');
++  note('customnote', R.on && v === 'CUSTOM' ? (`<#RDDN_25#>` + (JFFS_SCRIPTS ? '' : ' ' + `<#RDDN_26#>`) + ddnsScriptNote()) : '');
+   certSync();
+   statusRow();
+   statePill();
+@@ -289,6 +297,7 @@ function certSync(){
+   show('r_ldstat', m === '3' && NV.reaper_ledns_enable === '1');
+   var h = m === '1' ? `<#RDDN_27#>` : m === '2' ? `<#RDDN_28#>` : m === '3' ? `<#RDDN_48#>` : `<#RDDN_29#>`;
+   if ((m === '0' || m === '2') && le && !leOk) h += ' ' + `<#RDDN_27#>`;
++  if (HTTP_ENABLE === '0') h += ' ' + `<#RDDN_59#>`;   /* 2026-11-08 (field RT-BE88U): no browser is served it */
+   q('h_cert').textContent = h;
+   /* the root/intermediate certificate exists for self-signed, and for an import that was a CA (casignedcert) */
+   show('r_ca', NV.le_enable === '0' || NV.le_enable === '' || (NV.le_enable === '2' && CASIGNED === '1'));
+diff --git a/release/src/router/www/Reaper_Diag.asp b/release/src/router/www/Reaper_Diag.asp
+index b834b2eee4b..300f279959a 100644
+--- a/release/src/router/www/Reaper_Diag.asp
++++ b/release/src/router/www/Reaper_Diag.asp
+@@ -69,7 +69,7 @@ pre.sample .g{color:var(--jade)} pre.sample .r{color:#e0837d} pre.sample .w{colo
+ 
+ <div class="pagehead">
+   <h1><#RDIAG_00#> <a href="https://github.com/TheUnboundDeveloper/AM-Reaper/blob/main/docs/REAPER-GUIDE.md#413-diagnostics" target="_blank" rel="noopener noreferrer" title="<#RABT_43#>" style="display:inline-flex;align-items:center;justify-content:center;width:22px;height:22px;margin-left:8px;border-radius:50%;border:1px solid #4a4a4e;color:#8d897f;font:700 13px Arial,sans-serif;text-decoration:none;vertical-align:middle">?</a></h1>
+-  <span class="ver"><#RDIAG_01#> &middot; REAPER-DIAG v1.3.53</span>
++  <span class="ver"><#RDIAG_01#> &middot; REAPER-DIAG v1.3.55</span>
+ </div>
+ <p class="lede"><#RDIAG_02#></p>
+ 
+-- 
+2.25.1
+

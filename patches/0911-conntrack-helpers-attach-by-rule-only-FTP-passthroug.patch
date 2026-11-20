@@ -1,0 +1,241 @@
+From 56be3deea329d1b48072812cff25bf82baa67dc5 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Thu, 5 Nov 2026 20:37:32 -0500
+Subject: [PATCH] conntrack helpers attach by rule only; FTP passthrough is a
+ NAT page switch, off
+
+Stock sets nf_conntrack_helper=1, so every loaded helper attaches itself to every connection on
+its port. rc now sets it to 0 and adds the helpers with raw-table CT rules (rc/reaper_cthelper.c,
+chains REAPER_CTH and REAPER_CTHO): FTP and PPTP for connections to the router itself, and FTP for
+LAN clients only while FTP Passthrough is on (nvram nf_ftp, new default 0, a new switch on the NAT
+page; its text is in the language-pack commit).
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ release/src/router/rc/common.c          |   9 +-
+ release/src/router/rc/reaper_cthelper.c | 108 ++++++++++++++++++++++++
+ release/src/router/www/Reaper_NAT.asp   |  24 ++----
+ 3 files changed, 122 insertions(+), 19 deletions(-)
+ create mode 100644 release/src/router/rc/reaper_cthelper.c
+
+diff --git a/release/src/router/rc/common.c b/release/src/router/rc/common.c
+index a09aadace51..f664fdf7e37 100644
+--- a/release/src/router/rc/common.c
++++ b/release/src/router/rc/common.c
+@@ -575,6 +575,7 @@ void setup_ftp_conntrack(int port)
+ 		ct_modprobe("ftp", ports);
+ 		nvram_set("ftp_ports", ports);
+ 	}
++	reaper_ct_helpers();	/* 2026-11-05 audit E-13: runs on every firewall start */
+ }
+ 
+ void setup_udp_timeout(int connflag)
+@@ -834,7 +835,10 @@ void setup_conntrack(void)
+ 		ct_modprobe_r("proto_gre");
+ 	}
+ #if defined(RTCONFIG_HND_ROUTER_AX_6756) || defined(RTCONFIG_HND_ROUTER_BE_4916) || defined(RTCONFIG_MT798X)
+-	f_write_string("/proc/sys/net/netfilter/nf_conntrack_helper", "1", 0, 0);
++	/* reaper 2026-11-05 (audit E-13): no automatic helper assignment - every loaded helper used to attach itself to
++	   every connection on its port (a LAN client's FTP session got the ALG and a hostile server's PASV/PORT reply
++	   opened pinholes to it); reaper_ct_helpers() attaches each one by an explicit raw-table rule instead */
++	f_write_string("/proc/sys/net/netfilter/nf_conntrack_helper", "0", 0, 0);
+ #endif
+ 
+ #ifdef RTCONFIG_BCMARM
+@@ -848,7 +852,7 @@ void setup_conntrack(void)
+ 	modprobe("xt_mac_extend");
+ 	modprobe("xt_mark");
+ 	modprobe("xt_mark_extend");
+-
++	reaper_ct_helpers();	/* 2026-11-05 audit E-13 */
+ }
+ 
+ void setup_pt_conntrack(void)
+@@ -891,6 +895,7 @@ void setup_pt_conntrack(void)
+ 	}
+ #endif
+ #endif
++	reaper_ct_helpers();	/* 2026-11-05 audit E-13 */
+ }
+ 
+ void remove_conntrack(void)
+diff --git a/release/src/router/rc/reaper_cthelper.c b/release/src/router/rc/reaper_cthelper.c
+new file mode 100644
+index 00000000000..0eae5524348
+--- /dev/null
++++ b/release/src/router/rc/reaper_cthelper.c
+@@ -0,0 +1,108 @@
++/*
++ * reaper 2026-11-05 (audit E-13, owner: "FTP/PPTP helper off by default"): conntrack helpers by explicit rule only.
++ *
++ * Stock sets nf_conntrack_helper=1, so every loaded helper attaches itself to every connection on its port:
++ * any LAN client's port-21 session got the FTP ALG, and a malicious FTP server's 227/PORT reply opened RELATED
++ * pinholes towards that client (the classic ALG exposure); likewise PPTP on 1723. rc now writes 0 there
++ * (setup_conntrack) and attaches each helper with a raw-table CT rule only where it is wanted:
++ *   to the router itself (its own FTP server, a port-forwarded FTP server, its PPTP server) - always, since
++ *     that traffic is addressed to the router (raw PREROUTING runs before DNAT, so a port forward's
++ *     destination is still the router's own address);
++ *   LAN clients going out - FTP only with the FTP passthrough switch (nf_ftp, default 0); PPTP while PPTP
++ *     passthrough (fw_pt_pptp) is on; RTSP / H.323 / SIP while their switches are on (any direction, as before);
++ *   the router's own outgoing PPTP (OUTPUT).
++ * IPv6: FTP and SIP (the helpers stock loaded for both families). Chains REAPER_CTH (PREROUTING) and
++ * REAPER_CTHO (OUTPUT) in the raw table, rebuilt whole on every call (setup_conntrack, setup_pt_conntrack and
++ * setup_ftp_conntrack - the last runs on every firewall start). Nothing else in rc flushes raw.
++ */
++#include <rc.h>
++#include <shared.h>
++
++#define CTH	"REAPER_CTH"
++#define CTHO	"REAPER_CTHO"
++
++static void cth_reset(char *ipt, const char *chain, const char *hook)
++{
++	char *n[] = { ipt, "-t", "raw", "-N", (char *)chain, NULL };
++	char *f[] = { ipt, "-t", "raw", "-F", (char *)chain, NULL };
++	char *c[] = { ipt, "-t", "raw", "-C", (char *)hook, "-j", (char *)chain, NULL };
++	char *i[] = { ipt, "-t", "raw", "-I", (char *)hook, "1", "-j", (char *)chain, NULL };
++
++	_eval(n, ">/dev/null", 0, NULL);	/* "already exists" on every call after the first */
++	_eval(f, NULL, 0, NULL);
++	if (_eval(c, ">/dev/null", 0, NULL) != 0)
++		_eval(i, NULL, 0, NULL);
++}
++
++/* one rule: proto, a destination port list ("21" or "554,8554"), local: 1 = to the router, 0 = not to the
++   router, -1 = either; helper name */
++static void cth_rule(char *ipt, const char *chain, const char *proto, const char *ports, int local, const char *helper)
++{
++	char *a[24];
++	int k = 0;
++
++	a[k++] = ipt; a[k++] = "-t"; a[k++] = "raw"; a[k++] = "-A"; a[k++] = (char *)chain;
++	a[k++] = "-p"; a[k++] = (char *)proto;
++	if (local >= 0) {
++		a[k++] = "-m"; a[k++] = "addrtype";
++		if (!local) a[k++] = "!";
++		a[k++] = "--dst-type"; a[k++] = "LOCAL";
++	}
++	if (strchr(ports, ',')) {
++		a[k++] = "-m"; a[k++] = "multiport"; a[k++] = "--dports"; a[k++] = (char *)ports;
++	} else {
++		a[k++] = "--dport"; a[k++] = (char *)ports;
++	}
++	a[k++] = "-j"; a[k++] = "CT"; a[k++] = "--helper"; a[k++] = (char *)helper;
++	a[k] = NULL;
++	_eval(a, NULL, 0, NULL);
++}
++
++void reaper_ct_helpers(void)
++{
++	char ftp[48];
++	int p, own = 0, v6 = ipv6_enabled();
++	int pptp = !nvram_match("nf_pptp", "0");
++
++	/* the FTP ports addressed to the router: 21, its own FTP server's port, the port-forward FTP port */
++	snprintf(ftp, sizeof(ftp), "21");
++	if (nvram_match("ftp_enable", "1") && (p = nvram_get_int("ftp_port")) > 0 && p != 21 && p < 65536) {
++		snprintf(ftp + strlen(ftp), sizeof(ftp) - strlen(ftp), ",%d", p);
++		own = p;
++	}
++	if ((p = nvram_get_int("vts_ftpport")) > 0 && p != 21 && p != own && p < 65536)
++		snprintf(ftp + strlen(ftp), sizeof(ftp) - strlen(ftp), ",%d", p);
++
++	cth_reset("iptables", CTH, "PREROUTING");
++	cth_reset("iptables", CTHO, "OUTPUT");
++	cth_rule("iptables", CTH, "tcp", ftp, 1, "ftp");
++	if (nvram_match("nf_ftp", "1"))
++		cth_rule("iptables", CTH, "tcp", "21", 0, "ftp");
++	if (pptp) {
++		cth_rule("iptables", CTH, "tcp", "1723", 1, "pptp");
++		if (!nvram_match("fw_pt_pptp", "0"))
++			cth_rule("iptables", CTH, "tcp", "1723", 0, "pptp");
++		cth_rule("iptables", CTHO, "tcp", "1723", -1, "pptp");
++	}
++	if (nvram_match("fw_pt_rtsp", "1"))
++		cth_rule("iptables", CTH, "tcp", "554,8554", -1, "rtsp");
++	if (nvram_match("fw_pt_h323", "1")) {
++		cth_rule("iptables", CTH, "tcp", "1720", -1, "Q.931");
++		cth_rule("iptables", CTH, "udp", "1719", -1, "RAS");
++	}
++	if (nvram_match("fw_pt_sip", "1")) {
++		cth_rule("iptables", CTH, "udp", "5060", -1, "sip");
++		cth_rule("iptables", CTH, "tcp", "5060", -1, "sip");
++	}
++
++	if (v6) {
++		cth_reset("ip6tables", CTH, "PREROUTING");
++		cth_rule("ip6tables", CTH, "tcp", ftp, 1, "ftp");
++		if (nvram_match("nf_ftp", "1"))
++			cth_rule("ip6tables", CTH, "tcp", "21", 0, "ftp");
++		if (nvram_match("fw_pt_sip", "1")) {
++			cth_rule("ip6tables", CTH, "udp", "5060", -1, "sip");
++			cth_rule("ip6tables", CTH, "tcp", "5060", -1, "sip");
++		}
++	}
++}
+diff --git a/release/src/router/www/Reaper_NAT.asp b/release/src/router/www/Reaper_NAT.asp
+index 850cd7c1432..e8b653136cc 100644
+--- a/release/src/router/www/Reaper_NAT.asp
++++ b/release/src/router/www/Reaper_NAT.asp
+@@ -163,6 +163,8 @@ table.classes td.mono{font-family:var(--mono);font-size:12px;word-break:break-al
+     <div class="frow"><div class="fl"><#NAT_SIP_Passthrough#></div><div class="fc"><label class="tswitch"><input type="checkbox" id="t_sip"><span class="track"></span></label></div><div class="fh"><#RNAT_20#></div></div>
+     <div class="frow"><div class="fl"><#PPPConnection_x_PPPoERelay_itemname#></div><div class="fc"><label class="tswitch"><input type="checkbox" id="t_relay"><span class="track"></span></label></div><div class="fh"><#RNAT_21#></div></div>
+     <div class="frow off" id="r_relayunit"><div class="fl"><#RNAT_22#></div><div class="fc"><select id="s_relayunit"><option value="0"><#dualwan_primary#></option><option value="1"><#dualwan_secondary#></option></select></div></div>
++    <!-- 2026-11-05 (audit E-13): helpers attach by explicit rule; the FTP ALG for LAN clients going out is a switch, off by default -->
++    <div class="frow"><div class="fl"><#RNAT_49#></div><div class="fc"><label class="tswitch"><input type="checkbox" id="t_ftp"><span class="track"></span></label></div><div class="fh"><#RNAT_50#></div></div>
+     <div class="frow"><div class="fl"><#FTP_ALG_port#></div><div class="fc"><input type="text" class="short mono" id="i_ftpport" maxlength="5" autocomplete="off"></div><div class="fh"><#RNAT_23#></div></div>
+   </div>
+ </div>
+@@ -177,20 +179,7 @@ table.classes td.mono{font-family:var(--mono);font-size:12px;word-break:break-al
+   <input type="hidden" name="action_mode" value="apply">
+   <input type="hidden" name="action_script" value="">
+   <input type="hidden" name="action_wait" value="5">
+-  <input type="hidden" name="vts_enable_x" value="" disabled>
+-  <input type="hidden" name="vts_rulelist" value="" disabled>
+-  <input type="hidden" name="autofw_enable_x" value="" disabled>
+-  <input type="hidden" name="autofw_rulelist" value="" disabled>
+-  <input type="hidden" name="dmz_ip" value="" disabled>
+-  <input type="hidden" name="fw_pt_pptp" value="" disabled>
+-  <input type="hidden" name="fw_pt_l2tp" value="" disabled>
+-  <input type="hidden" name="fw_pt_ipsec" value="" disabled>
+-  <input type="hidden" name="fw_pt_rtsp" value="" disabled>
+-  <input type="hidden" name="fw_pt_h323" value="" disabled>
+-  <input type="hidden" name="fw_pt_sip" value="" disabled>
+-  <input type="hidden" name="fw_pt_pppoerelay" value="" disabled>
+-  <input type="hidden" name="pppoerelay_unit" value="" disabled>
+-  <input type="hidden" name="vts_ftpport" value="" disabled>
++  <!-- settings fields: added by rp.changed at Apply -->
+ </form>
+ 
+ <script>
+@@ -212,6 +201,7 @@ var NV = {
+   fw_pt_pptp: U('<% nvram_char_to_ascii("","fw_pt_pptp"); %>'), fw_pt_l2tp: U('<% nvram_char_to_ascii("","fw_pt_l2tp"); %>'),
+   fw_pt_ipsec: U('<% nvram_char_to_ascii("","fw_pt_ipsec"); %>'), fw_pt_rtsp: U('<% nvram_char_to_ascii("","fw_pt_rtsp"); %>'),
+   fw_pt_h323: U('<% nvram_char_to_ascii("","fw_pt_h323"); %>'), fw_pt_sip: U('<% nvram_char_to_ascii("","fw_pt_sip"); %>'),
++  nf_ftp: U('<% nvram_char_to_ascii("","nf_ftp"); %>'),
+   fw_pt_pppoerelay: U('<% nvram_char_to_ascii("","fw_pt_pppoerelay"); %>'), pppoerelay_unit: U('<% nvram_char_to_ascii("","pppoerelay_unit"); %>'),
+   vts_ftpport: U('<% nvram_char_to_ascii("","vts_ftpport"); %>')
+ };
+@@ -289,8 +279,8 @@ var SECTIONS = [], BROKEN = {};
+ function section(panel, tab, init, collect){ SECTIONS.push({panel: panel, tab: tab, init: init, collect: collect}); }
+ var FIELD_TAB = {vts_enable_x: 'pf', vts_rulelist: 'pf', autofw_enable_x: 'pt', autofw_rulelist: 'pt', dmz_ip: 'dmz',
+   fw_pt_pptp: 'alg', fw_pt_l2tp: 'alg', fw_pt_ipsec: 'alg', fw_pt_rtsp: 'alg', fw_pt_h323: 'alg', fw_pt_sip: 'alg',
+-  fw_pt_pppoerelay: 'alg', pppoerelay_unit: 'alg', vts_ftpport: 'alg'};
+-var SWITCHES = {vts_enable_x: 1, autofw_enable_x: 1, fw_pt_pptp: 1, fw_pt_l2tp: 1, fw_pt_ipsec: 1, fw_pt_rtsp: 1, fw_pt_h323: 1, fw_pt_sip: 1, fw_pt_pppoerelay: 1};
++  fw_pt_pppoerelay: 'alg', pppoerelay_unit: 'alg', vts_ftpport: 'alg', nf_ftp: 'alg'};
++var SWITCHES = {vts_enable_x: 1, autofw_enable_x: 1, fw_pt_pptp: 1, fw_pt_l2tp: 1, fw_pt_ipsec: 1, fw_pt_rtsp: 1, fw_pt_h323: 1, fw_pt_sip: 1, fw_pt_pppoerelay: 1, nf_ftp: 1};
+ 
+ /* --- port forwarding --- */
+ section('p_pf', 'pf', function(){
+@@ -502,7 +492,7 @@ function dmzSync(){
+ }
+ 
+ /* --- NAT passthrough --- */
+-var ALG = [['t_pptp', 'fw_pt_pptp'], ['t_l2tp', 'fw_pt_l2tp'], ['t_ipsec', 'fw_pt_ipsec'], ['t_rtsp', 'fw_pt_rtsp'], ['t_h323', 'fw_pt_h323'], ['t_sip', 'fw_pt_sip'], ['t_relay', 'fw_pt_pppoerelay']];
++var ALG = [['t_pptp', 'fw_pt_pptp'], ['t_l2tp', 'fw_pt_l2tp'], ['t_ipsec', 'fw_pt_ipsec'], ['t_rtsp', 'fw_pt_rtsp'], ['t_h323', 'fw_pt_h323'], ['t_sip', 'fw_pt_sip'], ['t_ftp', 'nf_ftp'], ['t_relay', 'fw_pt_pppoerelay']];
+ section('p_alg', 'alg', function(){
+   ALG.forEach(function(a){ q(a[0]).checked = on1(NV[a[1]]); });
+   q('s_relayunit').value = NV.pppoerelay_unit === '1' ? '1' : '0';
+-- 
+2.25.1
+

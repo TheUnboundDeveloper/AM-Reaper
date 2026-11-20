@@ -1,0 +1,1557 @@
+From 274759c3ec93fb9aee9381473fa663bc91107179 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Fri, 6 Nov 2026 17:29:35 -0500
+Subject: [PATCH] Wallguard: Advanced rules in AdGuard Home syntax; reservation
+ names; report line ends
+
+- Advanced rules: a box on the Wallguard page that takes an AdGuard Home rule list as it is (up to
+  40,000 characters): ||name^ blocks a name and its subdomains, |name| that name only, @@ allows,
+  $important, $client= (an address, a MAC or a device's name; ~ for everyone else), $ctag= (a
+  Wallguard profile), $dnstype=, $dnsrewrite=NOERROR/NXDOMAIN/REFUSED, wildcards and /regex/. A
+  rule for some devices applies to those devices only, and a block is never put on a name the
+  router itself needs. wallguardc compiles it beside the block table
+  (dnsmasq/src/wallguard_adv.h), dnsmasq reloads it when the file changes, and the page shows what
+  the last build made of it: rules in use, lines left out with the reason, notes.
+- Invisible characters (zero-width and other format characters) are removed before saving and the
+  page says how many; control characters are refused by httpd; a line with any other non-ASCII
+  byte is left out with the character named.
+- Device names for $client= include the DHCP reservations' names, so a reserved device that is
+  offline still matches.
+- The report no longer shows a reported line's own line end as '?'.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ release/src/router/dnsmasq/src/wallguard.c    | 108 +++
+ .../src/router/dnsmasq/src/wallguard_adv.h    | 389 +++++++++++
+ release/src/router/httpd/web.c                |  81 +++
+ release/src/router/rc/wallguard.c             |  86 +++
+ release/src/router/wallguard/wallguard.sh     |  11 +
+ release/src/router/wallguard/wallguardc.c     | 621 +++++++++++++++++-
+ release/src/router/www/Reaper_Wallguard.asp   |  46 ++
+ 7 files changed, 1341 insertions(+), 1 deletion(-)
+ create mode 100644 release/src/router/dnsmasq/src/wallguard_adv.h
+
+diff --git a/release/src/router/dnsmasq/src/wallguard.c b/release/src/router/dnsmasq/src/wallguard.c
+index 5fd3112a112..282f5a173dd 100644
+--- a/release/src/router/dnsmasq/src/wallguard.c
++++ b/release/src/router/dnsmasq/src/wallguard.c
+@@ -22,6 +22,7 @@
+ 
+ #include "dnsmasq.h"
+ #include "wallguard_db.h"
++#include "wallguard_adv.h"	/* 2026-11-06: Advanced rules */
+ 
+ #include <sys/mman.h>
+ 
+@@ -51,6 +52,10 @@ struct wallguard_safe_name { uint64_t h; char g; };
+ struct wallguard_safe_addr { char g; int family; union all_addr a; };
+ 
+ static struct {
++  struct wga adv;			/* 2026-11-06: Advanced rules (wallguard_adv.h), SH_DIR/adv */
++  time_t adv_mtime;
++  ino_t adv_ino;
++  off_t adv_size;
+   struct wallguard_table t;		/* wallguard_db.h: the block table (review 2026-10-24, Q-A-9: one mapper) */
+   time_t checked, pol_mtime, stats_at;
+   ino_t pol_ino;
+@@ -339,6 +344,66 @@ static char wallguard_safe_group(const char *name)
+ }
+ 
+ /* once every WALLGUARD_RECHECK seconds: pick up a new table / policy, the live switch, stats */
++/* 2026-11-06 (owner): Advanced rules - SH_DIR/adv, written by `wallguardc adv`; reloaded when it changes (rename =
++   a new inode), cleared when it goes. A damaged file means no Advanced rules, never a failure. */
++static void wallguard_adv_load(void)
++{
++  char p[SH_PATH];
++  struct stat st;
++  FILE *f;
++
++  wallguard_path(p, sizeof(p), "adv");
++  if (stat(p, &st) == -1)
++    {
++      if (sh.adv_mtime)
++	wga_free(&sh.adv);
++      sh.adv_mtime = 0;
++      return;
++    }
++  if (st.st_mtime == sh.adv_mtime && st.st_ino == sh.adv_ino && st.st_size == sh.adv_size)
++    return;
++  sh.adv_mtime = st.st_mtime;
++  sh.adv_ino = st.st_ino;
++  sh.adv_size = st.st_size;
++  if (!(f = fopen(p, "r")))
++    {
++      wga_free(&sh.adv);
++      return;
++    }
++  if (wga_load(&sh.adv, f))
++    wga_free(&sh.adv);
++  fclose(f);
++}
++
++/* a blocked answer: resp = the rule's own (wallguard_adv.h WGA_R_*), else the global answer mode */
++static size_t wallguard_block_reply(struct dns_header *header, char *limit, size_t qlen, unsigned short qtype, int resp)
++{
++  union all_addr addr;
++  unsigned char *p;
++  int trunc = 0, ip = (qtype == T_A || qtype == T_AAAA);
++  int nx = resp == WGA_R_NX || (resp == WGA_R_DEFAULT && sh.nx);
++  int null = ip && (resp == WGA_R_NULL || (resp == WGA_R_DEFAULT && !sh.nx));
++
++  if (resp == WGA_R_REFUSED)
++    setup_reply(header, 0, EDE_BLOCKED);
++  else if (nx)
++    setup_reply(header, F_NXDOMAIN, EDE_BLOCKED);
++  else if (null)
++    setup_reply(header, qtype == T_A ? F_IPV4 : F_IPV6, EDE_BLOCKED);
++  else
++    setup_reply(header, F_NOERR, EDE_BLOCKED);	/* NODATA */
++  if (!(p = skip_questions(header, qlen)))
++    return 0;
++  if (null)
++    {
++      memset(&addr, 0, sizeof(addr));
++      if (add_resource_record(header, limit, &trunc, sizeof(struct dns_header), &p, WALLGUARD_TTL, NULL,
++			      qtype, C_IN, qtype == T_A ? "4" : "6", &addr))
++	header->ancount = htons(1);
++    }
++  return p - (unsigned char *)header;
++}
++
+ static void wallguard_tick(time_t now)
+ {
+   char p[SH_PATH];
+@@ -350,6 +415,7 @@ static void wallguard_tick(time_t now)
+   wallguard_map();
+   wallguard_policy();
+   wallguard_safe_load();
++  wallguard_adv_load();
+   wallguard_path(p, sizeof(p), "live.on");
+   sh.live = stat(p, &st) == 0 && now - st.st_mtime < WALLGUARD_LIVE_AGE;
+   if (now - sh.stats_at >= WALLGUARD_STATS_EVERY)
+@@ -615,6 +681,48 @@ size_t wallguard_answer(struct dns_header *header, char *limit, size_t qlen,
+   *ede = EDE_UNSET;
+   if ((sa = wallguard_safe_answer(header, limit, qlen, client, qtype, name, now)))
+     return sa;
++  /* 2026-11-06 (owner): Advanced rules first, in AdGuard's order - an important allow, an important block (it beats
++     the table's allows too: My rules' Never block, the lists' @@ lines), an allow, a plain block (the table's
++     allows still beat that one). Like My rules (bit 0) they apply only where the device's profile has My rules:
++     Bypass and a paused device are left alone. dnsmasq's own answers still win (wallguard_config_answer). */
++  if (sh.adv.nnames || sh.adv.npats)
++    {
++      struct wga_who w;
++      unsigned char amac[6];
++      int imp, resp, av;
++      uint32_t aline, abits;
++
++      memset(&w, 0, sizeof(w));
++      if (client && client->sa.sa_family == AF_INET)
++	w.family = AF_INET, w.addr = (const unsigned char *)&client->in.sin_addr;
++      else if (client && client->sa.sa_family == AF_INET6)
++	{
++	  const unsigned char *a6 = (const unsigned char *)&client->in6.sin6_addr;
++	  if (IN6_IS_ADDR_V4MAPPED(&client->in6.sin6_addr))
++	    w.family = AF_INET, w.addr = a6 + 12;
++	  else
++	    w.family = AF_INET6, w.addr = a6;
++	}
++      if (sh.adv.has_mac && client && find_mac(client, amac, 1, now) == 6)
++	w.mac = amac;
++      av = wga_eval(&sh.adv, name, qtype, &w, &imp, &resp, &aline);
++      if (av == WGA_ALLOW)
++	{
++	  wallguard_live(client, qtype, name, 'a');
++	  return 0;
++	}
++      if (av == WGA_BLOCK && !wallguard_config_answer(name, qtype))
++	{
++	  mask = wallguard_mask(client, now, mac, &have_mac, NULL);
++	  if ((mask & 1u) && (imp || !sh.t.ok || wallguard_lookup(&sh.t.v, name, &abits) != WALLGUARD_ALLOWED))
++	    {
++	      wallguard_hit(client, 1u, 'q', name, mac, have_mac);
++	      wallguard_live(client, qtype, name, 'b');
++	      *ede = EDE_BLOCKED;
++	      return wallguard_block_reply(header, limit, qlen, qtype, resp);
++	    }
++	}
++    }
+   if (!sh.t.ok)
+     {
+       wallguard_live(client, qtype, name, '-');
+diff --git a/release/src/router/dnsmasq/src/wallguard_adv.h b/release/src/router/dnsmasq/src/wallguard_adv.h
+new file mode 100644
+index 00000000000..1a8ad819fc4
+--- /dev/null
++++ b/release/src/router/dnsmasq/src/wallguard_adv.h
+@@ -0,0 +1,389 @@
++// SPDX-License-Identifier: GPL-2.0-only
++// Copyright (C) 2026 the Reaper project maintainer
++// Part of the Reaper hardened Asuswrt-Merlin build. See LICENSE / LICENSE.reaper.
++/*
++ * wallguard_adv.h - Wallguard's Advanced rules, the engine side (2026-11-06, owner: "a custom box that would
++ * accept all of the text file ... fully switch over to the router and off AdGuard").
++ *
++ * `wallguardc adv` (wallguard/wallguardc.c) turns the operator's AdGuard-syntax text into this file, and every
++ * dnsmasq instance loads it beside the block table. Plain text, one item per line:
++ *   WGADV 1
++ *   scope <id> mac <aa:bb:cc:dd:ee:ff>      | scope <id> ip <address[/prefix]>
++ *   rule <flags> <scope> <qtypes> <resp> <kind> <pattern> <source line>
++ *     flags   a|b (allow|block) [i] (important) s|x (name and subdomains | that name only)
++ *     scope   - | <id> | !<id> (every device but those)     qtypes  - | n,n... | !n,n...
++ *     resp    - (the global answer mode) | nodata | nx | refused | null
++ *     kind    n (a name: hashed, binary search) | g (a glob, fnmatch) | r (POSIX extended regex)
++ * The order AdGuard uses: an important allow > an important block > an allow > a block. The caller combines
++ * the verdict with the block table (see wallguard.c): an important block also beats the table's allows (My
++ * rules' Never block, lists' @@ lines); a plain block does not. The compiler keeps a block off every name the
++ * router itself needs. Damaged lines are skipped; a missing file means no Advanced rules.
++ */
++#ifndef WALLGUARD_ADV_H
++#define WALLGUARD_ADV_H
++#include <stdint.h>
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++#include <fnmatch.h>
++#include <regex.h>
++#include <arpa/inet.h>
++#include <sys/socket.h>
++
++#define WGA_MAX_RULES	20000
++#define WGA_MAX_PATS	576		/* 512 globs + 64 regexes */
++#define WGA_MAX_RE	64
++#define WGA_MAX_SCOPES	256
++#define WGA_MAX_MEMB	2048
++
++#define WGA_F_ALLOW	1
++#define WGA_F_IMP	2
++#define WGA_F_SUB	4
++#define WGA_F_SNEG	8
++#define WGA_F_QNEG	16
++
++#define WGA_R_DEFAULT	0
++#define WGA_R_NODATA	1
++#define WGA_R_NX	2
++#define WGA_R_REFUSED	3
++#define WGA_R_NULL	4
++
++#define WGA_NONE	0
++#define WGA_ALLOW	1
++#define WGA_BLOCK	2
++
++struct wga_rule {
++	uint64_t h;		/* kind n: the name's hash (wallguard_hash) */
++	char *pat;		/* g / r */
++	regex_t *re;
++	uint32_t line;
++	int16_t scope;		/* -1 = everyone */
++	uint8_t flags, resp, kind, nq;
++	uint16_t q[6];
++};
++
++struct wga_memb {
++	int16_t scope;
++	uint8_t is_mac, mac[6];
++	int family, prefix;
++	unsigned char addr[16];
++};
++
++struct wga {
++	struct wga_rule *names, *pats;
++	size_t nnames, npats;
++	struct wga_memb *memb;
++	size_t nmemb;
++	int has_mac;
++};
++
++static inline uint64_t wga_hash(const char *s, size_t n)
++{
++	uint64_t h = 0xcbf29ce484222325ull;
++	size_t i;
++	for (i = 0; i < n; i++) {
++		unsigned char c = (unsigned char)s[i];
++		if (c >= 'A' && c <= 'Z')
++			c += 32;
++		h ^= c;
++		h *= 0x100000001b3ull;
++	}
++	return h;
++}
++
++static inline void wga_free(struct wga *a)
++{
++	size_t i;
++	for (i = 0; i < a->npats; i++) {
++		if (a->pats[i].re) {
++			regfree(a->pats[i].re);
++			free(a->pats[i].re);
++		}
++		free(a->pats[i].pat);
++	}
++	free(a->names);
++	free(a->pats);
++	free(a->memb);
++	memset(a, 0, sizeof(*a));
++}
++
++static inline int wga_cmp(const void *x, const void *y)
++{
++	const struct wga_rule *a = (const struct wga_rule *)x, *b = (const struct wga_rule *)y;
++	return a->h < b->h ? -1 : a->h > b->h;
++}
++
++static inline int wga_mac_parse(const char *s, uint8_t *m)
++{
++	unsigned int v[6];
++	int i;
++	if (strlen(s) != 17 || sscanf(s, "%2x:%2x:%2x:%2x:%2x:%2x", &v[0], &v[1], &v[2], &v[3], &v[4], &v[5]) != 6)
++		return 0;
++	for (i = 0; i < 6; i++)
++		m[i] = (uint8_t)v[i];
++	return 1;
++}
++
++/* 0 = loaded (possibly empty); the previous content of a is freed first */
++static inline int wga_load(struct wga *a, FILE *f)
++{
++	char line[600];
++	size_t cn = 0, cp = 0, cm = 0;
++	int nre = 0;
++
++	wga_free(a);
++	if (!f || !fgets(line, sizeof(line), f) || strncmp(line, "WGADV 1", 7))
++		return -1;
++	while (fgets(line, sizeof(line), f)) {
++		char fl[8], sc[16], qt[64], rs[12], kd[4], pat[300], kindw[8], val[64];
++		unsigned long ln;
++		int id;
++
++		line[strcspn(line, "\r\n")] = 0;
++		if (sscanf(line, "scope %d %7s %63s", &id, kindw, val) == 3) {
++			struct wga_memb m;
++			if (id < 0 || id >= WGA_MAX_SCOPES || a->nmemb >= WGA_MAX_MEMB)
++				continue;
++			memset(&m, 0, sizeof(m));
++			m.scope = (int16_t)id;
++			if (!strcmp(kindw, "mac")) {
++				if (!wga_mac_parse(val, m.mac))
++					continue;
++				m.is_mac = 1;
++				a->has_mac = 1;
++			} else if (!strcmp(kindw, "ip")) {
++				char *sl = strchr(val, '/');
++				int max;
++				if (sl)
++					*sl++ = 0;
++				if (inet_pton(AF_INET, val, m.addr) == 1)
++					m.family = AF_INET, max = 32;
++				else if (inet_pton(AF_INET6, val, m.addr) == 1)
++					m.family = AF_INET6, max = 128;
++				else
++					continue;
++				m.prefix = sl ? atoi(sl) : max;
++				if (m.prefix < 0 || m.prefix > max)
++					continue;
++			} else
++				continue;
++			if (a->nmemb == cm) {
++				struct wga_memb *n = (struct wga_memb *)realloc(a->memb, (cm = cm ? cm * 2 : 16) * sizeof(*n));
++				if (!n)
++					return -1;
++				a->memb = n;
++			}
++			a->memb[a->nmemb++] = m;
++			continue;
++		}
++		if (sscanf(line, "rule %7s %15s %63s %11s %3s %299s %lu", fl, sc, qt, rs, kd, pat, &ln) == 7) {
++			struct wga_rule r;
++			char *q;
++			memset(&r, 0, sizeof(r));
++			r.line = (uint32_t)ln;
++			r.flags = (fl[0] == 'a' ? WGA_F_ALLOW : 0) | (strchr(fl, 'i') ? WGA_F_IMP : 0) | (strchr(fl, 's') ? WGA_F_SUB : 0);
++			if (fl[0] != 'a' && fl[0] != 'b')
++				continue;
++			r.scope = -1;
++			if (strcmp(sc, "-")) {
++				const char *s = sc;
++				if (*s == '!')
++					r.flags |= WGA_F_SNEG, s++;
++				r.scope = (int16_t)atoi(s);
++				if (r.scope < 0 || r.scope >= WGA_MAX_SCOPES)
++					continue;
++			}
++			if (strcmp(qt, "-")) {
++				char *s = qt;
++				if (*s == '!')
++					r.flags |= WGA_F_QNEG, s++;
++				for (q = strtok(s, ","); q && r.nq < 6; q = strtok(NULL, ","))
++					r.q[r.nq++] = (uint16_t)atoi(q);
++			}
++			r.resp = !strcmp(rs, "nodata") ? WGA_R_NODATA : !strcmp(rs, "nx") ? WGA_R_NX :
++				 !strcmp(rs, "refused") ? WGA_R_REFUSED : !strcmp(rs, "null") ? WGA_R_NULL : WGA_R_DEFAULT;
++			r.kind = (uint8_t)kd[0];
++			if (r.kind == 'n') {
++				if (a->nnames >= WGA_MAX_RULES)
++					continue;
++				r.h = wga_hash(pat, strlen(pat));
++				if (a->nnames == cn) {
++					struct wga_rule *n = (struct wga_rule *)realloc(a->names, (cn = cn ? cn * 2 : 64) * sizeof(*n));
++					if (!n)
++						return -1;
++					a->names = n;
++				}
++				a->names[a->nnames++] = r;
++			} else if (r.kind == 'g' || r.kind == 'r') {
++				if (a->npats >= WGA_MAX_PATS)
++					continue;
++				if (r.kind == 'r') {
++					if (nre >= WGA_MAX_RE || !(r.re = (regex_t *)malloc(sizeof(regex_t))))
++						continue;
++					if (regcomp(r.re, pat, REG_EXTENDED | REG_ICASE | REG_NOSUB)) {
++						free(r.re);
++						continue;
++					}
++					nre++;
++				}
++				if (!(r.pat = strdup(pat))) {
++					if (r.re) {
++						regfree(r.re);
++						free(r.re);
++					}
++					continue;
++				}
++				if (a->npats == cp) {
++					struct wga_rule *n = (struct wga_rule *)realloc(a->pats, (cp = cp ? cp * 2 : 16) * sizeof(*n));
++					if (!n) {
++						free(r.pat);
++						if (r.re) {
++							regfree(r.re);
++							free(r.re);
++						}
++						return -1;
++					}
++					a->pats = n;
++				}
++				a->pats[a->npats++] = r;
++			}
++		}
++	}
++	if (a->nnames)
++		qsort(a->names, a->nnames, sizeof(*a->names), wga_cmp);
++	return 0;
++}
++
++/* the asking device's scopes, worked out once per query and only when a scoped rule is in play */
++struct wga_who {
++	const uint8_t *mac;		/* NULL = unknown */
++	int family;			/* AF_INET / AF_INET6 / 0 */
++	const unsigned char *addr;
++	int done;
++	uint64_t bits[WGA_MAX_SCOPES / 64];
++};
++
++static inline int wga_prefix_eq(const unsigned char *a, const unsigned char *b, int bits)
++{
++	int full = bits / 8, rest = bits % 8;
++	if (full && memcmp(a, b, (size_t)full))
++		return 0;
++	if (rest) {
++		unsigned char m = (unsigned char)(0xff << (8 - rest));
++		if ((a[full] & m) != (b[full] & m))
++			return 0;
++	}
++	return 1;
++}
++
++static inline int wga_in_scope(const struct wga *a, struct wga_who *w, const struct wga_rule *r)
++{
++	int in;
++	if (r->scope < 0)
++		return 1;
++	if (!w->done) {
++		size_t i;
++		memset(w->bits, 0, sizeof(w->bits));
++		for (i = 0; i < a->nmemb; i++) {
++			const struct wga_memb *m = &a->memb[i];
++			int hit = m->is_mac ? (w->mac && !memcmp(m->mac, w->mac, 6))
++				: (w->family == m->family && w->addr && wga_prefix_eq(m->addr, w->addr, m->prefix));
++			if (hit)
++				w->bits[m->scope / 64] |= 1ull << (m->scope % 64);
++		}
++		w->done = 1;
++	}
++	in = (w->bits[r->scope / 64] >> (r->scope % 64)) & 1;
++	return (r->flags & WGA_F_SNEG) ? !in : in;
++}
++
++static inline int wga_qt_ok(const struct wga_rule *r, int qtype)
++{
++	int i, hit = 0;
++	if (!r->nq)
++		return 1;
++	for (i = 0; i < r->nq; i++)
++		if (r->q[i] == qtype)
++			hit = 1;
++	return (r->flags & WGA_F_QNEG) ? !hit : hit;
++}
++
++/* precedence classes: 3 important allow, 2 important block, 1 allow, 0 block */
++static inline int wga_class(const struct wga_rule *r)
++{
++	return (r->flags & WGA_F_ALLOW) ? ((r->flags & WGA_F_IMP) ? 3 : 1) : ((r->flags & WGA_F_IMP) ? 2 : 0);
++}
++
++/* WGA_NONE / WGA_ALLOW / WGA_BLOCK; *imp = the deciding rule was important, *resp its answer, *line its source line.
++   name: the query name, any case, trailing dots ignored. */
++static inline int wga_eval(const struct wga *a, const char *qname, int qtype, struct wga_who *w,
++			   int *imp, int *resp, uint32_t *line)
++{
++	char name[256];
++	const struct wga_rule *best = NULL;
++	size_t n = strlen(qname), i;
++	const char *s;
++	int first = 1;
++
++	*imp = 0;
++	*resp = WGA_R_DEFAULT;
++	*line = 0;
++	if (!a || (!a->nnames && !a->npats))
++		return WGA_NONE;
++	while (n && qname[n - 1] == '.')
++		n--;
++	if (!n || n >= sizeof(name))
++		return WGA_NONE;
++	for (i = 0; i < n; i++)
++		name[i] = (char)((qname[i] >= 'A' && qname[i] <= 'Z') ? qname[i] + 32 : qname[i]);
++	name[n] = 0;
++
++#define WGA_TAKE(r) do { if (wga_qt_ok((r), qtype) && wga_in_scope(a, w, (r)) && \
++			     (!best || wga_class(r) > wga_class(best))) best = (r); } while (0)
++	/* names: the full name, then each parent whose rule covers subdomains */
++	for (s = name; a->nnames; first = 0) {
++		uint64_t h = wga_hash(s, strlen(s));
++		size_t lo = 0, hi = a->nnames;
++		while (lo < hi) {
++			size_t mid = lo + (hi - lo) / 2;
++			if (a->names[mid].h < h)
++				lo = mid + 1;
++			else
++				hi = mid;
++		}
++		for (; lo < a->nnames && a->names[lo].h == h; lo++)
++			if (first || (a->names[lo].flags & WGA_F_SUB))
++				WGA_TAKE(&a->names[lo]);
++		if (best && wga_class(best) == 3)
++			break;
++		if (!(s = strchr(s, '.')))
++			break;
++		s++;
++	}
++	/* patterns: a glob against the name (and, covering subdomains, each parent); a regex against the name */
++	for (i = 0; i < a->npats && !(best && wga_class(best) == 3); i++) {
++		const struct wga_rule *r = &a->pats[i];
++		int hit = 0;
++		if (best && wga_class(r) <= wga_class(best))
++			continue;
++		if (r->kind == 'r')
++			hit = regexec(r->re, name, 0, NULL, 0) == 0;
++		else
++			for (s = name; s && !hit; ) {
++				hit = fnmatch(r->pat, s, 0) == 0;
++				if (!(r->flags & WGA_F_SUB) || !(s = strchr(s, '.')))
++					break;
++				s++;
++			}
++		if (hit)
++			WGA_TAKE(r);
++	}
++#undef WGA_TAKE
++	if (!best)
++		return WGA_NONE;
++	*imp = (best->flags & WGA_F_IMP) != 0;
++	*resp = best->resp;
++	*line = best->line;
++	return (best->flags & WGA_F_ALLOW) ? WGA_ALLOW : WGA_BLOCK;
++}
++#endif
+diff --git a/release/src/router/httpd/web.c b/release/src/router/httpd/web.c
+index b32ead860bf..37c87c3582f 100644
+--- a/release/src/router/httpd/web.c
++++ b/release/src/router/httpd/web.c
+@@ -27109,6 +27109,22 @@ static int sh_chk_rewrite(char *l)
+    `<>&` arrive as < etc. - S-B-4 - and the parsed value is the same) */
+ /* 2026-10-27: Wallguard's settings files and the check every line must pass. The page's save and the settings
+    file's import (rcfg_put) both write through this table, so a restored file meets the page's own rules. */
++/* 2026-11-06 (owner): Wallguard's Advanced rules text - up to SH_ADV_MAX bytes, UTF-8 allowed (comments), no control
++   character but tab and line ends, no NUL. Every rule line is checked by wallguardc adv, which skips and reports. */
++#define SH_ADV_MAX 40000
++static int sh_adv_ok(const char *v, size_t n)
++{
++	size_t i;
++	if (n > SH_ADV_MAX || strlen(v) != n)
++		return 0;
++	for (i = 0; i < n; i++) {
++		unsigned char c = (unsigned char)v[i];
++		if ((c < 0x20 && c != '\t' && c != '\n' && c != '\r') || c == 0x7f)
++			return 0;
++	}
++	return 1;
++}
++
+ struct sh_file { const char *field, *file; int (*check)(char *); };
+ static const struct sh_file sh_files[] = {
+ 	{ "lists", SH_JFFS "/lists", sh_chk_list },
+@@ -27327,6 +27343,28 @@ do_reaper_wallguard_cgi(char *url, FILE *stream)
+ 		/* 2026-11-05: DNS rewrites */
+ 		websWrite(stream, ",\"rewrite\":");
+ 		sh_json_file(stream, SH_JFFS "/rewrite");
++		/* 2026-11-06: Advanced rules - the text, and what the last build made of it (wallguardc's own JSON) */
++		websWrite(stream, ",\"adv\":");
++		sh_json_file(stream, SH_JFFS "/adv");
++		websWrite(stream, ",\"adv_stats\":");
++		{
++			struct stat ast;
++			FILE *af = NULL;
++			char abuf[2048];
++			size_t an;
++			if (stat(SH_DIR "/adv.json", &ast) == 0 && S_ISREG(ast.st_mode) && ast.st_size > 1 && ast.st_size < 65536 &&
++			    (af = fopen(SH_DIR "/adv.json", "r")) != NULL && fgetc(af) == '{') {
++				websWrite(stream, "{");
++				while ((an = fread(abuf, 1, sizeof(abuf) - 1, af)) > 0) {
++					abuf[an] = 0;
++					abuf[strcspn(abuf, "\n")] = 0;	/* one line; the trailing newline goes */
++					websWrite(stream, "%s", abuf);
++				}
++			} else
++				websWrite(stream, "null");
++			if (af)
++				fclose(af);
++		}
+ 		websWrite(stream, ",\"catalog\":[");
+ 		if ((f = fopen(SH_CATALOG, "r"))) {
+ 			char cl[2048];
+@@ -27428,6 +27466,45 @@ do_reaper_wallguard_cgi(char *url, FILE *stream)
+ 		websWrite(stream, "{\"ok\":1,\"saved\":%d}", saved);
+ 		return;
+ 	}
++	/* 2026-11-06 (owner): Advanced rules - its own request (the settings post shares one 64 KB buffer), the text
++	   base64url-encoded so the rule characters cost no %-escapes. The page then saves as usual, which rebuilds. */
++	if (!strcmp(action, "adv")) {
++		char *v = get_cgi("adv64"), *txt;
++		long n = -1;
++		if (v && strlen(v) <= (SH_ADV_MAX + 2) / 3 * 4 + 4 && (txt = malloc(SH_ADV_MAX + 4)) != NULL) {
++			unsigned long acc = 0;
++			int bits = 0;
++			const char *s;
++			n = 0;
++			for (s = v; *s && *s != '=' && n >= 0; s++) {
++				int c = *s, d = (c >= 'A' && c <= 'Z') ? c - 'A' : (c >= 'a' && c <= 'z') ? c - 'a' + 26 :
++					(c >= '0' && c <= '9') ? c - '0' + 52 : (c == '-' || c == '+' || c == ' ') ? 62 : (c == '_' || c == '/') ? 63 : -1;
++				if (d < 0) { n = -1; break; }
++				acc = ((acc << 6) | (unsigned long)d) & 0xffffff;
++				bits += 6;
++				if (bits >= 8) {
++					bits -= 8;
++					if (n >= SH_ADV_MAX) { n = -1; break; }
++					txt[n++] = (char)((acc >> bits) & 0xff);
++				}
++			}
++			if (n >= 0) {
++				txt[n] = 0;
++				if (!sh_adv_ok(txt, (size_t)n))
++					n = -1;
++				else if (n ? rjf_set(SH_JFFS "/adv", txt, "wallguard") != 0 : (unlink(SH_JFFS "/adv"), 0) != 0)
++					n = -2;
++			}
++			free(txt);
++		}
++		if (n < 0) {
++			websWrite(stream, "{\"ok\":0,\"ek\":\"%s\",\"field\":\"adv\"}", n == -2 ? "RSHD_E1" : "RSHD_E2");
++			return;
++		}
++		reaper_audit("wallguard", "save", "Advanced rules");
++		websWrite(stream, "{\"ok\":1,\"bytes\":%ld}", n);
++		return;
++	}
+ 	if (!strcmp(action, "update")) {
+ 		notify_rc("start_wallguard_update");
+ 		reaper_audit("wallguard", "update", "lists");
+@@ -29159,6 +29236,7 @@ static const struct { const char *sect; const char *nv; size_t max; } rcfg_flags
+ 	{ "wallguard", "wallguard_assign", SH_LIST_MAX }, { "wallguard", "wallguard_services", SH_LIST_MAX },
+ 	{ "wallguard", "wallguard_sched", SH_LIST_MAX }, { "wallguard", "wallguard_safe", SH_LIST_MAX },
+ 	{ "wallguard", "wallguard_rewrite", SH_LIST_MAX },	/* 2026-11-05: DNS rewrites */
++	{ "wallguard", "wallguard_adv", SH_ADV_MAX + 1 },	/* 2026-11-06: Advanced rules */
+ 	{ "wallguard", "wallguard_keys", 8 * 220 + 1 },
+ 	/* DNS: strict order, no cache, reverse sharing, IPv6 names, the LAN DNS check, the health check */
+ 	{ "dns",    "reaper_dns_strict", 2  }, { "dns",    "reaper_dns_nocache", 2 },
+@@ -29239,6 +29317,7 @@ static char *rcfg_get(int i, int *have)
+ 	}
+ 	if (!strcmp(nv, "rwarden_dnskeys")) f = RDW_KEYS;
+ 	else if (!strcmp(nv, "wallguard_keys")) f = SH_JFFS "/keys";
++	else if (!strcmp(nv, "wallguard_adv")) f = SH_JFFS "/adv";	/* 2026-11-06 */
+ 	else if (wf) f = wf->file;
+ 	if (f) {
+ 		jv = rjf_get(f, &ex);
+@@ -29278,6 +29357,8 @@ static int rcfg_put(int i, const char *v)
+ 		unlink(dw ? RDW_KEYS : SH_JFFS "/keys");
+ 		return (dw ? src_keys_save(RDW_KEYS, RDW_SRC, "rwarden", v) : sh_keys_save(v)) == 0 ? 0 : -1;
+ 	}
++	if (!strcmp(nv, "wallguard_adv"))	/* 2026-11-06: Advanced rules - its own gate (sh_adv_ok) */
++		return (sh_adv_ok(v, strlen(v)) && (*v ? rjf_set(SH_JFFS "/adv", v, "wallguard") == 0 : (unlink(SH_JFFS "/adv"), 1))) ? 0 : -1;
+ 	if (wf || !strcmp(nv, "rwarden_dnssrc")) {	/* line by line through the page's own check */
+ 		if ((clean = malloc(SH_LIST_MAX > RDW_SRC_MAX ? SH_LIST_MAX : RDW_SRC_MAX)) == NULL)
+ 			return -1;
+diff --git a/release/src/router/rc/wallguard.c b/release/src/router/rc/wallguard.c
+index c40b0161efe..22ea1f44822 100644
+--- a/release/src/router/rc/wallguard.c
++++ b/release/src/router/rc/wallguard.c
+@@ -417,6 +417,91 @@ static void sh_seed_allow(void)
+ 
+ /* ---- safe: names that are never blocked without being on the allow list - the operator's own
+    (DDNS, NTP and DoT servers, LAN domain, VPN endpoints) and the hosts of their custom lists */
++/* 2026-11-06 (owner): Advanced rules name devices ($client='name') and profiles ($ctag=name); `wallguardc adv`
++ * resolves both to MACs from this map, "<name>\t<mac>": the Devices page's names, DHCP host names, and
++ * "profile:<id>" / "profile:<name>" for every device assigned to a profile. Root-only (the LAN's names). */
++static void sh_clients_add(char **b, size_t *len, size_t *cap, const char *pre, const char *name, const char *mac)
++{
++	char m[18];
++	size_t i;
++
++	if (!name || !*name || !mac || strlen(mac) != 17 || strlen(name) > 90)
++		return;
++	for (i = 0; name[i]; i++)
++		if ((unsigned char)name[i] < 0x20 || name[i] == 0x7f)
++			return;
++	for (i = 0; i < 17; i++) {
++		char c = mac[i];
++		if (i % 3 == 2 ? c != ':' : !isxdigit((unsigned char)c))
++			return;
++		m[i] = (char)tolower((unsigned char)c);
++	}
++	m[17] = 0;
++	sh_add(b, len, cap, "%s%s\t%s\n", pre, name, m);
++}
++
++static void sh_write_clients(void)
++{
++	char *b = NULL, *nv, *p, *ent, *cfg, *line, *save, buf[256], ids[64][20], names[64][64];
++	size_t len = 0, cap = 0;
++	int ex, n = 0, i;
++	FILE *f;
++
++	sh_add(&b, &len, &cap, "%s", "");
++	nv = strdup(nvram_safe_get("custom_clientlist"));
++	for (p = nv; p && (ent = strsep(&p, "<")) != NULL; ) {
++		char *nm = NULL, *mac = NULL;
++		if (vstrsep(ent, ">", &nm, &mac) >= 2)
++			sh_clients_add(&b, &len, &cap, "", nm, mac);
++	}
++	free(nv);
++	/* 2026-11-06 (metal _r4): the DHCP reservations' names - the most deliberate names a device has, and the ones an
++	   operator writes into $client=; a reserved device that is offline still resolves. "<mac>ip>dns>name" */
++	nv = strdup(nvram_safe_get("dhcp_staticlist"));
++	for (p = nv; p && (ent = strsep(&p, "<")) != NULL; ) {
++		char *mac = NULL, *ip = NULL, *dns = NULL, *nm = NULL;
++		if (vstrsep(ent, ">", &mac, &ip, &dns, &nm) >= 4)
++			sh_clients_add(&b, &len, &cap, "", nm, mac);
++	}
++	free(nv);
++	if ((f = fopen("/var/lib/misc/dnsmasq.leases", "r")) != NULL) {
++		while (fgets(buf, sizeof(buf), f)) {
++			char mac[20], host[100];
++			if (sscanf(buf, "%*s %19s %*s %99s", mac, host) == 2 && strcmp(host, "*"))
++				sh_clients_add(&b, &len, &cap, "", host, mac);
++		}
++		fclose(f);
++	}
++	/* profiles: "<id> <mask> <name>"; assignments: "mac <MAC> <id>" */
++	cfg = strdup(rjf_get(SH_JFFS "/profiles", &ex));
++	for (line = cfg ? strtok_r(cfg, "\n", &save) : NULL; line && n < 64; line = strtok_r(NULL, "\n", &save)) {
++		char id[20];
++		unsigned long m;
++		int off = 0;
++		if (sscanf(line, "%19s %lx %n", id, &m, &off) >= 2 && off > 0) {
++			snprintf(ids[n], sizeof(ids[n]), "%s", id);
++			snprintf(names[n], sizeof(names[n]), "%s", line + off);
++			n++;
++		}
++	}
++	free(cfg);
++	cfg = strdup(rjf_get(SH_JFFS "/assign", &ex));
++	for (line = cfg ? strtok_r(cfg, "\n", &save) : NULL; line; line = strtok_r(NULL, "\n", &save)) {
++		char mac[20], pid[20];
++		if (sscanf(line, "mac %19s %19s", mac, pid) != 2)
++			continue;
++		sh_clients_add(&b, &len, &cap, "profile:", pid, mac);
++		for (i = 0; i < n; i++)
++			if (!strcmp(ids[i], pid))
++				sh_clients_add(&b, &len, &cap, "profile:", names[i], mac);
++	}
++	free(cfg);
++	if (b) {
++		reaper_write_changed(SH_DIR "/clients", b, strlen(b), 0600);
++		free(b);
++	}
++}
++
+ static void sh_write_safe(void)
+ {
+ 	char *b = NULL, host[256], *cfg, *line, *save;
+@@ -425,6 +510,7 @@ static void sh_write_safe(void)
+ 	const char *v;
+ 
+ 	sh_seed_allow();	/* 2026-10-22: the fixed names live in the operator's allow list now */
++	sh_write_clients();	/* 2026-11-06: Advanced rules' name map, written wherever the safe set is */
+ 	sh_add(&b, &len, &cap, "%s", "");
+ 	/* the hosts of the operator's own custom lists (the presets' hosts are seeded entries) */
+ 	cfg = strdup(rjf_get(SH_JFFS "/lists", &ex));
+diff --git a/release/src/router/wallguard/wallguard.sh b/release/src/router/wallguard/wallguard.sh
+index e9cf20733c1..5a3ac26aab3 100644
+--- a/release/src/router/wallguard/wallguard.sh
++++ b/release/src/router/wallguard/wallguard.sh
+@@ -243,6 +243,17 @@ build() {
+   # same table file (review 2026-10-21); waits, so the later rule change still lands
+   exec 8>"$D/build.lock"
+   lock_wait 8 300 || { log "another block table build is still running - this one was skipped"; return 1; }
++  # 2026-11-06 (owner): Advanced rules - the AdGuard-syntax box, compiled beside the table (the engine reads
++  # $D/adv); rc writes $D/clients (device and profile names -> MACs) and $D/safe before every build
++  if [ -s "$J/adv" ]; then
++    if "$SC" adv --in "$J/adv" --out "$D/adv" --stats "$D/adv.json" --clients "$D/clients" --safe "$D/safe"; then
++      log "Advanced rules: $(grep -o '"kept":[0-9]*' "$D/adv.json" | cut -d: -f2) in use, $(grep -o '"skipped":[0-9]*' "$D/adv.json" | cut -d: -f2) left out"
++    else
++      log "the Advanced rules could not be compiled - the previous ones stay in use"
++    fi
++  else
++    rm -f "$D/adv" "$D/adv.json"
++  fi
+   args=; miss=
+   [ -f "$D/feeds" ] || : > "$D/feeds"
+   [ -n "${S+x}" ] || S=$(st_lists)
+diff --git a/release/src/router/wallguard/wallguardc.c b/release/src/router/wallguard/wallguardc.c
+index 5c837c0aad6..5a92a4f0ddb 100644
+--- a/release/src/router/wallguard/wallguardc.c
++++ b/release/src/router/wallguard/wallguardc.c
+@@ -33,6 +33,10 @@
+ #define _GNU_SOURCE
+ #include <ctype.h>
+ #include <errno.h>
++#include <regex.h>		/* 2026-11-06: Advanced rules (cmd_adv) */
++#include <strings.h>
++#include <arpa/inet.h>
++#include <sys/socket.h>
+ #include <fcntl.h>
+ #include <stdio.h>
+ #include <stdlib.h>
+@@ -716,8 +720,623 @@ static int cmd_resolve(int argc, char **argv)
+ 	return any ? 0 : 1;
+ }
+ 
++/* ---- 2026-11-06 (owner): Advanced rules - the AdGuard Home rule syntax, so an AdGuard user list moves over
++ * whole. `wallguardc adv` turns the operator's raw text into the normalized rules file the engine reads
++ * (wallguard_adv.h documents that format) and a report for the page: what each unsupported line was and why.
++ *
++ * Accepted (AdGuard DNS filtering syntax, the DNS subset):
++ *   ||name^  ||name^|  ||*.name^ (subdomains)  |name|  |name^  (that name only)  name  0.0.0.0 name
++ *   ||na*me^ / ||name. (any ending) -> a glob;  /regex/ -> a POSIX extended regex
++ *   @@ in front = allow.  Modifiers, comma separated:
++ *     important                      block beats allows / allow beats important blocks (AdGuard order)
++ *     client=a|b|~c                  IP, CIDR, MAC, a device's name ('quoted' or bare); ~ = everyone but
++ *     ctag=p|q                       a Wallguard profile's devices (AdGuard's client tags)
++ *     dnstype=A|AAAA|~PTR            only these query types (~ = all but)
++ *     dnsrewrite=NOERROR|NXDOMAIN|REFUSED|0.0.0.0|::   how a block answers; on @@ = allow
++ *   Comments: lines starting ! or #, and " # ..." after a rule.
++ * Anything else (badfilter, denyallow, rewrites to an address, $client with nothing resolvable ...) is
++ * reported with its line number and why, and left out. */
++#define ADV_MAX_RULES	20000
++#define ADV_MAX_GLOB	512
++#define ADV_MAX_RE	64
++#define ADV_MAX_SCOPES	256
++#define ADV_MAX_MEMB	2048
++#define ADV_MAX_REPORT	200
++
++struct adv_map { char name[96]; char mac[18]; };
++static struct adv_map *advmap;
++static size_t nadvmap;
++
++static void adv_load_map(const char *path)
++{
++	FILE *f = path ? fopen(path, "r") : NULL;
++	char line[256];
++
++	if (!f)
++		return;
++	while (fgets(line, sizeof(line), f)) {
++		char *tab = strchr(line, '\t'), *e;
++		if (!tab)
++			continue;
++		*tab++ = 0;
++		if ((e = strpbrk(tab, "\r\n")))
++			*e = 0;
++		if (strlen(line) >= sizeof(advmap->name) || strlen(tab) != 17)
++			continue;
++		advmap = xrealloc(advmap, (nadvmap + 1) * sizeof(*advmap));
++		for (e = line; *e; e++)
++			*e = (char)tolower((unsigned char)*e);
++		strcpy(advmap[nadvmap].name, line);
++		for (e = tab; *e; e++)
++			*e = (char)tolower((unsigned char)*e);
++		strcpy(advmap[nadvmap].mac, tab);
++		nadvmap++;
++	}
++	fclose(f);
++}
++
++static int adv_is_mac(const char *s)
++{
++	int i;
++	if (strlen(s) != 17)
++		return 0;
++	for (i = 0; i < 17; i++)
++		if ((i % 3 == 2) ? (s[i] != ':' && s[i] != '-') : !isxdigit((unsigned char)s[i]))
++			return 0;
++	return 1;
++}
++
++static int adv_is_cidr(const char *s)
++{
++	char a[64], *sl;
++	unsigned char b[16];
++	int max;
++	if (strlen(s) >= sizeof(a))
++		return 0;
++	strcpy(a, s);
++	if ((sl = strchr(a, '/')))
++		*sl++ = 0;
++	if (inet_pton(AF_INET, a, b) == 1)
++		max = 32;
++	else if (inet_pton(AF_INET6, a, b) == 1)
++		max = 128;
++	else
++		return 0;
++	if (sl) {
++		char *end;
++		long p = strtol(sl, &end, 10);
++		if (*end || p < 0 || p > max || !*sl)
++			return 0;
++	}
++	return 1;
++}
++
++static const struct { const char *n; int t; } adv_types[] = {
++	{ "A", 1 }, { "NS", 2 }, { "CNAME", 5 }, { "SOA", 6 }, { "PTR", 12 }, { "HINFO", 13 }, { "MX", 15 },
++	{ "TXT", 16 }, { "AAAA", 28 }, { "SRV", 33 }, { "NAPTR", 35 }, { "DS", 43 }, { "DNSKEY", 48 },
++	{ "SVCB", 64 }, { "HTTPS", 65 }, { "ANY", 255 }, { NULL, 0 }
++};
++
++struct adv_out {
++	FILE *rules;		/* tmp file of "rule ..." lines (scopes go first in the real file) */
++	char scopes[ADV_MAX_SCOPES][512];	/* canonical member text per scope id ("mac x ip y ...") */
++	int nscope, nmemb;
++	unsigned long total, kept, allow, block, important, scoped, glob, re, typed, unsup, warn;
++	unsigned long nglob, nre;
++	FILE *js;		/* report (the stats JSON's "lines" array) */
++	int nreport;
++};
++
++/* 2026-11-06 (owner): invisible and non-ASCII characters. A rule is ASCII (a name with non-ASCII letters is
++ * written in its xn-- form); a character a list picked up on a web page - a zero-width space, a BOM, a direction
++ * mark, a no-break space - would otherwise make a rule silently never match. */
++static unsigned long adv_utf8(const unsigned char *s, int *len)
++{
++	unsigned long c = s[0];
++	int n = c >= 0xf0 ? 4 : c >= 0xe0 ? 3 : c >= 0xc0 ? 2 : 1, i;
++
++	if (n == 1) {
++		*len = 1;
++		return c >= 0x80 ? 0xfffd : c;
++	}
++	c &= 0x3f >> (n - 1);
++	for (i = 1; i < n; i++) {
++		if ((s[i] & 0xc0) != 0x80) {
++			*len = i;
++			return 0xfffd;
++		}
++		c = (c << 6) | (s[i] & 0x3f);
++	}
++	*len = n;
++	return c;
++}
++
++static const char *adv_cpname(unsigned long c)
++{
++	switch (c) {
++	case 0x200b: return "a zero-width space";
++	case 0x200c: return "a zero-width non-joiner";
++	case 0x200d: return "a zero-width joiner";
++	case 0x2060: return "a word joiner";
++	case 0xfeff: return "a byte-order mark";
++	case 0x00a0: return "a no-break space";
++	case 0x00ad: return "a soft hyphen";
++	case 0x200e: case 0x200f: return "a direction mark";
++	case 0x202a: case 0x202b: case 0x202c: case 0x202d: case 0x202e: return "a direction override";
++	case 0x2066: case 0x2067: case 0x2068: case 0x2069: return "a direction isolate";
++	case 0x2028: case 0x2029: return "a line separator";
++	case 0x3000: case 0x202f: case 0x205f: return "a wide space";
++	case 0xfffd: return "a broken UTF-8 byte";
++	default:
++		if (c >= 0x2000 && c <= 0x200a)
++			return "a typographic space";
++		return "a non-ASCII character";
++	}
++}
++
++/* the report's copy of a line: hidden and non-ASCII characters as <U+XXXX>, control characters as ? */
++static void adv_disp(const char *in, char *out, size_t osz)
++{
++	const unsigned char *s = (const unsigned char *)in;
++	size_t o = 0;
++
++	while (*s && o + 12 < osz) {
++		if (*s >= 0x80) {
++			int l;
++			unsigned long c = adv_utf8(s, &l);
++			o += (size_t)snprintf(out + o, osz - o, "<U+%04lX>", c);
++			s += l;
++		} else {
++			out[o++] = (*s < 0x20 || *s == 0x7f) ? '?' : (char)*s;
++			s++;
++		}
++	}
++	if (*s && o + 4 < osz) {
++		memcpy(out + o, "...", 3);
++		o += 3;
++	}
++	out[o] = 0;
++}
++
++static void adv_report(struct adv_out *o, unsigned long ln, const char *raw, const char *why, int warn)
++{
++	char buf[400];
++
++	if (warn)
++		o->warn++;
++	else
++		o->unsup++;
++	if (o->nreport >= ADV_MAX_REPORT)
++		return;
++	{	/* ~120 characters shown, hidden ones made visible; the line's own end is not part of it */
++		char t[LINE_MAX_];
++		size_t n;
++		snprintf(t, sizeof(t), "%s", raw);
++		n = strlen(t);
++		while (n && (t[n - 1] == '\n' || t[n - 1] == '\r'))
++			t[--n] = 0;
++		adv_disp(t, buf, 160);
++	}
++	fprintf(o->js, "%s{\"line\":%lu,\"kind\":\"%s\",\"text\":", o->nreport++ ? "," : "", ln, warn ? "warn" : "skip");
++	json_str(o->js, buf);
++	fprintf(o->js, ",\"why\":");
++	json_str(o->js, why);
++	fprintf(o->js, "}");
++}
++
++/* one client= / ctag= token -> members appended to m (" mac x" / " ip y"); 0 = nothing resolvable */
++static int adv_member(const char *tok, int ctag, char *m, size_t msz)
++{
++	char t[128], key[144];
++	size_t i, n;
++	int found = 0;
++
++	n = strlen(tok);
++	if (n >= sizeof(t) || !n)
++		return 0;
++	strcpy(t, tok);
++	if ((t[0] == '\'' || t[0] == '"') && n >= 2 && t[n - 1] == t[0]) {
++		t[n - 1] = 0;
++		memmove(t, t + 1, n - 1);
++	}
++	if (!ctag && adv_is_mac(t)) {
++		for (i = 0; t[i]; i++)
++			t[i] = t[i] == '-' ? ':' : (char)tolower((unsigned char)t[i]);
++		snprintf(m + strlen(m), msz - strlen(m), " mac %s", t);
++		return 1;
++	}
++	if (!ctag && adv_is_cidr(t)) {
++		snprintf(m + strlen(m), msz - strlen(m), " ip %s", t);
++		return 1;
++	}
++	snprintf(key, sizeof(key), "%s%s", ctag ? "profile:" : "", t);
++	for (i = 0; key[i]; i++)
++		key[i] = (char)tolower((unsigned char)key[i]);
++	for (i = 0; i < nadvmap; i++)
++		if (!strcmp(advmap[i].name, key) && strlen(m) + 24 < msz) {
++			snprintf(m + strlen(m), msz - strlen(m), " mac %s", advmap[i].mac);
++			found = 1;
++		}
++	return found;
++}
++
++/* "a|b|~c" -> scope id (or -1 = none given), *neg set when every token is ~; why on failure */
++static int adv_scope(struct adv_out *o, char *val, int ctag, int *neg, const char **why, char *unres, size_t usz)
++{
++	char m[512] = "", *tok;
++	int pos = 0, ng = 0, i, cnt = 0;
++
++	/* split on |, and on blanks outside quotes ('Nate PC' stays one name) */
++	for (tok = val; *tok; ) {
++		char *s = tok, q = 0;
++		int isneg;
++		while (*tok && (q || (*tok != '|' && *tok != ' ' && *tok != '\t'))) {
++			if (!q && (*tok == '\'' || *tok == '"'))
++				q = *tok;
++			else if (q && *tok == q)
++				q = 0;
++			tok++;
++		}
++		if (*tok)
++			*tok++ = 0;
++		if (!*s)
++			continue;
++		isneg = s[0] == '~';
++		if (isneg)
++			s++, ng++;
++		else
++			pos++;
++		cnt++;
++		if (!adv_member(s, ctag, m, sizeof(m)))
++			snprintf(unres + strlen(unres), usz - strlen(unres), "%s%s", *unres ? ", " : "", s);
++	}
++	if (!cnt)
++		return *why = "empty client list", -2;
++	if (pos && ng)
++		return *why = "a client list mixes ~ and plain entries", -2;
++	*neg = ng > 0;
++	if (!m[0])
++		return *why = ctag ? "no device has that profile" : "no such device (name, address or MAC)", -3;
++	for (i = 0; i < o->nscope; i++)
++		if (!strcmp(o->scopes[i], m))
++			return i;
++	if (o->nscope >= ADV_MAX_SCOPES)
++		return *why = "too many different client lists", -2;
++	strcpy(o->scopes[o->nscope], m);
++	return o->nscope++;
++}
++
++static int adv_types_of(char *val, char *out, size_t osz, int *neg)
++{
++	char *tok, *save;
++	int pos = 0, ng = 0, i;
++
++	out[0] = 0;
++	for (tok = strtok_r(val, "|", &save); tok; tok = strtok_r(NULL, "|", &save)) {
++		int isneg = tok[0] == '~', t = 0;
++		if (isneg)
++			tok++, ng++;
++		else
++			pos++;
++		for (i = 0; adv_types[i].n; i++)
++			if (!strcasecmp(adv_types[i].n, tok))
++				t = adv_types[i].t;
++		if (!t)
++			return -1;
++		snprintf(out + strlen(out), osz - strlen(out), "%s%d", out[0] ? "," : "", t);
++	}
++	if (!pos && !ng)
++		return -1;
++	if (pos && ng)
++		return -1;
++	*neg = ng > 0;
++	return 0;
++}
++
++#define ADV_SKIP(w)	do { adv_report(o, ln, raw, (w), 0); return; } while (0)
++#define ADV_WARN(w)	do { adv_report(o, ln, raw, (w), 1); return; } while (0)
++static void adv_line(struct adv_out *o, char *raw, unsigned long ln, char **safe, size_t nsafe)
++{
++	char line[LINE_MAX_], rxbuf[260], *p, *e, *mods = NULL, *pat, kind = 'n', flags[8] = "", scope[16] = "-",
++	     qt[128] = "-", unres[160] = "";
++	const char *resp = "-", *why = NULL;
++	int allow = 0, important = 0, subtree = 1, i;
++
++	snprintf(line, sizeof(line), "%s", raw);
++	for (p = line; *p == ' ' || *p == '\t'; p++)
++		;
++	for (e = p + strlen(p); e > p && (e[-1] == '\r' || e[-1] == '\n' || e[-1] == ' ' || e[-1] == '\t'); e--)
++		*(e - 1) = 0;
++	if (!strncmp(p, "\xef\xbb\xbf", 3))
++		p += 3;	/* a byte-order mark at the start of a line: a file artifact */
++	if (!*p || *p == '!' || *p == '#' || *p == '[')
++		return;
++	o->total++;
++	/* " # comment" after a rule (a regex keeps its #s) */
++	if (*p != '/' && (e = strstr(p, " #")))
++		*e = 0, e = p + strlen(p);
++	while (e > p && (e[-1] == ' ' || e[-1] == '\t'))
++		*--e = 0;
++	/* 2026-11-06 (owner): a rule is ASCII - an invisible character would make it never match, silently */
++	{
++		const unsigned char *u;
++		int ch = 0;
++		for (u = (const unsigned char *)p; *u; u++) {
++			if ((*u & 0xc0) != 0x80)
++				ch++;
++			if (*u >= 0x80) {
++				char w[200];
++				int l;
++				unsigned long c = adv_utf8(u, &l);
++				snprintf(w, sizeof(w), "%s (U+%04lX) at character %d - retype the line; a name with non-ASCII letters needs its xn-- form",
++					 adv_cpname(c), c, ch);
++				ADV_SKIP(w);
++			}
++		}
++	}
++	if (!strncmp(p, "@@", 2))
++		allow = 1, p += 2;
++
++	/* split the modifiers off: after the regex's closing slash, else at the first $ */
++	if (*p == '/') {
++		char *c = strrchr(p, '/');
++		if (c == p)
++			ADV_SKIP("a regex needs a closing /");
++		if (c[1] == '$')
++			mods = c + 2;
++		else if (c[1])
++			ADV_SKIP("text after a regex");
++		c[1] = 0;
++		kind = 'r';
++	} else if ((e = strchr(p, '$'))) {
++		*e = 0;
++		mods = e + 1;
++	}
++	pat = p;
++
++	if (mods && *mods) {
++		char *m, *save;
++		for (m = strtok_r(mods, ",", &save); m; m = strtok_r(NULL, ",", &save)) {
++			char *v = strchr(m, '=');
++			if (v)
++				*v++ = 0;
++			if (!strcmp(m, "important") && !v)
++				important = 1;
++			else if ((!strcmp(m, "client") || !strcmp(m, "ctag")) && v && *v) {
++				int neg = 0, id;
++				if (strcmp(scope, "-"))
++					ADV_SKIP("client and ctag together");
++				id = adv_scope(o, v, m[1] == 't', &neg, &why, unres, sizeof(unres));
++				if (id == -2)
++					ADV_SKIP(why);
++				if (id == -3) {
++					char w[240];
++					snprintf(w, sizeof(w), "%s: %s - left out until it exists", why, unres);
++					ADV_WARN(w);
++				}
++				snprintf(scope, sizeof(scope), "%s%d", neg ? "!" : "", id);
++				if (unres[0]) {
++					char w[240];
++					snprintf(w, sizeof(w), "not found, ignored in this rule: %s", unres);
++					adv_report(o, ln, raw, w, 1);
++				}
++			} else if (!strcmp(m, "dnstype") && v && *v) {
++				int neg = 0;
++				char tmp[120];
++				if (adv_types_of(v, tmp, sizeof(tmp), &neg))
++					ADV_SKIP("unknown dnstype");
++				snprintf(qt, sizeof(qt), "%s%s", neg ? "!" : "", tmp);
++			} else if (!strcmp(m, "dnsrewrite")) {
++				if (allow)
++					;	/* @@...$dnsrewrite: exempt from rewrites = an allow here */
++				else if (!v || !*v)
++					ADV_SKIP("dnsrewrite needs a value");
++				else if (!strcasecmp(v, "NOERROR"))
++					resp = "nodata";
++				else if (!strcasecmp(v, "NXDOMAIN"))
++					resp = "nx";
++				else if (!strcasecmp(v, "REFUSED"))
++					resp = "refused";
++				else if (!strcmp(v, "0.0.0.0") || !strcmp(v, "::"))
++					resp = "null";
++				else
++					ADV_SKIP("dnsrewrite to an address: use the DNS rewrites table");
++			} else
++				ADV_SKIP("modifier not supported here");
++		}
++	}
++
++	if (kind != 'r') {
++		size_t n;
++		int start2 = !strncmp(pat, "||", 2), start1 = !start2 && pat[0] == '|';
++		if (start2)
++			pat += 2;
++		else if (start1)
++			pat += 1, subtree = 0;
++		else if (strpbrk(pat, " \t")) {	/* hosts line: an address, then one name */
++			char first[64], *sp = pat + strcspn(pat, " \t");
++			snprintf(first, sizeof(first), "%.*s", (int)(sp - pat), pat);
++			if (!is_ip(first))
++				ADV_SKIP("not a DNS name rule");
++			sp += strspn(sp, " \t");
++			if (!*sp || strpbrk(sp, " \t"))
++				ADV_SKIP("one name per hosts line here");
++			pat = sp;
++			subtree = 0;
++		}
++		n = strlen(pat);
++		if (n && pat[n - 1] == '|')
++			pat[--n] = 0;
++		if (n && pat[n - 1] == '^')
++			pat[--n] = 0;
++		else if ((start2 || start1) && n && pat[n - 1] == '.') {
++			/* ||name. = name followed by any ending (another TLD) */
++			if (n + 2 > 250)
++				ADV_SKIP("too long");
++			pat[n++] = '*';
++			pat[n] = 0;
++			kind = 'g';
++		}
++		if (!strncmp(pat, "*.", 2) && !strchr(pat + 2, '*'))
++			pat += 2;	/* ||*.name^ : name's subdomains (and, here, name) */
++		if (strpbrk(pat, "|^$/ \t"))
++			ADV_SKIP("not a DNS name rule");
++		if (strchr(pat, '*') || strchr(pat, '?'))
++			kind = 'g';
++		for (e = pat; *e; e++)
++			*e = (char)tolower((unsigned char)*e);
++		if (kind == 'n' && norm(pat))
++			ADV_SKIP("not a valid name");
++		if (kind == 'g') {
++			for (e = pat; *e; e++)
++				if (!((*e >= 'a' && *e <= 'z') || (*e >= '0' && *e <= '9') || strchr(".-_*?", *e)))
++					ADV_SKIP("not a valid name pattern");
++			if (strlen(pat) > 250)
++				ADV_SKIP("too long");
++		}
++	} else {
++		regex_t re;
++		size_t n = strlen(pat);
++		char *rx = rxbuf;
++		if (n < 3 || n - 2 >= sizeof(rxbuf))
++			ADV_SKIP("regex too long");
++		memcpy(rx, pat + 1, n - 2);
++		rx[n - 2] = 0;
++		if (strpbrk(rx, " \t"))
++			ADV_SKIP("a space in a regex");
++		if (regcomp(&re, rx, REG_EXTENDED | REG_ICASE | REG_NOSUB))
++			ADV_SKIP("regex does not compile (POSIX extended syntax)");
++		regfree(&re);
++		pat = rx;
++	}
++
++	if (kind == 'g' && o->nglob >= ADV_MAX_GLOB)
++		ADV_SKIP("too many wildcard rules (512)");
++	if (kind == 'r' && o->nre >= ADV_MAX_RE)
++		ADV_SKIP("too many regex rules (64)");
++	if (o->kept >= ADV_MAX_RULES)
++		ADV_SKIP("too many rules (20000)");
++
++	/* a block may not take a name the router itself needs (the safe set: NTP, DoT, DDNS, list hosts ...) */
++	if (!allow && kind == 'n')
++		for (i = 0; i < (int)nsafe; i++) {
++			size_t a = strlen(safe[i]), b = strlen(pat);
++			if (!strcmp(safe[i], pat) || (subtree && a > b && safe[i][a - b - 1] == '.' && !strcmp(safe[i] + a - b, pat)))
++				ADV_SKIP("would block a name the router itself needs");
++		}
++
++	snprintf(flags, sizeof(flags), "%s%s%s", allow ? "a" : "b", important ? "i" : "", subtree ? "s" : "x");
++	fprintf(o->rules, "rule %s %s %s %s %c %s %lu\n", flags, scope, qt, resp, kind, pat, ln);
++	o->kept++;
++	if (allow) o->allow++; else o->block++;
++	if (important) o->important++;
++	if (strcmp(scope, "-")) o->scoped++;
++	if (strcmp(qt, "-")) o->typed++;
++	if (kind == 'g') o->nglob++;
++	if (kind == 'r') o->nre++;
++}
++
++static int cmd_adv(int argc, char **argv)
++{
++	const char *in = NULL, *out = NULL, *stats = NULL, *clients = NULL, *safef = NULL;
++	char tmp[512], tmps[512], line[LINE_MAX_], **safe = NULL;
++	size_t nsafe = 0;
++	unsigned long ln = 0;
++	struct adv_out o;
++	FILE *f, *of;
++	int i;
++
++	for (i = 2; i < argc; i++) {
++		const char *a = argv[i];
++		if (i + 1 >= argc)
++			goto usage;
++		if (!strcmp(a, "--in")) in = argv[++i];
++		else if (!strcmp(a, "--out")) out = argv[++i];
++		else if (!strcmp(a, "--stats")) stats = argv[++i];
++		else if (!strcmp(a, "--clients")) clients = argv[++i];
++		else if (!strcmp(a, "--safe")) safef = argv[++i];
++		else goto usage;
++	}
++	if (!in || !out || !stats)
++		goto usage;
++	memset(&o, 0, sizeof(o));
++	adv_load_map(clients);
++	if (safef && (f = fopen(safef, "r"))) {
++		while (fgets(line, sizeof(line), f)) {
++			line[strcspn(line, " \t\r\n")] = 0;
++			if (!line[0] || line[0] == '#' || norm(line))
++				continue;
++			safe = xrealloc(safe, (nsafe + 1) * sizeof(*safe));
++			safe[nsafe++] = strdup(line);
++		}
++		fclose(f);
++	}
++	snprintf(tmp, sizeof(tmp), "%s.rules.tmp", out);
++	snprintf(tmps, sizeof(tmps), "%s.tmp", stats);
++	if (!(o.rules = fopen(tmp, "w+")) || !(o.js = fopen(tmps, "w"))) {
++		fprintf(stderr, "wallguardc: cannot write %s\n", out);
++		return 1;
++	}
++	fprintf(o.js, "{\"lines\":[");
++	if ((f = fopen(in, "r"))) {
++		while (fgets(line, sizeof(line), f)) {
++			size_t n = strlen(line);
++			ln++;
++			if (n == sizeof(line) - 1 && line[n - 1] != '\n') {
++				int c;
++				while ((c = fgetc(f)) != EOF && c != '\n')
++					;
++				adv_report(&o, ln, "(line longer than 4095 characters)", "too long", 0);
++				continue;
++			}
++			adv_line(&o, line, ln, safe, nsafe);
++		}
++		fclose(f);
++	}
++	/* the real file: header, scopes, then the rules (rename - the engine maps what it finds) */
++	snprintf(line, sizeof(line), "%s.tmp", out);
++	if (!(of = fopen(line, "w")))
++		return 1;
++	fprintf(of, "WGADV 1\n");
++	for (i = 0; i < o.nscope; i++) {
++		char m[512], *t, *save, *kindw;
++		snprintf(m, sizeof(m), "%s", o.scopes[i]);
++		for (kindw = strtok_r(m, " ", &save); kindw && (t = strtok_r(NULL, " ", &save)); kindw = strtok_r(NULL, " ", &save))
++			if (o.nmemb++ < ADV_MAX_MEMB)
++				fprintf(of, "scope %d %s %s\n", i, kindw, t);
++	}
++	rewind(o.rules);
++	{
++		char buf[8192];
++		size_t r;
++		while ((r = fread(buf, 1, sizeof(buf), o.rules)) > 0)
++			fwrite(buf, 1, r, of);
++	}
++	fclose(o.rules);
++	unlink(tmp);
++	if (fclose(of) || rename(line, out)) {
++		fprintf(stderr, "wallguardc: cannot write %s\n", out);
++		return 1;
++	}
++	fprintf(o.js, "],\"total\":%lu,\"kept\":%lu,\"allow\":%lu,\"block\":%lu,\"important\":%lu,\"scoped\":%lu,"
++		"\"typed\":%lu,\"wildcard\":%lu,\"regex\":%lu,\"skipped\":%lu,\"warnings\":%lu,\"devices\":%d}\n",
++		o.total, o.kept, o.allow, o.block, o.important, o.scoped, o.typed, o.nglob, o.nre, o.unsup, o.warn, o.nscope);
++	if (fclose(o.js) || rename(tmps, stats))
++		return 1;
++	for (i = 0; i < (int)nsafe; i++)
++		free(safe[i]);
++	free(safe);
++	free(advmap);
++	return 0;
++usage:
++	fprintf(stderr, "usage: wallguardc adv --in RAW --out RULES --stats JSON [--clients FILE] [--safe FILE]\n");
++	return 2;
++}
++
+ int main(int argc, char **argv)
+ {
++	if (argc >= 2 && !strcmp(argv[1], "adv"))
++		return cmd_adv(argc, argv);
+ 	if (argc >= 2 && !strcmp(argv[1], "build"))
+ 		return cmd_build(argc, argv);
+ 	if (argc >= 2 && !strcmp(argv[1], "explain"))
+@@ -726,6 +1345,6 @@ int main(int argc, char **argv)
+ 		return cmd_check(argc, argv);
+ 	if (argc >= 2 && !strcmp(argv[1], "resolve"))
+ 		return cmd_resolve(argc, argv);
+-	fprintf(stderr, "usage: wallguardc build|explain|check|resolve ...\n");
++	fprintf(stderr, "usage: wallguardc build|adv|explain|check|resolve ...\n");
+ 	return 2;
+ }
+diff --git a/release/src/router/www/Reaper_Wallguard.asp b/release/src/router/www/Reaper_Wallguard.asp
+index 16cdec1285c..63a64a8ba36 100644
+--- a/release/src/router/www/Reaper_Wallguard.asp
++++ b/release/src/router/www/Reaper_Wallguard.asp
+@@ -164,6 +164,15 @@ label.chip{gap:7px;padding:5px 11px 5px 7px;border:1px solid var(--line-soft);bo
+   <div class="desc" id="allow24box" style="display:none"><b><#RSHD_42#>:</b> <span id="allow24"></span></div>
+ </div>
+ 
++<!-- 2026-11-06 (owner): Advanced rules - an AdGuard Home rule list, pasted whole -->
++<div class="card">
++  <h2><#RSHD_178#></h2>
++  <div class="desc"><#RSHD_179#></div>
++  <textarea id="adv" style="height:260px;margin-top:8px" spellcheck="false" placeholder="||ads.example.com^&#10;@@||example.com^$client=192.168.50.20"></textarea>
++  <div class="desc" id="advstat" style="margin-top:6px"></div>
++  <ul class="desc" id="advlines" style="margin:4px 0 0 18px;padding:0"></ul>
++</div>
++
+ <!-- 2026-11-05 (owner): DNS rewrites - names answered with an address or another name, on every network -->
+ <div class="card">
+   <h2><#RSHD_164#></h2>
+@@ -579,10 +588,29 @@ function shPaint(){
+   if(!cfg) return;
+   $('block').value = String(cfg.block || '');
+   $('allow').value = String(cfg.allow || '');
++  $('adv').value = String(cfg.adv || ''); shPaintAdv();
+   var a24 = String(cfg.allow24 || '').split('\n').map(function(l){ var p = l.split(' '); return p[1] ? p[1] + ' (' + shWhen(+p[0]) + ')' : ''; }).filter(function(x){ return x; });
+   $('allow24box').style.display = a24.length ? '' : 'none'; $('allow24').textContent = a24.join(', ');
+   shPaintLists(); shPaintProfiles(); shPaintAssign(); shPaintTargets(); shPaintPauses(); shPaintRewrites();
+ }
++/* 2026-11-06 (owner): what the last build made of the Advanced rules (wallguardc adv's report) - text only */
++function shPaintAdv(){
++  var s = cfg.adv_stats, ul = $('advlines');
++  ul.textContent = '';
++  if(!s || typeof s !== 'object' || !String(cfg.adv || '').trim()){ $('advstat').textContent = ''; return; }
++  $('advstat').textContent = `<#RSHD_180#>`.replace('%1', s.kept || 0).replace('%2', s.skipped || 0).replace('%3', s.warnings || 0);
++  (s.lines || []).forEach(function(l){
++    var li = document.createElement('li');
++    li.textContent = l.line + ': ' + String(l.text || '').trim() + ' \u2014 ' + String(l.why || '');
++    ul.appendChild(li);
++  });
++}
++/* the Advanced rules travel base64url (UTF-8 bytes), so no rule character costs a %-escape */
++function shB64(s){
++  var u = new TextEncoder().encode(s), b = '', i;
++  for(i = 0; i < u.length; i += 8192) b += String.fromCharCode.apply(null, u.subarray(i, i + 8192));
++  return btoa(b).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
++}
+ function shPaintRewrites(){
+   shRows('rwbody', cfg.rw, 4, function(tr, r){
+     shCell(tr, r.n, 'mono');
+@@ -919,10 +947,28 @@ function shSnap(){
+   o.keys = Object.keys(cfg.keyUpd).sort().map(function(s){ return s + (cfg.keyUpd[s] === '-' ? ' -' : ' set'); }).join(' ');
+   o.on = $('tgon').className.indexOf('on') >= 0 ? '1' : '0';
+   o.mode = $('mode').value;
++  o.adv = $('adv').value;
+   return o;
+ }
+ function shSave(){
+   if(!cfg) return;
++  /* 2026-11-06 (owner): the Advanced rules first, in their own request; then the settings as before */
++  var adv = $('adv').value, cut = 0;
++  /* 2026-11-06 (owner): characters a paste brings along that would make a rule silently never match - zero-width
++     characters, byte-order marks, direction marks, soft hyphens (removed) and odd spaces (made plain) */
++  adv = adv.replace(/[\u200B-\u200D\u2060\uFEFF\u00AD\u200E\u200F\u202A-\u202E\u2066-\u2069]/g, function(){ cut++; return ''; })
++           .replace(/[\u00A0\u2000-\u200A\u202F\u205F\u3000]/g, function(){ cut++; return ' '; })
++           .replace(/[\u2028\u2029]/g, function(){ cut++; return '\n'; });
++  if(cut){ $('adv').value = adv; alert(`<#RSHD_182#>`.replace('%1', cut)); }
++  if(adv !== String(cfg.adv || '')){
++    if(new TextEncoder().encode(adv).length > 40000){ alert(`<#RSHD_181#>`); return; }
++    $('applying').className = 'applying show';
++    shPost({action: 'adv', adv64: shB64(adv)}, function(j){
++      if(!j || !j.ok){ $('applying').className = 'applying'; shErr(j); return; }
++      cfg.adv = adv; shSave();
++    });
++    return;
++  }
+   var p = shPayload();
+   $('applying').className = 'applying show';
+   shPost(p, function(j){
+-- 
+2.25.1
+

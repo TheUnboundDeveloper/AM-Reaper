@@ -172,12 +172,14 @@ try:
         base = os.path.join(jffs, "reaper", "review", "baseline")
         # functions, not only PATH stubs: busybox ash in standalone mode runs its own
         # applets (logger, md5sum, awk ...) ahead of PATH, and a function outranks both
-        head = ('_nv() { cat "$NVDIR/$1" 2>/dev/null; }\n' + nvram_fn + 'usleep() { sleep 0.02; }\n'
+        head = ('_nv() { cat "$NVDIR/$1" 2>/dev/null; }\n' + '_nvc() { _nv "$1"; }\n' + nvram_fn + 'usleep() { sleep 0.02; }\n'
                 'logger() { printf "%s\\n" "$*" >> "$LOGF"; }\n'
                 'cru() { [ "$1" = l ] && cat "$CRU_FILE"; return 0; }\n' + NVS)
         tail = ('\nRV_JFFS="%s"\nRV_TMP="%s"\nRV_BASE="%s"\n%s\n_rv_run\n' % (jffs, tmpd, base, extra))
         sp = os.path.join(work, "run.sh"); open(sp, "w").write(head + block + tail)
-        env = dict(os.environ, NVDIR=nvd, LOGF=logf, CRU_FILE=cruf, LC_ALL="C", PATH=binp + os.pathsep + os.environ.get("PATH", ""))
+        # RV_WWT_ROOTS: the /tmp + /var folder check (2026-11-06, C-8) must not read the host's own /tmp here
+        env = dict(os.environ, NVDIR=nvd, LOGF=logf, CRU_FILE=cruf, LC_ALL="C", PATH=binp + os.pathsep + os.environ.get("PATH", ""),
+                   RV_WWT_ROOTS=os.path.join(work, "no-wwt-root"))
         cmd = [shell, sp] if shell != "busybox" else [BB, "ash", sp]
         p = subprocess.run(cmd, capture_output=True, text=True, env=env, cwd=work, timeout=60)
         if p.returncode != 0:
@@ -408,8 +410,8 @@ finally:
     shutil.rmtree(work, ignore_errors=True)
 ok('"RV_AUTH_N=10\\n"' in rw and "_rv_auth() {" in rw and "grep -v 'rmcpd-lab' $_win" in rw and "tail -n 50 $RV_TMP/review.auth" in rw,
    "rwatch.c: the login watch has its threshold, ignores the lab daemon's echo and caps the notices file")
-ok('\\\\\\"notices_n\\\\\\":%d,\\\\\\"ww\\\\\\":%d,\\\\\\"ww_p\\\\\\":\\\\\\"%s\\\\\\"}' in rw,
-   "rwatch.c: the report carries notices_n for the dashboard bar, then the /jffs write-for-everyone count and first path (2026-10-20)")
+ok('\\\\\\"notices_n\\\\\\":%d,\\\\\\"ww\\\\\\":%d,\\\\\\"ww_p\\\\\\":\\\\\\"%s\\\\\\",\\\\\\"wwt\\\\\\":%d,\\\\\\"wwt_p\\\\\\":\\\\\\"%s\\\\\\",\\\\\\"wwfs\\\\\\":\\\\\\"%s\\\\\\",\\\\\\"wwfs_p\\\\\\":\\\\\\"%s\\\\\\"}' in rw,
+   "rwatch.c: the report carries notices_n for the dashboard bar, then the /jffs write-for-everyone count and first path (2026-10-20), then the /tmp,/var folder count and first path (2026-11-06, C-8), then the store's no-permission file system and base (2026-11-07)")
 
 # ---- 3. pins in source
 i_heal = rw.index('"HEALGRACE=300\\n"'); i_entry = rw.index('"[ \\"$1\\" = review ] && { _rv_run; exit 0; }\\n"')
@@ -431,7 +433,9 @@ ok('rjf_set(RVIEW_BASE, body, "review")' in cgi and "O_RDONLY | O_NOFOLLOW" in c
 kick = between(web, "static void rview_kick(void)", "\n}\n", "rview_kick")
 ok("reaper_script_ok(RVIEW_SH)" in kick and kick.count("fork()") == 2 and "setsid()" in kick and "_eval(argv, NULL, 30, NULL)" in kick,
    "web.c: the re-check runs detached (double fork) and only when the script passes reaper_script_ok")
-ok('{ "reaper_watch.cgi*", "application/json", no_cache, do_html_post_and_get, do_reaper_watch_cgi, do_auth }' in web, "web.c: the mime row carries do_auth")
+ok('{ "reaper_watch.cgi*", "application/json", no_cache, do_html_post_and_get, do_reaper_watch_cgi, do_auth }' in web
+   or '{ "reaper_watch.cgi*", "application/json", no_cache_IE7, do_html_post_and_get, do_reaper_watch_cgi, do_auth }' in web,	# the 102.8 line's row (2026-11-07)
+   "web.c: the mime row carries do_auth")
 ok('{ "watch",  "rwatch_review",   2    }' in web, "web.c: the settings export carries rwatch_review (max 2 for a 0/1 flag)")
 ok('nvram_set("rwatch_review", on ? "1" : "0");' in cgi and 'reaper_audit("review"' in cgi, "web.c: the switch is audited")
 
@@ -460,7 +464,7 @@ ok("localStorage" not in between(dash, '<div class="rvb" id="rvb">', "})();</scr
 pr = between(dash, "function paintReview(){", "\n}\n", "paintReview")
 ok('id="s_rv_tag"' in dash and 'data-go="Reaper_Firewall.asp?t=status"' in dash[dash.index('id="s_wdn_tag"'):dash.index('id="s_rv_tag"')],
    "posture: the Security Review row sits after Warden and opens the Status tab")
-ok("set(`<#btn_Disabled#>`,'warn'" in pr and "set(`<#RDSH_109#>`,'warn',`<#RDSH_113#>`)" in pr and "set(`<#RDSH_108#>`,'ok'" in pr and "set(`<#RDSH_105#>`,'danger'" in pr,
+ok("set(`<#btn_Disabled#>`,'warn'" in pr and "set(`<#RDSH_109#>`,'warn',`<#RDSH_113#>`+fsn)" in pr and "set(`<#RDSH_108#>`,'ok'" in pr and "set(`<#RDSH_105#>`,'danger'" in pr,
    "posture: Disabled and No baseline amber, Baseline green, Review red")
 # 2026-10-19: no report yet (a boot: the first check can take up to 10 minutes) - a baseline on
 # disk keeps the Baseline word in amber instead of claiming "No baseline"; httpd says which
@@ -474,10 +478,20 @@ ok("innerHTML" not in pr and "'rwatch_review'" in dash and "review:'rwatch_revie
 ok("window.RVJ=j; if(typeof paintReview==='function')paintReview();" in dash and "paintReview();" in between(dash, "function paintPosture(){", "\n}\n", "paintPosture"),
    "posture: the row repaints from the bar's poll and on every posture refresh")
 diag = read("others/reaper_diag")
-ok('VER="REAPER-DIAG v1.3.51"' in diag and 'echo "  security review   : rwatch_review=' in diag and 'echo "  threat domains    : rwarden_dns=' in diag,
+ok('VER="REAPER-DIAG v1.3.61"' in diag and 'echo "  security review   : rwatch_review=' in diag and 'echo "  threat domains    : rwarden_dns=' in diag,
    "diag v1.3.45: the review and threat-domain state lines")
 ok("finding WARN \"security review: ${_rvu} unreviewed change(s)" in diag and "finding WARN \"security review: ${_rvn} failed-login burst(s)" in diag
    and "finding WARN \"threat domains are switched on but no list is loaded" in diag, "diag: findings for unreviewed changes, login bursts and an unloaded domain list")
 ok("review.auth" not in between(diag, 'echo "  security review   : rwatch_review=', "\n\n", "diag 12 review block").replace("login_notices", ""), "diag: section 12 prints counts, never the notice sources")
+
+# 2026-11-07 (owner, option A): a run takes 1 s; the first review after a boot waited for the first tick at or past
+# HEALGRACE (5-10 min by tick alignment). The first tick inside the grace arms one detached run at boot + HEALGRACE.
+# Metal _r4: the tick exits inside the grace ("boot grace" line) long before 3h - the arm must come BEFORE that exit.
+arm = 'if [ \\"$UP\\" -lt \\"$HEALGRACE\\" ] && [ \\"$(_nvc rwatch_review)\\" = 1 ] && [ ! -f $RV_TMP/review.boot ]; then\\n'
+ok(arm in rw and '  : > $RV_TMP/review.boot\\n' in rw
+   and '( sleep $((HEALGRACE - UP + 2)); [ -f /tmp/reaper_fw/armed ] || sh " RWATCH_SH " review ) </dev/null >/dev/null 2>&1 &\\n' in rw
+   and rw.index(arm) < rw.index('[ \\"$UP\\" -lt 300 ] && exit 0\\n') < rw.index("# 3h) security review")
+   and 'if [ \\"$UP\\" -ge \\"$HEALGRACE\\" ] && [ ! -f /tmp/reaper_fw/armed ]; then _rv_run; fi\\n' in rw and "elif" not in rw[rw.index("# 3h) security review"):rw.index("# 4) GDX host-TCP pool")],
+   "the first tick inside the grace arms ONE detached review at boot + HEALGRACE, BEFORE the grace exit (review on, no candidate armed); 3h unchanged")
 
 print("PASS: %d checks" % passed)

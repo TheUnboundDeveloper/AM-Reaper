@@ -20,8 +20,11 @@ tester's block, a fake registry and a fake `iptables-restore` for the probe, and
     declarations, `-A OUTPUT -j OUTPUT_IP` and the `-d <ip>` lines do; ONE log line names the
     match and the count, and a second call in the same boot logs nothing more;
   - registry has both but the probe refuses them (the reporter's kernel): same result;
-  - registry has both and the probe takes them: the block passes through byte for byte and
-    nothing is logged;
+  - registry has both and the probe takes them: the block passes through byte for byte
+    (declarations first) except its two LOG lines;
+  - 2026-11-08: those two LOG lines are rerouted to the firewall log target
+    (shared/reaper_fwlog.h): the limited LOG at level 5 with the blob's options when no
+    collector runs, NFLOG group 42 when the state file says "nflog";
   - on the real source, both `write_extra_filter(fp)` call sites are gone and both
     `reaper_write_extra_filter(fp)` calls are present.
 Exit 0 pass, 1 fail, 77 skipped (no gcc, or no router source tree - pass the tree's
@@ -85,6 +88,10 @@ parts = [
     extract(source, "static int reaper_nf_probe("),
     extract(source, "static int reaper_nf_forward_refs("),
     extract(source, "static int reaper_nf_copy_supported("),
+    # 2026-11-08: the blob's two LOG lines are rerouted to the firewall log target (shared/reaper_fwlog.h)
+    # before the copy; the state file lives under the test's own folder (@RFLDIR@, filled in below)
+    '#define RFL_DIR "@RFLDIR@"\n' + open(os.path.join(src_root, "shared", "reaper_fwlog.h"), encoding="utf-8").read(),
+    extract(source, "static void reaper_extra_log_reroute("),
     extract(source, "static void reaper_write_extra_filter("),
 ]
 
@@ -155,8 +162,9 @@ exit 0
 td = tempfile.mkdtemp(prefix="extrafilter-")
 try:
     csrc = os.path.join(td, "t.c")
+    rfl = os.path.join(td, "fwlog"); os.mkdir(rfl)
     with open(csrc, "w") as f:
-        f.write(STUBS + BLOB_C + "\n".join(parts) + MAIN)
+        f.write(STUBS + BLOB_C + "\n".join(parts).replace("@RFLDIR@", rfl) + MAIN)
     exe = os.path.join(td, "t")
     p = subprocess.run([CC, "-std=gnu99", "-Wall", "-Wno-unused-result", "-o", exe, csrc], capture_output=True, text=True)
     if p.returncode != 0:
@@ -189,7 +197,9 @@ try:
         with open(trace) as f: T = f.read()
         return L, O, T
 
-    BASE = ["state", "tcp", "udp", "conntrack"]
+    # `limit`: the fallback log rule (10/s, burst 50) carries -m limit - this kernel has it built in
+    BASE = ["state", "tcp", "udp", "conntrack", "limit"]
+    LIM = '-m limit --limit 10/s --limit-burst 50 -j LOG --log-prefix "%s " --log-tcp-sequence --log-tcp-options --log-ip-options --log-level 5'
     fails = []
     def check(name, cond, detail=""):
         print(("ok   " if cond else "FAIL ") + name)
@@ -204,7 +214,10 @@ try:
     # 1. the registry lacks string and u32
     L, O, T = run(BASE, "")
     check("registry: no string/u32 rule reaches the table", "-m string" not in O and "-m u32" not in O, O)
-    check("registry: declarations and the address rules stay", ":OUTPUT_DNS - [0:0]" in O and "-A OUTPUT -j OUTPUT_IP" in O and "-A OUTPUT_IP -d 51.15.120.245 -j logdrop_ip" in O and "-A logdrop_dns -j LOG" in O, O)
+    check("registry: declarations and the address rules stay", ":OUTPUT_DNS - [0:0]" in O and "-A OUTPUT -j OUTPUT_IP" in O and "-A OUTPUT_IP -d 51.15.120.245 -j logdrop_ip" in O and ("-A logdrop_dns " + LIM % "DROP_DNS") in O, O)
+    check("registry: the blob's LOG lines are rerouted - limited, level 5, the blob's options kept; no unlimited LOG left",
+          ("-A logdrop_dns " + LIM % "DROP_DNS") in O and ("-A logdrop_ip " + LIM % "DROP_IP") in O
+          and "-A logdrop_dns -j LOG" not in O and "-A logdrop_ip -j LOG" not in O, O)
     check("registry: every declaration precedes the first rule", decls_first(O), O)
     check("registry: two log lines - the reorder and the drop, with the match and the count", L.count("\n") == 2 and "declares 2 chain(s) (OUTPUT_DNS,logdrop_ip) after the first rule" in L and "will not take 'u32'" in L and "4 rule(s) of the ASUS anti-botnet blocklist" in L, L)
     L2, O2, T2 = run(BASE, "", warned_exists=True)
@@ -222,6 +235,19 @@ try:
     L, O, T = run(BASE + ["string", "u32"], "")
     check("passthrough: every line of the block, declarations first", O.count("-m string") == 2 and O.count("-m u32") == 2 and O.count("\n") == 15 and decls_first(O), O)
     check("passthrough: one log line, the reorder only", L.count("\n") == 1 and "declares 2 chain(s) (OUTPUT_DNS,logdrop_ip)" in L and "will not take" not in L, L)
+
+    # 4. 2026-11-08: the collector is running (state file "nflog") and the kernel takes NFLOG -> the blob's two
+    #    log lines go to NFLOG group 42, nothing else in the block changes
+    with open(os.path.join(rfl, "path"), "w") as f: f.write("nflog\n")
+    with open(t4, "w") as f: f.write("LOG\nNFLOG\n")
+    L, O, T = run(BASE + ["string", "u32"], "")
+    CEIL = "-m limit --limit 10000/s --limit-burst 10000 "
+    check("collector: the blob's log lines go to NFLOG group 42 under the flood ceiling, every other line kept",
+          ('-A logdrop_dns ' + CEIL + '-j NFLOG --nflog-group 42 --nflog-prefix "DROP_DNS "') in O
+          and ('-A logdrop_ip ' + CEIL + '-j NFLOG --nflog-group 42 --nflog-prefix "DROP_IP "') in O
+          and "-j LOG" not in O and "--limit 10/s" not in O and O.count("-m string") == 2 and O.count("\n") == 15 and decls_first(O), O)
+    os.unlink(os.path.join(rfl, "path"))
+    with open(t4, "w") as f: f.write("LOG\n")
 
     if fails:
         print("\n%d check(s) failed:\n  " % len(fails) + "\n  ".join(fails)); sys.exit(1)

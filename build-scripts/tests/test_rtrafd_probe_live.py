@@ -218,8 +218,12 @@ else:
 # ------------------------------------------------------------------ the page: the latency & loss chart
 # 2026-10-20 (owner): one probe every 5 s drew a fragmented, popping latency line on the WAN chart;
 # latency and loss now have their own chart under it, sampled on every poll like the WAN ring
-check("the WAN chart is throughput only again (two traces, no latency, no right axis)",
-      "new LiveChart('wanchart',[],['var(--jade)','var(--crimson)'])" in page and "wanC.raxis(" not in page
+# 2026-11-13: the Guest Portal's share joined it as two more throughput traces (dashed, same jade/crimson) - the
+# point of this pin is still "no latency on the WAN chart", so any number of download/upload traces passes
+_wl = re.search(r"new LiveChart\('wanchart',\[\],\[([^\]]*)\]\)", page)
+check("the WAN chart is throughput only again (download/upload traces only, no latency, no right axis)",
+      _wl is not None and set(re.findall(r"'([^']*)'", _wl.group(1))) == {"var(--jade)", "var(--crimson)"}
+      and "wanC.raxis(" not in page
       and "lineChart('wanchart', series, maxv, fmtBps);" in page and "v/lmax*maxv" not in page)
 check("the latency & loss chart: its own card under WAN throughput, latency left (ms), loss right (%)",
       page.index('id="wanchart"') < page.index('id="latchart"') < page.index('id="clschart"')

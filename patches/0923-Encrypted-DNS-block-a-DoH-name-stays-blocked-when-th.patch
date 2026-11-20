@@ -1,0 +1,112 @@
+From 13d9545e77d94b63f30cc714c2401671c8d933fa Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Fri, 6 Nov 2026 17:29:36 -0500
+Subject: [PATCH] Encrypted DNS block: a DoH name stays blocked when the
+ router's DoT host is under it
+
+With DNS Privacy on family.cloudflare-dns.com the block left the whole cloudflare-dns.com entry
+out, so chrome.cloudflare-dns.com (Chrome's 'Secure DNS: Cloudflare') still resolved for devices.
+The parent name now stays blocked and only the router's own DoT host names under it answer
+normally (server=/<host>/#, the longer dnsmasq match wins over the parent's address=). A host name
+is checked for length and characters before it is written, and each is written once.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ release/src/router/rc/encdns.c | 46 ++++++++++++++++++++++++++++++----
+ 1 file changed, 41 insertions(+), 5 deletions(-)
+
+diff --git a/release/src/router/rc/encdns.c b/release/src/router/rc/encdns.c
+index 6309515430f..bb780570e57 100644
+--- a/release/src/router/rc/encdns.c
++++ b/release/src/router/rc/encdns.c
+@@ -432,25 +432,59 @@ void edns_block_rules(FILE *fp, int v6)
+ 	fprintf(fp, "-A FORWARD -i br+ -j REAPER_EDNS\n");
+ }
+ 
+-/* is name (or a name it sits under) one the router itself encrypts to (DNS Privacy) */
++/* is name one the router itself encrypts to (DNS Privacy): 1 = that very name (left out of the block), 2 = a
++   name the router's host sits under (2026-11-06: the parent stays blocked and only the router's own names are
++   carved out - edns_router_carve; dropping the parent unblocked chrome.cloudflare-dns.com), 0 = neither */
+ static int edns_router_upstream(const char *name)
+ {
+ 	char *nv = strdup(nvram_safe_get("dnspriv_rulelist")), *p = nv, *rule;
+ 	size_t n = strlen(name);
+ 	int hit = 0;
+ 
+-	while (!hit && p && (rule = strsep(&p, "<")) != NULL) {
++	while (hit != 1 && p && (rule = strsep(&p, "<")) != NULL) {
+ 		char *addr = NULL, *port = NULL, *host = NULL, *spki = NULL;
+ 		size_t h;
+ 		if (vstrsep(rule, ">", &addr, &port, &host, &spki) < 3 || !host || !*host)
+ 			continue;
+ 		h = strlen(host);
+-		hit = !strcasecmp(host, name) || (h > n && host[h - n - 1] == '.' && !strcasecmp(host + h - n, name));
++		if (!strcasecmp(host, name))
++			hit = 1;
++		else if (h > n && host[h - n - 1] == '.' && !strcasecmp(host + h - n, name))
++			hit = 2;
+ 	}
+ 	free(nv);
+ 	return hit;
+ }
+ 
++/* the router's own DoT names under a blocked parent answer normally (the longer dnsmasq match wins over the
++   parent's address=); the parent and every other name under it stay blocked. Appends to b; NUL-terminated. */
++static char *edns_router_carve(char *b, size_t *len, const char *name)
++{
++	char *nv = strdup(nvram_safe_get("dnspriv_rulelist")), *p = nv, *rule, *nb, ln[300];
++	size_t n = strlen(name);
++
++	while (p && (rule = strsep(&p, "<")) != NULL) {
++		char *addr = NULL, *port = NULL, *host = NULL, *spki = NULL;
++		size_t h, i;
++		int ok = 1;
++		if (vstrsep(rule, ">", &addr, &port, &host, &spki) < 3 || !host || !*host)
++			continue;
++		h = strlen(host);
++		if (h > 253 || !(h > n && host[h - n - 1] == '.' && !strcasecmp(host + h - n, name)))
++			continue;
++		for (i = 0; host[i]; i++)
++			if (!(isalnum((unsigned char)host[i]) || host[i] == '.' || host[i] == '-'))
++				ok = 0;
++		snprintf(ln, sizeof(ln), "server=/%s/#\n", host);
++		if (!ok || (b && strstr(b, ln)) || !(nb = realloc(b, *len + strlen(ln) + 1)))
++			continue;
++		b = nb;
++		*len += sprintf(b + *len, "%s", ln);
++	}
++	free(nv);
++	return b;
++}
++
+ /* The DoH provider names, answered NXDOMAIN (with their subdomains) while the block is on:
+    the conf-file every dnsmasq instance includes (services.c, sdn.c). Written here, when a
+    dnsmasq config is written; NULL = no include. */
+@@ -465,13 +499,13 @@ const char *reaper_edns_dns_conf(void)
+ 	while (fgets(line, sizeof(line), f)) {
+ 		char *s = line, *e;
+ 		size_t i;
+-		int ok = 1;
++		int ok = 1, up = 0;
+ 		while (*s == ' ' || *s == '\t')
+ 			s++;
+ 		for (e = s; *e && *e != '\n' && *e != '\r' && *e != ' ' && *e != '#'; e++)
+ 			;
+ 		*e = 0;
+-		if (!*s || !strchr(s, '.') || edns_router_upstream(s))
++		if (!*s || !strchr(s, '.') || (up = edns_router_upstream(s)) == 1)
+ 			continue;
+ 		for (i = 0; s[i]; i++)
+ 			if (!(isalnum((unsigned char)s[i]) || s[i] == '.' || s[i] == '-'))
+@@ -480,6 +514,8 @@ const char *reaper_edns_dns_conf(void)
+ 			continue;
+ 		b = nb;
+ 		len += sprintf(b + len, "address=/%s/\n", s);
++		if (up == 2)
++			b = edns_router_carve(b, &len, s);
+ 	}
+ 	fclose(f);
+ 	if (!b)
+-- 
+2.25.1
+

@@ -1,17 +1,19 @@
 # RT-BE Series "Reaper" — Changelog
 
-> **Doc status:** current as of **v3.6.2** · 2026-10-28 <!--@stamp-->
+> **Doc status:** current as of **v3.8.3** · 2026-11-19 <!--@stamp-->
 
 High-level history of the Reaper build. One entry per version, big changes only —
 the exhaustive security detail is in [`REAPER-FIXES.md`](REAPER-FIXES.md) and the
 per-release summary in [`RELEASE-NOTES.md`](RELEASE-NOTES.md).
 
-From v3.6.0 the firmware line is `3006.102.10_Reaper_v<X>`, built on the Asuswrt-Merlin
-3006.102.10 base (ASUS GPL 102_40585); v1.0 - v3.5.0 are the `3006.102.8_Reaper_v<X>` line on the
-3006.102.8 base. All are for the ASUS RT-BE Series (BCM4916 platform).
-The RT-BE96U is the primary, hardware-validated model; the **RT-BE86U**,
+From v3.6.0 there are two firmware lines with the same Reaper version: `3006.102.10_Reaper_v<X>`
+on the Asuswrt-Merlin 3006.102.10 base (ASUS GPL 102_40585) for the RT-BE96U, RT-BE86U, RT-BE88U
+and GT-BE98 Pro, and `3006.102.8_Reaper_v<X>` on the 3006.102.8 base for the GT-BE98, GT-BE19000,
+ZenWiFi BQ16 and BQ16 Pro; v1.0 - v3.5.0 are the 3006.102.8 line for every model. All are for the
+ASUS RT-BE Series (BCM4916 platform).
+The RT-BE96U is the primary model; the **RT-BE86U**,
 **RT-BE88U**, **GT-BE98**, **GT-BE98 Pro**, from v3.1.4 the **GT-BE19000** and from v3.3.2
-the **ZenWiFi BQ16** (BE25000) and from v3.3.4 the **ZenWiFi BQ16 Pro** (BE30000) are built from per-model branches of the same tree. See `RELEASE-NOTES.md` for each release's validation status.
+the **ZenWiFi BQ16** (BE25000) and from v3.3.4 the **ZenWiFi BQ16 Pro** (BE30000) are built from per-model branches of their line's tree. See `RELEASE-NOTES.md` for each release's summary.
 
 Throughout this document, you will see references to AI and MCP functionality. Reaper is 
 distributed in two distinct build variants. The MCP-enabled build includes a custom Model 
@@ -46,6 +48,659 @@ node, not only on the primary router.
 > design; compare `--exported` instead.
 
 ---
+
+## v3.8.3 — Guest networks can reach chosen main-network devices; AP Isolation keeps wired devices reachable; guest VPN routing after a WAN reconnect
+
+Everything in v3.8.2 is included. Both lines carry the same changes: RT-BE96U, RT-BE86U, RT-BE88U and GT-BE98 Pro on
+3006.102.10; GT-BE98, GT-BE19000, BQ16 and BQ16 Pro on 3006.102.8. Most of this rung answers field reports about
+guest networks and about devices that could no longer reach each other on the main network.
+
+- **Guest networks: paths you open on purpose.** Guest isolation stays the default; three new controls, all off at
+  factory, open narrow paths to the main network. None of them ever opens the router's own pages, SSH or services,
+  another guest network, or the WAN while a network's VPN is down, and none is offered on a Guest Portal network.
+  - **Reach these main-network devices** (Network page, a network's General settings): tick up to 16 main-network
+    devices that have a DHCP reservation; devices on the guest network can open connections to them, and those
+    devices can only answer. AiMesh nodes and the router are never listed. A changed reservation is followed at once.
+  - **Device discovery with the main network**: casting, AirPlay, printer and HomeKit discovery between the main
+    network and that network only, never between two guest networks, limited to the service types you pick
+    (Printing, AirPlay, Google Cast, HomeKit / Matter, Spotify / Sonos, or your own). The router's own name is not
+    announced there, and a guest device cannot take over the name of a main-network device or hide its services.
+  - **Firewall > Zones: Zone policies may open one-way paths from the main network into isolated guest networks**:
+    an Accept zone policy from the main network (or a network linked to it) into a guest network now opens that
+    path; the guest network only answers. Never guest to guest.
+- **AP Isolation: Wi-Fi only, or Wi-Fi and LAN ports.** On the 3006.102.10 line, turning AP Isolation on for the main
+  network also kept its wired devices apart, so a TV could no longer find a NAS on another port. AP Isolation is now a
+  choice on every network: **Wi-Fi only** (the default; Wi-Fi devices cannot reach each other, wired devices stay
+  reachable) or **Wi-Fi and LAN ports** (the router's LAN ports are kept apart too). The WAN ports, VLAN trunk ports and
+  a port with an AiMesh node behind it are never isolated; a network whose VLAN profile sets port isolation keeps it.
+  Both lines behave the same. On an AiMesh node the node keeps the firmware's own behaviour.
+- **Guest networks bound to a VPN client** keep their routing through a WAN reconnect: the router puts the network's VPN
+  routing rules back as soon as the WAN routes are rebuilt (before, the network left by the WAN until the VPN client
+  restarted, unless its Kill Switch held it). Unbinding a network removes its IPv6 rule into the tunnel.
+- **IPv6 for guest and VLAN networks**: a delegated prefix of /57 to /63 is now divided too (a /60 has room for 15
+  networks; before, anything smaller than /56 left them without public IPv6). New or reset routers ask the provider
+  for a /56; an upgraded router keeps its setting. With Static IPv6 the page fills in 64 on such a router.
+- **Rule Status 1.16**: a zone policy that guest isolation holds back reads **Held** (amber) with a note naming the
+  network, not a failure; new rows check the devices you picked, discovery, and that an opened path stays one way.
+- **Guest Portal web server**: its unused file-sharing library is replaced by a 5 KB stand-in; about 0.9 MB of flash
+  comes back.
+- **AiMesh tab**: devices connected with MLO show the MLO icon, on the router and on nodes; a node's MLO backhaul list
+  reads 2.4 GHz.
+- **Phones**: a menu's tab bar keeps its size when a page is wider than the screen (Administration > System on an
+  iPhone); long values on that page wrap.
+
+## v3.8.2 — Security review fixes (kernel, Guest Portal, USB, web server); faster firewall loads; QoS queue fix; a smaller image; ASUS's nvram line-break guard
+
+Everything in v3.8.1 is included. Both lines carry the same changes: RT-BE96U, RT-BE86U, RT-BE88U and GT-BE98 Pro on
+3006.102.10; GT-BE98, GT-BE19000, BQ16 and BQ16 Pro on 3006.102.8. Most of this rung comes from a full code review of
+v3.8.1 and from ASUS's releases of 2026-11-17.
+
+- **Kernel.** A board-driver message handler freed each message it received, and the kernel freed it again. It no
+  longer does, and only a privileged process may send to it. The skb-free tunables under `/proc` are root-only.
+- **Guest Portal.** The portal's DNS answers before sign-in check every length against the packet and the buffer.
+  After sign-in the phone goes on to the page it first asked for. A portal whose process has died is started again
+  by the watchdog (after two missed checks a minute apart, at most three times per boot).
+- **USB drives.** A damaged or crafted FAT or HFS+ drive could crash the drive check, and the watchdog with it, by
+  dividing by zero or reading past a buffer. Such a volume is refused; a partition whose check crashes or hangs is
+  logged once and not checked again.
+- **Firewall rules engine, Policy Routing and guest isolation** load their rules in one step per table instead of
+  one command per rule: restarts are faster and no chain is ever half filled. Guest connections are cut only when the
+  guest rules really changed. If a batch is refused, the old rule-by-rule path runs and names the rule it refused.
+- **Domain lists.** Addresses saved to `/jffs` were replayed at every firewall restart and each got a fresh hour; they
+  are now replayed only into an empty list. The resolver's comparison copy lives in RAM, so `/jffs` is written only
+  when a list changes.
+- **Classful hardware QoS.** After QoS settings were applied, traffic could stay in the default queue until the
+  connections were made again. The flow cache is now cleared after the class rules and queues are in place, and the
+  first packet of a connection goes to its class (this also applies to Traditional QoS).
+- **Firewall Auto refresh** (Status and Rule Status) is now a router setting: it survives a reboot, a firmware update
+  and another browser. Clicking the words beside the switch works too.
+- **Devices page.** A device given a new static address shows the address it answers on now, not its old lease.
+- **Wallguard safe search.** When the search engines' enforcement addresses could not all be looked up (for example
+  before the WAN was up at boot), Wallguard now logs which engine is missing and retries until every one is in place.
+  Nothing changes on a router where no profile uses safe search.
+- **SNMP.** The agent's configuration file is readable by root only. System name, location and contact can be set
+  over SNMP; a value set that way lasts until the agent next starts, when the page's values apply again.
+- **AI Advisor.** Name lookups are limited to 20 per session. A result that was cut short says so. Client lists and
+  log excerpts are fenced with a marker that changes at each start, so text in a log or a device name cannot pass
+  itself off as an instruction.
+- **Diagnostics v1.3.61.** The admin login name is never printed (the process listings showed it). Passwords on
+  command lines, user names and passwords in URLs, bearer tokens, WAN domains, the remote log server, VPN client
+  endpoints and a typed NTP server are masked. Crash dumps stay readable (the zero halves of registers were masked).
+  New lines: the radio software of each radio, AP isolation per network, and the Wallguard state.
+- **Web server.** The cross-site check covers every signed-in download, not only addresses ending in `.cgi`; two
+  unused addresses that renewed the IKEv2 certificate when opened are gone. The iperf3 request checks its port and
+  lengths, and the login state and the self-block guards no longer start a shell.
+- **Settings with line breaks.** From ASUS GPL 102_39448: a setting that holds a line break is read as empty and
+  logged, apart from the multi-line settings ASUS allows (VPN custom configurations, SSH keys); a stored line break
+  can then no longer add lines to a generated configuration file. The device-discovery service bounds the fields of
+  its reply (ASUS GPL 102_39442).
+- **Services.** Two restarts that the router asked for from inside its own service handler were silently dropped:
+  the UPnP reload after a firewall rebuild (mappings the rebuild removed were not put back) and the DNS restart after
+  a guest network was added or removed (reverse lookups for the new network were missing). Both now run. A DHCP
+  reservation with a malformed MAC address is skipped whole; a per-device DNS setting now also applies when the MAC
+  was typed in lower case. The UPnP deny list covers every WireGuard server.
+- **Lighter on the router.** The DNS name mapper listens on the LAN bridges only. The traffic daemon rewrites its
+  live file ten times a second only while a page shows it. The dashboard and other live pages stop polling while
+  their browser tab is hidden. System Information reads the connection table without copying it.
+- **More free space in the image** (about 7 MB on the RT-BE96U): stock pages and libraries nothing uses are removed,
+  the logo, header and pictures are WebP, and the portal background photos are rescaled to 1280 by 720 where that
+  makes the file smaller. Old addresses of the stock Captive Portal pages open the Network page.
+- **Radio firmware.** The BCM6717 radio firmware is no longer installed on the GT-BE98, GT-BE98 Pro, GT-BE19000, BQ16
+  and BQ16 Pro: every board file of these models names BCM6726 radios only. The RT-BE96U keeps both files (its early
+  units carry BCM6717 radios), and its BCM6717 file is ASUS's from firmware 3006.102.39435.
+- **3006.102.8 line.** The web server takes the 3006.102.10 hardening it lacked (format strings, the certificate file
+  name check, the iperf3 service list, bounds in four diagnostic handlers), the DHCP range is copied with bounds, and
+  the Wi-Fi start scripts of all four models match the 3006.102.10 line.
+
+## v3.8.1 — Device names reach every page; names keep their spaces; Wi-Fi restarts no longer stall the 5 and 6 GHz radios; guest network links, SNMP and VPN fixes
+
+Everything in v3.8.0 is included. Both lines carry the same changes: RT-BE96U, RT-BE86U, RT-BE88U and GT-BE98 Pro on
+3006.102.10; GT-BE98, GT-BE19000, BQ16 and BQ16 Pro on 3006.102.8.
+
+- **Device names on every page.** The Name / Hostname list introduced in v3.8.0 never reached the pages: the request
+  for it was cut short by the web server. Pages showed only the names set on the Devices page, and the dashboard
+  Clients card showed MAC addresses. The request is fixed, and the dashboard card uses the same name helper as every
+  other page.
+- **Names with spaces.** A setting saved from some pages was stored with a plus sign for each space: a network name
+  set as MLO Fronthaul became `My+Wifi+Network`. Spaces are kept now. A name already stored with plus signs is not
+  rewritten: enter it again.
+- **Wi-Fi restarts and the 5 / 6 GHz radios.** Several Network-page saves in quick succession could leave the 5 GHz
+  and 6 GHz radios down until a reboot. The pause the router takes before a Wi-Fi restart could end early; it now
+  always runs its full time.
+- **Guest networks linked by Access Intranet.** Two guest networks linked to each other were also let onto the main
+  network: the router's pages, the main network's device names and mDNS. A link between two guest networks now joins
+  only those two; only a link with the main network gives main-network access. **What changes for you:** guest
+  networks you linked to each other lose the router's pages and main-network names, and a Guest Portal linked only to
+  another guest network loses main-network access.
+- **SNMP.** The SNMP user could change everything the agent exposes. It can now set only the contact, name and
+  location, and nothing at all while **Allow access from WAN** is on. That switch now works (the agent did not listen
+  on the WAN address before). SNMP and its WAN access stay off unless you turn them on.
+- **OpenVPN Killswitch.** With **Redirect Internet traffic** set to **No**, or on a TAP client, a Killswitch stored
+  earlier still closed the traffic of Policy Routing devices, although the page hides the switch there. It now applies
+  only when the client carries all traffic or is in VPN Director mode. VPN Director and Policy Routing show the real
+  state of a client (off, not in VPN Director mode, pushed routes only, TAP), and the warnings no longer say that a
+  switched-off client blocks traffic: that traffic uses the WAN.
+- **WireGuard server.** A new peer gets an address in both families, and an IPv6 default route only when it has an
+  IPv6 address. A port that another VPN server on the router already uses is refused. A server that could not start
+  is logged.
+- **OpenVPN server page.** The live status of both servers updates again (only the first value was being read).
+- **Wake on LAN.** The wake packet was sent on the main network only; a device on a guest or VLAN network is now
+  woken on its own network.
+- **IPv6.** The WAN Prefix Length for Native with prefix delegation is checked (empty, 0 or 48 to 64), and the page
+  says that guest networks need a /56 or larger from the provider.
+- **Access Restrictions.** The page says that IPv6 access to the web interface and SSH is blocked while the list is
+  on, and asks first when you are connected over IPv6.
+- **MLO.** Switching MLO off keeps every band of the main network.
+- **Auto refresh.** The Auto refresh switches on Firewall Status and Rule Status, and the box on the System Log, keep
+  your choice per browser.
+- **Tweaks.** The connection limit help says that its default is the maximum.
+
+## v3.8.0 — VPN-routed guest networks reach the internet; the portal passcode on every subnet; DHCP leases kept across a restart; one rule for device names; Wallguard finds the culprit
+
+Everything in v3.7.9 is included. Both lines carry the same changes: RT-BE96U, RT-BE86U, RT-BE88U and GT-BE98 Pro on
+3006.102.10; GT-BE98, GT-BE19000, BQ16 and BQ16 Pro on 3006.102.8.
+
+- **Guest networks routed into a VPN.** A guest network that VPN Director (or an OpenVPN client set to redirect all
+  traffic) sent into a VPN tunnel had no internet: guest isolation only allowed the WAN or the network's own bound
+  client. It now follows those rules. Not on a Guest Portal network, and not with the network's Kill Switch on.
+  Changing VPN Director's rules re-applies it straight away.
+- **Guest Portal passcode on a short subnet.** On some portal subnets the router checked the passcode against the
+  wrong key, so a correct passcode and the terms page were refused. The portal network is now matched properly.
+- **Apple devices on an isolated guest network keep DNS.** An isolated guest network was offered the router's
+  encrypted DNS, which it cannot reach; iPhones take that offer by themselves and then lost DNS. The offer is now
+  made only where it works.
+- **Login name.** The first-setup page no longer forces the login name to lower case; it follows the stock rule.
+- **Network page.** Editing the Default IoT Network no longer resets its LAN ports to All (Default).
+- **Warden custom feeds with an API key.** A feed address may contain `$APIkey`. The key goes in its own box, stays
+  private on the router (not in the list, the page or a settings export) and is used only when the feed is fetched.
+- **DHCP leases survive a restart.** The router keeps its lease lists in flash and puts them back when it starts, so
+  every device that still holds a lease is listed (and named) right after a reboot, not only once it renews.
+- **Device names.** One rule on every page: Name is the name you gave the device on the Devices page; Hostname is
+  what the device sends, else the maker of its network card, else `Private-Address` for a randomized address. A
+  page with one label shows Name, else Hostname. DHCP Leases shows both columns and lists devices whose address is
+  set on the device; its Refresh button shows it was pressed. A DHCP reservation's name is the device's DNS name and
+  is labelled so.
+- **Wallguard finds the culprit.** A streaming app that broke under Wallguard (a Paramount+ report) showed nothing
+  useful on the page. Every block now records the device it came from, so Unbreak finds a device by name; it keeps
+  an hour of history and leaves out names you have allowed. A name hidden behind a CNAME alias is shown as
+  "asked name (blocked via listed name)", and allowing the asked name now lifts the block. Lists kept on a USB
+  store are kept current (they were rejected after a reboot), and a skipped list rebuild is reported on the page.
+- **Wallguard page in tabs.** Overview (Fix a device, Pause with a 10-minute choice, Why?), Lists, Rules, Devices
+  (one row per device with its profile, blocked lookups in the last 15 minutes, Fix and Pause) and Activity.
+- **QoS defaults.** On a new or factory-reset router QoS is off (as before), and the HW QoS Classful profile now
+  starts Web/VoIP at a 90% ceiling instead of 100%. Routers that already have QoS rates keep their own.
+
+## v3.7.9 — DNS Director works on guest networks again; VPN-bound guest networks keep DNS and IPv6 in the tunnel; AiMesh wired devices stay wired
+
+Everything in v3.7.8 is included. Both lines carry the same changes: RT-BE96U, RT-BE86U, RT-BE88U and GT-BE98 Pro on
+3006.102.10; GT-BE98, GT-BE19000, BQ16 and BQ16 Pro on 3006.102.8.
+
+- **DNS Director on a guest network.** Since v3.7.7, a guest network whose DNS Director rule sent it to a resolver
+  on the main network (a Pi-hole, AdGuard Home) had no DNS: guest isolation dropped the redirected queries. Those
+  queries pass again on port 53, as before v3.7.7. The resolver's web page and every other device on the main
+  network stay closed to the guests. A Guest Portal network keeps its own resolver, and a network with its Kill
+  Switch on keeps its DNS in the tunnel.
+- **Guest networks bound to a WireGuard client keep DNS after a drop.** When a tunnel dropped and came back by
+  itself, its DNS servers were not put back, so a network bound to it could not resolve names until the client was
+  restarted. They are now rebuilt with the route. (3006.102.10 models; the 3006.102.8 base has no such recovery path.)
+- **IPv6 on a VPN-bound network goes into the tunnel.** The rule that sends a bound network's IPv6 into its VPN client
+  was never added, so IPv6 left by the WAN. It is added now, for WireGuard and OpenVPN clients alike, and for the main
+  network with a default VPN client.
+- **Devices cabled to an AiMesh node.** When the mesh's wireless client list was missing, devices plugged into a node
+  lost their wired mark and could show as Wi-Fi clients; a Wi-Fi band remembered from earlier no longer sticks to a
+  device known to be wired; the dashboard tiles and the AiMesh map (access point mode) check wired first.
+
+## v3.7.8 — mDNS across networks; the Guest Portal passcode is back; VPN profiles that reconnect by themselves; VPN server clients reach isolated networks again
+
+Everything in v3.7.7 is included. Both lines carry the same changes: RT-BE96U, RT-BE86U, RT-BE88U and GT-BE98 Pro on
+3006.102.10; GT-BE98, GT-BE19000, BQ16 and BQ16 Pro on 3006.102.8.
+
+- **mDNS across networks.** Devices on the main network and on every network with Access Intranet on can find each
+  other (casting, printers, AirPlay). A Guest Portal network and a network with Set AP Isolated on never take part,
+  and the router no longer answers mDNS on an isolated guest network. A switch on the Tweaks page, on by default.
+- **Guest Portal: the passcode is back.** A Free Wi-Fi portal can ask for a passcode again (Network page, wizard and
+  Portal tab); on v3.7.7 the field was gone and a portal that still had one refused every entry. After sign-in a
+  phone shows one success page instead of two.
+- **VPN profiles bound to a network connect by themselves.** A WireGuard client whose server name could not be looked
+  up when it started stayed down until it was switched off and on by hand. It is now restarted when the name
+  resolves, and after five minutes without a handshake. Choosing a VPN profile for a network switches the profile
+  on, and a network's profile is started when the network is applied.
+- **VPN server clients reach isolated guest networks again.** The guest isolation of v3.7.7 also shut out clients of
+  the router's own WireGuard / OpenVPN server. They can open connections into an isolated guest network again (the
+  server's own Access Intranet setting still decides); devices on that network can answer them, not start
+  connections to them. Not into a Guest Portal network, and not while the network's Kill Switch is on.
+- **Guest DNS stays in place.** The rule that keeps portal guests on their network's own resolver was lost whenever
+  a portal started or the Internet connection came back; it is put back each time.
+- **Rule Status.** Three "Guest network: DNS at its gateway" rows read inconclusive on v3.7.7 with nothing wrong on
+  the router; the checker now reads the rule they depend on.
+- **Smaller fixes.** System Log > IPv6 names devices the way the Devices page does (a device with a static address
+  showed as unknown); the Wi-Fi quick connect sheet stays open until it is printed.
+
+## v3.7.7 — Guest Portal: create, sign-in, isolation and guest DNS that hold; a quicker finish after sign-in; the system log capped; the WAN status follows the internet check
+
+Everything in v3.7.6 is included. Both lines carry the same changes: RT-BE96U, RT-BE86U, RT-BE88U and GT-BE98 Pro on
+3006.102.10; GT-BE98, GT-BE19000, BQ16 and BQ16 Pro on 3006.102.8.
+
+- **Guest Portal networks are built when you create them.** On a router with AiMesh, creating a Guest Network Pro
+  network from the Network page saved the settings and built nothing (no Wi-Fi restart, no bridge, no portal) until
+  a reboot, and one switched off stayed on. The router now applies a guest-network change itself when the request
+  does not arrive, and the portal starts and stops with its network.
+- **Guests are kept to the Internet.** A guest or Guest Portal device reaches only the Internet (or its network's VPN
+  client) and the router only for DHCP, DNS and the sign-in page; no main-network device, no other guest network,
+  no router service. Access Intranet on a portal network opens the main network only. A VPN binding starts with its
+  Kill Switch on.
+- **Sign-in works on current phones and finishes quickly.** The "Sign in to network" sheet opens even when the
+  network's DNS has no upstream; the success page waits until the Internet answers; after sign-in a phone no longer
+  waits about 30 seconds on the address it was given before sign-in. A Free Wi-Fi portal is terms-only (no
+  passcode), and each router makes its own portal secret.
+- **Guest DNS.** Guests' lookups always go to their network's own resolver (a DNS server set by hand on the device,
+  or DNS-over-TLS, does not bypass it), and guests without intranet access cannot look up main-network names. The
+  network's DNS Server setting picks the guests' provider; left empty, guests use Cloudflare for Families over
+  DNS-over-TLS. A network bound to a VPN keeps the tunnel's DNS.
+- **Traffic Analyzer.** A Guest Portal panel on the Live tab lists each guest with their speed and session time; a
+  removed network leaves the live view; a chosen timeframe lists only devices that moved traffic; a bar is the row's
+  share of the total; a guest network's accelerated uploads are no longer also counted as the router's own.
+- **The system log cannot be flooded.** One kind of message repeating fast (a device looping on DHCP, a driver
+  printing per packet) is written at most 300 times at once and 10 times a second after that, with a line saying
+  how many were left out, so the log on flash keeps its history. Critical messages and the remote log server are
+  not limited.
+- **WAN status.** The header and dashboard say Connected only while the router's own Internet check passes on the
+  line, and IPv6 counts as up only with a working route. Native IPv6 that did not come back after an ISP outage is
+  asked for again.
+- **DNS Health Check.** When no new name resolves, it names the upstreams dnsmasq really uses, and says when a
+  leftover custom dnsmasq.conf replaces the router's own configuration or the silent upstream is on the router
+  itself (an add-on that was removed).
+- **Pages.** Buttons that start something show Working..., then Done or Failed; Wallguard's state column is green
+  for ok and amber for a fault; the About page credits the people who made Reaper possible.
+- **Smaller fixes.** The ASUS DDNS client code is deleted (the service itself was already refused); the Rule
+  Status Re-check stamp is no longer writable by every user. On the 3006.102.8 line: haveged 1.9.27 and two build
+  changes from Asuswrt-Merlin (Eric Sauvageau), already on the 3006.102.10 line.
+
+## v3.7.6 — Encrypted DNS for devices over HTTPS; DHCP keeps answering through a stalled radio; a security review's fixes; Guest Portal and VPN fixes
+
+Everything in v3.7.5 is included. Both lines carry the same changes: RT-BE96U, RT-BE86U, RT-BE88U and GT-BE98 Pro on
+3006.102.10; GT-BE98, GT-BE19000, BQ16 and BQ16 Pro on 3006.102.8.
+
+- **DNS-over-HTTPS for your devices.** The router's encrypted DNS server now also answers DNS-over-HTTPS (port 443
+  on the LAN side) beside DNS-over-TLS (port 853), each with its own switch on the Encrypted DNS page. Devices that
+  support it find it on their own: the router offers it by DHCP (option 162) while its certificate is valid for its
+  name. The page shows both legs of a lookup - device to router, router to upstream - in red when a leg fails, lists
+  the devices still on plain DNS, and gives the DNS-over-HTTPS address for devices you set up by hand.
+- **The Encrypted DNS block is two switches**, port 853 (DNS-over-TLS and DNS-over-QUIC) and the DNS-over-HTTPS
+  resolvers; a router that had the block on keeps both on. Saving the block no longer drops every open encrypted
+  DNS connection.
+- **The router's own lookups follow DNS-over-TLS.** With DNS-over-TLS on, the router's own lookups still went to the
+  WAN DNS servers in plain text; they now go through the encrypted forwarder. The DNS Health Check asks over
+  DNS-over-TLS too and sends no plain probe.
+- **DHCP keeps answering while a radio stalls.** dnsmasq no longer waits on the kernel's network lock for every
+  DHCP packet, so a Wi-Fi radio that stops answering no longer stops DHCP and DNS with it. Replies to a device that
+  has no address yet go out as broadcast.
+- **Wireless stability switches** (Administration > Tweaks), all off: a shorter wait for a radio call, keeping
+  devices an AiMesh node reports, and ASUS's background-DFS rule. They are meant for routers that see Wi-Fi stalls
+  or whole-network disconnects; the help text gives the recommended setting for each.
+- **Guest Portal.** A Guest Portal network is exempt from Gatekeeper (its own sign-in is the gate), and its passcode
+  can be set when the portal is created. Each router now gets its own portal secret instead of the stock one every
+  router shared; Administration > Tweaks > Guest Portal takes your own if you prefer. The Wireless Log no longer
+  shows a portal network as the main network, and its network chips are coloured: main green, guest blue,
+  customized amber.
+- **Web interface.** A connection has 15 seconds to finish logging in, so a slow or stalled client can no longer
+  hold the interface for everybody. Session tokens come from the kernel's random generator. The cross-site guard
+  also covers the USB share and WAN action pages and treats another port on the router as another site. With
+  Gatekeeper's waiting page on, approved devices are recognised again (they got "Awaiting approval" on plain HTTP).
+  The Network page's setup panels are no longer cut off at the bottom.
+- **VPN.** A WireGuard or OpenVPN client kept from the stock firmware's provider list was switched off at every
+  boot, which looked like a lost key; it is not any more, and the VPN Client page says whether a key is saved.
+  IPsec profiles are checked before the VPN configuration is written.
+- **Security review fixes.** From a full debug and security review: only administrator processes may talk to three
+  netlink interfaces of the prebuilt Wi-Fi and IGMP-snooping drivers or listen to settings changes; /tmp, /var and
+  /jffs are mounted nosuid,nodev; restart requests rc sent to itself are no longer lost; AiMesh sync files are
+  private; Time Machine and portal folders are root's own; Wallguard regular expressions that could stall DNS are
+  refused; the encrypted DNS server shares its connection slots fairly between devices; an unused second admin
+  password setting is kept empty; and smaller fixes.
+- **Firewall log.** The remote log server's sent and unsent lines are counted on the Firewall page; a collector
+  that runs but stops reporting is replaced.
+- **Diagnostics v1.3.59.** A radio call stalls section, the DNS Health Check under DNS-over-TLS, the firewall log
+  forward, and the names on the router's own certificates masked.
+
+## v3.7.5 — The firewall log leaves the system log; a failed web login locks one address, not the whole LAN; Custom DDNS with Let's Encrypt; WireGuard client fixes; Encrypted DNS trusted after a reboot
+
+Everything in v3.7.4 is included. Both lines carry the same changes: RT-BE96U, RT-BE86U, RT-BE88U and GT-BE98 Pro on
+3006.102.10; GT-BE98, GT-BE19000, BQ16 and BQ16 Pro on 3006.102.8.
+
+- **Firewall logging no longer floods the system log.** With "Logged packets type" on Accepted or Both, every new
+  connection went to the flash system log and could starve the CPU and DNS. Every firewall log rule - the stock
+  chains, Warden, the anti-botnet chains and the rules engine - now hands its lines to a small collector,
+  `rflogd`, up to 10000 lines a second per rule. If the collector is not running, the rules fall back on their own
+  to a plain log of at most 10 lines a second. The Firewall page shows the collector's state (lines, lost, held
+  back), the System Log has a **Firewall** view, the remote log server still receives the lines, and on a USB
+  long-term store the Storage page offers **Firewall log**: one file a day, up to 30 days or 256 MB. New installs
+  keep it there by default; on an existing router tick it on the Storage page.
+- **A failed web login locks one address, not the whole LAN.** Five wrong passwords locked every browser on that
+  side of the router for 5 minutes, logged-in admins included, and any IPv6 address counted as the LAN. Now the
+  address that failed is refused (the login page says other addresses can still log in); 20 failures on one side
+  within 5 minutes still lock that side. A connection on the remote-access listener counts as the WAN side.
+- **Custom DDNS with Let's Encrypt.** With DDNS on Custom, the built-in Let's Encrypt never asked for a certificate;
+  it does now. The DDNS page says when `/jffs/scripts/ddns-start` is missing (and names a file to rename, such as
+  `ddns-start.sh`) or not executable, and that browsers are not served the certificate while the web interface is
+  HTTP only. The diagnostic (v1.3.55) says the same and no longer tells log or helper files in /jffs/scripts to
+  be made executable.
+- **WireGuard client.** A client's old DNS rule stayed after its DNS was changed or removed and came back after a
+  reboot; every restart now clears that client's rules first. A `.conf` without its keys is refused, saying which
+  key is missing, and nothing is changed (it used to reset the client and import half of it).
+- **Encrypted DNS is trusted after a reboot.** The certificate was judged once, at start - often before the
+  router's clock was set - so a Let's Encrypt certificate read "Not publicly trusted" until its next renewal. The
+  chain is now checked without the clock (expiry is still shown). An untrusted Let's Encrypt certificate is told to
+  be issued again, not to "use Let's Encrypt".
+- **Firewall > Objects: Address groups.** An Add on Objects, Zones, Egress or Forwards reported on the hidden Rules
+  tab, so it looked as if nothing happened; each add row now shows its own message, and a group member that is not
+  an address object is named.
+- **Security review: a long-term store on FAT, exFAT or NTFS** is one note on the dashboard and the Firewall page
+  (those volumes keep no file permissions), not a red list of every file; the text names the store beside /jffs.
+- **Rule Status walker 1.14.** The log chains' counter rule had made 35 rows Inconclusive; a rule with no target
+  now counts and walks on. A port forward covering a WAN test port is recognised, and the shared fixture masks
+  every WAN-side address.
+- **Pages.** Dreadwatch's **Test now** card explains the test instead of opening with "No list is loaded yet";
+  Wallguard's settings and live tables say they are empty rather than "Nothing blocked yet"; a page that gets
+  shorter no longer leaves empty scroll below it (the frame shrinks too); ticking **Firewall log** no longer
+  reflows the Storage page.
+- **Hardening and image.** The web API library is built with full RELRO and FORTIFY, and a check in front of its
+  input checks refuses line breaks and other control characters in single-line settings, the same on every model.
+  About 45 programs and scripts nothing on any supported model uses (test tools, flash tools for other flash types,
+  a DNS query daemon whose switches no page sets) left the image. The AiMesh exemption table holds 256 entries
+  (64 had been filled by 16 tri-band nodes).
+
+## v3.7.4 — Wallguard blocks within seconds of the clock after a reboot; a per-list Update; AdGuard DNS's Popup Hosts and allow-only sources; USB disks past 2 TB; the Wireless Log names AiMesh nodes
+
+Everything in v3.7.3 is included. Both lines carry the same changes: RT-BE96U, RT-BE86U, RT-BE88U and GT-BE98 Pro on
+3006.102.10; GT-BE98, GT-BE19000, BQ16 and BQ16 Pro on 3006.102.8.
+
+- **Wallguard after a reboot.** The boot-time download ran before the WAN and the clock were up and failed, and a
+  failed list waited for the 05:15 run: a router rebooting at 03:00 showed ads until then. Nothing is fetched now
+  until a default route exists and the clock is set; the lists kept on a USB volume are used as soon as the store
+  attaches; the first NTP sync fetches what is owed, and the self-monitor retries every 5 minutes, fetching only
+  the missing lists (10 minutes doubling to 6 hours for a list that keeps failing).
+- **Per-list Update.** Each subscribed row has an **Update** button that downloads that list alone, and a save that
+  adds a list downloads only that list; **Update lists now** and the daily run still fetch everything.
+- **AdGuard DNS's Popup Hosts filter and allow-only sources load.** `||name^$dnsrewrite=<sinkhole>` rules
+  (`ad-block.dns.adguard.com`, `0.0.0.0`, `::`, `NXDOMAIN`, `REFUSED`) are blocks, `|name^` is an exact entry, and a
+  source made only of `@@` exception lines is taken (its Names column reads *N allowed*); both had stayed
+  "not downloaded yet, 0 names" since the v3.7.0 download check.
+- **USB disks past 2 TB** read as 0 B on the USB Disks tab and "not mounted" on the dashboard (a 32-bit size in
+  `get_usb_info`); the sizes are 64-bit now. The dashboard draws one USB tile for a one-port model (ZenWiFi BQ16),
+  and the USB Application table's number headers line up with their cells.
+- **The Wireless Log names AiMesh nodes.** A node's backhaul station row read "-": it has no lease and no name of its
+  own. The row now carries its node, is named as the Devices page names the node, and its address cell reads
+  *AiMesh Node*.
+- **Security review: the first check after a boot runs 5 minutes in**, whatever the self-monitor's tick alignment
+  (it was 5 to 10 minutes).
+- **Dreadwatch's "List updated" survives a reboot.** The stamp lived in /tmp and the tile read "-" until the next
+  feed run; the boot rebuild restores it from the saved copy's time.
+- **The `command` shell builtin is in busybox** (`CONFIG_ASH_CMDCMD`): scripts that look for a tool with
+  `command -v` now work on the router (acme.sh does).
+
+## v3.7.3 — Wallguard takes AdGuard Home rule lists; Chrome's Secure DNS no longer slips past the Encrypted DNS block; kernel CVE fixes; port trigger keeps live sessions
+
+Everything in v3.7.2 is included. Both lines carry the same changes: RT-BE96U, RT-BE86U, RT-BE88U and GT-BE98 Pro on
+3006.102.10; GT-BE98, GT-BE19000, BQ16 and BQ16 Pro on 3006.102.8.
+
+- **Advanced rules in Wallguard.** A new box on the Wallguard page takes an AdGuard Home rule list as it is, up to
+  40,000 characters: `||name^` blocks a name and its subdomains, `|name|` that name only, `@@` allows, and
+  `$important`, `$client=` (an address, a MAC or a device's name), `$ctag=` (a Wallguard profile), `$dnstype=`,
+  `$dnsrewrite=`, wildcards and `/regex/` all work. A rule for some devices applies to those devices only, and a
+  block is never put on a name the router itself needs. After Save the page shows how many rules are in use and lists
+  every line it could not use, with the reason. Invisible characters pasted with a list (zero-width spaces, byte-order
+  marks) are removed and counted; a device's name in `$client=` can also be its DHCP reservation name.
+- **Chrome's Secure DNS no longer gets past the Encrypted DNS block.** With the router's own DNS Privacy set to a
+  Cloudflare family or security name, the block left all of `cloudflare-dns.com` open, so Chrome's "Secure DNS:
+  Cloudflare" still worked. The provider name now stays blocked and only the router's own DoT name answers, and the
+  built-in address list adds Chrome's Cloudflare endpoint and the missing IPv6 addresses of Firefox's.
+- **Kernel CVE fixes.** CVE-2024-26921 (IP fragment reassembly kept a socket reference, ported to this 4.19 kernel),
+  CVE-2023-4207 (the fw packet classifier) and CVE-2023-4623 (the HFSC scheduler), both use-after-free.
+- **Port trigger keeps live sessions.** Any firewall change, such as Warden or Gatekeeper updating its rules, used to
+  close every open trigger port, which dropped game and VoIP sessions. Each trigger rule now keeps its own ports; a
+  rule you remove still closes its ports at once.
+- **Security Review watches /tmp and /var folders** that any user could write. The router made six of them that way
+  at every start (Samba's and Encrypted DNS's working folders); they are now created writable by root only, so the
+  review no longer reports them after a flash.
+- **The lighttpd web server is built position-independent with FORTIFY checks**, and its debug log is created
+  readable by root only.
+- **Eight stock pages that nothing reached are gone** (old access-point list and scan pages, the WAN auto-detect page,
+  three AiProtection mobile pages and the old device list). Their addresses open the matching Reaper page.
+- **Rule Status:** with the Encrypted DNS block on, the "reaches the Internet" rows no longer all read red; the
+  checker now finds a test address that no block list holds.
+- **AiMesh** shows a node location such as "First Floor" as typed, and the **clocks** on the dashboard and the top bar
+  no longer jitter as the seconds change.
+
+## v3.7.2 — 279 kernel fixes and a High in the Wi-Fi 7 frame parser; CVE fixes in dnsmasq, netatalk and more; Let's Encrypt without DDNS; DNS rewrites in Wallguard; FTP passthrough off by default
+
+Everything in v3.7.1 is included. Both lines carry the same changes: RT-BE96U, RT-BE86U, RT-BE88U and GT-BE98 Pro on
+3006.102.10; GT-BE98, GT-BE19000, BQ16 and BQ16 Pro on 3006.102.8.
+
+- **A High in the Wi-Fi 7 multi-link parser is closed.** The access-point daemon's parser for Wi-Fi 7 multi-link
+  elements trusted the frame: a malformed element that reached it could make it write past a three-entry table or
+  follow a missing pointer. It now checks every length and caps the link count. No CVE is assigned; the same code
+  ships in the stock firmware.
+- **279 kernel fixes.** The router's 4.19 kernel gets no upstream updates after the version it is built on, so Reaper
+  carries them: 104 fixes from 4.19 stable, 160 small mainline fixes each checked against 4.19, and 15 more from the
+  CVE audit, among them the H.323 and SIP connection-tracking flaws and a route-cache flaw on CISA's list of exploited
+  vulnerabilities (CVE-2024-36971). Two behaviour changes come with them: a packet with an IP source-route option
+  needs root on the router, and an interface's transmit queue length is capped at 32767.
+- **Less kernel code to attack.** nf_tables, which nothing in Reaper or the amtm add-ons uses, is no longer built;
+  that closes CVE-2024-1086 (also on CISA's exploited list) and 28 more. SCTP sockets, VXLAN, the IPv6 routing-header
+  match and five unused firewall matches are gone too. SCTP traffic passing through the router is still handled, and
+  SMB mounts (cifs) stay for backup add-ons.
+- **CVE fixes in the router's services.** dnsmasq (four, including the DNSSEC name buffer and the DHCPv6 name), wget
+  (four), iperf3 (three), the media server's TiVo support, the L2TP client, libevent's DNS and avahi. AFP / Time
+  Machine (netatalk) closes twelve, including a flaw in the DHX2 login reachable before login, and no longer crashes
+  on an account with a locked password; the old DHX1 login is no longer offered (macOS uses DHX2). avahi's wide-area
+  DNS and Samba's Spotlight search are off, which closes five more.
+- **Let's Encrypt without DDNS.** The DDNS page has a new choice, Let's Encrypt via DNS: give it a name in a domain
+  you hold at Cloudflare, deSEC or Duck DNS and an API token, and the router gets a trusted certificate by writing a
+  temporary DNS record. No DDNS, no open port 80, and the name does not have to point at your router; it renews on
+  its own. The web interface and Encrypted DNS use it, so an iPhone's DNS profile no longer needs a certificate
+  installed. The web server switches to a new certificate once nobody is logged in. The plain Let's Encrypt option
+  is now always listed, greyed until DDNS is on.
+- **DNS rewrites in Wallguard**, as in AdGuard Home and Pi-hole: point a name at an address or at another name for
+  every device that uses the router's DNS. A rewritten name is never blocked by Wallguard's lists.
+- **FTP passthrough is off by default.** The FTP and PPTP connection helpers now attach only where they are needed,
+  not to every connection on their port: a malicious FTP server could use the FTP helper to open ports towards a LAN
+  device. If a device on your network uses active-mode FTP to a server on the Internet, turn on FTP Passthrough on the
+  NAT page. The router's own FTP server, a port forward to an FTP server and PPTP passthrough work as before.
+- **Security audit fixes.** Three web endpoints now require the page token, an endpoint that stored a setting before
+  login is no longer served, a request with a false length can no longer stall the web server before login,
+  WireGuard's temporary files moved to root's private directory, and the Security Review also watches a USB long-term
+  store and fixes files that closed programs leave writable by everyone. Gone: a socket-leak workaround that every
+  model's vendor libraries no longer need, and two LLTD programs that never ran.
+- **Devices no longer lists a phone or laptop twice.** With MLO off, a device can still connect on extra randomized
+  addresses; those rows ("no lease", "private address") now fold into the device they belong to.
+- **System Info names its capabilities** instead of showing internal tokens, and hides the ones that mean nothing on
+  this firmware. The NordVPN and Surfshark hooks, which no Reaper page offered, are no longer built.
+- **Faster firewall rebuilds and Connections page.** Gatekeeper loads its rules in batches, Warden and Gatekeeper tear
+  their rules down once instead of twice, and the Connections page sorts the connection table once instead of
+  scanning it for every flow.
+- **Wireless Log** refreshes every 10 seconds, pauses while its tab is hidden, and reads its data as JSON.
+- **Rule Status C3:** a port forwarded to another of the router's own addresses, such as a WireGuard server, is no
+  longer reported as blocked.
+- **GT-BE98, GT-BE19000, BQ16 and BQ16 Pro:** the built-in CA list matches the other models (emSign ECC Root CA - G3
+  removed, as Merlin did).
+
+## v3.7.1 — kernel, WireGuard and DHCP-client CVE fixes; USB Application, Media Server, Samba and FTP on Reaper pages; no blank page after login; refused SMB logins logged
+
+Everything in v3.7.0 is included. Both lines carry the same changes: RT-BE96U, RT-BE86U, RT-BE88U and GT-BE98 Pro on
+3006.102.10; GT-BE98, GT-BE19000, BQ16 and BQ16 Pro on 3006.102.8.
+
+- **CVE-2026-98432: the kernel's IPv4 TCP handshake could read memory it had already freed.** A connection attempt
+  carrying IP options, raced against a resent one, let the kernel build its reply from options the new connection
+  had already freed: a crash or kernel memory corruption, from anyone who can reach a TCP port on the router. The
+  options are now freed only once nothing can still read them, as upstream does. The 4.19 kernel gets no upstream
+  fix, so it is carried here.
+- **Four more fixes from a check of every CVE published in the last 90 days.** The WAN DHCP client no longer crashes
+  on a reply shorter than its own headers, which anyone on your ISP's network segment could send (CVE-2026-88833).
+  WireGuard checks the handshake key when it accepts a response, so one handshake can no longer give two sessions
+  (CVE-2026-99059). The kernel sets a socket's timestamp flag only under the socket's lock (CVE-2026-98276). On
+  GT-BE98, GT-BE19000, BQ16 and BQ16 Pro the configuration-upload address is no longer served: ASUS fixed it
+  (CVE-2026-19386) in firmware newer than the components those models are built from, and nothing in Reaper uses it.
+- **USB Application, Media Server, Network Place (Samba) Share and FTP Share are Reaper pages.** The USB Application
+  page shows one card per USB service with its state, and the disks with their size and use. The Samba and FTP pages
+  hold the server settings, guest or anonymous access, the accounts and each folder's rights in one place; turning on
+  FTP access from the Internet asks first, and FTP over TLS cannot be combined with anonymous login. The Media Server
+  page sets the DLNA and iTunes servers and their media folders, picked from the disks, and shows the scan status.
+  Deleting a folder asks you to type DELETE, because it removes every file in it. The stock pages no longer ship;
+  their old addresses open the new pages.
+- **No more blank page after login.** When a page's background request was the last one refused before you logged
+  in, login opened that request's address as a page - often the security banner's text, which shows as a white
+  screen. Login now returns only to a page your browser opened, or to the dashboard.
+- **A refused SMB login is in the system log**, with the user, the client's address and the reason (a wrong password
+  reads `NT_STATUS_WRONG_PASSWORD`). Successful logins are not logged.
+
+## v3.7.0 — security review: kernel privilege checks, root-only files and keys, a page token on every save, hardened binaries; USB 3 write levers; list addresses on the Dreadwatch and Wallguard rows
+
+Everything in v3.6.5 is included. Both lines carry the same changes: RT-BE96U, RT-BE86U, RT-BE88U and GT-BE98 Pro on
+3006.102.10; GT-BE98, GT-BE19000, BQ16 and BQ16 Pro on 3006.102.8.
+
+- **A full code review of the firmware, its kernel and a surface pass over the closed programs.** The fixes below are
+  its outcome; the items it did not change are listed with their reasons in the review record. Highest priorities fixed 
+  first, more to come.
+- **Kernel: privileged interfaces answer only privileged callers.** The kernel's nvram channel, the multicast-snooping
+  control, the packet-flow device and the `/proc` command consoles refuse a process without administrator rights, and
+  the lengths they read are bounded by what was sent. Five stable fixes for the 4.19 kernel: CVE-2023-42752,
+  CVE-2024-36904, CVE-2024-56631, CVE-2024-41012 and CVE-2024-47685. Port trigger, the URL / keyword filter and the
+  repeater-mode DNS redirect get locking, bounds and copy fixes.
+- **Files, keys and folders are no longer open to every process on the router.** The kernel nvram file, device nodes,
+  lock and mount folders, the Wi-Fi and AiMesh configuration files, certificates and keys (also after a restore),
+  PPPoE / PPTP / L2TP and WireGuard credentials, SSH keys, the USB share-permission files and several working folders
+  are root-only or read-only for others. The kernel log and kernel addresses are readable by root only. A new file
+  that names no mode is created 0644, not 0666.
+- **Every settings save carries the page's token.** A save from the web pages now carries the per-boot request token
+  that every Reaper page already used, and a browser request without it is refused; the ASUS app and scripts are not
+  affected. If a page ever saves nothing, the system log says `apply without the page token refused`.
+- **Secrets stay out of page source.** RADIUS shared secrets, the WPS PIN and the MLO network's password are no longer
+  written into the pages; the PIN and the password are read when you press Show.
+- **Hardened builds.** httpd, rc, infosvr and dnsmasq are position-independent with full RELRO; httpd, infosvr and
+  dnsmasq are also built with FORTIFY.
+- **Web interface fixes.** The browser cross-site refusal also covers the HTTPS port and the WAN-detection and scan
+  pages; the IPsec certificate upload sets only its own setting; byte-range downloads are answered as ranges; the
+  firmware download is checked in a private folder before it is used; the password change no longer writes the new
+  password to a temporary file.
+- **Gatekeeper's waiting page with an HTTPS-only web interface.** A held device's web check reached a closed port, so
+  the waiting page never showed. The router now runs a plain-HTTP instance for that page only; every other request to
+  it is sent to HTTPS.
+- **Wallguard keeps a good list when a provider answers with an error page.** A download is parsed before it replaces
+  the list in use; one with no names, or mostly lines that are not a list, is refused and the previous copy kept.
+- **Encrypted DNS: one host can no longer hold every connection slot** with connections that never finish the TLS
+  handshake.
+- **The Windows Network Map no longer lists the router.** Its responder (LLTD) is not started.
+- **The kernel banner names no build machine** (`/proc/version` reads `reaper@reaper`).
+- **USB 3 write-speed levers, off by default.** Five module parameters set from the `reaper_usb3_*` settings, for
+  A/B tests of the write speed on BCM4912 / BCM4916 models; nothing changes unless one is set.
+- **Dreadwatch and Wallguard show each built-in list's address on its row**, so a list can be read before it is
+  ticked. Save downloads a list ticked for the first time. The DNS-bypass banner also recognises VPN Director's
+  Exclusive DNS. Warden exempts the IPv6 prefix of every LAN network, Encrypted DNS exempts AiMesh nodes, and the
+  Dreadwatch device counters list the 100 busiest devices.
+
+## v3.6.5 — seven more Reaper settings pages, AiMesh and Network on their own stylesheet, AiMesh nodes exempt everywhere, WireGuard through Warden
+
+Everything in v3.6.4 is included. Both lines carry the same changes: RT-BE96U, RT-BE86U, RT-BE88U and GT-BE98 Pro on
+3006.102.10; GT-BE98, GT-BE19000, BQ16 and BQ16 Pro on 3006.102.8.
+
+- **Seven more settings pages on the Reaper kit, and the stock ones gone.** Wireless > WPS, WDS, Wireless MAC Filter,
+  RADIUS Setting, Roaming Block List and MLO, and LAN > VLAN (Switch and Profiles), are Reaper pages that keep the
+  stock settings and apply them the way stock does. The stock pages they replace no longer ship; their old addresses
+  open the new pages. The Roaming Block List is read from all three radios (stock read one and wrote three, so a list
+  that had drifted apart lost entries on the next save); MLO's "Add a Network" opens the Network page's own MLO
+  wizard; VLAN keeps a trunk that carries several VLANs as it is; RADIUS Setting shows which bands use the server.
+- **AiMesh and Network: their own stylesheet.** Both pages keep the stock layout and now link a Reaper stylesheet of
+  their own, with the same look (compared element by element); the router no longer injects one into them, and the
+  stock white / ROG / TUF themes of those pages are gone.
+- **AiMesh nodes are exempt everywhere, from one list.** Gatekeeper exempted AiMesh nodes; the firewall rules engine
+  (Service Intercept) and Policy Routing did not, so one broad rule could cut a node off. One shared list
+  (`reaper_aimesh`), refreshed from the router's AiMesh registry, is now honoured by Gatekeeper, the rules engine,
+  Policy Routing and the watchdog.
+- **Warden: the WireGuard server is reachable with country blocking or feeds on.** Field report (GT-BE98, v3.6.2): a
+  phone on mobile data could not reach the router's WireGuard server. Warden now lets UDP through to the listen ports
+  of the enabled WireGuard servers (WireGuard answers only peers it holds keys for) and re-applies when a server is
+  switched on or off or its port changes. OpenVPN and IPsec are not exempted.
+- **Header on a phone: Reboot and Logout hold still.** The ? / Reboot / Logout buttons are one group that fits beside
+  the logo or wraps whole; a live tile spilling past a phone screen no longer shrinks them and lets them spring back.
+- **Reaper pages fit a phone.** Under 680 px a settings row is one column and a data table scrolls sideways in its
+  own box with its headers whole; every kit page is the width of the screen at 402, 375 and 320 px. The dashboard's
+  phone strip matches the one on every other page.
+- **Pop-up panels open where you are looking.** Inside the Reaper frame a stock pop-up (the AiMesh client card, for
+  example) opened near the top of the page however far down it was scrolled; it now opens centred in the part of the
+  page on screen.
+- **DNS Director: device names on per-device rules.** The rule list shows the device's name beside its MAC.
+- **One MAC-vendor table in the image (3006.102.10).** The web pages' vendor table was a second copy of the
+  networkmap one (about 352 KB of flash, its accented names stripped); the web path now points at the networkmap
+  table. The 3006.102.8 GPL ships no networkmap table, so those models keep the web copy.
+
+## v3.6.4 — Guest Network Pro through an OpenVPN client has Internet, Rule Status reads VPN routing, device pickers on VPN Director and DHCP reservations
+
+Everything in v3.6.3 is included. Both lines carry the same changes: RT-BE96U, RT-BE86U, RT-BE88U and GT-BE98 Pro on
+3006.102.10; GT-BE98, GT-BE19000, BQ16 and BQ16 Pro on 3006.102.8.
+
+- **Guest Network Pro: a network sent through an OpenVPN client has Internet.** Field report (RT-BE86U, v3.6.3): a
+  Guest Network Pro network bound to an OpenVPN client from the Network page had no Internet, while a VPN Director
+  rule for the same subnet worked. Routing, firewall and NAT were right; the network's DNS was not. Its dnsmasq asks
+  the VPN's resolvers from the router itself, and nothing sent those queries into the tunnel (only the WireGuard path
+  installs that rule), so they left by the WAN, or down another tunnel whose resolver had the same address. Each
+  resolver is now bound to the client's tunnel in the network's servers file (`server=10.9.0.1@tun13`), and dnsmasq
+  keeps the capability that binding needs when it reads a servers file.
+- **Rule Status: a guest network sent through a VPN is a note, not a red G2.** Same report: the check went red at the
+  FORWARD tail for that network although its forwarding was right - its Internet path is the routing table its
+  `ip rule` selects, which the check does not read. The walker (v1.11) now reads each rule's input interface: a bridge
+  an unconditional rule sends to a table of its own is reported as policy-routed, with the rule, the table and its Kill
+  Switch partner named, and is not judged against the WAN path.
+- **VPN Director: picking a device fills the Description with its name.** Only while the field is empty or still
+  holds the last name filled in, never over typed text; characters the description refuses are dropped.
+- **LAN > DHCP: a device list when adding a reservation.** The MAC field offers this LAN's connected devices that
+  hold no reservation yet, name and address, sorted by address; picking one fills the address and shows the device's
+  name as the host-name placeholder. The stock add row had such a list; the Reaper page did not.
+- **Diagnostics v1.3.53: two address-shaped names stay readable.** The report's sanitizer masked the speed-test
+  engine's four-part version and a WDS link's interface name (`wds1.1.1.0`) as external addresses; the version
+  prints as "v3.8.0 build 235" and WDS names are kept.
+
+## v3.6.3 — Wireless Log names and network types, hardware QoS behind an ISP profile, unsaved-changes cue, the speed test on 3006.102.8
+
+Everything in v3.6.2 is included. Both lines carry the same changes: RT-BE96U, RT-BE86U, RT-BE88U and GT-BE98 Pro on
+3006.102.10; GT-BE98, GT-BE19000, BQ16 and BQ16 Pro on 3006.102.8. Two are for the 3006.102.8 models only: the speed
+test setup (the 3006.102.10 models have had it since v3.6.0) and the Wi-Fi start-up script.
+
+- **Wireless Log: your device names, and each network for what it is.** Field report (GT-BE98, v3.6.2): names were
+  missing and a main + guest + IoT router read as two guest networks. The page printed only the DHCP lease hostname
+  (`*` when a device sends none); it now shows your name for the device first (Devices page, then the client list),
+  the lease hostname after. Each box other than the main network carries its Guest Network Pro type (Guest, IoT,
+  Kids, VPN ...). On a router whose main network is still on the primary interface (no MAINFH profile) the main
+  network is found there instead of being filed under the AiMesh backhaul.
+- **Hardware QoS shapes the port under an ISP / IPTV profile.** With `switch_wantag` and an STB port or a WAN VLAN
+  tag, `wan0_ifname` is the profile's `vlanNNN` / `brvNNN` device, which the traffic manager refuses, so hardware QoS
+  shaped nothing. `hwqos_tm_ifname()` now takes the physical port there (`wan_if_eth()`, as Asuswrt-Merlin's HW AQM
+  does since Eric "Merlin" Sauvageau's f5334a33d23); a port that also carries the LAN is still refused.
+  `reaper_diag` v1.3.52 section 10 names the same port. The QoS page's "LAN trunk" note shows only for the GT-BE98
+  family's vlan4094 jack, not for every VLAN WAN.
+- **Internet Connection names the WAN port in use.** Field report (RT-BE88U, v3.6.1): with the cable on the 2.5G port
+  the page said "10G WAN/LAN"; it named the model's default port. It resolves the port the way WAN Ports does.
+- **WAN Ports tab in router mode.** Same report: the tab was missing because `wlc_band` held `-1`; any value hid it. In
+  router mode the dual-WAN flag alone decides; WISP, repeater, media bridge and AP keep the stock rule.
+- **System Info: an off radio reads "off".** Field report (GT-BE98, v3.6.1): it showed the markup `<i>off</i>` as text.
+- **"Unsaved changes" on the pages that keep edits until Apply or Save.** QoS, Policy Routing, WAN Ports, Wallguard and
+  Dreadwatch show "Unsaved changes: N" and a Discard button, as the other Reaper pages do: a QoS rule's × had edited
+  only the page with nothing saying Apply was still needed.
+- **DNS Director: pick the device from a list.** A picker of connected devices sits beside the MAC box and fills it;
+  typing a MAC still works. Offline devices and devices that already have a rule are left out.
+- **Dreadwatch names itself.** Its apply message and how-it-works card said Warden; they now say Dreadwatch, in all 25
+  languages.
+- **Speed test (3006.102.8 models): ASUS's 102_40585 setup.** ASUS retired the Ookla key this line used on 2026-10-01.
+  GT-BE98, GT-BE19000, BQ16 and BQ16 Pro get the files the 3006.102.10 models have had since v3.6.0 (Asuswrt-Merlin,
+  Eric "Merlin" Sauvageau, 0c5d53820c7): the key chosen by platform, ASUS's quota (100 free tests, then 3 per 24
+  hours, once setup is complete; the page says when it is used up) and the engine build 40585 pairs with it.
+- **Wi-Fi start-up script (3006.102.8 models): the defaults volume is mounted once.** `hndnvram.sh` mounted it again on
+  every call, stacking mounts. The models' platform trees predate the fix (Asuswrt-Merlin, Eric "Merlin" Sauvageau,
+  d7c6a53e440, from GPL 102_40585); the build now swaps in that script, and only over the known older copy.
+- **Smaller fixes:** VPN Director's client list gives each client a card with its tags on their own line; Wireless
+  Settings' band dot is the radio's state, green on and grey off, as on the dashboard; Wallguard and Dreadwatch "Add
+  a source" folds Request and the key header away for a plain list and styles the API key field; LAN > VLAN reads
+  "In use by Ethernet WAN"; three images are recompressed losslessly (71 KB); the release workflow retries a failed
+  artifact download and refuses to publish a partial one.
 
 ## v3.6.2 — RT-BE86U keeps 5 GHz after a Guest Network Pro save, API keys inside a source address, review fixes
 

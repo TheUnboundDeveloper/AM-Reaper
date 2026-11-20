@@ -85,7 +85,7 @@ check("all 25 packs: RDWT_02 gone, RDWT_40 names Dreadwatch", len(packs) == 25 a
 
 wg = rd("rc", "wallguard.c"); ed = rd("rc", "encdns.c")
 check("Wallguard's and Encrypted DNS's starts read no other Bastion switch",
-      not re.search(r'nvram_\w+\("(rwarden_enable|rwarden_dns|reaper_dot_srv|reaper_doh_block)"', wg)
+      not re.search(r'nvram_\w+\("(rwarden_enable|rwarden_dns|reaper_dot_srv|reaper_doh_block|reaper_dot_block)"', wg)
       and not re.search(r'nvram_\w+\("(rwarden_enable|rwarden_dns|wallguard_enable)"', ed))
 print("%d failure(s)" % len(fails))
 for f in fails: print("  " + f)

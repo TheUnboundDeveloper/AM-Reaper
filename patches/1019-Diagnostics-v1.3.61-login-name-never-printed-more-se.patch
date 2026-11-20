@@ -1,0 +1,238 @@
+From 19b2955e71231db39ac7899aa287cb51bf3c1b60 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Wed, 18 Nov 2026 17:05:10 -0500
+Subject: [PATCH] Diagnostics v1.3.61: login name never printed; more secrets
+ masked; radio lines
+
+- uid-0 account names are read from /etc/passwd and the USER column of the top and ps listings is
+  rewritten by position, so the admin login name never appears.
+- A value made of one repeated character no longer joins the redaction list (the zero halves of
+  crash-dump registers were masked).
+- New sanitizer stage: a name=value pair with a secret-word name, a URL user:password and a Bearer
+  value are masked. The host-name list adds each WAN domain, the remote log server, WireGuard and
+  OpenVPN client endpoints and a typed NTP server.
+- New lines: radio software per radio, AP isolation per network, Wallguard state.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ release/src/router/others/reaper_diag  | 118 +++++++++++++++++++++++--
+ release/src/router/www/Reaper_Diag.asp |   2 +-
+ 2 files changed, 114 insertions(+), 6 deletions(-)
+
+diff --git a/release/src/router/others/reaper_diag b/release/src/router/others/reaper_diag
+index 93acef08ab..59bf89319b 100644
+--- a/release/src/router/others/reaper_diag
++++ b/release/src/router/others/reaper_diag
+@@ -1,6 +1,14 @@
+ #!/bin/sh
+ # ============================================================================
+-#  REAPER-DIAG v1.3.59 (2026-11-11) - sanitized one-shot diagnostic bundle
++#  REAPER-DIAG v1.3.61 (2026-11-18) - sanitized one-shot diagnostic bundle
++#  v1.3.61 (review 2026-11-17, Phase 6): a new sanitizer stage (arg) masks secrets written into free text - a
++#  `name=value` whose name ends in token / password / secret / apikey and the like, the user:password part of a URL,
++#  a "Bearer" value - wherever they stand (a cron line the user added, a process command line, an add-on's log
++#  line); the ISP's DHCP domain (wanN_domain, printed by dnsmasq in the system log), a typed NTP server, the remote
++#  log server and the VPN clients' server names join the host-name list.
++#  v1.3.60: the login name no longer shows in the process lists (it was printed in the USER column of top / ps);
++#  the hardware section names each radio's driver and firmware version; section 7 says which networks have
++#  Set AP Isolated on; section 12c shows Wallguard's switch.
+ #  v1.3.59 adds section 12d: the wait each radio call may take, the three Wireless stability switches, how often
+ #  the Wi-Fi driver logged a timed-out or busy call, and the kernel stacks of blocked tasks while any are blocked.
+ #  v1.3.58 names how the DNS Health Check asks (port 53, over DNS-over-TLS, or through the DNS-over-TLS forwarder) and
+@@ -189,7 +197,7 @@
+ #  not add an unbounded command here.
+ # ============================================================================
+ PATH=/sbin:/bin:/usr/sbin:/usr/bin
+-VER="REAPER-DIAG v1.3.59"
++VER="REAPER-DIAG v1.3.61"
+ T0="$(date +%s 2>/dev/null)"
+ MODEL="$(nvram get productid 2>/dev/null)"
+ EXTNO="$(nvram get extendno 2>/dev/null)"
+@@ -338,6 +346,12 @@ awk -F= '
+     k=$1; sub(/^[^=]*=/,""); v=$0
+     if (length(v) < 5) next
+     if (v ~ /^[0-9]+$/ && length(v) < 6) next
++    # v1.3.60 (owner diag 2026-11-17) REAPER-DIAG-FILLER: a value that is one repeated character (the stock default
++    # wps_sta_pin=00000000) is filler, not a secret. As a literal it replaced the zero half of every register
++    # in a crash dump: the dump was garbled, and where the token stood told the reader what the value was.
++    same = 1; c1 = substr(v, 1, 1)
++    for (j = 2; j <= length(v); j++) if (substr(v, j, 1) != c1) { same = 0; break }
++    if (same) next
+     cls=""
+     # review 2026-11-03 (D-4): and WireGuard private keys and peer PSKs, IPsec profiles (their PSK), the
+     # user>password client lists, AiMesh guest security strings and SSH keys
+@@ -345,9 +359,35 @@ awk -F= '
+     else if (k ~ /username|_user$|_account|http_username|login_name/) cls="USR"
+     else if (k ~ /_ssid$/) cls="SSID"
+     else if (k ~ /ddns_hostname|_hostname$|computer_name|lan_domain|ddns_username|reaper_ledns_domain|reaper_landns_domain|https_crt_cn/) cls="HOST"
++    # v1.3.61 (review P6-4-G2 / G3, rule diag-sanitizer-name-sources): the ISP-given DHCP domain (wanN_domain - dnsmasq
++    # prints it as "using nameserver ... for domain <d>"), the remote log server, the server of each VPN client
++    # (WireGuard endpoint name and the addresses it resolved to, OpenVPN server) and a typed NTP server. The public
++    # NTP pools the firmware ships with identify nobody and stay readable. NO APOSTROPHE in this awk program.
++    else if (k ~ /^wan[0-9]*_domain$|^log_ipaddr$|^wgc[0-9]+_ep_addr(_r)?$|^vpn_client[0-9]+_addr$/) cls="HOST"
++    else if (k ~ /^ntp_server[0-9]$/ && tolower(v) !~ /(^|\.)(pool\.ntp\.org|ntp\.org|time\.google\.com|time\.cloudflare\.com|time\.apple\.com|time\.windows\.com|time\.nist\.gov|ntp\.ubuntu\.com)$/) cls="HOST"
+     if (cls != "") print cls "\t" v
+     if (cls == "HOST" && v ~ /[ ,;]/) { m = split(v, pp, /[ ,;]+/); for (j = 1; j <= m; j++) if (length(pp[j]) >= 5) print "HOST\t" pp[j] }
+   }' "$NVS" > "$SLIST" 2>/dev/null
++# v1.3.60 (field diag 2026-11-17) REAPER-DIAG-USERCOL: the login name. On these builds http_username is an
++# ENCRYPTED value in the `nvram show` dump, so the clear name never reached the list above - and the USER column
++# of `top` and `ps` printed it on every line while the ledger said "usernames redacted: 0". The name is read
++# from the account file (every uid-0 name; root and admin identify nobody). A name of 5 or more characters joins
++# the literal list, so it is also taken out of log lines; a shorter one would match inside ordinary words, so
++# for any length the USER column of the two process lists is rewritten by position (san_usercol; busybox cuts
++# that column at 8 characters, so the first 8 are compared too).
++ADMU="$(awk -F: '$3 == 0 && $1 != "" && $1 != "root" && $1 != "admin" { printf "%s ", $1 }' /etc/passwd 2>/dev/null)"
++for _u in $ADMU; do [ "${#_u}" -ge 5 ] && printf 'USR\t%s\n' "$_u" >> "$SLIST"; done
++san_usercol() {
++  awk -v L="$ADMU" 'BEGIN { n = split(L, U, " ") }
++    { for (i = 1; i <= n; i++) {
++        for (k = 0; k < 2; k++) {
++          t = (k == 0) ? U[i] : substr(U[i], 1, 8)
++          p = index($0, " " t " ")
++          if (p > 0 && p < 24) { $0 = substr($0, 1, p) "admin" substr($0, p + 1 + length(t)); break }
++        }
++      }
++      print }'
++}
+ # DHCP client hostnames (dnsmasq leases field 4)
+ for LF in /var/lib/misc/dnsmasq.leases /tmp/var/lib/misc/dnsmasq.leases /jffs/nmp/dnsmasq.leases; do
+   [ -f "$LF" ] && awk '{ if ($4 != "*" && length($4) >= 5) print "HOST\t" $4 }' "$LF" >> "$SLIST" 2>/dev/null && break
+@@ -423,7 +463,8 @@ awk -F'\t' '{ print length($2) "\t" $0 }' "$SLIST" | sort -rn | cut -f2- | awk '
+ # A new kind of leak gets its own stage (or a template in ctx), never a wider
+ # shape rule. test_diag_sanitizer.py runs the stages, in SAN_STAGES order, under
+ # busybox awk, gawk and mawk.
+-SAN_STAGES="lit ctx mail mac ip6 ip4"
++#   arg   (v1.3.61) secrets written into free text: name=value with a secret-word name, URL credentials, Bearer
++SAN_STAGES="lit arg ctx mail mac ip6 ip4"
+ 
+ cat > "$AWKP.lit" <<'AWKEOF'
+ BEGIN {
+@@ -470,6 +511,64 @@ END {
+ }
+ AWKEOF
+ 
++cat > "$AWKP.arg" <<'AWKEOF'
++# v1.3.61 (review 2026-11-17, P6-4-G1) REAPER-DIAG-ARGSTAGE: a secret written into FREE TEXT - a cron line the user
++# added (cru l), a process command line (ps, top), an add-on log line - sits in no nvram key, so the literal list
++# never holds it, and the shape stages only know addresses. Three shapes are masked wherever they stand:
++#   name=value or name:value whose name ENDS in a secret word (token, password, passwd, secret, apikey, api_key,
++#   authkey, auth_key, access_key, private_key, psk), the value quoted or not
++#   the user:password part of a URL (scheme://user:password@host)
++#   "Bearer <value>" (an Authorization header in a curl or wget line), 8 characters or more
++# One token per distinct value. A value under 4 characters, or one an earlier stage already replaced, stays.
++function keep(v) { return (length(v) < 4 || index(v, "\001") > 0 || substr(v, 1, 1) == "[") }
++function tok(v) { if (!(v in AM)) { cA++; AM[v] = "[R\001EDACTED-ARG-" cA "]" }; return AM[v] }
++function mask_kv(line,   lw, out, mm, s, n, p, c, v) {
++  out = ""
++  for (;;) {
++    lw = tolower(line)
++    if (!match(lw, /(token|passwd|password|secret|apikey|api_key|authkey|auth_key|access_key|private_key|psk)["']?[=:] ?["']?[^ \t"'&;,)]+/)) break
++    s = RSTART; n = RLENGTH; mm = substr(line, s, n)
++    p = 1
++    while (p <= n) { c = substr(mm, p, 1); if (c == "=" || c == ":") break; p++ }
++    p++
++    if (substr(mm, p, 1) == " ") p++
++    c = substr(mm, p, 1)
++    if (c == "\"" || c == "'") p++
++    v = substr(mm, p)
++    out = out substr(line, 1, s - 1) substr(mm, 1, p - 1) (keep(v) ? v : tok(v))
++    line = substr(line, s + n)
++  }
++  return out line
++}
++function mask_url(line,   out, mm, s, n, cs, v) {
++  out = ""
++  while (match(line, /[A-Za-z][A-Za-z0-9+.-]*:\/\/[^ \t\/:@"']+:[^ \t\/@"']+@/)) {
++    s = RSTART; n = RLENGTH; mm = substr(line, s, n)
++    cs = index(mm, "://") + 3
++    v = substr(mm, cs, n - cs)
++    out = out substr(line, 1, s - 1) substr(mm, 1, cs - 1) (keep(v) ? v : tok(v)) "@"
++    line = substr(line, s + n)
++  }
++  return out line
++}
++function mask_bearer(line,   lw, out, mm, s, n, p, v) {
++  out = ""
++  for (;;) {
++    lw = tolower(line)
++    if (!match(lw, /bearer[ ]+[a-z0-9._~+\/=-]+/)) break
++    s = RSTART; n = RLENGTH; mm = substr(line, s, n)
++    p = 7
++    while (substr(mm, p, 1) == " ") p++
++    v = substr(mm, p)
++    out = out substr(line, 1, s - 1) substr(mm, 1, p - 1) ((length(v) < 8 || keep(v)) ? v : tok(v))
++    line = substr(line, s + n)
++  }
++  return out line
++}
++{ print mask_bearer(mask_url(mask_kv($0))) }
++END { print "  free-text secrets redacted : " cA+0   > "/dev/stderr" }
++AWKEOF
++
+ cat > "$AWKP.ctx" <<'AWKEOF'
+ # v1.3.36: names and domains a LAN client wrote into a log line. Run over the
+ # report twice (the file is given twice): pass 1 collects them from the known
+@@ -729,6 +828,11 @@ for _w in $(nvram get wl_ifnames 2>/dev/null); do
+   _rl="$_rl${_rl:+ | }$_w ${_cn:-?} rev ${_cr:-?}"
+ done
+ echo "  radios   : ${_rl:-none found}"
++# v1.3.60: the driver and firmware version each radio reports (a field report could not say which were loaded)
++for _w in $(nvram get wl_ifnames 2>/dev/null); do
++  _wv="$(wl -i "$_w" ver 2>/dev/null | awk '/version/ { sub(/^[^:]*: */, ""); print; exit }')"
++  echo "  radio sw : $_w ${_wv:-version not readable}"
++done
+ if [ -n "$BOARD" ] && [ -n "$MODEL" ] && [ "$BOARD" != "$MODEL" ]; then
+   case "$BOARD" in
+     *_BCM) _bv="Broadcom PHYs instead of the Realtek RTL8372 LAN switch - LAN port handling differs from the original board" ;;
+@@ -778,7 +882,7 @@ else
+   if [ "$JFA" -lt 2048 ] || [ "$JFP" -ge 90 ]; then finding WARN "/jffs nearly full (${JFA}K free, ${JFP}%) - Reaper saves will start failing; see the du line in 11 for what is using it"; fi
+   if ! ( : > /jffs/.reaper_diag_w 2>/dev/null && rm -f /jffs/.reaper_diag_w ); then finding WARN "/jffs write test FAILED - Reaper lists cannot persist"; fi
+ fi
+-echo "  -- top (snapshot) --"; top -bn1 2>/dev/null | head -12 | sed 's/^/  /'
++echo "  -- top (snapshot) --"; top -bn1 2>/dev/null | head -12 | san_usercol | sed 's/^/  /'
+ # v1.3.33 (2026-10-09, audit V3): the /tmp hardening - the four kernel link protections
+ # rc sets at boot, and Reaper's private directories (fixed names; owner and mode only).
+ echo "  -- /tmp hardening --"
+@@ -1209,6 +1313,9 @@ sec "7. WIRELESS (radios discovered at runtime)"
+ # gated per band by wlN_user_rssi and globally by disable_exap; roamast_disable
+ # stops the daemon. Schedules and DFS follow per radio, auth/PMF per VIF.
+ if pidof roamast >/dev/null 2>&1; then RAST=running; else RAST=not-running; fi
++# v1.3.60: Set AP Isolated per network (two Wi-Fi devices on such a network cannot reach each other)
++_iso="$(grep -E '^(apm|apg|wl)[0-9.]*_ap_isolate=1$' "$NVS" 2>/dev/null | cut -d= -f1 | tr '\n' ' ')"
++echo "  ap isolation      : ${_iso:-off on every network}"
+ echo "  roaming assistant : roamast=$RAST  roamast_disable=$(nvram get roamast_disable 2>/dev/null)  disable_exap=$(nvram get disable_exap 2>/dev/null)"
+ APGS=""
+ for k in $(grep -E '^apg[0-9]+_timesched=1$' "$NVS" 2>/dev/null | cut -d_ -f1); do APGS="$APGS $k"; done
+@@ -1546,7 +1653,7 @@ _rmx="$(cat /proc/sys/net/core/rmem_max 2>/dev/null)"; case "$_rmx" in ''|*[!0-9
+ [ "$_rmx" -lt 16777216 ] && finding INFO "net.core.rmem_max is $_rmx, below the 16 MB Reaper sets at firewall start since v3.0.3 - an older build, or start_firewall has not run this boot; a single stream to the router itself is capped accordingly (see 11b)"
+ 
+ sec "12. PROCESSES / LISTENING SOCKETS"
+-ps w 2>/dev/null | sed 's/^/  /'
++ps w 2>/dev/null | san_usercol | sed 's/^/  /'
+ echo "  -- listeners --"
+ netstat -tuln 2>/dev/null | sed 's/^/  /'
+ 
+@@ -1634,6 +1741,7 @@ echo "  warden            : rwarden_enable=$(nvram get rwarden_enable 2>/dev/nul
+ echo "  rules engine      : reaper_fw_enable=$(nvram get reaper_fw_enable 2>/dev/null) active=$(nvram get reaper_fw_active 2>/dev/null) armed=$(nvram get reaper_fw_armed 2>/dev/null)"
+ echo "  policy routing    : reaper_pbr_enable=$(nvram get reaper_pbr_enable 2>/dev/null) active=$(nvram get reaper_pbr_active 2>/dev/null)"
+ echo "  exporter          : reaper_export_mode=$(nvram get reaper_export_mode 2>/dev/null)"
++echo "  wallguard         : wallguard_enable=$(nvram get wallguard_enable 2>/dev/null) table=$([ -s /tmp/wallguard/db ] && echo built || echo none)"
+ echo "  -- cron (cru l) --"; cru l 2>/dev/null | sed 's/^/  /'
+ [ "$(nvram get rwarden_enable 2>/dev/null)" = 1 ] && ! iptables -nL REAPER_WARDEN >/dev/null 2>&1 && finding WARN "Warden enabled but REAPER_WARDEN chain absent"
+ _wdir="$(nvram get rwarden_dir 2>/dev/null)"
+diff --git a/release/src/router/www/Reaper_Diag.asp b/release/src/router/www/Reaper_Diag.asp
+index b47ef3409c..9208ca9a43 100644
+--- a/release/src/router/www/Reaper_Diag.asp
++++ b/release/src/router/www/Reaper_Diag.asp
+@@ -69,7 +69,7 @@ pre.sample .g{color:var(--jade)} pre.sample .r{color:#e0837d} pre.sample .w{colo
+ 
+ <div class="pagehead">
+   <h1><#RDIAG_00#> <a href="https://github.com/TheUnboundDeveloper/AM-Reaper/blob/main/docs/REAPER-GUIDE.md#413-diagnostics" target="_blank" rel="noopener noreferrer" title="<#RABT_43#>" style="display:inline-flex;align-items:center;justify-content:center;width:22px;height:22px;margin-left:8px;border-radius:50%;border:1px solid #4a4a4e;color:#8d897f;font:700 13px Arial,sans-serif;text-decoration:none;vertical-align:middle">?</a></h1>
+-  <span class="ver"><#RDIAG_01#> &middot; REAPER-DIAG v1.3.59</span>
++  <span class="ver"><#RDIAG_01#> &middot; REAPER-DIAG v1.3.61</span>
+ </div>
+ <p class="lede"><#RDIAG_02#></p>
+ 
+-- 
+2.25.1
+

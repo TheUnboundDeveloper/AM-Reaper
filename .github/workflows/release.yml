@@ -171,10 +171,27 @@ jobs:
             SRC_RUN="${{ inputs.run_id }}"
             [ -n "$SRC_RUN" ] || SRC_RUN="$GITHUB_RUN_ID"
             echo "== no in-tree images for $M $V; pulling clean-room artifacts from run $SRC_RUN"
-            dl="$RUNNER_TEMP/ci"; mkdir -p "$dl"
-            gh run download "$SRC_RUN" --repo "$GITHUB_REPOSITORY" \
-               --pattern "firmware-${M}-*" --pattern "evidence-${M}-*" --dir "$dl" || true
+            dl="$RUNNER_TEMP/ci"
+            # Retry: the artifact store answers a transient "HTTP 503: Egress is
+            # over the account limit" (v3.6.2 stable, RT-BE88U, 2026-10-29), and a
+            # single try failed the model's release and skipped the manifest
+            # refresh. Each try starts empty, and only a clean exit counts: a
+            # partial pull (one variant's firmware + evidence lost) would still
+            # pass the checksum check below and publish half the release.
+            dl_ok=0
+            for i in 1 2 3 4 5; do
+              rm -rf "$dl"; mkdir -p "$dl"
+              if gh run download "$SRC_RUN" --repo "$GITHUB_REPOSITORY" \
+                   --pattern "firmware-${M}-*" --pattern "evidence-${M}-*" --dir "$dl"; then
+                dl_ok=1; break
+              fi
+              [ "$i" = 5 ] || { echo "   artifact download attempt $i failed; retrying in $((i * 30))s"; sleep $((i * 30)); }
+            done
             imgs=("$dl"/firmware-"$M"-*/*.pkgtb)
+            if [ "$dl_ok" = 0 ] && [ ${#imgs[@]} -gt 0 ]; then
+              echo "::error::artifact download for $M from run $SRC_RUN did not complete after 5 attempts; refusing to publish a partial release"
+              exit 1
+            fi
             if [ ${#imgs[@]} -eq 0 ]; then
               echo "::error::no images for model '$M' version '$V' — not in releases/*/*-REAPER-$V/ and not in run $SRC_RUN's artifacts"
               echo "   in-tree route: stage with the maintainer's stage_release.ps1 (private tooling, outside this repo) and push before tagging"

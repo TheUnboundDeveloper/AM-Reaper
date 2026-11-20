@@ -318,7 +318,7 @@ try:
     addr_tun = ADDR + "4: v6tun0    inet6 2001:db8:4::2/64 scope global \\       valid_lft forever preferred_lft forever\n"
     j6, _, _ = run(witness=None, save6=save6_tun, addr=addr_tun, nv=NV + "ipv6_service=6in4\nipv6_tun_v4end=203.0.113.1\n", tag="g6in4")
     x = wit(j6, "A1v6"); check("v1.9 6in4: A1v6 leaves over v6tun0 and is judged by the tunnel accept", x and x["state"] == "green" and "-o v6tun0" in x["rule"], x)
-    check("v1.9 6in4: the walker reports itself as 1.10 (v1.10 = free stand-ins)", j6.get("ver") == "1.10", j6.get("ver"))
+    check("v1.9 6in4: the walker reports itself as 1.16 (v1.16 = the opt-in guest paths: G5 / G6 / F2 with the zone switch)", j6.get("ver") == "1.16", j6.get("ver"))
     j6b, _, _ = run(witness=None, save6=save6_tun, addr=addr_tun, tag="g6in4neg")
     x = wit(j6b, "A1v6"); check("v1.9 no tunnel service: the same table is red at the tail DROP (the pre-fix picture, still honest)", x and x["state"] == "red" and x["rule"].endswith("-j DROP"), x)
     j6c, _, _ = run(witness=None, nv=NV + "ipv6_service=6in4\n", tag="g6in4v4")
@@ -456,7 +456,9 @@ try:
     # 9100+code. No walk of iptables can see it, so before the rule database
     # became an input a Killswitch that never installed was invisible - the
     # exact failure the feature exists to prevent.
-    PBRNV = (NV + "reaper_pbr_enable=1\nvpn_client1_enforce=1\nvpn_clientx_eas=1\n"
+    # 2026-11-16: the Killswitch counts only while the client carries the default route (Redirect all = 1 or
+    # VPN Director = 2, TUN), as ppbr_target() decides it
+    PBRNV = (NV + "reaper_pbr_enable=1\nvpn_client1_enforce=1\nvpn_client1_rgw=2\nvpn_client1_if=tun\nvpn_clientx_eas=1\n"
              "reaper_pbr_rulelist=<1>to the tunnel>src>192.168.50.50>>>OVPN1\n")
     KS_ON = "0:\tfrom all lookup local\n9001:\tfrom all fwmark 0x10000/0xf0000 lookup ovpnc1\n9101:\tfrom all fwmark 0x10000/0xf0000 prohibit\n32766:\tfrom all lookup main\n"
     KS_OFF = "0:\tfrom all lookup local\n9001:\tfrom all fwmark 0x10000/0xf0000 lookup ovpnc1\n32766:\tfrom all lookup main\n"
@@ -481,6 +483,17 @@ try:
     j, out, rc = run(nv=PBRNV.replace("vpn_clientx_eas=1", "vpn_clientx_eas="), witness=None, rule4=KS_OFF, tag="c6d")
     check("C6: a disabled client's Killswitch emits no witness",
           not any(i["id"].startswith("C6") for i in j["witnesses"]), [i["id"] for i in j["witnesses"]])
+
+    # 2026-11-16 (review): Redirect "No" (pushed routes only) or a TAP client - the stored Killswitch promises nothing
+    # (no prohibit is installed any more), so there is no row to go red; Redirect "all" is a promise like VPN Director
+    for tag, old, new in (("c6f", "vpn_client1_rgw=2", "vpn_client1_rgw=0"), ("c6g", "vpn_client1_rgw=2\n", ""),
+                          ("c6h", "vpn_client1_if=tun", "vpn_client1_if=tap")):
+        j, out, rc = run(nv=PBRNV.replace(old, new), witness=None, rule4=KS_OFF, tag=tag)
+        check("C6: no Killswitch witness with %s" % (new or "no Redirect value"),
+              not any(i["id"].startswith("C6") for i in j["witnesses"]), [i["id"] for i in j["witnesses"]])
+    j, out, rc = run(nv=PBRNV.replace("vpn_client1_rgw=2", "vpn_client1_rgw=1"), witness=None, rule4=KS_ON, tag="c6i")
+    x = wit(j, "C6.1")
+    check("C6: Redirect all keeps the Killswitch witness", x and x["state"] == "green", x)
 
     # a BLOCK target is a prohibit by definition, at 9000+code
     j, out, rc = run(nv=(NV + "reaper_pbr_enable=1\nreaper_pbr_rulelist=<1>no internet>src>192.168.50.60>>>BLOCK\n"),
@@ -527,6 +540,29 @@ try:
                      witness=None, tag="c2b")
     x = wit(j, "C2"); check("C2: green once OVPNSF exists", x and x["state"] == "green", x)
     x = wit(j, "C4"); check("C4: green once WGSF exists", x and x["state"] == "green", x)
+
+    # C3 (v1.12, field GT-BE98 v3.7.1): a port forward of the WireGuard port to the router's OWN LAN address,
+    # then WGSI's accept, is the router reaching itself - green, the DNAT still shown in the verdict. A DNAT to
+    # another LAN host, or no accept after it, stays red.
+    wgnv = NV.replace("wgs_enable=0", "wgs_enable=1")
+    wgi = vpnf.replace(":WGSF - [0:0]\n", ":WGSF - [0:0]\n:WGSI - [0:0]\n").replace("-A INPUT -j DROP\n", "-A INPUT -j WGSI\n-A INPUT -j DROP\n", 1) \
+              .replace("-A INPUT_ICMP -p icmp -j ACCEPT\n", "-A INPUT_ICMP -p icmp -j ACCEPT\n-A WGSI -p udp -m udp --dport 51820 -j ACCEPT\n", 1)
+    fwd = "-A VSERVER -p tcp -m tcp --dport 443 -j DNAT --to-destination 192.168.50.10:8443\n"
+    j, out, rc = run(save4=wgi, nv=wgnv, witness=None, tag="c3a")
+    x = wit(j, "C3"); check("C3: WGSI accept, no port forward: green", x and x["state"] == "green" and "DNAT" not in x.get("verdict", ""), x)
+    j, out, rc = run(save4=wgi.replace(fwd, fwd + "-A VSERVER -p udp -m udp --dport 51820 -j DNAT --to-destination 192.168.50.1:51820\n"),
+                     nv=wgnv, witness=None, tag="c3b")
+    x = wit(j, "C3")
+    check("C3: a forward of the WireGuard port to the router's own LAN address, then WGSI accept: green, the DNAT still in the verdict",
+          x and x["state"] == "green" and "DNAT 192.168.50.1:51820" in x.get("verdict", ""), x)
+    j, out, rc = run(save4=wgi.replace(fwd, fwd + "-A VSERVER -p udp -m udp --dport 51820 -j DNAT --to-destination 192.168.50.10:51820\n"),
+                     nv=wgnv, witness=None, tag="c3c")
+    x = wit(j, "C3"); check("C3: the WireGuard port forwarded to another LAN host: red (the router's server never sees it)", x and x["state"] == "red", x)
+    j, out, rc = run(save4=wgi.replace("-A WGSI -p udp -m udp --dport 51820 -j ACCEPT\n", "")
+                     .replace(fwd, fwd + "-A VSERVER -p udp -m udp --dport 51820 -j DNAT --to-destination 192.168.50.1:51820\n"),
+                     nv=wgnv, witness=None, tag="c3d")
+    x = wit(j, "C3"); check("C3: forwarded to the router's own address but nothing accepts it: red", x and x["state"] == "red", x)
+    check("the simulator reports version 1.16", '"1.16"' in json.dumps(j), str(j)[:200])
 
     # D5 - the escape hatch. Gatekeeper enforcement is FORWARD-side; a rule
     # that reached INPUT would lock the admin out of their own router.
@@ -606,6 +642,34 @@ try:
     j, out, rc = run(save4=wcc, nv=NV, members=MEMBERS + "rw_threat 198.51.100.7\n", witness=None, tag="ws5")
     check("wansrc: 40 country sets ahead of rw_threat still leave rw_threat tested", j.get("wansrc") == "203.0.113.99", (j.get("wansrc"), j.get("wansrc_note")))
 
+    # THE WAN WITNESS DESTINATION. 2026-11-06 (owner box, walker 1.12): the
+    # Encrypted DNS block put every public resolver in redns_doh and firehol
+    # put both documentation addresses in rw_threat, so all six candidates were
+    # claimed, the fallback 1.1.1.1:443 hit the DoH reject and 27 "reaches the
+    # WAN" rows went red on a working box. v1.13 goes on to ordinary addresses.
+    wed = SAVE4.replace(":WARDEN - [0:0]\n", ":WARDEN - [0:0]\n:REAPER_EDNS - [0:0]\n") \
+               .replace("-A FORWARD -i br0 -o eth0 -p tcp -m multiport --dports 25,465",
+                        "-A FORWARD -i br0 -j REAPER_EDNS\n-A FORWARD -i br0 -o eth0 -p tcp -m multiport --dports 25,465") \
+               .replace("-A RW_DROP -j DROP\n", "-A RW_DROP -j DROP\n"
+                        "-A REAPER_EDNS -p tcp -m tcp --dport 443 -m set --match-set redns_doh dst -j REJECT --reject-with tcp-reset\n"
+                        "-A REAPER_EDNS -m set --match-set rw_threat dst -j DROP\n")
+    six = "".join("redns_doh %s\n" % c for c in ("1.1.1.1", "9.9.9.9", "8.8.8.8", "208.67.222.222")) + \
+          "rw_threat 198.51.100.7\nrw_threat 203.0.113.99\n"
+    j, out, rc = run(save4=wed, nv=NV, members=MEMBERS + six, witness=None, tag="wd1")
+    check("wandst: all six old candidates claimed (DoH block + bogons) = the next, ordinary address is used and noted",
+          j.get("wandst") == "17.0.0.1" and "1.1.1.1" in j.get("wandst_note", ""), (j.get("wandst"), j.get("wandst_note")))
+    x = wit(j, "A1"); check("wandst: 'LAN host reaches the WAN' is green again, witnessed to 17.0.0.1 (was red at REAPER_EDNS)",
+          x and x["state"] == "green" and "17.0.0.1" in x["witness"], x)
+    j, out, rc = run(save4=wed, nv=NV, members=MEMBERS + six + "rw_threat 17.0.0.1\nrw_threat 20.0.0.1\n", witness=None, tag="wd2")
+    check("wandst: further claims step on down the list", j.get("wandst") == "151.101.0.1", (j.get("wandst"), j.get("wandst_note")))
+    allten = six + "".join("rw_threat %s\n" % c for c in ("17.0.0.1", "20.0.0.1", "151.101.0.1", "193.0.6.139"))
+    j, out, rc = run(save4=wed, nv=NV, members=MEMBERS + allten, witness=None, tag="wd3")
+    check("wandst neg: every candidate claimed = 1.1.1.1 and the note says every (an honest red stays possible)",
+          j.get("wandst") == "1.1.1.1" and "every candidate" in j.get("wandst_note", ""), (j.get("wandst"), j.get("wandst_note")))
+    x = wit(j, "A1"); check("wandst neg: ...and that row is still red at the DoH reject", x and x["state"] == "red" and "REAPER_EDNS" in x["rule"], x)
+    j, out, rc = run(save4=wed, nv=NV, witness=None, tag="wd4")
+    check("wandst: nothing claims 1.1.1.1 = the documented default, no note", j.get("wandst") == "1.1.1.1" and j.get("wandst_note") == "", (j.get("wandst"), j.get("wandst_note")))
+
     # ---- the convergence pass (owner, 2026-09-16) ----
     # mode is a constant: the report is advisory by design
     j, out, rc = run(save4=SAVE4, nv=NV, witness=None, tag="mode")
@@ -628,6 +692,14 @@ try:
     x = wit(j, "T1"); check("inert: `-m policy ... -j TCPMSS` cannot decide anything, so the walk goes on and the row is green", x and x["state"] == "green" and x["rule"] == "filter/FORWARD#8 -i br0 -o eth0 -j ACCEPT", x)
     j, out, rc = run(save4=tm.replace("-j TCPMSS --set-mss 1360", "-j DROP"), tag="tm2")
     x = wit(j, "T1"); check("inert neg: the same match on a VERDICT target is still depends:policy", x and x["state"] == "depends" and x["verdict"] == "depends:policy", x)
+
+    # v1.14 (owner, on the router, 2026-11-08): a rule with no -j / -g only counts; the log chains carry one on
+    # purpose (`-A logaccept -m state --state NEW`) and it made 35 rows depends:target: with an empty target name
+    j, out, rc = run(save4=SAVE4.replace("-A FORWARD -j WARDEN\n", "-A FORWARD -m state --state NEW\n-A FORWARD -j WARDEN\n"), tag="cnt1")
+    x = wit(j, "T1"); check("counter: a rule with no target on the path is walked past and the row is judged", x and x["state"] == "green" and x["rule"] == "filter/FORWARD#8 -i br0 -o eth0 -j ACCEPT", x)
+    check("counter: no row anywhere says depends:target: with an empty name", "depends:target:\"" not in json.dumps(j), "")
+    j, out, rc = run(save4=SAVE4.replace("-A FORWARD -j WARDEN\n", "-A FORWARD -m policy --dir in --pol ipsec\n-A FORWARD -j WARDEN\n"), tag="cnt2")
+    x = wit(j, "T1"); check("counter: no target behind an unmodelled match still cannot decide anything", x and x["state"] == "green", x)
 
     # deferred doubt: a mark-class target behind an unmodelled match is only a
     # problem if something later CONSULTS that field (dual-WAN `-m statistic
@@ -687,7 +759,7 @@ try:
 
     # ---- pass 2 (owner, 2026-09-16): no mislabelled working firewalls ----
     j, out, rc = run(save4=SAVE4, nv=NV, witness=None, tag="p2v")
-    check("pass2: walker is v1.10", j.get("ver") == "1.10", j.get("ver"))
+    check("pass2: walker is v1.16", j.get("ver") == "1.16", j.get("ver"))
 
     # ---- v1.10 (owner, 2026-10-09): a stand-in is never an address a device holds ----
     # The Devices page listed a phone on 192.168.50.123 - the walker's LAN stand-in,
@@ -713,6 +785,34 @@ try:
     G55 = ADDR + "4: br55    inet 10.20.0.1/24 brd 10.20.0.255 scope global br55\\       valid_lft forever preferred_lft forever\n"
     j, out, rc = run(witness=None, addr=G55, used="10.20.0.123\n", tag="su5")
     x = wit(j, "G2.1"); check("stand-in: a guest bridge's .123 in use moves that network's witness too", x and x["witness"].startswith("br55 10.20.0.124 "), x and x["witness"])
+    # ---- 2026-11-14 (field report, v3.7.7): guest isolation's DNS rule uses `--limit-iface-in` ----
+    # Three "Guest network brNN: DNS at its gateway" rows turned inconclusive after the update on a router where
+    # nothing was wrong: the walker did not know the option, so the rule (rc/reaper_guest.c: DNS only to the
+    # network's OWN gateway) read as undecidable. It is judged now - the address must sit on the arrival interface.
+    GI = (SAVE4.replace(":INPUT_ICMP - [0:0]\n", ":INPUT_ICMP - [0:0]\n:REAPER_GUI - [0:0]\n")
+               .replace("-A INPUT -m state --state RELATED,ESTABLISHED -j ACCEPT\n",
+                        "-A INPUT -j REAPER_GUI\n-A INPUT -m state --state RELATED,ESTABLISHED -j ACCEPT\n"
+                        "-A INPUT -i br55 -p udp -m udp --dport 53 -j ACCEPT\n")
+               .replace('-A INPUT -p udp -m udp --dport 53 -m string --icase --hex-string "|03|bad|00|" --algo bm -j DROP\n', "")
+               .replace("-A INPUT_ICMP -p icmp -j ACCEPT\n",
+                        "-A INPUT_ICMP -p icmp -j ACCEPT\n"
+                        "-A REAPER_GUI -i br55 -m conntrack --ctstate RELATED,ESTABLISHED,DNAT -j RETURN\n"
+                        "-A REAPER_GUI -i br55 -p udp -m udp --dport 67 -j RETURN\n"
+                        "-A REAPER_GUI -i br55 -p udp -m udp --dport 53 -m addrtype --dst-type LOCAL --limit-iface-in -j RETURN\n"
+                        "-A REAPER_GUI -i br55 -j DROP\n"))
+    check("limit-iface-in: the synthetic table took the guest chain", GI.count("REAPER_GUI") == 6 and "--hex-string" not in GI)
+    j, out, rc = run(save4=GI, addr=G55, witness=None, tag="gli1")
+    x = wit(j, "G4.1"); check("limit-iface-in: 'Guest network br55: DNS at its gateway' is judged again, not inconclusive",
+                              x and x["state"] == "green" and x["expect"] == "RESOLVED" and "depends" not in x["verdict"], x)
+    GW = "GX1|guest DNS at the main LAN address|4|br55|10.20.0.123|192.168.50.1|udp|53|NEW|DROP\n"
+    j, out, rc = run(save4=GI, addr=G55, witness=GW, tag="gli2")
+    x = wit(j, "GX1"); check("limit-iface-in: DNS to ANOTHER of the router's addresses is not let through by that rule - the guest chain drops it",
+                             x and x["state"] == "green" and "REAPER_GUI#4" in x["rule"], x)
+    j, out, rc = run(save4=GI.replace(" --limit-iface-in", ""), addr=G55, witness=GW, tag="gli3")
+    x = wit(j, "GX1"); check("limit-iface-in: without the option the same packet IS let through (the option is what the walker now reads)",
+                             x and x["state"] == "red" and x["verdict"].startswith("ACCEPT"), x)
+    j, out, rc = run(save4=GI.replace(" --limit-iface-in", " --limit-iface-out"), addr=G55, witness=None, tag="gli4")
+    x = wit(j, "G4.1"); check("limit-iface-out is still said to be undecidable (never guessed)", x and x["state"] == "depends", x)
     j, out, rc = run(witness=None, used=ARP, nv=NV + "enable_acc_restriction=1\nrestrict_rulelist=<1>192.168.50.77>3<\n", tag="su6")
     check("stand-in: the admin allowlist still decides the LAN host (a real allowed client is the point there)",
           j.get("lanhost") == "192.168.50.77" and "allowed client" in j.get("lanhost_note", ""), (j.get("lanhost"), j.get("lanhost_note")))
@@ -766,18 +866,139 @@ try:
     j, out, rc = run(save4=arw, nv=NV.replace("misc_http_x=0", "misc_http_x=1"), witness=None, tag="aw3")
     x = wit(j, "A6a"); check("acc WAN neg: restriction in the table but not in nvram = the honest red at the tail DROP", x and x["state"] == "red" and "ACCESS_RESTRICTION#3" in x["rule"], x)
 
+    # 2026-11-07 (field, GT-BE98): the user's own port forward of tcp/80 to a LAN server made A6b ("WAN port 80 is
+    # closed") red. A forward covering 80 for any source turns it into a NOTE naming the target; B witnesses the forward.
+    V = "vts_rulelist=<web>443>192.168.50.10>8443>TCP>"
+    for tag, row, want_na in (("a6b1", "<site>80>192.168.50.105>80>TCP>", True),
+                              ("a6b2", "<range>70:90>192.168.50.105>80>BOTH>", True),
+                              ("a6b3", "<list>443,80>192.168.50.105>80>TCP>0.0.0.0", True),
+                              ("a6b4", "<udp>80>192.168.50.105>80>UDP>", False),
+                              ("a6b5", "<only>80>192.168.50.105>80>TCP>198.51.100.0/24", False),
+                              ("a6b6", "<near>81>192.168.50.105>80>TCP>", False)):
+        j, out, rc = run(nv=NV.replace(V, V + row), witness=None, tag=tag)
+        x = wit(j, "A6b")
+        if want_na:
+            check("A6b %s: a port forward covering tcp/80 for any source = a NOTE naming its LAN target, not a red" % tag,
+                  x and x["state"] == "na" and "192.168.50.105" in x["note"] and "forwarded" in x["note"], x)
+        else:
+            check("A6b %s: UDP only, a source-restricted or a non-covering forward keeps the DROP witness" % tag,
+                  x and x["expect"] == "DROP" and x["state"] != "na", x)
+    j, out, rc = run(nv=NV.replace("vts_enable_x=1", "vts_enable_x=0").replace(V, V + "<site>80>192.168.50.105>80>TCP>"), witness=None, tag="a6b7")
+    x = wit(j, "A6b"); check("A6b a6b7: port forwarding switched off = the DROP witness", x and x["expect"] == "DROP", x)
+
     # the IPv6 WAN witness source is picked against the v6 sets too
     check("v6 picker: default source when nothing claims it", j.get("wan6src") == "2001:db8:ffff::7" and j.get("wan6src_note") == "", (j.get("wan6src"), j.get("wan6src_note")))
     s6 = SAVE6[:SAVE6.rfind("COMMIT")] + "-A FORWARD -m set --match-set rw_threat6 src -j DROP\nCOMMIT\n"
     j, out, rc = run(save6=s6, members=MEMBERS + "rw_threat6 2001:db8:ffff::7\n", witness=None, tag="v6p")
     check("v6 picker: the documentation address is claimed, the next candidate is used", j.get("wan6src") == "2606:4700:4700::1111" and "2001:db8:ffff::7" in j.get("wan6src_note", ""), (j.get("wan6src"), j.get("wan6src_note")))
 
-    # guest isolation is not promised where networks are deliberately linked
+    # ---- 2026-11-16 (bug review A1): G1 reads the Access Intranet pair, G3 witnesses it ----
+    # sdn_access_rl is "<a>b" pairs of network indexes; a pair is two-way forwarding between exactly those two
+    # networks and index 0 is the main network. G1 ("isolated from the main LAN") used to stand down while ANY pair
+    # existed. It now resolves a pair through sdn_rl / subnet_rl: only a pair with the main network lifts the
+    # promise. A pair between two guest networks leaves G1 judged (rc/reaper_guest.c keeps both isolated), and G3
+    # witnesses the pair itself: a host on one reaches a host on the other, through the guest layer's RETURN and on
+    # to the stock pair rule.
     gaddr = ADDR + "4: br55    inet 10.20.0.1/24 brd 10.20.0.255 scope global br55\\       valid_lft forever preferred_lft forever\n"
     j, out, rc = run(addr=gaddr, nv=NV + "sdn_access_rl=<1>2<\n", witness=None, tag="gl1")
-    x = wit(j, "G1.1"); check("linked SDN: guest isolation is a NOTE while any link exists", x and x["state"] == "na" and "linked" in x["note"], x)
+    x = wit(j, "G1.1"); check("pairs, but an input without the network list (a replayed fixture): G1 is a NOTE that says so",
+                              x and x["state"] == "na" and "does not carry the network list" in x["note"], x)
+    check("...and no pair row is made up from a pair that cannot be resolved", not [w_ for w_ in j["witnesses"] if w_["id"].startswith("G3.")])
     j, out, rc = run(addr=gaddr, nv=NV, witness=None, tag="gl2")
-    x = wit(j, "G1.1"); check("linked SDN neg: no links = the isolation row is judged as before", x and x["state"] in ("green", "red") and x["expect"] == "DROP", x)
+    x = wit(j, "G1.1"); check("no pairs = the isolation row is judged as before", x and x["state"] in ("green", "red") and x["expect"] == "DROP", x)
+    check("...and there is no pair row", not [w_ for w_ in j["witnesses"] if w_["id"].startswith("G3.")])
+    # two guest networks (documentation addresses): 1 = br55 192.0.2.0/25, 2 = br56 192.0.2.128/25
+    PADDR = ADDR + ("4: br55    inet 192.0.2.1/25 brd 192.0.2.127 scope global br55\\       valid_lft forever preferred_lft forever\n"
+                    "5: br56    inet 192.0.2.129/25 brd 192.0.2.255 scope global br56\\       valid_lft forever preferred_lft forever\n")
+    SDN = ("sdn_rl=<0>MAINFH>1>0>0>1>0>0>0>0>0>0>0>0>0>0<1>Guest>1>1>1>2>0>0>0>0>0>0>0>0>0>0<2>IoT>1>2>2>3>0>0>0>0>0>0>0>0>0>0\n"
+           "subnet_rl=<1>br55>192.0.2.1>255.255.255.128>1>192.0.2.2>192.0.2.126>86400<2>br56>192.0.2.129>255.255.255.128>1>192.0.2.130>192.0.2.254>86400\n")
+    def pair_table(pair):
+        # the guest layer as rc/reaper_guest.c writes it for two plain guest networks (iptables-save order), with or
+        # without the pair rules, and the stock pair chain: ACCEPT both ways, then bridge-to-bridge DROP
+        def guf(X, P):
+            L = ["-A REAPER_GUF -i %s -o %s -j RETURN" % (X, X), "-A REAPER_GUF -i %s -o eth0 -j RETURN" % X]
+            if pair: L.append("-A REAPER_GUF -i %s -o %s -j RETURN" % (X, P))
+            L += ["-A REAPER_GUF -i %s -j DROP" % X,
+                  "-A REAPER_GUF -o %s -m conntrack --ctstate RELATED,ESTABLISHED -j RETURN" % X,
+                  "-A REAPER_GUF -i eth0 -o %s -j RETURN" % X]
+            if pair: L.append("-A REAPER_GUF -i %s -o %s -j RETURN" % (P, X))
+            return L + ["-A REAPER_GUF -o %s -j DROP" % X]
+        extra = guf("br55", "br56") + guf("br56", "br55") + ["-A SDN_IA -i br55 -o br56 -j ACCEPT", "-A SDN_IA -i br56 -o br55 -j ACCEPT",
+                                                             "-A SDN_IA -i br+ -o br+ -j DROP"]
+        t = SAVE4.replace(":INPUT_ICMP - [0:0]\n", ":INPUT_ICMP - [0:0]\n:REAPER_GUF - [0:0]\n:SDN_IA - [0:0]\n")
+        t = t.replace("-A FORWARD -j WARDEN\n", "-A FORWARD -j REAPER_GUF\n-A FORWARD -j WARDEN\n")
+        t = t.replace("-A FORWARD -i br0 -o br0 -j ACCEPT\n",
+                      "-A FORWARD -i br0 -o br0 -j ACCEPT\n-A FORWARD -i br55 -o eth0 -j ACCEPT\n-A FORWARD -i br56 -o eth0 -j ACCEPT\n-A FORWARD -j SDN_IA\n")
+        return t.replace("-A RW_DROP -j DROP\nCOMMIT\n", "-A RW_DROP -j DROP\n" + "\n".join(extra) + "\nCOMMIT\n")
+    PT, PN = pair_table(True), pair_table(False)
+    check("pair: the synthetic table took the guest layer and the stock pair chain",
+          PT.count("-A REAPER_GUF ") == 16 and PN.count("-A REAPER_GUF ") == 12 and PT.count("-A SDN_IA ") == 3 and "-A FORWARD -j SDN_IA\n" in PT)
+    j, out, rc = run(save4=PT, addr=PADDR, nv=NV + SDN + "sdn_access_rl=<1>2\n", witness=None, tag="gq1")
+    x = wit(j, "G3.1.1"); check("G3: a host on br55 reaches a host on its paired network br56 - past the guest layer, accepted by the stock pair rule",
+                                x and x["state"] == "green" and x["expect"] == "ACCEPT" and x["verdict"] == "ACCEPT" and "SDN_IA#1" in x["rule"]
+                                and x["witness"].startswith("br55 192.0.2.123 ") and "192.0.2.252" in x["witness"], x)
+    x = wit(j, "G3.2.1"); check("G3: and the other way round (a pair has no direction)",
+                                x and x["state"] == "green" and x["verdict"] == "ACCEPT" and "SDN_IA#2" in x["rule"] and x["witness"].startswith("br56 192.0.2.251 "), x)
+    x = wit(j, "G1.1"); check("G3: the paired network is still isolated from the main LAN - G1 is judged and the guest layer drops it",
+                              x and x["state"] == "green" and x["expect"] == "DROP" and x["verdict"] == "DROP" and "REAPER_GUF#4" in x["rule"], x)
+    x = wit(j, "G1.2"); check("G3: so is the other one", x and x["state"] == "green" and x["verdict"] == "DROP" and "REAPER_GUF#12" in x["rule"], x)
+    x = wit(j, "G2.1"); check("G3: and both still reach the WAN", x and x["state"] == "green" and wit(j, "G2.2")["state"] == "green", x)
+    check("G3: one row per paired network, none else", sorted(w_["id"] for w_ in j["witnesses"] if w_["id"].startswith("G3.")) == ["G3.1.1", "G3.2.1"])
+    j, out, rc = run(save4=PN, addr=PADDR, nv=NV + SDN + "sdn_access_rl=<1>2\n", witness=None, tag="gq2")
+    x = wit(j, "G3.1.1"); check("G3 neg: without the pair rules the guest layer drops the pair - red, and the row names the rule",
+                                x and x["state"] == "red" and x["verdict"] == "DROP" and "REAPER_GUF#3" in x["rule"], x)
+    x = wit(j, "G1.1"); check("G3 neg: the main-LAN promise is unaffected", x and x["state"] == "green" and x["verdict"] == "DROP", x)
+    j, out, rc = run(save4=PT, addr=PADDR, nv=NV + SDN + "sdn_access_rl=<2>1<1>2\n", witness=None, tag="gq3")
+    check("G3: the pair written the other way round, and twice, is still one row each",
+          sorted(w_["id"] for w_ in j["witnesses"] if w_["id"].startswith("G3.")) == ["G3.1.1", "G3.2.1"] and wit(j, "G3.1.1")["state"] == "green")
+    j, out, rc = run(save4=PT, addr=PADDR, nv=NV + SDN + "sdn_access_rl=<0>1\n", witness=None, tag="gq4")
+    x = wit(j, "G1.1"); check("a pair with the main network: G1 is a NOTE - that network reaches the main LAN by design",
+                              x and x["state"] == "na" and "Access Intranet to the main network" in x["note"], x)
+    x = wit(j, "G1.2"); check("...the network that is in no pair is still judged", x and x["expect"] == "DROP" and x["state"] == "green", x)
+    check("...and a main-network pair is not a guest pair: no G3 row", not [w_ for w_ in j["witnesses"] if w_["id"].startswith("G3.")])
+    j, out, rc = run(save4=PT, addr=PADDR, nv=NV + SDN + "sdn_access_rl=<1>2<2>0\n", witness=None, tag="gq5")
+    x = wit(j, "G1.1"); check("paired with a network that has main-network access: that network is no peer - no G3 row, G1 still judged",
+                              x and x["expect"] == "DROP" and x["state"] != "na" and wit(j, "G1.2")["state"] == "na"
+                              and not [w_ for w_ in j["witnesses"] if w_["id"].startswith("G3.")], x)
+    for tag, nv_, why in (("gq6", SDN + "sdn_access_rl=<1>9\n", "the other index names no network"),
+                          ("gq7", SDN.replace("<2>IoT>1>", "<2>IoT>0>") + "sdn_access_rl=<1>2\n", "the other network is switched off"),
+                          ("gq8", SDN.replace("<2>IoT>1>2>2>3>0>0>0>0>0>0", "<2>IoT>1>2>2>3>0>0>0>0>0>2") + "sdn_access_rl=<1>2\n", "the other network is a captive portal"),
+                          ("gq9", SDN + "sdn_access_rl=<1>1\n", "a network paired with itself")):
+        j, out, rc = run(save4=PT, addr=PADDR, nv=NV + nv_, witness=None, tag=tag)
+        x = wit(j, "G1.1"); check("pair ignored (%s): no G3 row, G1 judged as for any guest network" % why,
+                                  x and x["expect"] == "DROP" and x["state"] == "green" and not [w_ for w_ in j["witnesses"] if w_["id"].startswith("G3.")], x)
+    j, out, rc = run(save4=PT, addr=PADDR.replace("5: br56    inet 192.0.2.129/25 brd 192.0.2.255 scope global br56\\       valid_lft forever preferred_lft forever\n", ""),
+                     nv=NV + SDN + "sdn_access_rl=<1>2\n", witness=None, tag="gq10")
+    check("the paired bridge has no address (not up): no G3 row, nothing to aim at", not [w_ for w_ in j["witnesses"] if w_["id"].startswith("G3.")]
+          and wit(j, "G1.1")["expect"] == "DROP")
+
+    # v1.11, 2026-10-30 field report: a guest network bound to an OpenVPN client
+    # from the Network page is policy-routed ("iif br55 lookup ovpnc3") with its
+    # Killswitch ("iif br55 prohibit") and no SDN_FF accept to the WAN BY DESIGN;
+    # G2 walked a WAN egress and went red at the FORWARD tail on a working box.
+    # The tester's own rule list, verbatim shape.
+    BOUND = ("0:\tfrom all lookup local\n20:\tfrom all lookup 8437\n100:\tfrom 10.13.104.73 lookup wgc1\n"
+             "1004:\tfrom all to 10.8.0.1 iif lo lookup wgc1\n1024:\tfrom all iif br55 lookup ovpnc3\n"
+             "9002:\tfrom all fwmark 0x20000/0xf0000 lookup ovpnc2\n12212:\tfrom all iif br55 prohibit\n"
+             "32766:\tfrom all lookup main\n32767:\tfrom all lookup default\n")
+    j, out, rc = run(addr=gaddr, nv=NV, witness=None, rule4=BOUND, tag="gp1")
+    x = wit(j, "G2.1"); check("policy-routed guest: G2 is a NOTE naming the rule, the table and the Killswitch rule",
+                              x and x["state"] == "na" and "ip rule 1024: lookup ovpnc3" in x["note"] and "rule 12212 (prohibit)" in x["note"], x)
+    x = wit(j, "G1.1"); check("policy-routed guest: isolation (G1) is still judged", x and x["state"] in ("green", "red") and x["expect"] == "DROP", x)
+    # (this synthetic table has a -m string rule on INPUT :53, so "judged" may be depends - just never n/a)
+    x = wit(j, "G4.1"); check("policy-routed guest: DNS at its gateway (G4) is still walked", x and x["state"] != "na" and x["expect"] == "RESOLVED", x)
+    j, out, rc = run(addr=gaddr, nv=NV, witness=None, rule4=BOUND.replace("12212:\tfrom all iif br55 prohibit\n", ""), tag="gp2")
+    x = wit(j, "G2.1"); check("policy-routed guest without a Killswitch: NOTE, and it claims no fail-closed rule",
+                              x and x["state"] == "na" and "ovpnc3" in x["note"] and "fails it closed" not in x["note"], x)
+    for tag, r4, why in (("gp3", "32766:\tfrom all lookup main\n", "no iif rule at all"),
+                         ("gp4", BOUND.replace("iif br55", "iif br56"), "the rules belong to another bridge"),
+                         ("gp5", "1024:\tfrom all iif br55 fwmark 0x20000/0xf0000 lookup ovpnc2\n", "a conditional (fwmark) rule sends only part of it"),
+                         ("gp6", "1024:\tfrom 10.20.0.5 iif br55 lookup ovpnc3\n", "a conditional (one source) rule sends only part of it"),
+                         ("gp7", "1024:\tfrom all iif br55 lookup main\n", "a lookup in main is the ordinary path")):
+        j, out, rc = run(addr=gaddr, nv=NV, witness=None, rule4=r4, tag=tag)
+        x = wit(j, "G2.1"); check("policy-routed guest neg (%s): G2 is walked as before" % why, x and x["state"] in ("green", "red") and x["expect"] == "ACCEPT", x)
+    j, out, rc = run(addr=gaddr, nv=NV, witness=None, tag="gp8")
+    x = wit(j, "G2.1"); check("policy-routed guest neg (no rule input at all): G2 is walked as before", x and x["state"] in ("green", "red") and x["expect"] == "ACCEPT", x)
 
     # DMZ: an intended exposure - A4 is a note, B6 witnesses the DMZ promise
     dmz = SAVE4.replace("-A VSERVER -s 198.51.100.0/24 -p udp -m udp --dport 5000 -j DNAT --to-destination 192.168.50.11:5000\n",
@@ -953,6 +1174,279 @@ try:
                      witness=None, tag="f2c")
     check("F2: a zone with no live interface emits NO row - an absent segment is not a broken policy",
           wit(j, "F2.1") is None, [i["id"] for i in j["witnesses"] if i["id"].startswith("F2")])
+
+    # v1.15 (field, GT-BE98 v3.8.0 alpha, 2026-11-16): F2 "held". Three zones - Admin = br0 (main), Family = br54 and
+    # IoT = br55 (guest networks, Access Intranet off, so rc/reaper_guest.c isolates both). Policies Admin -> Family,
+    # Admin -> IoT, Family -> IoT = accept; the three reverse ones = drop. The guest layer (REAPER_GUF) runs before
+    # the rules engine (REAPER_FWF) and drops the three ACCEPT paths BY DESIGN. Those rows used to read red, which
+    # sent the reporter looking for a wrong policy. They are now "held": never red, the note names the guest bridge
+    # from the deciding rule (-o X = the destination network, -i X = the source). The DROP rows are judged as before.
+    def guf_block(X):
+        # the deny-only block rc/reaper_guest.c writes for one plain isolated network (iptables-save order)
+        return ["-A REAPER_GUF -i %s -o %s -j RETURN" % (X, X), "-A REAPER_GUF -i %s -o eth0 -j RETURN" % X,
+                "-A REAPER_GUF -i %s -j DROP" % X,
+                "-A REAPER_GUF -o %s -m conntrack --ctstate RELATED,ESTABLISHED -j RETURN" % X,
+                "-A REAPER_GUF -i eth0 -o %s -j RETURN" % X, "-A REAPER_GUF -o %s -j DROP" % X]
+    ZPFWF = ["-A REAPER_FWF -m conntrack --ctstate RELATED,ESTABLISHED -j RETURN",
+             "-A REAPER_FWF -i br0 -o br54 -j ACCEPT", "-A REAPER_FWF -i br0 -o br55 -j ACCEPT",
+             "-A REAPER_FWF -i br54 -o br55 -j ACCEPT", "-A REAPER_FWF -i br54 -o br0 -j DROP",
+             "-A REAPER_FWF -i br55 -o br0 -j DROP", "-A REAPER_FWF -i br55 -o br54 -j DROP"]
+    def zone3_table(guf_lines, fwf_lines):
+        t = SAVE4.replace(":INPUT_ICMP - [0:0]\n", ":INPUT_ICMP - [0:0]\n:REAPER_GUF - [0:0]\n:REAPER_FWF - [0:0]\n")
+        t = t.replace("-A FORWARD -j WARDEN\n", "-A FORWARD -j REAPER_GUF\n-A FORWARD -j REAPER_FWF\n-A FORWARD -j WARDEN\n")
+        return t.replace("-A RW_DROP -j DROP\nCOMMIT\n", "-A RW_DROP -j DROP\n" + "\n".join(guf_lines + fwf_lines) + "\nCOMMIT\n")
+    ZADDR = ADDR + ("4: br54    inet 192.0.2.1/25 brd 192.0.2.127 scope global br54\\       valid_lft forever preferred_lft forever\n"
+                    "5: br55    inet 192.0.2.129/25 brd 192.0.2.255 scope global br55\\       valid_lft forever preferred_lft forever\n")
+    ZNV = (NV.replace("reaper_fw_enable=0", "reaper_fw_enable=1") +
+           "reaper_fw_zone=<Admin>br0>c<Family>br54>c<IoT>br55>c\n"
+           "reaper_fw_zpol=<Admin>Family>accept<Admin>IoT>accept<Family>IoT>accept<Family>Admin>drop<IoT>Admin>drop<IoT>Family>drop\n")
+    Z3 = zone3_table(guf_block("br54") + guf_block("br55"), ZPFWF)
+    check("held: the synthetic three-zone table took both guest blocks and the zone matrix",
+          Z3.count("-A REAPER_GUF ") == 12 and Z3.count("-A REAPER_FWF ") == 7 and "-A FORWARD -j REAPER_GUF\n-A FORWARD -j REAPER_FWF\n" in Z3)
+    j, out, rc = run(save4=Z3, addr=ZADDR, nv=ZNV, witness=None, tag="zh1")
+    f2 = dict((x["id"], x) for x in j["witnesses"] if x["id"].startswith("F2."))
+    check("held: six zone policies, six F2 rows", sorted(f2) == ["F2.%d" % i for i in range(1, 7)], sorted(f2))
+    # v1.16 (image 2): the note says what would open the path - from the main network (Admin = br0) the Firewall
+    # switch "Zone policies may open one-way paths ...", from a guest network (Family) Access Intranet
+    ZSW = "Turn on Firewall > Zone policies may open one-way paths from the main network into isolated guest networks to allow it."
+    for wid, feat, rno, bridge, hint in (("F2.1", "Admin -> Family", 6, "br54", "switch"), ("F2.2", "Admin -> IoT", 12, "br55", "switch"),
+                                         ("F2.3", "Family -> IoT", 3, "br54", "intranet")):
+        x = f2.get(wid)
+        check("held: %s %s accept is HELD (not red), decided by REAPER_GUF#%d, the note names %s and the %s" % (wid, feat, rno, bridge, hint),
+              x and feat in x["feature"] and x["expect"] == "ACCEPT" and x["state"] == "held" and x["verdict"] == "DROP"
+              and x["rule"].startswith("filter/REAPER_GUF#%d " % rno)
+              and ("guest isolation on %s holds this path" % bridge) in x["note"]
+              and ((ZSW in x["note"] and "Access Intranet" not in x["note"]) if hint == "switch"
+                   else ("Access Intranet" in x["note"] and "Zone policies" not in x["note"])), x)
+    check("held: the switch off adds no reverse companion row", not [i_ for i_ in j["witnesses"] if i_["id"].endswith("r") and i_["id"].startswith("F2.")])
+    x = f2.get("F2.3")
+    check("held: Family -> IoT is held by the SOURCE network's -i DROP (the field shape: in Family)",
+          x and x["rule"] == "filter/REAPER_GUF#3 -i br54 -j DROP" and x["witness"].startswith("br54 192.0.2.123 -> 192.0.2.252 "), x)
+    for wid, feat, rno in (("F2.4", "Family -> Admin", 3), ("F2.5", "IoT -> Admin", 9), ("F2.6", "IoT -> Family", 6)):
+        x = f2.get(wid)
+        check("held: %s %s drop stays GREEN although REAPER_GUF#%d decides it (a DROP row is never held)" % (wid, feat, rno),
+              x and feat in x["feature"] and x["expect"] == "DROP" and x["state"] == "green" and x["note"] == ""
+              and x["rule"].startswith("filter/REAPER_GUF#%d " % rno), x)
+    s = j["summary"]
+    states = [x["state"] for x in j["witnesses"]]
+    check("held: the summary counts held (3), and total is still every row = the sum of all states",
+          s.get("held") == 3 and states.count("held") == 3 and s["total"] == len(j["witnesses"])
+          and s["total"] == s["green"] + s["red"] + s["held"] + s["depends"] + s["na"]
+          and s["red"] == states.count("red") and s["green"] == states.count("green"), s)
+    check("held: no row outside F2 is held", not [x["id"] for x in j["witnesses"] if x["state"] == "held" and not x["id"].startswith("F2.")])
+    hdr = out.splitlines()[0] if out else ""
+    check("held: the text report counts held in its header and marks the rows HELD with the note line",
+          (" %d red, 3 held, " % s["red"]) in hdr and len(re.findall(r"^  F2\.[123] +HELD ", out, re.M)) == 3
+          and "          note: Not in effect: guest isolation on br55 holds this path." in out, hdr)
+    # the same three ACCEPTs when the deciding DROP is NOT the guest layer: a held row exists only for REAPER_GUF
+    Z3N = zone3_table(guf_block("br55"), ZPFWF[:1] + ["-A REAPER_FWF -i br0 -o br54 -j DROP"] + ZPFWF[1:])
+    j, out, rc = run(save4=Z3N, addr=ZADDR, nv=ZNV, witness=None, tag="zh2")
+    x = wit(j, "F2.1")
+    check("held neg: a zone ACCEPT dropped by another chain (a REAPER_FWF user rule ahead of the policy) stays RED",
+          x and x["expect"] == "ACCEPT" and x["state"] == "red" and x["rule"] == "filter/REAPER_FWF#2 -i br0 -o br54 -j DROP" and x["note"] == "", x)
+    x = wit(j, "F2.2")
+    check("held neg: ...in the same report the path into the still-isolated IoT is held",
+          x and x["state"] == "held" and "on br55" in x["note"] and j["summary"]["held"] == 2, x)
+    x = wit(j, "F2.3")
+    check("held neg: Family is not isolated here, so Family -> IoT is held by IoT's -o DROP (the destination)",
+          x and x["state"] == "held" and x["rule"].startswith("filter/REAPER_GUF#6 ") and "on br55" in x["note"], x)
+    # a REAPER_GUF decision on another row family is unchanged: the G3 pair row above (gq2) reads red, not held
+    j, out, rc = run(save4=PN, addr=PADDR, nv=NV + SDN + "sdn_access_rl=<1>2\n", witness=None, tag="zh3")
+    x = wit(j, "G3.1.1")
+    check("held neg: a G3 pair row decided by REAPER_GUF stays RED - held is F2 only", x and x["state"] == "red" and "REAPER_GUF#3" in x["rule"]
+          and j["summary"]["held"] == 0, x)
+    src = open(walker, encoding="utf-8").read()
+    check("held: each note text lives in one place (each FWSIM_HELD_NOTE* defined once, used once) and the block marker is single",
+          all(len(re.findall(r"\b%s\b" % n, src)) == 2 and len(re.findall(r"#define %s\b" % n, src)) == 1
+              for n in ("FWSIM_HELD_NOTE", "FWSIM_HELD_NOTE_ZPOL", "FWSIM_HELD_NOTE_PORTAL", "FWSIM_G5_FWF_NOTE"))
+          and src.count("REAPER-FWSIM-HELD") == 1)
+
+    # ---- v1.16 (image 2, 2026-11-19): the opt-in guest paths (REAPER-FWSIM-GUESTCROSS) ----
+    # Two guest networks with subnets of their own (documentation addresses): Family = sdn 1 on br54 (apg 2), IoT =
+    # sdn 2 on br55 (apg 3). The rule shapes are rc/reaper_guest.c's, from the image 2 contract:
+    #   chosen device d of X:  -A REAPER_GUF -i X -o br0 -d d -j RETURN  +  -A REAPER_GUA -i X -o br0 -d d -m conntrack --ctstate NEW -j ACCEPT
+    #   discovery on X:        -A REAPER_GUI -i X -p udp --dport 5353 -j RETURN
+    #   zone path a -> b:      -A REAPER_GUF -o b -i a -j RETURN  +  -A REAPER_GUF -i b -o a -m conntrack --ctstate RELATED,ESTABLISHED -j RETURN
+    # REAPER_GUA is hooked after the rules engine (REAPER_FWF), so an admin rule decides first.
+    XSDN = ("sdn_rl=<0>MAINFH>1>0>0>1>0>0>0>0>0>0>0>0>0>0<1>Family>1>1>1>2>0>0>0>0>0>0>0>0>0>0<2>IoT>1>2>2>3>0>0>0>0>0>0>0>0>0>0\n"
+            "subnet_rl=<1>br54>192.0.2.1>255.255.255.128>1>192.0.2.2>192.0.2.126>86400<2>br55>192.0.2.129>255.255.255.128>1>192.0.2.130>192.0.2.254>86400\n")
+    XRES = ("dhcp_static_x=1\n"
+            "dhcp_staticlist=<AA:BB:CC:00:00:01>192.168.50.20>>printer<aa:bb:cc:00:00:02>192.168.50.21>>nas<AA:BB:CC:00:00:03>10.9.9.9>>"
+            "outside<AA:BB:CC:00:00:04>192.168.50.1>>rtr<AA:BB:CC:00:00:05>192.168.50.22>>node\n")
+    # 01 (lower case here, upper in the list), 02 = opened; 09 has no reservation, 03 is outside the LAN, 04 is the
+    # router's own address, 05 is an AiMesh node, the last one is not a MAC: rc opens none of those, so no row
+    # the stored form is "<MAC<MAC..." (each entry prefixed by '<'), split on '<' as rc/reaper_guest.c rg_dev_resolve does
+    XDEVS = "apg2_rg_devs=<aa:bb:cc:00:00:01<AA:BB:CC:00:00:02<AA:BB:CC:00:00:09<AA:BB:CC:00:00:03<AA:BB:CC:00:00:04<AA:BB:CC:00:00:05<zz:zz:zz:zz:zz:zz\n"
+    XMEM = MEMBERS + "reaper_aimesh AA:BB:CC:00:00:05\n"
+    def gx_guf(X, devs=(), opens=()):
+        L = ["-A REAPER_GUF -i %s -o %s -j RETURN" % (X, X), "-A REAPER_GUF -i %s -o eth0 -j RETURN" % X]
+        L += ["-A REAPER_GUF -i %s -o br0 -d %s/32 -j RETURN" % (X, d) for d in devs]
+        for a in opens:
+            L += ["-A REAPER_GUF -o %s -i %s -j RETURN" % (X, a),
+                  "-A REAPER_GUF -i %s -o %s -m conntrack --ctstate RELATED,ESTABLISHED -j RETURN" % (X, a)]
+        return L + ["-A REAPER_GUF -i %s -j DROP" % X,
+                    "-A REAPER_GUF -o %s -m conntrack --ctstate RELATED,ESTABLISHED -j RETURN" % X,
+                    "-A REAPER_GUF -i eth0 -o %s -j RETURN" % X, "-A REAPER_GUF -o %s -j DROP" % X]
+    def gx_gui(X, mdns):
+        return (["-A REAPER_GUI -i %s -m conntrack --ctstate RELATED,ESTABLISHED,DNAT -j RETURN" % X,
+                 "-A REAPER_GUI -i %s -p udp -m udp --dport 67 -j RETURN" % X]
+                + (["-A REAPER_GUI -i %s -p udp -m udp --dport 5353 -j RETURN" % X] if mdns else [])
+                + ["-A REAPER_GUI -i %s -j DROP" % X])
+    def gx_table(guf, gui=(), gua=(), fwf=None):
+        chains = ":REAPER_GUF - [0:0]\n:REAPER_GUI - [0:0]\n:REAPER_GUA - [0:0]\n" + (":REAPER_FWF - [0:0]\n" if fwf is not None else "")
+        t = SAVE4.replace(":INPUT_ICMP - [0:0]\n", ":INPUT_ICMP - [0:0]\n" + chains)
+        t = t.replace("-A FORWARD -j WARDEN\n", "-A FORWARD -j REAPER_GUF\n" + ("-A FORWARD -j REAPER_FWF\n" if fwf is not None else "")
+                      + "-A FORWARD -j REAPER_GUA\n-A FORWARD -j WARDEN\n")
+        # the guest layer first on INPUT; the stock multicast accept for the SDN bridges at the tail (SDN_FI's job)
+        t = t.replace("-A INPUT -m state --state RELATED,ESTABLISHED -j ACCEPT\n",
+                      "-A INPUT -j REAPER_GUI\n-A INPUT -m state --state RELATED,ESTABLISHED -j ACCEPT\n")
+        t = t.replace("-A INPUT -j DROP\n", "-A INPUT -i br+ -d 224.0.0.0/4 -j ACCEPT\n-A INPUT -j DROP\n")
+        return t.replace("-A RW_DROP -j DROP\nCOMMIT\n", "-A RW_DROP -j DROP\n" + "\n".join(list(guf) + list(gui) + list(gua) + list(fwf or []))
+                         + "\nCOMMIT\n")
+    GUA54 = ["-A REAPER_GUA -i br54 -o br0 -d %s/32 -m conntrack --ctstate NEW -j ACCEPT" % d for d in ("192.168.50.20", "192.168.50.21")]
+    G5T = gx_table(gx_guf("br54", ("192.168.50.20", "192.168.50.21")) + gx_guf("br55"), gx_gui("br54", True) + gx_gui("br55", False), GUA54)
+    G5NV = NV + XSDN + XRES + XDEVS + "apg2_rg_mdns=print,airplay\napg3_rg_mdns=\n"
+    check("guestcross: the synthetic table took the chosen-device RETURNs, REAPER_GUA, the discovery RETURN and the hooks",
+          G5T.count("-A REAPER_GUA ") == 2 and G5T.count("--dport 5353 -j RETURN") == 1 and "-A FORWARD -j REAPER_GUF\n-A FORWARD -j REAPER_GUA\n" in G5T
+          and "-A INPUT -j REAPER_GUI\n" in G5T and "-A INPUT -i br+ -d 224.0.0.0/4 -j ACCEPT\n-A INPUT -j DROP\n" in G5T)
+    j, out, rc = run(save4=G5T, addr=ZADDR, members=XMEM, nv=G5NV, witness=None, tag="gx1")
+    g5 = dict((x["id"], x) for x in j["witnesses"] if x["id"].startswith("G5."))
+    check("G5: one row per device rc opens - the two reserved main devices of Family, nothing for IoT (no devices chosen)",
+          sorted(g5) == ["G5.1.1", "G5.1.2"], sorted(g5))
+    for wid, ip, nm in (("G5.1.1", "192.168.50.20", "printer"), ("G5.1.2", "192.168.50.21", "nas")):
+        x = g5.get(wid)
+        check("G5: %s - a Family guest opens a connection to the chosen device %s (%s): ACCEPT by REAPER_GUA past the guest layer's RETURN" % (wid, ip, nm),
+              x and x["state"] == "green" and x["expect"] == "ACCEPT" and x["verdict"] == "ACCEPT"
+              and x["rule"].startswith("filter/REAPER_GUA#") and ("-d %s/32" % ip) in x["rule"]
+              and x["witness"].startswith("br54 192.0.2.123 -> %s tcp:445 NEW" % ip) and ip in x["feature"] and nm in x["feature"]
+              and "REAPER_GUF#" in x["path"] and x["note"] == "", x)
+    check("G5: the unreserved, out-of-subnet, router-address, AiMesh-node and malformed entries give no row",
+          not [x for x in j["witnesses"] if x["id"].startswith("G5.") and any(a in x["witness"] for a in ("10.9.9.9", "192.168.50.22", "-> 192.168.50.1 "))])
+    x = wit(j, "G1.1"); check("G5: G1 (another main host) stays DROP, and its stand-in is none of the chosen devices",
+                              x and x["state"] == "green" and x["expect"] == "DROP" and x["verdict"] == "DROP" and "REAPER_GUF#" in x["rule"]
+                              and not any(" -> %s " % a in x["witness"] for a in ("192.168.50.20", "192.168.50.21", "192.168.50.22")), x)
+    j2, _, _ = run(save4=G5T, addr=ZADDR, members=XMEM, nv=G5NV.replace(XDEVS, "apg2_rg_devs=<<AA:BB:CC:00:00:01<<AA:BB:CC:00:00:02<\n"), witness=None, tag="gx1b")
+    check("G5: empty fields between entries are skipped (rc does the same)",
+          sorted((x["id"], x["witness"]) for x in j2["witnesses"] if x["id"].startswith("G5.")) == sorted((x["id"], x["witness"]) for x in g5.values()))
+    j2, _, _ = run(save4=G5T, addr=ZADDR, members=XMEM, nv=G5NV.replace(XDEVS, "apg2_rg_devs=<AA:BB:CC:00:00:01><AA:BB:CC:00:00:02>\n"), witness=None, tag="gx1c")
+    check("G5: the list written \"<MAC><MAC>\" gives the same rows - rc's rg_dev_resolve splits on '<' and '>' too",
+          sorted((x["id"], x["witness"]) for x in j2["witnesses"] if x["id"].startswith("G5.")) == sorted((x["id"], x["witness"]) for x in g5.values()))
+    j2, _, _ = run(save4=G5T, addr=ZADDR, members=XMEM, nv=G5NV.replace(XDEVS, "apg2_rg_devs=<AA:BB:CC:00:00:01x<AA:BB:CC:00:00:02\n"), witness=None, tag="gx1d")
+    check("G5: an entry with anything else glued to the MAC is no MAC - no row for it (rc skips it too)",
+          sorted(x["witness"].split(" -> ")[1].split(" ")[0] for x in j2["witnesses"] if x["id"].startswith("G5.")) == ["192.168.50.21"])
+    x = wit(j, "G6.1"); check("G6: Family has discovery on - mDNS to 224.0.0.251 passes the guest layer's 5353 RETURN and the stock accept",
+                              x and x["state"] == "green" and x["expect"] == "ACCEPT" and x["verdict"] == "ACCEPT"
+                              and x["witness"].startswith("br54 192.0.2.123 -> 224.0.0.251 udp:5353 NEW") and "-d 224.0.0.0/4" in x["rule"]
+                              and "REAPER_GUI#3 RETURN" in x["path"], x)
+    x = wit(j, "G6.2"); check("G6: IoT has discovery off - mDNS is dropped by the guest layer",
+                              x and x["state"] == "green" and x["expect"] == "DROP" and x["verdict"] == "DROP" and x["rule"].startswith("filter/REAPER_GUI#")
+                              and x["rule"].endswith("-i br55 -j DROP"), x)
+    # (G2 / G4 - WAN and DNS - are not modelled by this synthetic table; the rows under test are G1, G5, G6)
+    check("guestcross: no G1 / G5 / G6 row is red on the table rc would write", not [x for x in j["witnesses"] if x["state"] == "red" and x["id"][:2] in ("G1", "G5", "G6")],
+          [(x["id"], x["rule"]) for x in j["witnesses"] if x["state"] == "red"])
+    # negatives: rc did not open the devices / did not open discovery
+    j, out, rc = run(save4=gx_table(gx_guf("br54") + gx_guf("br55"), gx_gui("br54", False) + gx_gui("br55", False)),
+                     addr=ZADDR, members=XMEM, nv=G5NV, witness=None, tag="gx2")
+    x = wit(j, "G5.1.1"); check("G5 neg: the guest layer did not open the device - red, the row names the guest layer's DROP",
+                                x and x["state"] == "red" and x["verdict"] == "DROP" and x["rule"] == "filter/REAPER_GUF#3 -i br54 -j DROP", x)
+    x = wit(j, "G6.1"); check("G6 neg: discovery chosen but no 5353 RETURN - red at REAPER_GUI's DROP",
+                              x and x["state"] == "red" and x["rule"].endswith("-i br54 -j DROP"), x)
+    j, out, rc = run(save4=gx_table(gx_guf("br54", ("192.168.50.20", "192.168.50.21")) + gx_guf("br55"), gx_gui("br54", True) + gx_gui("br55", False)),
+                     addr=ZADDR, members=XMEM, nv=G5NV, witness=None, tag="gx3")
+    x = wit(j, "G5.1.1"); check("G5 neg: the RETURN without REAPER_GUA - nothing accepts it, red at the FORWARD policy",
+                                x and x["state"] == "red" and x["rule"] == "filter/FORWARD policy DROP", x)
+    # the admin's own rules-engine rule decides first: the row names it (red - that is the admin's rule, not a fault
+    # of the guest layer) and the note says whose rule it is
+    j, out, rc = run(save4=gx_table(gx_guf("br54", ("192.168.50.20", "192.168.50.21")) + gx_guf("br55"), gx_gui("br54", True) + gx_gui("br55", False),
+                                    GUA54, ["-A REAPER_FWF -i br54 -o br0 -d 192.168.50.20/32 -j DROP"]),
+                     addr=ZADDR, members=XMEM, nv=G5NV, witness=None, tag="gx4")
+    x = wit(j, "G5.1.1"); check("G5: an engine DROP rule decides - the rule column names REAPER_FWF, red, and the note says it is your own rule",
+                                x and x["state"] == "red" and x["rule"] == "filter/REAPER_FWF#1 -i br54 -o br0 -d 192.168.50.20/32 -j DROP"
+                                and x["note"].startswith("Decided by your own Firewall rule"), x)
+    check("G5: ...and the text report prints that note", "          note: Decided by your own Firewall rule" in out)
+    x = wit(j, "G5.1.2"); check("G5: the other device is still accepted (the engine rule names one address)", x and x["state"] == "green" and x["note"] == "", x)
+    for tag, nv_, why in (("gx5", G5NV.replace("dhcp_static_x=1", "dhcp_static_x=0"), "DHCP reservations are off"),
+                          ("gx6", G5NV.replace("<1>Family>1>1>1>2>0>0>0>0>0>0", "<1>Family>1>1>1>2>0>0>0>0>0>2"), "Family is a Guest Portal"),
+                          ("gx7", G5NV + "sdn_access_rl=<0>1\n", "Family is paired with the main network (not isolated)"),
+                          ("gx8", G5NV.replace(XSDN, ""), "the input has no network list")):
+        j, out, rc = run(save4=G5T, addr=ZADDR, members=XMEM, nv=nv_, witness=None, tag=tag)
+        check("G5: no device rows when %s" % why, not [x for x in j["witnesses"] if x["id"].startswith("G5.")],
+              [x["id"] for x in j["witnesses"] if x["id"].startswith("G5.")])
+        if tag != "gx5":
+            check("G6: no discovery row for Family when %s" % why, wit(j, "G6.1") is None, wit(j, "G6.1"))
+    j, out, rc = run(save4=G5T, addr=ZADDR, members=XMEM, nv=G5NV + "apg2_ap_isolate=1\n", witness=None, tag="gx9")
+    x = wit(j, "G6.1"); check("G6: discovery chosen with AP Isolation on - rc opens nothing (the reflector leaves the network out): expect DROP",
+                              x and x["expect"] == "DROP" and x["feature"].endswith("closed by AP Isolation") and x["state"] == "red"
+                              and "REAPER_GUI#3 RETURN" in x["path"], x)  # this table still has the RETURN rc would not write: red
+    j, out, rc = run(save4=gx_table(gx_guf("br54", ("192.168.50.20", "192.168.50.21")) + gx_guf("br55"), gx_gui("br54", False) + gx_gui("br55", False), GUA54),
+                     addr=ZADDR, members=XMEM, nv=G5NV + "apg2_ap_isolate=1\n", witness=None, tag="gx9b")
+    x = wit(j, "G6.1"); check("G6: ...and green on the table rc writes for it (no 5353 RETURN)", x and x["state"] == "green" and x["verdict"] == "DROP", x)
+    j, out, rc = run(save4=G5T, addr=ZADDR, members=XMEM, nv=G5NV.replace("apg2_rg_mdns=print,airplay", "apg2_rg_mdns=Print,_x._smtp,ipp._tcp"),
+                     witness=None, tag="gx9c")
+    x = wit(j, "G6.1"); check("G6: a service list with nothing usable is off, as rc reads it (expect DROP)", x and x["expect"] == "DROP", x)
+    j, out, rc = run(save4=G5T, addr=ZADDR, members=XMEM, nv=G5NV.replace("apg2_rg_mdns=print,airplay", "apg2_rg_mdns=bogus,_my-svc._udp"),
+                     witness=None, tag="gx9d")
+    x = wit(j, "G6.1"); check("G6: one usable free service type is enough (expect ACCEPT)", x and x["expect"] == "ACCEPT" and x["state"] == "green", x)
+    j, out, rc = run(save4=G5T, addr=ZADDR, members=XMEM,
+                     nv=G5NV.replace(">>node\n", ">>node<AA:BB:CC:00:00:06>192.168.50.255>>bcast<AA:BB:CC:00:00:07>192.168.50.0>>net\n")
+                            .replace("<zz:zz:zz:zz:zz:zz", "<AA:BB:CC:00:00:06<AA:BB:CC:00:00:07"), witness=None, tag="gx9e")
+    check("G5: a reservation on the subnet's broadcast or network address gives no row (rc skips it)",
+          sorted(x["id"] for x in j["witnesses"] if x["id"].startswith("G5.")) == ["G5.1.1", "G5.1.2"],
+          [x["witness"] for x in j["witnesses"] if x["id"].startswith("G5.")])
+    x = wit(j, "G5.1.1"); check("G5: AP isolation does not touch the device path", x and x["state"] == "green", x)
+    # G1 with the admin access restriction on: the LAN witness is the allowed client - here a chosen device. G1 then
+    # aims at the stand-in, so "isolated from the main LAN" is not judged against the one host the guest may reach.
+    j, out, rc = run(save4=G5T, addr=ZADDR, members=XMEM, nv=G5NV + "enable_acc_restriction=1\nrestrict_rulelist=<1>192.168.50.20>7\n",
+                     witness=None, tag="gx10")
+    x = wit(j, "G1.1"); check("G1: the access-restriction client is a chosen device - G1 aims at the stand-in instead and stays DROP",
+                              x and x["state"] == "green" and x["verdict"] == "DROP" and " -> 192.168.50.20 " not in x["witness"]
+                              and j.get("lanhost") == "192.168.50.20", (x, j.get("lanhost")))
+
+    # F2 with Firewall > "Zone policies may open one-way paths from the main network into isolated guest networks"
+    # (reaper_fw_zpol_guest). The three-zone matrix above, now with the network list so the walker knows the networks.
+    ZXNV = ZNV + XSDN
+    ZOPEN = zone3_table(gx_guf("br54", opens=("br0",)) + gx_guf("br55", opens=("br0",)), ZPFWF)
+    j, out, rc = run(save4=ZOPEN, addr=ZADDR, nv=ZXNV + "reaper_fw_zpol_guest=1\n", witness=None, tag="zs1")
+    f2 = dict((x["id"], x) for x in j["witnesses"] if x["id"].startswith("F2."))
+    for wid, feat, rno in (("F2.1", "Admin -> Family", 2), ("F2.2", "Admin -> IoT", 3)):
+        x = f2.get(wid)
+        check("switch on: %s %s is GREEN - the guest layer RETURNs it and the zone policy accepts it (REAPER_FWF#%d)" % (wid, feat, rno),
+              x and x["state"] == "green" and x["verdict"] == "ACCEPT" and x["rule"].startswith("filter/REAPER_FWF#%d " % rno) and x["note"] == "", x)
+    for wid, feat, br in (("F2.1r", "Admin -> Family", "br54"), ("F2.2r", "Admin -> IoT", "br55")):
+        x = f2.get(wid)
+        check("switch on: companion %s - a %s guest still cannot open a connection back (reverse NEW = DROP by the guest layer)" % (wid, br),
+              x and feat in x["feature"] and "reverse stays closed" in x["feature"] and x["expect"] == "DROP" and x["state"] == "green"
+              and x["rule"] == "filter/REAPER_GUF#%d -i %s -j DROP" % (5 if br == "br54" else 13, br) and x["witness"].startswith(br + " ") and "tcp:445 NEW" in x["witness"], x)
+    x = f2.get("F2.3")
+    check("switch on: a guest-as-source policy (Family -> IoT) stays HELD with the Access Intranet note",
+          x and x["state"] == "held" and "Access Intranet" in x["note"] and "Zone policies" not in x["note"], x)
+    check("switch on: companions only for the main -> guest ACCEPTs, none for a guest source or a DROP policy",
+          sorted(i_ for i_ in f2 if i_.endswith("r")) == ["F2.1r", "F2.2r"] and j["summary"]["held"] == 1, (sorted(f2), j["summary"]))
+    # switch on, but the guest layer did not open the paths: no longer "held by design" - red
+    j, out, rc = run(save4=Z3, addr=ZADDR, nv=ZXNV + "reaper_fw_zpol_guest=1\n", witness=None, tag="zs2")
+    for wid in ("F2.1", "F2.2"):
+        x = wit(j, wid)
+        check("switch on but the paths are not opened: %s is RED (never held), the guest layer's DROP is named" % wid,
+              x and x["state"] == "red" and x["rule"].startswith("filter/REAPER_GUF#") and x["note"] == "", x)
+    x = wit(j, "F2.1r"); check("...and the reverse companion is still green", x and x["state"] == "green", x)
+    # switch off with the network list: the same as the held test above
+    j, out, rc = run(save4=Z3, addr=ZADDR, nv=ZXNV, witness=None, tag="zs3")
+    x = wit(j, "F2.2"); check("switch off: Admin -> IoT is HELD and the note names the switch", x and x["state"] == "held" and ZSW in x["note"], x)
+    check("switch off: no companion rows", not [i_ for i_ in j["witnesses"] if i_["id"].startswith("F2.") and i_["id"].endswith("r")])
+    # IoT is a Guest Portal: no switch opens a portal - held with the portal note, switch on or off, and no companion
+    PNV = ZXNV.replace("<2>IoT>1>2>2>3>0>0>0>0>0>0", "<2>IoT>1>2>2>3>0>0>0>0>0>1")
+    for tag, sw in (("zs4", "0"), ("zs5", "1")):
+        j, out, rc = run(save4=Z3, addr=ZADDR, nv=PNV + "reaper_fw_zpol_guest=%s\n" % sw, witness=None, tag=tag)
+        x = wit(j, "F2.2")
+        check("portal (switch %s): Admin -> IoT stays HELD, the note says a Guest Portal stays closed, no companion" % sw,
+              x and x["state"] == "held" and "Guest Portal network stays closed" in x["note"] and wit(j, "F2.2r") is None, x)
+
+    # the fixture dump carries what these rows read (router build only - test_fwsim_dump_mask.py builds it)
+    check("dump: the fixed key list carries dhcp_static_x, the switch and the network lists",
+          '"dhcp_static_x", "reaper_fw_zpol_guest", "sdn_rl", "subnet_rl",' in src)
+    check("dump: the per-network keys (rg_devs / rg_mdns / ap_isolate) of every apg index in sdn_rl",
+          '{ "rg_devs", "rg_mdns", "ap_isolate", NULL }' in src and 'snprintf(k, sizeof(k), "apg%d_%s", atoi(fa), sfx[s]);' in src)
+    check("guestcross: the block marker is single", src.count("REAPER-FWSIM-GUESTCROSS v1.16 (image 2") == 1)
 
     # F3 - the per-device egress default. Matched on egress to the WAN only,
     # never LAN-to-LAN, so the witness goes out the WAN.

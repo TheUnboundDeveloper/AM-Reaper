@@ -1,0 +1,40 @@
+From f30d7926d04f7c2214f1380a13e1d80017f2493a Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Sat, 14 Nov 2026 17:05:20 -0500
+Subject: [PATCH] WireGuard client: DNS is rebuilt when a dropped tunnel comes
+ back
+
+- When a connected client's route was missing (the tunnel dropped and came back), the every-minute
+  check re-added the route and marked the client up, but the client's DNS servers had been cleared
+  when it went down. Its resolv file, which a guest network bound to it reads, and the VPN
+  Director DNS rules were not rebuilt, so the bound network lost DNS until the client was
+  restarted. The check now repeats the DNS steps a client start runs.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ release/src/router/rc/wireguard.c | 8 ++++++++
+ 1 file changed, 8 insertions(+)
+
+diff --git a/release/src/router/rc/wireguard.c b/release/src/router/rc/wireguard.c
+index 27196fb5d8..3d0f65533f 100644
+--- a/release/src/router/rc/wireguard.c
++++ b/release/src/router/rc/wireguard.c
+@@ -2235,7 +2235,15 @@ void check_wgc_endpoint()
+ 			if (!_wg_check_route_exist(prefix, wg_ifname, table))
+ 			{
+ 				_wg_config_route(prefix, wg_ifname, table, WG_NF_ADD);
++				/* reaper 2026-11-14 (guest VPN binding B4): the tunnel dropped and came back. vpnc_down()
++				 * cleared vpncN_dns, so vpnc_up() alone skipped the DNS servers, and the client's resolv
++				 * file (read by guest networks bound to it) and VPN Director DNS were not rebuilt: repeat
++				 * the DNS steps start_wgc() runs. */
++				_wg_client_dns_setup_vpnc(prefix, wg_ifname, vpnc_idx);
++				_gen_vpnc_resolv_conf(vpnc_idx);
+ 				vpnc_up(vpnc_idx, wg_ifname);
++				wgc_set_exclusive_dns(unit);
++				amvpn_update_exclusive_dns_rules();
+ 			}
+ #endif
+ 			continue;
+-- 
+2.25.1
+

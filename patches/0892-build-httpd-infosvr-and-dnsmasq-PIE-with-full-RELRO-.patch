@@ -1,0 +1,106 @@
+From 6a3e7a2e3edad2b1e5c6b360bbd854b67aaf2101 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Tue, 3 Nov 2026 12:15:08 -0500
+Subject: [PATCH] build: httpd, infosvr and dnsmasq PIE with full RELRO and
+ FORTIFY; rc PIE with full RELRO
+
+2026-11-03 review. The closed objects linked into these hosts are compiled -fPIC, so the hosts
+link -pie -Wl,-z,relro,-z,now with no text relocations. rc gets no FORTIFY: an abort in PID 1 is a
+kernel panic.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ release/src/router/Makefile         | 4 ++--
+ release/src/router/httpd/Makefile   | 4 +++-
+ release/src/router/infosvr/Makefile | 4 +++-
+ release/src/router/rc/Makefile      | 5 ++++-
+ 4 files changed, 12 insertions(+), 5 deletions(-)
+
+diff --git a/release/src/router/Makefile b/release/src/router/Makefile
+index f84eac6bf07..d7ebc7afc96 100644
+--- a/release/src/router/Makefile
++++ b/release/src/router/Makefile
+@@ -4348,9 +4348,9 @@ dnsmasq:  $(if $(RTCONFIG_DNSSEC_OPENSSL),openssl,) $(if $(RTCONFIG_DNSSEC_NETTL
+ 		$(if $(RTCONFIG_USB_EXTRAS),,-DNO_TFTP) \
+ 		$(if $(RTCONFIG_DNSSEC_OPENSSL),-I$(TOP)/openssl/include -DHAVE_DNSSEC,) \
+ 		$(if $(RTCONFIG_DNSSEC_NETTLE),-I$(TOP)/nettle/include -I$(TOP)/gmp -DHAVE_DNSSEC -DHAVE_DNSSEC_STATIC -DNO_GOST,)" \
+-	CFLAGS="-Os -ffunction-sections -DASUSWRT -fdata-sections $(EXTRACFLAGS) -std=gnu99 \
++	CFLAGS="-Os -ffunction-sections -DASUSWRT -fdata-sections $(EXTRACFLAGS) -std=gnu99 -fPIE -D_FORTIFY_SOURCE=2 \
+ 		$(if $(filter $(BUILD_NAME),RT-AX82_XD6 XD6_V2 ET12),-I$(TOP)/shared -I$(SRCBASE)/include -D$(MODEL),)" \
+-	LDFLAGS="-ffunction-sections -fdata-sections -Wl,--gc-sections $(EXTRALDFLAGS) \
++	LDFLAGS="-ffunction-sections -fdata-sections -Wl,--gc-sections $(EXTRALDFLAGS) -pie -Wl,-z,relro,-z,now \
+ 		$(if $(filter $(BUILD_NAME),RT-AX82_XD6 XD6_V2 ET12),-L$(TOP)/shared -lshared -L$(TOP_PLATFORM)/nvram$(BCMEX)$(EX7) -lnvram -L$(TOP_PLATFORM)/wlcsm -lwlcsm,) \
+ 		$(if $(RTCONFIG_DNSSEC_OPENSSL),-pthread -L$(TOP)/openssl,) \
+ 		$(if $(RTCONFIG_DNSSEC_NETTLE),-L$(TOP)/nettle/lib -L$(TOP)/gmp/.libs,)" \
+diff --git a/release/src/router/httpd/Makefile b/release/src/router/httpd/Makefile
+index b33e8ab1da6..e70c3ae8e01 100644
+--- a/release/src/router/httpd/Makefile
++++ b/release/src/router/httpd/Makefile
+@@ -2,6 +2,8 @@ include ../common.mak
+ 
+ CFLAGS += -Os -Wall $(EXTRACFLAGS)
+ CFLAGS += $(PRIVATE_EXTRACFLAGS)
++# review 2026-11-03 (F-4): position-independent, full RELRO and FORTIFY - the closed objects linked in are -fPIC
++CFLAGS += -fPIE -D_FORTIFY_SOURCE=2
+ CFLAGS += -I$(SRCBASE) -I.
+ ifeq ($(RTCONFIG_BCM7),y)
+ CFLAGS += -I$(SRCBASE)/../../dhd/src/wl/exe/
+@@ -443,7 +445,7 @@ all: httpd #test_apps
+ 
+ httpd: $(OBJS)
+ 	@echo " [httpd] CC $@"
+-	$(CC) -o $@ $(OBJS) $(LIBS) $(EXTRALDFLAGS)
++	$(CC) -o $@ $(OBJS) $(LIBS) $(EXTRALDFLAGS) -pie -Wl,-z,relro,-z,now
+ 
+ 	$(SIZECHECK)
+ 	$(CPTMP)
+diff --git a/release/src/router/infosvr/Makefile b/release/src/router/infosvr/Makefile
+index e38a7f7ed98..5a967835862 100644
+--- a/release/src/router/infosvr/Makefile
++++ b/release/src/router/infosvr/Makefile
+@@ -16,6 +16,8 @@
+ include ../common.mak
+ 
+ CFLAGS  += -I. -I$(TOP)/shared  -I$(SRCBASE)/include -Wall
++# review 2026-11-03 (F-4): position-independent, full RELRO and FORTIFY
++CFLAGS  += -Os -fPIE -D_FORTIFY_SOURCE=2
+ ifeq ($(RTCONFIG_AMAS),y)
+ CFLAGS += -I$(TOP)/openssl/include
+ CFLAGS += -I$(TOP)/json-c
+@@ -83,7 +85,7 @@ install: all
+ 
+ 
+ infosvr: ./infosvr.o ./common.o ./packet.o ./storage.o
+-	$(CC) -o $@ $^ $(LDFLAGS) $(CFLAGS)
++	$(CC) -o $@ $^ $(LDFLAGS) $(CFLAGS) -pie -Wl,-z,relro,-z,now
+ 
+ ifneq ($(wildcard ./prebuild/interface.o),)
+ interface.o:
+diff --git a/release/src/router/rc/Makefile b/release/src/router/rc/Makefile
+index 3d235db64c9..15589b594d5 100644
+--- a/release/src/router/rc/Makefile
++++ b/release/src/router/rc/Makefile
+@@ -15,6 +15,7 @@ CFLAGS += -DBCM49XX
+ endif
+ endif
+ CFLAGS += -Wall $(if $(RTCONFIG_DEBUG),-g,-Os) $(EXTRACFLAGS)
++# review 2026-11-03 (F-4): position-independent, full RELRO for rc's own objects (the shared libraries built here keep -fPIC); NO FORTIFY: an abort in PID 1 is a panic
+ CFLAGS += -I. -I$(TOP)/shared -I$(SRCBASE)/include -I$(TOP)/networkmap
+ ifneq ($(HND_ROUTER),y)
+ CFLAGS += -idirafter$(LINUXDIR)/include
+@@ -1407,9 +1408,11 @@ $(WPS_PBCD): $(OBJS_WPS_PBCD)
+ 	@$(CC) -o $@ $(OBJS_WPS_PBCD) $(LDFLAGS)
+ endif
+ 
++$(OBJS): CFLAGS += -fPIE
++
+ rc: $(OBJS) $(if $(RTCONFIG_CONNDIAG),libconn_diag.so,) $(if $(RTCONFIG_ENERGY_SAVE),libes.so,) $(if $(RTCONFIG_BCM_AFC),libbcm_afc.so,)
+ 	@echo " [rc] CC $@"
+-	@$(CC) -o $@ $^ $(LDFLAGS2) $(CFLAGS)
++	@$(CC) -o $@ $^ $(LDFLAGS2) $(CFLAGS) -pie -Wl,-z,relro,-z,now
+ 
+ 	$(SIZECHECK)
+ 	$(CPTMP)
+-- 
+2.25.1
+

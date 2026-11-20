@@ -1,0 +1,272 @@
+From b07bc3b593fd7490949cc5f6d99d6a0bdce05a26 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Wed, 18 Nov 2026 17:05:15 -0500
+Subject: [PATCH] Devices: current IPv4 address from the neighbour table; names
+ cut on a whole character
+
+- libshared's neighbour reader learns IPv4 (one dump routine, a fresh-address lookup); the Devices
+  list reads every lease file and shows the address a device answers on now.
+- A device name cut to its field keeps a complete last UTF-8 character.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ release/src/router/httpd/reaper_devname.c |  29 +++++-
+ release/src/router/shared/reaper_nd.c     | 114 ++++++++++++++++++----
+ release/src/router/shared/reaper_nd.h     |  22 ++++-
+ 3 files changed, 142 insertions(+), 23 deletions(-)
+
+diff --git a/release/src/router/httpd/reaper_devname.c b/release/src/router/httpd/reaper_devname.c
+index 55b9d7a610..78580be1bb 100644
+--- a/release/src/router/httpd/reaper_devname.c
++++ b/release/src/router/httpd/reaper_devname.c
+@@ -72,10 +72,31 @@ static void rdn_copy(char *out, size_t n, const char *s, size_t len)
+ 			continue;
+ 		out[o++] = (char)c;
+ 	}
+-	while (o > 0 && ((unsigned char)out[o - 1] & 0xc0) == 0x80)
+-		o--;			/* a cut UTF-8 continuation: back to the lead byte ... */
+-	if (o > 0 && ((unsigned char)out[o - 1] & 0xc0) == 0xc0)
+-		o--;			/* ... and drop it */
++	/* reaper 2026-11-17 (review B-1): only a sequence the copy cut short is removed. The two lines that stood
++	 * here stepped back over the continuation bytes and then dropped the lead byte whatever followed it, so
++	 * every label ending in an accented or CJK character lost that character. */
++	{
++		size_t k = o, need = 0;
++
++		while (k > 0 && ((unsigned char)out[k - 1] & 0xc0) == 0x80)
++			k--;			/* back over the continuation bytes at the end */
++		if (k > 0) {
++			unsigned char lead = (unsigned char)out[k - 1];
++
++			if ((lead & 0xe0) == 0xc0)
++				need = 2;
++			else if ((lead & 0xf0) == 0xe0)
++				need = 3;
++			else if ((lead & 0xf8) == 0xf0)
++				need = 4;
++			if (need) {
++				if (o - (k - 1) < need)
++					o = k - 1;	/* the sequence is incomplete: lead byte and what follows go */
++			} else if (k < o)
++				o = k;		/* continuation bytes with no lead byte before them */
++		} else
++			o = 0;			/* nothing but continuation bytes */
++	}
+ 	while (o > 0 && out[o - 1] == ' ')
+ 		o--;
+ 	out[o] = 0;
+diff --git a/release/src/router/shared/reaper_nd.c b/release/src/router/shared/reaper_nd.c
+index dab2a3d32f..e4907d9707 100644
+--- a/release/src/router/shared/reaper_nd.c
++++ b/release/src/router/shared/reaper_nd.c
+@@ -13,6 +13,7 @@
+ #include <sys/socket.h>
+ #include <sys/time.h>
+ #include <net/if.h>
++#include <netinet/in.h>
+ #include <arpa/inet.h>
+ #include <linux/netlink.h>
+ #include <linux/rtnetlink.h>
+@@ -37,17 +38,20 @@ int reaper_nd_global(const unsigned char *ip6)
+ 	return 1;
+ }
+ 
+-int reaper_nd_load(struct reaper_nd *tbl, int max)
++/* reaper 2026-11-17 (review B-50; field report on the Devices page) REAPER-ND-DUMP: one RTM_GETNEIGH dump for both
++ * families. Each usable neighbour on a bridge is handed to `cb`; state is the kernel's NUD_* word. A callback
++ * returns 0 to stop taking entries (its table is full); the dump is still read to its end. */
++typedef int (*nd_each)(void *ctx, const unsigned char *dst, const unsigned char *lla, const char *ifn, int state);
++
++static void nd_dump(int family, nd_each cb, void *ctx)
+ {
+ 	struct { struct nlmsghdr nh; struct ndmsg nd; } req;
+ 	struct timeval tv;
+ 	char buf[16384];
+-	int fd, len, n = 0;
++	int fd, len, alen = (family == AF_INET6) ? 16 : 4, more = 1;
+ 
+-	if (!tbl || max <= 0)
+-		return 0;
+ 	if ((fd = socket(AF_NETLINK, SOCK_RAW, NETLINK_ROUTE)) < 0)
+-		return 0;
++		return;
+ 	tv.tv_sec = 1; tv.tv_usec = 0;
+ 	setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+ 
+@@ -56,10 +60,10 @@ int reaper_nd_load(struct reaper_nd *tbl, int max)
+ 	req.nh.nlmsg_type  = RTM_GETNEIGH;
+ 	req.nh.nlmsg_flags = NLM_F_REQUEST | NLM_F_DUMP;
+ 	req.nh.nlmsg_seq   = 1;
+-	req.nd.ndm_family  = AF_INET6;
++	req.nd.ndm_family  = family;
+ 	if (send(fd, &req, req.nh.nlmsg_len, 0) < 0) {
+ 		close(fd);
+-		return 0;
++		return;
+ 	}
+ 
+ 	while ((len = recv(fd, buf, sizeof(buf), 0)) > 0) {
+@@ -73,10 +77,10 @@ int reaper_nd_load(struct reaper_nd *tbl, int max)
+ 
+ 			if (nh->nlmsg_type == NLMSG_DONE || nh->nlmsg_type == NLMSG_ERROR)
+ 				goto done;
+-			if (nh->nlmsg_type != RTM_NEWNEIGH)
++			if (nh->nlmsg_type != RTM_NEWNEIGH || !more)
+ 				continue;
+ 			ndm = (struct ndmsg *)NLMSG_DATA(nh);
+-			if (ndm->ndm_family != AF_INET6)
++			if (ndm->ndm_family != family)
+ 				continue;
+ 			/* FAILED/INCOMPLETE carry no usable link address */
+ 			if (!(ndm->ndm_state & (NUD_REACHABLE | NUD_STALE | NUD_DELAY |
+@@ -90,7 +94,7 @@ int reaper_nd_load(struct reaper_nd *tbl, int max)
+ 			rta  = (struct rtattr *)((char *)ndm + NLMSG_ALIGN(sizeof(*ndm)));
+ 			rlen = nh->nlmsg_len - NLMSG_LENGTH(sizeof(*ndm));
+ 			for (; RTA_OK(rta, rlen); rta = RTA_NEXT(rta, rlen)) {
+-				if (rta->rta_type == NDA_DST && RTA_PAYLOAD(rta) == 16)
++				if (rta->rta_type == NDA_DST && (int)RTA_PAYLOAD(rta) == alen)
+ 					dst = RTA_DATA(rta);
+ 				else if (rta->rta_type == NDA_LLADDR) {
+ 					lla = RTA_DATA(rta);
+@@ -99,18 +103,92 @@ int reaper_nd_load(struct reaper_nd *tbl, int max)
+ 			}
+ 			if (!dst || !lla || llalen != 6)
+ 				continue;
+-			if (n >= max)
+-				goto done;
+-			memcpy(tbl[n].ip, dst, 16);
+-			snprintf(tbl[n].mac, sizeof(tbl[n].mac), "%02x:%02x:%02x:%02x:%02x:%02x",
+-				 lla[0], lla[1], lla[2], lla[3], lla[4], lla[5]);
+-			snprintf(tbl[n].br, sizeof(tbl[n].br), "%s", ifn);
+-			n++;
++			more = cb(ctx, dst, lla, ifn, ndm->ndm_state);
+ 		}
+ 	}
+ done:
+ 	close(fd);
+-	return n;
++}
++
++struct nd_fill { void *tbl; int max, n; };
++
++static void nd_mac(char *out, size_t len, const unsigned char *lla)
++{
++	snprintf(out, len, "%02x:%02x:%02x:%02x:%02x:%02x", lla[0], lla[1], lla[2], lla[3], lla[4], lla[5]);
++}
++
++static int nd_fill6(void *ctx, const unsigned char *dst, const unsigned char *lla, const char *ifn, int state)
++{
++	struct nd_fill *f = ctx;
++	struct reaper_nd *t = f->tbl;
++
++	(void)state;
++	if (f->n >= f->max)
++		return 0;
++	memcpy(t[f->n].ip, dst, 16);
++	nd_mac(t[f->n].mac, sizeof(t[0].mac), lla);
++	snprintf(t[f->n].br, sizeof(t[0].br), "%s", ifn);
++	f->n++;
++	return 1;
++}
++
++int reaper_nd_load(struct reaper_nd *tbl, int max)
++{
++	struct nd_fill f = { tbl, max, 0 };
++
++	if (!tbl || max <= 0)
++		return 0;
++	nd_dump(AF_INET6, nd_fill6, &f);
++	return f.n;
++}
++
++static int nd_fill4(void *ctx, const unsigned char *dst, const unsigned char *lla, const char *ifn, int state)
++{
++	struct nd_fill *f = ctx;
++	struct reaper_nd4 *t = f->tbl;
++
++	if (f->n >= f->max)
++		return 0;
++	memcpy(t[f->n].ip, dst, 4);
++	nd_mac(t[f->n].mac, sizeof(t[0].mac), lla);
++	snprintf(t[f->n].br, sizeof(t[0].br), "%s", ifn);
++	/* fresh = the kernel has heard from this address lately. STALE lingers for hours on a small table, and
++	 * PERMANENT is an entry somebody configured: neither says the device is using the address now */
++	t[f->n].fresh = (state & (NUD_REACHABLE | NUD_DELAY | NUD_PROBE)) ? 1 : 0;
++	f->n++;
++	return 1;
++}
++
++int reaper_nd4_load(struct reaper_nd4 *tbl, int max)
++{
++	struct nd_fill f = { tbl, max, 0 };
++
++	if (!tbl || max <= 0)
++		return 0;
++	nd_dump(AF_INET, nd_fill4, &f);
++	return f.n;
++}
++
++int reaper_nd4_fresh_of(const struct reaper_nd4 *tbl, int n, const char *mac, const char *held,
++			char *out, size_t outlen)
++{
++	struct in_addr h;
++	const struct reaper_nd4 *pick = NULL;
++	int i, have = (held && held[0] && inet_pton(AF_INET, held, &h) == 1);
++
++	if (!tbl || !mac || !out || outlen < INET_ADDRSTRLEN)
++		return 0;
++	for (i = 0; i < n; i++) {
++		if (!tbl[i].fresh || strcasecmp(tbl[i].mac, mac) != 0)
++			continue;
++		if (have && memcmp(tbl[i].ip, &h, 4) == 0)
++			return 0;		/* the address held IS in use: nothing to correct */
++		if (!pick)
++			pick = &tbl[i];
++	}
++	if (!pick)
++		return 0;			/* no fresh entry: keep what the caller has */
++	return inet_ntop(AF_INET, pick->ip, out, outlen) != NULL;
+ }
+ 
+ int reaper_nd_mac_of(const struct reaper_nd *tbl, int n, const unsigned char *ip6,
+diff --git a/release/src/router/shared/reaper_nd.h b/release/src/router/shared/reaper_nd.h
+index 44e93b2e37..867f075872 100644
+--- a/release/src/router/shared/reaper_nd.h
++++ b/release/src/router/shared/reaper_nd.h
+@@ -2,7 +2,8 @@
+  * Copyright (C) 2026 the Reaper project maintainer
+  * Part of the Reaper hardened Asuswrt-Merlin build. See LICENSE / LICENSE.reaper.
+  *
+- * reaper_nd.h - the LAN IPv6 neighbour cache, shared (IPv6 remediation 2026-10-07, step 0c).
++ * reaper_nd.h - the LAN neighbour cache, shared (IPv6 remediation 2026-10-07, step 0c; IPv4 with its
++ * freshness added 2026-11-17).
+  *
+  * /proc/net/arp has no IPv6 counterpart. The only fork-free way to turn a LAN
+  * IPv6 address into the MAC the device rows are keyed on - or a MAC into the
+@@ -46,4 +47,23 @@ int reaper_nd_mac_of_str(const struct reaper_nd *tbl, int n, const char *ip6,
+ int reaper_nd_addr_of(const struct reaper_nd *tbl, int n, const char *mac,
+ 		      unsigned char *ip6);
+ 
++/* reaper 2026-11-17 REAPER-ND4: the IPv4 neighbour table, with the one thing /proc/net/arp cannot tell - whether
++ * the kernel has heard from the address lately (its "complete" flag is set for a STALE entry as well). */
++struct reaper_nd4 {
++	unsigned char ip[4];	/* network byte order */
++	char mac[18];		/* "aa:bb:cc:dd:ee:ff" */
++	char br[16];		/* the bridge the neighbour sits behind */
++	int fresh;		/* 1 = REACHABLE, DELAY or PROBE; 0 = STALE or PERMANENT */
++};
++
++/* fill tbl from the kernel; returns the number of entries (0 on any failure) */
++int reaper_nd4_load(struct reaper_nd4 *tbl, int max);
++
++/* The address `mac` is using NOW, when that is not `held` (the address a caller has for it, a lease's for
++ * instance; "" or NULL = none). 1 with `out` filled (INET_ADDRSTRLEN at least) when the MAC has a fresh entry and
++ * none of its fresh entries is `held`; 0 otherwise - `held` is in use, or nothing fresh is known (an absent device
++ * keeps its last known address). */
++int reaper_nd4_fresh_of(const struct reaper_nd4 *tbl, int n, const char *mac, const char *held,
++			char *out, size_t outlen);
++
+ #endif /* REAPER_ND_H */
+-- 
+2.25.1
+

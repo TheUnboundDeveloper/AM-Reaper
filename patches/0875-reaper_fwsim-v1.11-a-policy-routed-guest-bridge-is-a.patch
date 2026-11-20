@@ -1,0 +1,118 @@
+From 12f054853dbaaa870063c1faef7d4e95b221ebf6 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Fri, 30 Oct 2026 20:09:21 -0400
+Subject: [PATCH] reaper_fwsim: v1.11 - a policy-routed guest bridge is a note
+ at the FORWARD tail, not a red G2
+
+Same field report: Rule Status went red at G2's FORWARD tail for a Guest Network Pro network sent
+through a VPN with its Kill Switch on, although the network's forwarding was right. The walk
+judged the bridge's packet against the WAN path; that network's Internet path is the table its
+ip rule selects, which the walk does not read.
+The walker now parses each rule's input interface and whether it selects on anything else (a
+mark, a source, a destination ...). A bridge whose UNCONDITIONAL iif rule looks up a table of its
+own ("1024: from all iif br55 lookup ovpnc3") is reported as policy-routed - rule, table and, when
+present, the Kill Switch partner that fails closed ("12212: from all iif br55 prohibit") named in
+a NOTE - and its FORWARD-tail packet is not walked.
+
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
+---
+ .../src/router/reaper_fwsim/reaper_fwsim.c    | 54 +++++++++++++++++--
+ 1 file changed, 50 insertions(+), 4 deletions(-)
+
+diff --git a/release/src/router/reaper_fwsim/reaper_fwsim.c b/release/src/router/reaper_fwsim/reaper_fwsim.c
+index 8784b86f71c..a30efbc19a4 100644
+--- a/release/src/router/reaper_fwsim/reaper_fwsim.c
++++ b/release/src/router/reaper_fwsim/reaper_fwsim.c
+@@ -47,7 +47,7 @@
+ #include <shared.h>
+ #endif
+ 
+-#define FWSIM_VER	"1.10"
++#define FWSIM_VER	"1.11"
+ #define FWSIM_DIR	"/tmp/reaper"
+ #define FWSIM_JSON	FWSIM_DIR "/fwstatus.json"
+ #define FWSIM_STATIC	"/usr/share/reaper/witness.static"
+@@ -339,7 +339,10 @@ static int lsn_has(int proto, int port)
+  * READ-ONLY, like everything else here: `ip rule show`, nothing more. */
+ static void parse_mark(const char *s, unsigned *v, unsigned *m);	/* the ruleset section below */
+ 
+-struct iprule { int fam, pref, has_mark; unsigned mark, mask; char action[16]; char table[36]; };
++/* iif/cond (v1.11): the input interface a rule selects on, and whether it
++ * selects on anything else besides (a mark, a source, a destination...) -
++ * a conditional rule sends only part of that interface's traffic */
++struct iprule { int fam, pref, has_mark, cond; unsigned mark, mask; char action[16]; char table[36]; char iif[16]; };
+ static struct iprule *iprules = NULL; static int niprules = 0;
+ static int iprule_loaded4 = 0, iprule_loaded6 = 0;
+ 
+@@ -359,8 +362,16 @@ static void load_iprules(const char *path, int fam)
+ 		r.fam = fam; r.pref = atoi(tok[0]); r.mask = 0xffffffffu;
+ 		snprintf(r.action, sizeof(r.action), "%s", tok[n-1]);
+ 		for (i = 1; i < n; i++) {
+-			if (!strcmp(tok[i], "fwmark") && i + 1 < n) { parse_mark(tok[++i], &r.mark, &r.mask); r.has_mark = 1; }
++			if (!strcmp(tok[i], "fwmark") && i + 1 < n) { parse_mark(tok[++i], &r.mark, &r.mask); r.has_mark = 1; r.cond = 1; }
+ 			else if (!strcmp(tok[i], "lookup") && i + 1 < n) { snprintf(r.action, sizeof(r.action), "lookup"); snprintf(r.table, sizeof(r.table), "%s", tok[++i]); }
++			else if (!strcmp(tok[i], "iif") && i + 1 < n) {
++				/* a name that cannot be an interface matches nothing */
++				if (strlen(tok[++i]) < sizeof(r.iif)) memcpy(r.iif, tok[i], strlen(tok[i]) + 1); else r.cond = 1;
++			}
++			else if (!strcmp(tok[i], "from") && i + 1 < n) { if (strcmp(tok[++i], "all")) r.cond = 1; }
++			else if (!strcmp(tok[i], "to") || !strcmp(tok[i], "oif") || !strcmp(tok[i], "tos") || !strcmp(tok[i], "dsfield") ||
++				!strcmp(tok[i], "ipproto") || !strcmp(tok[i], "sport") || !strcmp(tok[i], "dport") || !strcmp(tok[i], "uidrange") ||
++				!strcmp(tok[i], "l3mdev")) r.cond = 1;
+ 		}
+ 		iprules = xrealloc(iprules, sizeof(*iprules) * (niprules + 1));
+ 		iprules[niprules++] = r;
+@@ -383,6 +394,28 @@ static const struct iprule *iprule_refuses(int fam, unsigned mark, unsigned mask
+ 	return NULL;
+ }
+ 
++/* v1.11: an UNCONDITIONAL rule on a bridge's input interface - "1024: from
++ * all iif br55 lookup ovpnc3" (an SDN network bound to a VPN client from the
++ * Network page) or its Killswitch partner "12212: from all iif br55
++ * prohibit". refusing=0 wants a lookup in a table of its own (main, local
++ * and default are the ordinary path); refusing=1 wants a rule that fails
++ * closed. 2026-10-30 field report: G2 went red at the FORWARD tail on such a
++ * network although it worked - its internet path is that table, which this
++ * walk does not read. */
++static const struct iprule *iprule_iif(int fam, const char *ifname, int refusing)
++{
++	int i;
++	for (i = 0; i < niprules; i++) {
++		const struct iprule *r = &iprules[i];
++		if (r->fam != fam || r->cond || strcmp(r->iif, ifname)) continue;
++		if (refusing) {
++			if (!strcmp(r->action, "prohibit") || !strcmp(r->action, "blackhole") || !strcmp(r->action, "unreachable")) return r;
++		} else if (!strcmp(r->action, "lookup") && strcmp(r->table, "main") && strcmp(r->table, "local") && strcmp(r->table, "default"))
++			return r;
++	}
++	return NULL;
++}
++
+ /* ------------------------------------------------------------------ */
+ /* nvram (real on the router, a key=value file on the host)            */
+ /* ------------------------------------------------------------------ */
+@@ -2370,7 +2403,20 @@ static void gen_witnesses(void)
+ 			else
+ 				wit_pkt(id, feat, 4, own[i].ifname, gh, lanhost, "tcp", "445", "NEW", "DROP", "", lanmac);
+ 			snprintf(id, sizeof(id), "G2.%d", k); snprintf(feat, sizeof(feat), "Guest network %s: reaches the WAN", own[i].ifname);
+-			wit_pkt(id, feat, 4, own[i].ifname, gh, wandst, "tcp", "443", "NEW", "ACCEPT", "", lanmac);
++			{
++				const struct iprule *pr = iprule_iif(4, own[i].ifname, 0), *ks = pr ? iprule_iif(4, own[i].ifname, 1) : NULL;
++				char gn[320];
++				if (pr && ks)
++					snprintf(gn, sizeof(gn), "NOTE %.15s is policy-routed (ip rule %d: lookup %.35s) - its internet path is that table, which this walk does not read; rule %d (%.15s) fails it closed when that table has no route",
++						own[i].ifname, pr->pref, pr->table, ks->pref, ks->action);
++				else if (pr)
++					snprintf(gn, sizeof(gn), "NOTE %.15s is policy-routed (ip rule %d: lookup %.35s) - its internet path is that table, which this walk does not read",
++						own[i].ifname, pr->pref, pr->table);
++				if (pr)
++					wit_shape(id, feat, 4, gn, "OK");
++				else
++					wit_pkt(id, feat, 4, own[i].ifname, gh, wandst, "tcp", "443", "NEW", "ACCEPT", "", lanmac);
++			}
+ 			snprintf(id, sizeof(id), "G4.%d", k); snprintf(feat, sizeof(feat), "Guest network %s: DNS at its gateway", own[i].ifname);
+ 			wit_pkt(id, feat, 4, own[i].ifname, gh, gr, "udp", "53", "NEW", "RESOLVED", "", lanmac);
+ 		}
+-- 
+2.25.1
+

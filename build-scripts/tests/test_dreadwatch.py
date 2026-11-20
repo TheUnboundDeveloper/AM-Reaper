@@ -97,6 +97,7 @@ def lifted_script(csrc, needle, macros):
 
 rw = read("rc/rwarden.c")
 macros = macros_of(rw)
+macros.update(macros_of(read("shared/reaper_lists.h")))  # 2026-11-02: the built-in list addresses live in shared/reaper_lists.h
 macros.update(macros_of(read("shared/reaper_store.h").replace("\\\n", " ")))	# RSTORE_SH_DIR (2026-10-21), a multi-line define
 script = lifted_script(rw, "# ---- Dreadwatch hit collector", macros)
 check("dns.sh lifts whole out of rw_gen_dns", script is not None and "dfold() {" in script and "dstats() {" in script and "dreset() {" in script)

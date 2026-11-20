@@ -61,7 +61,7 @@ defs = re.findall(r"^#define (?:RW_GEO_HOST_IP|RW_SEED_MARK|RW_ABUSECH_IPS|RW_SE
 check("the four Fastly addresses for the abuse.ch hosts are the seed",
       '#define RW_ABUSECH_IPS  "%s"' % " ".join(ABUSE) in rw)
 check("the abuse.ch seed has its own marker (boxes that took the ipdeny seed still get it)",
-      '#define RW_SEED_MARK_ABUSECH REAPER_RW_DIR "/.seed_abusech"' in rw and len(defs) == 11, defs)
+      '#define RW_SEED_MARK_ABUSECH REAPER_RW_DIR "/.seed_abusech"' in rw and len(defs) == 9, defs)
 DNSSEED = ["abuse.ch", "ipdeny.com", "pool.ntp.org", "asuscomm.com", "asus.com", "github.com", "githubusercontent.com",
            "spamhaus.org", "malware-filter.gitlab.io", "v.firebog.net", "blocklistproject.github.io", "hole.cert.pl", "threatview.io"]
 dx = rw[rw.find('"rw_dexempt() {\\n"'):]
@@ -69,9 +69,10 @@ dx = dx[:dx.find('"}\\n"')]
 check("2026-10-22: Dreadwatch's fixed never-block names are a one-time seed of the page's never-block list, not hard-coded",
       ('#define RW_SEED_MARK_DNSALLOW REAPER_RW_DIR "/.seed_dnsallow"' in rw
        and "printf '%s\\\\n' local arpa lan\\n" in dx and not any(n in dx for n in DNSSEED)), dx[:300])
-check("2026-10-22: the ASUS DDNS server and the Let's Encrypt API (v4 + v6) are seeds with their own markers",
-      '#define RW_ASUSDDNS_IP  "%s"' % ASUS in rw and '#define RW_LE_IPS       "%s"' % " ".join(LE) in rw
-      and '#define RW_SEED_MARK_ASUSDDNS REAPER_RW_DIR "/.seed_asusddns"' in rw and '#define RW_SEED_MARK_LE REAPER_RW_DIR "/.seed_letsencrypt"' in rw)
+check("2026-10-22: the Let's Encrypt API (v4 + v6) is a seed with its own marker",
+      '#define RW_LE_IPS       "%s"' % " ".join(LE) in rw and '#define RW_SEED_MARK_LE REAPER_RW_DIR "/.seed_letsencrypt"' in rw)
+check("2026-11-13: the ASUS DDNS server seed is deleted with asuscomm (removed 2026-10-23)",
+      "RW_ASUSDDNS_IP" not in rw and "RW_SEED_MARK_ASUSDDNS" not in rw and ".seed_asusddns" not in rw and ASUS not in rw)
 sv = open(os.path.join(os.path.dirname(RW), "services.c"), encoding="utf-8", errors="surrogateescape").read()
 sd = sv[sv.find("start_ddns(char *caller, int isAidisk)"):]
 check("start_ddns seeds them before any update, after the DDNS-off return (not on the AiDisk register path)",
@@ -214,38 +215,36 @@ with tempfile.TemporaryDirectory() as td:
     check("a newline-separated list is matched too (no duplicates of existing names)",
           x["dnsallow"].startswith("a.example\nb.example ") and x["dnsallow"].count("asus.com") == 1, x["dnsallow"])
 
-    # ---- 2026-10-22: ASUS DDNS / Let's Encrypt
+    # ---- 2026-10-22: Let's Encrypt (the ASUS DDNS seed beside it was deleted 2026-11-13)
     M2 = (".seed_geohost", ".seed_abusech")
     ASUSNV = {"ddns_enable_x": "1", "ddns_server_x": "WWW.ASUS.COM"}
+    LENV = {"le_enable": "1"}
     x = run(allow="1.2.3.4", marks=M2)
-    check("DDNS off, no certificate: neither seed, no marker", x["allow"] == "1.2.3.4" and not x["asus"] and not x["le"] and not x["log"], x)
-    x = run(allow="1.2.3.4", marks=M2, nv={"ddns_enable_x": "1", "ddns_server_x": "WWW.NO-IP.COM"})
-    check("another DDNS provider: the ASUS server is not seeded", x["allow"] == "1.2.3.4" and not x["asus"], x)
+    check("DDNS off, no certificate: no seed, no marker", x["allow"] == "1.2.3.4" and not x["asus"] and not x["le"] and not x["log"], x)
     x = run(allow="1.2.3.4", marks=M2, nv=dict(ASUSNV, rwarden_enable="1"))
-    check("ASUS DDNS on: its server is added once, logged, marker set; the certificate seed waits",
-          x["allow"] == "1.2.3.4 " + ASUS and x["asus"] and not x["le"] and len(x["log"]) == 1 and "ns1.asuscomm.com (%s)" % ASUS in x["log"][0], x)
-    check("... and goes straight into the running whitelist set while Warden is on", x["eval"] == ["EVAL ipset add rw_allow %s -exist" % ASUS], x["eval"])
-    x = run(allow="1.2.3.4", marks=M2, nv=dict(ASUSNV, le_enable="1", rwarden_enable="1"))
-    check("ASUS DDNS + Let's Encrypt: both seeds, the v6 address into the v6 set",
-          x["allow"] == "1.2.3.4 %s %s" % (ASUS, " ".join(LE)) and x["asus"] and x["le"]
-          and x["eval"] == ["EVAL ipset add rw_allow %s -exist" % ASUS, "EVAL ipset add rw_allow %s -exist" % LE[0],
-                            "EVAL ipset add rw_allow6 %s -exist" % LE[1]], x)
-    x = run(allow="1.2.3.4", marks=M2, nv=dict(ASUSNV, le_enable="1"))
-    check("Warden off: the list gets the entries, the live sets are not touched", x["asus"] and x["le"] and not x["eval"], x)
-    x = run(allow="1.2.3.4 %s/128" % LE[1], marks=M2, nv={"le_enable": "1"})
+    check("a saved ASUS DDNS setup (an old backup) seeds nothing any more", x["allow"] == "1.2.3.4" and not x["asus"] and not x["eval"] and not x["log"], x)
+    x = run(allow="1.2.3.4", marks=M2, nv=dict(LENV, rwarden_enable="1"))
+    check("Let's Encrypt on: both addresses added once, logged, marker set",
+          x["allow"] == "1.2.3.4 %s" % " ".join(LE) and x["le"] and not x["asus"] and len(x["log"]) == 1, x)
+    check("... the v6 address into the v6 set while Warden is on",
+          x["eval"] == ["EVAL ipset add rw_allow %s -exist" % LE[0], "EVAL ipset add rw_allow6 %s -exist" % LE[1]], x["eval"])
+    x = run(allow="1.2.3.4", marks=M2, nv=LENV)
+    check("Warden off: the list gets the entries, the live sets are not touched", x["le"] and not x["eval"], x)
+    x = run(allow="1.2.3.4 %s/128" % LE[1], marks=M2, nv=LENV)
     check("an address already present as /128 is not added again", x["allow"] == "1.2.3.4 %s/128 %s" % (LE[1], LE[0]), x["allow"])
-    x = run(allow="1.2.3.4", marks=M2 + (".seed_asusddns",), nv=dict(ASUSNV, rwarden_enable="1", rwarden_self="1"))
-    check("seeded then removed, router-traffic filter on: stays removed, ONE warning naming the address",
-          x["allow"] == "1.2.3.4" and len(x["log"]) == 1 and "router-traffic filter is ON" in x["log"][0] and ASUS in x["log"][0] and x["warned"], x)
-    x = run(allow="1.2.3.4", marks=M2 + (".seed_asusddns",), nv=dict(ASUSNV, rwarden_enable="1", rwarden_self="1"), warned=True)
+    x = run(allow="1.2.3.4", marks=M2 + (".seed_letsencrypt",), nv=dict(LENV, rwarden_enable="1", rwarden_self="1"))
+    check("seeded then removed, router-traffic filter on: stays removed, ONE warning naming the addresses",
+          x["allow"] == "1.2.3.4" and len(x["log"]) == 1 and "router-traffic filter is ON" in x["log"][0] and LE[0] in x["log"][0]
+          and "ASUS" not in x["log"][0] and x["warned"], x)
+    x = run(allow="1.2.3.4", marks=M2 + (".seed_letsencrypt",), nv=dict(LENV, rwarden_enable="1", rwarden_self="1"), warned=True)
     check("... and not again in the same boot (start_ddns runs on every retry)", not x["log"], x["log"])
-    x = run(allow="1.2.3.4", marks=M2 + (".seed_asusddns",), nv=dict(ASUSNV, rwarden_enable="1"))
+    x = run(allow="1.2.3.4", marks=M2 + (".seed_letsencrypt",), nv=dict(LENV, rwarden_enable="1"))
     check("seeded then removed, router-traffic filter off: no warning (country blocks never touch the router's own traffic)",
           not x["log"] and not x["warned"], x)
-    x = run(allow="1.2.3.4 " + ASUS, marks=M2 + (".seed_asusddns",), nv=dict(ASUSNV, rwarden_enable="1", rwarden_self="1"))
-    check("entry still there: no warning", not x["log"], x["log"])
-    x = run(allow="1.2.3.4", marks=M2, nv=dict(ASUSNV, rwarden_enable="1"), fail_set=True)
-    check("a failed list write: no marker, no live add (the next DDNS start retries)", not x["asus"] and not x["eval"], x)
+    x = run(allow="1.2.3.4 %s" % " ".join(LE), marks=M2 + (".seed_letsencrypt",), nv=dict(LENV, rwarden_enable="1", rwarden_self="1"))
+    check("entries still there: no warning", not x["log"], x["log"])
+    x = run(allow="1.2.3.4", marks=M2, nv=dict(LENV, rwarden_enable="1"), fail_set=True)
+    check("a failed list write: no marker, no live add (the next start retries)", not x["le"] and not x["eval"], x)
 
 if fails:
     print("\n%d FAILED:" % len(fails))

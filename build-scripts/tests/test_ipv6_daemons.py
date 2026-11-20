@@ -84,7 +84,9 @@ check("accept: both listeners are polled and the client pin is compared within t
                       "inet_ntop(AF_INET6, &((struct sockaddr_in6 *)&ca)->sin6_addr, peer, sizeof(peer));",
                       "if (strcmp(peer, g_client_ip)) { close(cfd); continue; }", "if (ls6 >= 0) close(ls6);"]), "")
 check("the pin sanitiser accepts an IPv6 literal and still refuses anything that is not an address",
-      "inet_pton(AF_INET6, g_client_ip, &a6) != 1)\n\t\tg_client_ip[0] = 0;" in m and 'static char  g_client_ip[48]' in m, "")
+      # 2026-11-17 (review D-2): an IPv6 pin is also rewritten in the form inet_ntop() prints
+      "if (inet_pton(AF_INET6, g_client_ip, &a6) == 1 && inet_ntop(AF_INET6, &a6, canon, sizeof(canon)))" in m
+      and "\telse\n\t\tg_client_ip[0] = 0;" in m and 'static char  g_client_ip[48]' in m, "")
 w = read("httpd/web.c")
 check("httpd: the arming reply names the IPv6 endpoint when the LAN holds an address; the session writer keeps an IPv6 pin",
       not has_all(w, ['",\\"url6\\":\\"%s://[%s]:%s/mcp\\""', 'inet_pton(AF_INET6, r6, &t6) == 1',

@@ -13,7 +13,10 @@ the 25 dicts; `node --check` on each page script; a node run of rp.cmp.
 """
 import os, re, shutil, subprocess, sys, tempfile
 
-SRC = os.environ.get("REAPER_SRC", "/home/reaper/asuswrt-be96u/release/src/router")
+# 2026-11-14: the tree comes from argv[1], REAPER_ROUTER_SRC or REAPER_SRC, like the other suites (it read
+# REAPER_SRC only, so a run against the 3006.102.8 tree silently tested the 3006.102.10 one)
+SRC = (sys.argv[1] if len(sys.argv) > 1 else os.environ.get("REAPER_ROUTER_SRC")
+       or os.environ.get("REAPER_SRC", "/home/reaper/asuswrt-be96u/release/src/router"))
 www = os.path.join(SRC, "www")
 PAGES = ["Reaper_Log.asp", "Reaper_WLog.asp", "Reaper_Leases.asp", "Reaper_IPv6.asp", "Reaper_Routes.asp", "Reaper_PortFwd.asp"]
 if not all(os.path.exists(os.path.join(www, p)) for p in PAGES):
@@ -48,12 +51,19 @@ check("Log: system + login views, Clear = apply.cgi \" Clear \", Save = syslog.t
       "nvram_dump(\"security_recored.log\",\"\")" in L and 'name="action_mode" value=" Clear "' in L and "location.href = '/syslog.txt'" in L
       and "rp.post(document.form, ch, 'restart_logger', 5, false)" in L)
 check("Log: the view is written as text (textContent), never as HTML", "box.textContent = out.join('\\n');" in L and "innerHTML" not in L.split("function render()")[1].split("function load(")[0])
-check("WLog: band by wlN_nband, endpoint evaluated in a function scope, driver dump only on demand",
-      "b === '2' ? '2.4 GHz' : b === '1' ? '5 GHz' : b === '4' ? '6 GHz'" in W and "return (new Function(src))();" in W and "'/ajax_reaper_wlstatus.asp?_='" in W
+check("WLog: band by wlN_nband, endpoint JSON.parsed (never run, B-5 2026-11-05), driver dump only on demand",
+      "b === '2' ? '2.4 GHz' : b === '1' ? '5 GHz' : b === '4' ? '6 GHz'" in W and "var o = JSON.parse(txt)" in W and "new Function" not in W and "'/ajax_reaper_wlstatus.asp?_='" in W
       and W.count("/wl_log.asp") == 1)
 check("Leases/IPv6/PortFwd: emitter arrays declared before the ej call (strict mode), no pop()+length>1 off-by-one",
       "var leasearray = [];\n<% get_leases_array(); %>" in LS and "var ipv6cfgarray = [[]], ipv6clientarray = [[]], pinholesarray = [[]];" in I6
       and ".pop()" not in I6 and "<% get_vserver_array(); %>" in PF and "<% get_upnp_array(); %>" in PF)
+check("IPv6: Name (the admin's, ReaperNames.name) and Hostname (the device's, ReaperNames.host, the lease hostname as the "
+      "fallback) in their own columns, \"<unknown>\" and \"*\" count as no name, the user's own names are seeded before the "
+      "first draw (2026-11-14; two columns 2026-11-15, owner's device-label rule)",
+      "var lease = (r[0] === '*' || r[0] === '<unknown>') ? '' : r[0];" in I6
+      and "name: ReaperNames.name(r[1]), host: ReaperNames.host(r[1]) || lease" in I6 and '<script src="/reaper_util.js"></script>' in I6
+      and I6.find("ReaperNames.refresh('<% nvram_char_to_ascii(\"\", \"custom_clientlist\"); %>'") != -1
+      and I6.find("ReaperNames.refresh(") < I6.rfind("try { drawCli(); }"))
 check("PortFwd: Reaper's own DNAT chain is named, not passed off as a user port forward", "REAPER_GKN: `<#RLOG_" in PF)
 check("Routes: every table + rules from reaper_pbr.cgi?action=routes, local table folded by default",
       "'/reaper_pbr.cgi?action=routes&http_id=' + encodeURIComponent(HTTPID)" in RT and "var HTTPID = <% nvram_get_js(\"http_id\"); %>;" in RT
@@ -73,8 +83,8 @@ check("httpd: SUP redirects all seven stock URLs; the six pages are native (no s
       all(('{ "%s.asp", "%s", ' % kv) in inj for kv in sup.items())
       and all(inj.index('\t"%s",' % p) > inj.index("static const char *reaper_native[]") for p in PAGES))
 aj = rd(os.path.join(www, "ajax_reaper_wlstatus.asp"))
-check("ajax_reaper_wlstatus.asp runs get_wl_status only (stock's ajax also ran the closed driver dump every refresh)",
-      aj.strip() == "<% get_wl_status(); %>")
+check("ajax_reaper_wlstatus.asp runs get_wl_status_json only (stock's ajax also ran the closed driver dump every refresh)",
+      aj.strip() == "<% get_wl_status_json(); %>")
 
 # _r25 field: a ?query on a static file 404'd on the old base (do_file looked the path up with the query); kept so
 # the kit does not grow a cache-busting query the build stamp already covers
@@ -94,11 +104,18 @@ check("data_arrays.c: UPnP + pinhole descriptions and IPv6 hostnames go through 
 # answers .css with Cache-Control: no-cache plus a build-stamped ETag, so the old 60 s rp.css row is gone (moot)
 _hc = rd(os.path.join(SRC, "httpd", "httpd.c"))
 _css = web.find('{ "**.css", "text/css", no_cache, NULL, do_file, NULL },')
-check("httpd serves reaper/rp.css fresh: **.css is no_cache with no cached row ahead of it, .css revalidates on a build-stamped ETag",
-      _css >= 0 and not re.search(r'\{ "reaper/[^"]*", "text/css", cache_object', web[:_css])
-      and '(!strcasecmp(ext, ".css") || (!strcasecmp(ext, ".js") && etag_header_flag == 1));' in _hc
-      and "if (revalidate)\n\t\textra_header = no_cache;" in _hc
-      and "reaper_append_buildinfo_to_etag(etag_value, sizeof(etag_value));" in _hc)
+# 3006.102.10: every .css is no_cache and revalidates on a build-stamped ETag, so no rp.css row is needed.
+# 3006.102.8 (older base): stylesheets are cached, and Reaper's own reaper/rp.css row (60 s) ahead of **.css is
+# what keeps the kit stylesheet fresh after an upgrade.
+_new = (_css >= 0 and not re.search(r'\{ "reaper/[^"]*", "text/css", cache_object', web[:_css])
+        and '(!strcasecmp(ext, ".css") || (!strcasecmp(ext, ".js") && etag_header_flag == 1));' in _hc
+        and "if (revalidate)\n\t\textra_header = no_cache;" in _hc
+        and "reaper_append_buildinfo_to_etag(etag_value, sizeof(etag_value));" in _hc)
+_rp = web.find('{ "reaper/rp.css", "text/css", cache_object_60, NULL, do_file, NULL },')
+_css8 = web.find('{ "**.css", "text/css", cache_object, NULL, do_file, NULL },')
+_old = 0 <= _rp < _css8
+check("httpd serves reaper/rp.css fresh: on 3006.102.10 **.css is no_cache and revalidates on a build-stamped ETag; "
+      "on 3006.102.8 the reaper/rp.css 60 s row sits ahead of **.css", _new or _old, ("new", _new, "old", _old))
 check("data_arrays.c: a missing IPv6 client list still closes the array", "close the array - returning here left it open" in da)
 check("web-broadcom-am.c: no-SCBSTATS stations keep the column count; one failed interface no longer drops the rest",
       'ret += websWrite(wp, "\\"\\",\\"\\",\\"\\",\\"\\",\\"\\",\\"\\",\\"");' in wb and "if (wl_ioctl(name_vif, WLC_GET_VAR, auth, mac_list_size))\n\t\t\t\tcontinue;" in wb)

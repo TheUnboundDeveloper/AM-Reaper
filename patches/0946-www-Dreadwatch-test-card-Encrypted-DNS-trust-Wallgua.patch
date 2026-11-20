@@ -1,0 +1,117 @@
+From 186084140157ec644a537a030d215ca32eaf7214 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Mon, 9 Nov 2026 20:27:52 -0500
+Subject: [PATCH] www: Dreadwatch test card, Encrypted DNS trust, Wallguard
+ empty tables; rednsd trust
+
+- Dreadwatch: the Test now card opened with the no-list error on every load; it now says what the
+  test does (RDWT_69) and the no-list text only when the list is empty, and a finished test's line
+  is kept.
+- rednsd judged the certificate once, at start - often at boot before NTP, when every recent
+  certificate is not yet valid - and the card said "Not publicly trusted" until the next renewal.
+  It now checks the chain without the clock; the page judges expiry from not_after as before.
+- Encrypted DNS: an untrusted certificate from Let's Encrypt says it does not chain to a public
+  root (missing intermediate or a test issuer) and to issue it again (RENC_66), not "use Let's
+  Encrypt".
+- Wallguard: the rewrites, profile assignment and live tables say they are empty, not "Nothing
+  blocked yet".
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ release/src/router/rednsd/rednsd.c             | 7 ++++++-
+ release/src/router/www/Reaper_Dreadwatch.asp   | 6 +++++-
+ release/src/router/www/Reaper_EncryptedDNS.asp | 3 ++-
+ release/src/router/www/Reaper_Wallguard.asp    | 4 +++-
+ 4 files changed, 16 insertions(+), 4 deletions(-)
+
+diff --git a/release/src/router/rednsd/rednsd.c b/release/src/router/rednsd/rednsd.c
+index e77acaaf33e..5e5656be923 100644
+--- a/release/src/router/rednsd/rednsd.c
++++ b/release/src/router/rednsd/rednsd.c
+@@ -1292,8 +1292,13 @@ static void cert_describe(void)
+ #else
+ 		if (st && sc && X509_STORE_load_locations(st, cfg.cabundle, NULL) == 1
+ #endif
+-		    && X509_STORE_CTX_init(sc, st, x, chain) == 1)
++		    && X509_STORE_CTX_init(sc, st, x, chain) == 1) {
++			/* 2026-11-09: the chain only, not the clock. This runs once, at start - often at
++			 * boot before NTP, when every recent certificate is not yet valid, and that verdict
++			 * stayed until the next renewal. The page judges expiry itself from not_after. */
++			X509_VERIFY_PARAM_set_flags(X509_STORE_CTX_get0_param(sc), X509_V_FLAG_NO_CHECK_TIME);
+ 			trusted = X509_verify_cert(sc) == 1;
++		}
+ 		X509_STORE_CTX_free(sc);
+ 		X509_STORE_free(st);
+ 		ERR_clear_error();
+diff --git a/release/src/router/www/Reaper_Dreadwatch.asp b/release/src/router/www/Reaper_Dreadwatch.asp
+index 1c7831d3f96..aed3b3b6c82 100644
+--- a/release/src/router/www/Reaper_Dreadwatch.asp
++++ b/release/src/router/www/Reaper_Dreadwatch.asp
+@@ -196,7 +196,7 @@ textarea{width:100%;height:120px;resize:vertical;font-family:ui-monospace,Consol
+ <div class="duo">
+   <div class="card">
+     <h2><#RDWT_24#></h2>
+-    <div class="desc" id="testdesc"><#RDWT_41#></div>
++    <div class="desc" id="testdesc"><#RDWT_69#></div>
+     <div><button type="button" class="btng" id="testbtn" onclick="dwTest()"><#RDWT_24#></button></div>
+     <div class="testres" id="testres"></div>
+     <div class="desc" id="since" style="margin-top:14px"></div>
+@@ -480,6 +480,7 @@ function dwPaint(){
+   DNS_BUILTIN.forEach(function(id){ $('fd_'+id).checked = (id === 'basics') ? DNS_BASICS.some(function(b){ return !!dfs[b]; }) : !!dfs[id]; });
+   $('dnsallow').value = dwSplit(NV.dnsallow).join('\n');
+ }
++var dwTested = false;
+ function dwRender(j){
+   var on = !!(j && j.enable);
+   if(j && j.ok) dwLast = j;
+@@ -487,6 +488,8 @@ function dwRender(j){
+   pill.className = 'statuspill' + ((on && j.live && j.names > 0) ? '' : ' off');
+   pill.textContent = (on && j.live && j.names > 0) ? `<#RWDN_03#>` : `<#RWDN_04#>`;
+   if(!j || !j.ok){ return; }
++  /* 2026-11-09: until a test has run, the card says what the test does - or, with no list, why it cannot run */
++  if(!dwTested) $('testdesc').textContent = j.names > 0 ? `<#RDWT_69#>` : `<#RDWT_41#>`;
+   $('s_total').textContent = dwNum(j.total);
+   $('s_names').textContent = dwNum(j.names);
+   /* 2026-11-02: every device the counters keep (the 100 busiest), not the 20 listed below the tiles */
+@@ -587,6 +590,7 @@ function dwTest(){
+       var EK = {RDWT_40:`<#RDWT_40#>`, RDWT_41:`<#RDWT_41#>`, RDWT_42:`<#RDWT_42#>`};
+       r.className = 'testres bad'; r.textContent = (j && j.ek && EK[j.ek]) ? EK[j.ek] : `<#RWDN_91#>`; return;
+     }
++    dwTested = true;
+     $('testdesc').textContent = `<#RDWT_25#>`.replace('%1', j.name);
+     r.className = 'testres ' + (j.blocked ? 'good' : 'bad');
+     r.textContent = j.blocked ? `<#RDWT_26#>`.replace('%1', j.name) : `<#RDWT_27#>`.replace('%1', j.name).replace('%2', String(j.rcode));
+diff --git a/release/src/router/www/Reaper_EncryptedDNS.asp b/release/src/router/www/Reaper_EncryptedDNS.asp
+index 51e25e982aa..dbd1f7f9f54 100644
+--- a/release/src/router/www/Reaper_EncryptedDNS.asp
++++ b/release/src/router/www/Reaper_EncryptedDNS.asp
+@@ -257,7 +257,8 @@ function encRender(j){
+   else if(c.not_after && c.not_after < now){ cs.className = 'certstate bad'; encFill(cs, `<#RENC_34#>`, LINK_CERT[0], LINK_CERT[1]); }
+   else if(c.trusted){ cs.className = 'certstate good'; cs.textContent = `<#RENC_31#>`; }
+   else if(c.self_signed){ cs.className = 'certstate bad'; encFill(cs, `<#RENC_32#>`, LINK_CERT[0], LINK_CERT[1]); }
+-  else { cs.className = 'certstate bad'; encFill(cs, `<#RENC_33#>`, LINK_CERT[0], LINK_CERT[1]); }
++  /* 2026-11-09: an LE certificate that does not verify needs issuing again, not the advice to use LE */
++  else { cs.className = 'certstate bad'; encFill(cs, /let.?s encrypt/i.test(c.issuer || '') ? `<#RENC_66#>` : `<#RENC_33#>`, LINK_CERT[0], LINK_CERT[1]); }
+ 
+   /* where it answers */
+   var ul = $('listen'); ul.textContent = '';
+diff --git a/release/src/router/www/Reaper_Wallguard.asp b/release/src/router/www/Reaper_Wallguard.asp
+index d29ffff2710..a52421f06ef 100644
+--- a/release/src/router/www/Reaper_Wallguard.asp
++++ b/release/src/router/www/Reaper_Wallguard.asp
+@@ -333,9 +333,11 @@ function shTg(el){ el.className = (el.className.indexOf('on') >= 0) ? 'tg' : 'tg
+ function shNum(n){ return Number(n || 0).toLocaleString(); }
+ function shWhen(t){ return t > 0 ? new Date(t * 1000).toLocaleString() : DASH; }
+ function shCell(tr, text, cls){ var td = document.createElement('td'); td.textContent = text; if(cls) td.className = cls; tr.appendChild(td); return td; }
++/* 2026-11-09: the blocked-name tables say nothing was blocked; the settings and live tables say they are empty */
++var SH_EMPTY = {rwbody: 1, assignbody: 1, livebody: 1};
+ function shRows(id, rows, cols, fill){
+   var tb = $(id); tb.textContent = '';
+-  if(!rows.length){ var tr = document.createElement('tr'), td = shCell(tr, `<#RDWT_23#>`, 'empty'); td.colSpan = cols; tb.appendChild(tr); return; }
++  if(!rows.length){ var tr = document.createElement('tr'), td = shCell(tr, SH_EMPTY[id] ? `<#IPConnection_VSList_Norule#>` : `<#RDWT_23#>`, 'empty'); td.colSpan = cols; tb.appendChild(tr); return; }
+   rows.forEach(function(r){ var tr = document.createElement('tr'); fill(tr, r); tb.appendChild(tr); });
+ }
+ function shBtn(label, fn, sm){ var b = document.createElement('button'); b.type = 'button'; b.className = 'btn ghost' + (sm ? ' small' : ''); b.textContent = label; b.addEventListener('click', fn); return b; }
+-- 
+2.25.1
+

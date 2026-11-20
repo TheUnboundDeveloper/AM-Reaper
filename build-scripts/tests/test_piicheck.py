@@ -85,6 +85,18 @@ check("deny-list value never appears in the output", secret not in out and secre
 rc, out = run({'a.txt': 'nothing here\n'}, env_deny='', extra=['--require-denylist'])
 check("--require-denylist fails when the list is empty", rc == 2, out)
 
+# 4b. a Markdown guide's four-level section numbers ("##### 4.3.2.3 Title", "(see 4.3.2.3)") are not
+#     addresses; a public address in the same file, or the same number outside a .md file, still is
+guide = '##### 4.3.2.3 The built-in lists\n\nSee (4.3.2.3) and 4.3.1.7 for more.\n#### 4.3.1.7. Rows\n'
+rc, out = run({'g.md': guide})
+check("a .md file's own heading numbers pass, in the heading and in cross-references", rc == 0, out)
+rc, out = run({'g.md': guide + 'the peer at 84.17.40.12 answers\n'})
+check("a public address in the same .md file is still flagged", rc == 1 and out.count('ipv4:') == 1, out)
+rc, out = run({'g.md': '##### 4.3.2.3 Title\nsee 4.3.2.4\n'})
+check("a number that is not one of the file's headings is still flagged", rc == 1 and 'ipv4:' in out, out)
+rc, out = run({'g.txt': guide})
+check("the same text outside a .md file is still flagged", rc == 1 and 'ipv4:' in out, out)
+
 # 5. private-key material: any added line of any patch (vendored too), and any plain file;
 #    the header is assembled here so this test file never holds one itself
 pem = '-----BEGIN ' + 'RSA PRIVATE KEY-----'

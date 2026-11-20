@@ -486,6 +486,42 @@ else
   cmp -s "$NMP_REF" "$NMP_DST" || { echo "::error::$NMP_DST is not the reference build after the copy"; exit 1; }
 fi
 
+# --- shared closed objects of the models built with an older GPL drop -----------
+# GT-BE98, GT-BE19000, BQ16 and BQ16_PRO keep the model-specific closed objects of
+# their own ASUS GPL drop (102_39274 / 102_39256) but take every closed object the
+# 3006.102.10 models share from canon; their platform archives were generated that
+# way. This phase proves it on the unpacked tree, so a stale archive (one cut from a
+# branch before the swap) fails here in seconds instead of linking a mixed set that
+# only breaks at run time. Assertion only: nothing is copied.
+_ph common-blobs
+case "$MODEL" in
+  GT-BE98|GT-BE19000|BQ16|BQ16_PRO)
+    CBL="$REPO_DIR/overlays/common-blobs.list"
+    [ -f "$CBL" ] || { echo "::error::overlays/common-blobs.list is missing"; exit 1; }
+    hr; echo " Shared closed objects for $MODEL = canon's copies ($(grep -c '^[a-z]' "$CBL") entries)"; hr
+    _msys="router-sysdep.$(echo "$MODEL" | tr 'A-Z' 'a-z')"
+    _ok=0; _kept=0; _bad=0
+    while read -r _kind _path _rest; do
+      case "$_kind" in prebuild|sysdep) ;; *) continue;; esac
+      if echo " $_rest " | grep -q -- " -$MODEL "; then _kept=$((_kept+1)); continue; fi
+      if [ "$_kind" = prebuild ]; then
+        _ref="release/src/router/${_path//MODEL/RT-BE96U}"; _dst="release/src/router/${_path//MODEL/$MODEL}"
+      else
+        _ref="release/src-rt-5.04behnd.4916/router-sysdep.rt-be96u/$_path"
+        _dst="release/src-rt-5.04behnd.4916/$_msys/$_path"
+      fi
+      if [ ! -e "$_ref" ] || [ ! -e "$_dst" ]; then
+        echo "::error::$MODEL: missing $([ -e "$_ref" ] || echo "$_ref ")$([ -e "$_dst" ] || echo "$_dst")"; _bad=$((_bad+1))
+      elif cmp -s "$_ref" "$_dst"; then _ok=$((_ok+1))
+      else echo "::error::$MODEL: $_dst differs from canon's $_ref"; _bad=$((_bad+1)); fi
+    done < "$CBL"
+    echo "   $_ok identical to canon, $_kept kept by this model, $_bad wrong"
+    [ "$_bad" = 0 ] || { echo "::error::$MODEL platform archive does not carry the shared closed objects (regenerate it from the model branch)"; exit 1; }
+    echo "   [MATCH] every shared closed object is canon's"
+    ;;
+  *) echo "   $MODEL builds with this tree's own closed objects - nothing to assert";;
+esac
+
 # --- radio firmware identity, BEFORE the build --------------------------------
 # Every rtecdc.bin the build will install for this model must name this model.
 # Broadcom stamps the model into each blob; the wrong one (a sibling's, or the
@@ -605,7 +641,16 @@ echo "   version: $VER (matches EXPECTED_VERSION)"
 # keyboard). Leaving it unset here would silently mark every clean-room build on
 # main as a pre-release, which is the failure this comment exists to prevent.
 export REAPER_BETA="${REAPER_BETA:-0}"
-if [ "$REAPER_BETA" = "1" ]; then
+# 2026-11-14: a third channel. REAPER_CHANNEL=alpha (public-build.yml sets it for the Dev-Uni branch only) marks a
+# TEST build of the unified tree: _ALPHA in the image name and in the version string the router reports, published
+# as a pre-release, never written to the update manifest - and the firmware itself looks for no update when it
+# carries the mark (rom/webs_scripts/reaper_webs_update.sh). Any other value leaves the choice to REAPER_BETA.
+export REAPER_CHANNEL="${REAPER_CHANNEL:-}"
+if [ "$REAPER_CHANNEL" = "alpha" ]; then
+  VER="${VER}_ALPHA"
+  SHORT_VER="${VER#Reaper_}"
+  echo "   channel: ALPHA (test build) -- images and the GUI will read $VER"
+elif [ "$REAPER_BETA" = "1" ]; then
   VER="${VER}_BETA"
   SHORT_VER="${VER#Reaper_}"
   echo "   channel: BETA (pre-release) -- images and the GUI will read $VER"

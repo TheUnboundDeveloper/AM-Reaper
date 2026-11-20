@@ -1,0 +1,347 @@
+From cfe62a173abc048ce7c53789bb4a742c457890cd Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Sat, 14 Nov 2026 12:29:36 -0500
+Subject: [PATCH] update check: a test build (alpha) looks for and offers no
+ update
+
+A build stamped _ALPHA is a test build of the unified tree, published from
+the lean branch Dev-Uni and installed by hand. It must never be offered
+another image: the stable line is older, and a Dev beta would take the
+router off the tree it is testing.
+
+- reaper_webs_update.sh ends before the manifest is fetched when EXTENDNO
+  carries _ALPHA, and reports webs_state_channel=alpha. The scheduled check
+  and an AiMesh-triggered one end there too.
+- Firmware page: says why in place of "up to date" (RFWU_62, 25 packs), an
+  ALPHA badge beside the installed version, and the node comparison knows
+  an alpha build from a beta of the same number.
+
+No effect on a stable or beta build.
+
+Co-Authored-By: Claude Fable 5.2 <noreply@anthropic.com>
+---
+ .../router/rom/webs_scripts/reaper_webs_update.sh  | 14 ++++++++++++++
+ release/src/router/www/BR.dict                     |  1 +
+ release/src/router/www/CN.dict                     |  1 +
+ release/src/router/www/CZ.dict                     |  1 +
+ release/src/router/www/DA.dict                     |  1 +
+ release/src/router/www/DE.dict                     |  1 +
+ release/src/router/www/EN.dict                     |  1 +
+ release/src/router/www/ES.dict                     |  1 +
+ release/src/router/www/FI.dict                     |  1 +
+ release/src/router/www/FR.dict                     |  1 +
+ release/src/router/www/HU.dict                     |  1 +
+ release/src/router/www/IT.dict                     |  1 +
+ release/src/router/www/JP.dict                     |  1 +
+ release/src/router/www/KR.dict                     |  1 +
+ release/src/router/www/MS.dict                     |  1 +
+ release/src/router/www/NL.dict                     |  1 +
+ release/src/router/www/NO.dict                     |  1 +
+ release/src/router/www/PL.dict                     |  1 +
+ release/src/router/www/RO.dict                     |  1 +
+ release/src/router/www/RU.dict                     |  1 +
+ release/src/router/www/Reaper_Firmware.asp         | 11 +++++++++--
+ release/src/router/www/SL.dict                     |  1 +
+ release/src/router/www/SV.dict                     |  1 +
+ release/src/router/www/TH.dict                     |  1 +
+ release/src/router/www/TR.dict                     |  1 +
+ release/src/router/www/TW.dict                     |  1 +
+ release/src/router/www/UK.dict                     |  1 +
+ 27 files changed, 48 insertions(+), 2 deletions(-)
+
+diff --git a/release/src/router/rom/webs_scripts/reaper_webs_update.sh b/release/src/router/rom/webs_scripts/reaper_webs_update.sh
+index 51cb70543e..6d3aa7ccf4 100644
+--- a/release/src/router/rom/webs_scripts/reaper_webs_update.sh
++++ b/release/src/router/rom/webs_scripts/reaper_webs_update.sh
+@@ -68,6 +68,20 @@ esac
+ 
+ echo "---- model=$model variant=$variant running=$cur_ver ----" >> "$LOG"
+ 
++# 2026-11-14 (owner): a TEST build - EXTENDNO carries _ALPHA, the unified-tree builds published from the Dev-Uni
++# branch - is installed by hand and is never offered another image: not the stable line, and not a Dev beta, which
++# would take the box off the tree it is testing. Nothing is fetched. The Firmware page says why
++# (webs_state_channel=alpha); the scheduled check and an AiMesh-triggered one end here too.
++case "$(nvram get extendno)" in
++*_ALPHA*)
++	echo "---- test build (alpha): no update is looked for or offered ----" >> "$LOG"
++	logger -t reaper-fw "update check: this is a test build (alpha) - updates are installed by hand, nothing is offered"
++	nvram set webs_state_channel=alpha
++	nvram set webs_state_flag=0
++	nvram set webs_state_update=1
++	exit 0 ;;
++esac
++
+ /usr/sbin/wget $wget_options "$MANIFEST_URL" -O "$TMP"
+ if [ "$?" != "0" ] || [ ! -s "$TMP" ]; then
+ 	echo "---- manifest fetch failed ----" >> "$LOG"
+diff --git a/release/src/router/www/BR.dict b/release/src/router/www/BR.dict
+index c3a0047b07..812a583915 100644
+--- a/release/src/router/www/BR.dict
++++ b/release/src/router/www/BR.dict
+@@ -9240,3 +9240,4 @@ RSDN_31=Isolar
+ RSDN_32=Somente WiFi
+ RSDN_33=WiFi e portas LAN
+ RSDN_34=Somente WiFi: os dispositivos sem fio não conseguem se comunicar entre si; os dispositivos com fio continuam acessíveis. WiFi e portas LAN: as portas LAN do roteador também ficam separadas, entre si e do WiFi; dispositivos atrás de um mesmo switch externo ainda se comunicam entre si; as portas de backhaul do AiMesh nunca são isoladas.
++RFWU_62=Esta é uma versão de teste (alfa). Ela não procura nem oferece atualizações. Instale a próxima versão de teste manualmente a partir da página Releases do projeto.
+diff --git a/release/src/router/www/CN.dict b/release/src/router/www/CN.dict
+index b947abb2c6..8e69e1c8c7 100644
+--- a/release/src/router/www/CN.dict
++++ b/release/src/router/www/CN.dict
+@@ -9240,3 +9240,4 @@ RSDN_31=隔离范围
+ RSDN_32=仅限 WiFi
+ RSDN_33=WiFi 和 LAN 端口
+ RSDN_34=仅限 WiFi：无线设备之间无法互相访问；有线设备仍可访问。WiFi 和 LAN 端口：路由器的 LAN 端口之间以及与 WiFi 之间也相互隔离；接在同一台外部交换机后的设备仍可互相访问；AiMesh 回程端口永不隔离。
++RFWU_62=这是测试版本（alpha）。它不会检查或提供更新。请从项目的 Releases 页面手动安装下一个测试版本。
+diff --git a/release/src/router/www/CZ.dict b/release/src/router/www/CZ.dict
+index 6a3490c020..1b07181836 100644
+--- a/release/src/router/www/CZ.dict
++++ b/release/src/router/www/CZ.dict
+@@ -9240,3 +9240,4 @@ RSDN_31=Izolovat
+ RSDN_32=Pouze WiFi
+ RSDN_33=WiFi a porty LAN
+ RSDN_34=Pouze WiFi: bezdrátová zařízení se navzájem nedosáhnou; kabelová zařízení zůstávají dostupná. WiFi a porty LAN: porty LAN routeru jsou také odděleny, navzájem i od WiFi; zařízení za jedním externím přepínačem se stále navzájem dosáhnou; porty páteřního připojení AiMesh se nikdy neizolují.
++RFWU_62=Toto je testovací sestavení (alfa). Nehledá ani nenabízí aktualizace. Další testovací sestavení nainstalujte ručně ze stránky Releases projektu.
+diff --git a/release/src/router/www/DA.dict b/release/src/router/www/DA.dict
+index 026771c2bb..2172f14c3e 100644
+--- a/release/src/router/www/DA.dict
++++ b/release/src/router/www/DA.dict
+@@ -9240,3 +9240,4 @@ RSDN_31=Isolér
+ RSDN_32=Kun WiFi
+ RSDN_33=WiFi og LAN-porte
+ RSDN_34=Kun WiFi: trådløse enheder kan ikke nå hinanden; kablede enheder kan stadig nås. WiFi og LAN-porte: routerens LAN-porte holdes også adskilt, fra hinanden og fra WiFi; enheder bag én ekstern switch kan stadig nå hinanden; AiMesh-backhaul-porte isoleres aldrig.
++RFWU_62=Dette er en testversion (alfa). Den søger ikke efter og tilbyder ikke opdateringer. Installer den næste testversion manuelt fra projektets Releases-side.
+diff --git a/release/src/router/www/DE.dict b/release/src/router/www/DE.dict
+index 7a845b69d1..bbc06a61e3 100644
+--- a/release/src/router/www/DE.dict
++++ b/release/src/router/www/DE.dict
+@@ -9240,3 +9240,4 @@ RSDN_31=Isolieren
+ RSDN_32=Nur WLAN
+ RSDN_33=WLAN und LAN-Ports
+ RSDN_34=Nur WLAN: Drahtlose Geräte können sich nicht gegenseitig erreichen; kabelgebundene Geräte bleiben erreichbar. WLAN und LAN-Ports: Die LAN-Ports des Routers werden ebenfalls getrennt, voneinander und vom WLAN; Geräte hinter einem externen Switch erreichen sich weiterhin gegenseitig; AiMesh-Backhaul-Ports werden nie isoliert.
++RFWU_62=Dies ist ein Test-Build (Alpha). Er sucht nicht nach Updates und bietet keine an. Installieren Sie den nächsten Test-Build von Hand von der Releases-Seite des Projekts.
+diff --git a/release/src/router/www/EN.dict b/release/src/router/www/EN.dict
+index 019db7d873..97f684dc98 100644
+--- a/release/src/router/www/EN.dict
++++ b/release/src/router/www/EN.dict
+@@ -9240,3 +9240,4 @@ RSDN_31=Isolate
+ RSDN_32=Wi-Fi only
+ RSDN_33=Wi-Fi and LAN ports
+ RSDN_34=Wi-Fi only: wireless devices cannot reach each other; wired devices stay reachable. Wi-Fi and LAN ports: the LAN ports of the router are also kept apart, from each other and from Wi-Fi; devices behind one external switch still reach each other; AiMesh backhaul ports are never isolated.
++RFWU_62=This is a test build (alpha). It does not look for or offer updates. Install the next test build by hand from the Releases page of the project.
+diff --git a/release/src/router/www/ES.dict b/release/src/router/www/ES.dict
+index 8a56be5e1b..71101c45b2 100644
+--- a/release/src/router/www/ES.dict
++++ b/release/src/router/www/ES.dict
+@@ -9240,3 +9240,4 @@ RSDN_31=Aislar
+ RSDN_32=Solo WiFi
+ RSDN_33=WiFi y puertos LAN
+ RSDN_34=Solo WiFi: los dispositivos inalámbricos no pueden comunicarse entre sí; los dispositivos con cable siguen accesibles. WiFi y puertos LAN: los puertos LAN del router también quedan separados, entre sí y del WiFi; los dispositivos conectados a un mismo switch externo siguen comunicándose entre sí; los puertos de backhaul de AiMesh nunca se aíslan.
++RFWU_62=Esta es una compilación de prueba (alfa). No busca ni ofrece actualizaciones. Instale la siguiente compilación de prueba a mano desde la página Releases del proyecto.
+diff --git a/release/src/router/www/FI.dict b/release/src/router/www/FI.dict
+index 5160d264af..8d7e235b7b 100644
+--- a/release/src/router/www/FI.dict
++++ b/release/src/router/www/FI.dict
+@@ -9240,3 +9240,4 @@ RSDN_31=Eristä
+ RSDN_32=Vain WiFi
+ RSDN_33=WiFi ja LAN-portit
+ RSDN_34=Vain WiFi: langattomat laitteet eivät tavoita toisiaan; langalliset laitteet ovat yhä tavoitettavissa. WiFi ja LAN-portit: myös reitittimen LAN-portit erotetaan toisistaan ja WiFistä; saman ulkoisen kytkimen takana olevat laitteet tavoittavat yhä toisensa; AiMesh-runkoyhteyden portteja ei koskaan eristetä.
++RFWU_62=Tämä on testiversio (alfa). Se ei etsi eikä tarjoa päivityksiä. Asenna seuraava testiversio käsin projektin Releases-sivulta.
+diff --git a/release/src/router/www/FR.dict b/release/src/router/www/FR.dict
+index 4da7c51fc7..b5e08006f3 100644
+--- a/release/src/router/www/FR.dict
++++ b/release/src/router/www/FR.dict
+@@ -9240,3 +9240,4 @@ RSDN_31=Isoler
+ RSDN_32=WiFi uniquement
+ RSDN_33=WiFi et ports LAN
+ RSDN_34=WiFi uniquement : les appareils sans fil ne peuvent pas communiquer entre eux ; les appareils filaires restent accessibles. WiFi et ports LAN : les ports LAN du routeur sont aussi séparés, entre eux et du WiFi ; les appareils derrière un même commutateur externe communiquent toujours entre eux ; les ports de liaison AiMesh ne sont jamais isolés.
++RFWU_62=Ceci est une version de test (alpha). Elle ne recherche ni ne propose de mises à jour. Installez la prochaine version de test à la main depuis la page Releases du projet.
+diff --git a/release/src/router/www/HU.dict b/release/src/router/www/HU.dict
+index e252c7335b..a5bbbd5335 100644
+--- a/release/src/router/www/HU.dict
++++ b/release/src/router/www/HU.dict
+@@ -9240,3 +9240,4 @@ RSDN_31=Elszigetelés
+ RSDN_32=Csak WiFi
+ RSDN_33=WiFi és LAN-portok
+ RSDN_34=Csak WiFi: a vezeték nélküli eszközök nem érik el egymást; a vezetékes eszközök továbbra is elérhetők. WiFi és LAN-portok: a router LAN-portjai is el vannak választva egymástól és a WiFi-től; az egy külső switch mögötti eszközök továbbra is elérik egymást; az AiMesh gerinckapcsolati portjai soha nincsenek elszigetelve.
++RFWU_62=Ez egy tesztverzió (alfa). Nem keres és nem kínál frissítéseket. A következő tesztverziót kézzel telepítse a projekt Releases oldaláról.
+diff --git a/release/src/router/www/IT.dict b/release/src/router/www/IT.dict
+index 6eb85f14c2..27ffd04861 100644
+--- a/release/src/router/www/IT.dict
++++ b/release/src/router/www/IT.dict
+@@ -9240,3 +9240,4 @@ RSDN_31=Isola
+ RSDN_32=Solo WiFi
+ RSDN_33=WiFi e porte LAN
+ RSDN_34=Solo WiFi: i dispositivi wireless non possono raggiungersi tra loro; i dispositivi cablati restano raggiungibili. WiFi e porte LAN: anche le porte LAN del router vengono separate, tra loro e dal WiFi; i dispositivi dietro uno stesso switch esterno si raggiungono ancora tra loro; le porte di backhaul AiMesh non vengono mai isolate.
++RFWU_62=Questa è una versione di prova (alfa). Non cerca e non propone aggiornamenti. Installare a mano la prossima versione di prova dalla pagina Releases del progetto.
+diff --git a/release/src/router/www/JP.dict b/release/src/router/www/JP.dict
+index 4270920ef0..a2b02d7dc8 100644
+--- a/release/src/router/www/JP.dict
++++ b/release/src/router/www/JP.dict
+@@ -9240,3 +9240,4 @@ RSDN_31=隔離の範囲
+ RSDN_32=WiFi のみ
+ RSDN_33=WiFi と LAN ポート
+ RSDN_34=WiFi のみ：ワイヤレスデバイス同士は通信できません。有線デバイスには引き続きアクセスできます。WiFi と LAN ポート：ルーターの LAN ポートも互いに、また WiFi から分離されます。同じ外部スイッチの先にあるデバイス同士は引き続き通信できます。AiMesh バックホールポートは分離されません。
++RFWU_62=これはテストビルド（アルファ）です。更新の確認や提供は行いません。次のテストビルドは、プロジェクトの Releases ページから手動でインストールしてください。
+diff --git a/release/src/router/www/KR.dict b/release/src/router/www/KR.dict
+index da9a6b6181..0811e7f362 100644
+--- a/release/src/router/www/KR.dict
++++ b/release/src/router/www/KR.dict
+@@ -9240,3 +9240,4 @@ RSDN_31=격리 범위
+ RSDN_32=WiFi만
+ RSDN_33=WiFi 및 LAN 포트
+ RSDN_34=WiFi만: 무선 기기끼리는 서로 연결할 수 없으며 유선 기기에는 계속 연결할 수 있습니다. WiFi 및 LAN 포트: 라우터의 LAN 포트도 서로, 그리고 WiFi와 분리됩니다. 같은 외부 스위치 뒤에 있는 기기끼리는 계속 서로 연결할 수 있으며 AiMesh 백홀 포트는 절대 격리되지 않습니다.
++RFWU_62=이것은 테스트 빌드(알파)입니다. 업데이트를 확인하거나 제공하지 않습니다. 다음 테스트 빌드는 프로젝트의 Releases 페이지에서 수동으로 설치하십시오.
+diff --git a/release/src/router/www/MS.dict b/release/src/router/www/MS.dict
+index 6e18a2bd04..742255b939 100644
+--- a/release/src/router/www/MS.dict
++++ b/release/src/router/www/MS.dict
+@@ -9240,3 +9240,4 @@ RSDN_31=Asingkan
+ RSDN_32=WiFi sahaja
+ RSDN_33=WiFi dan port LAN
+ RSDN_34=WiFi sahaja: peranti wayarles tidak dapat mencapai satu sama lain; peranti berwayar kekal boleh dicapai. WiFi dan port LAN: port LAN penghala juga diasingkan, antara satu sama lain dan daripada WiFi; peranti di belakang satu suis luaran masih boleh mencapai satu sama lain; port backhaul AiMesh tidak pernah diasingkan.
++RFWU_62=Ini ialah binaan ujian (alfa). Ia tidak mencari atau menawarkan kemas kini. Pasang binaan ujian seterusnya secara manual dari halaman Releases projek.
+diff --git a/release/src/router/www/NL.dict b/release/src/router/www/NL.dict
+index 9898c20939..e18baecbb7 100644
+--- a/release/src/router/www/NL.dict
++++ b/release/src/router/www/NL.dict
+@@ -9240,3 +9240,4 @@ RSDN_31=Isoleren
+ RSDN_32=Alleen WiFi
+ RSDN_33=WiFi en LAN-poorten
+ RSDN_34=Alleen WiFi: draadloze apparaten kunnen elkaar niet bereiken; bekabelde apparaten blijven bereikbaar. WiFi en LAN-poorten: ook de LAN-poorten van de router worden gescheiden, van elkaar en van WiFi; apparaten achter één externe switch bereiken elkaar nog steeds; AiMesh-backhaulpoorten worden nooit geïsoleerd.
++RFWU_62=Dit is een testbuild (alfa). Deze zoekt niet naar updates en biedt er geen aan. Installeer de volgende testbuild handmatig vanaf de Releases-pagina van het project.
+diff --git a/release/src/router/www/NO.dict b/release/src/router/www/NO.dict
+index e0d38b6391..37d466640e 100644
+--- a/release/src/router/www/NO.dict
++++ b/release/src/router/www/NO.dict
+@@ -9240,3 +9240,4 @@ RSDN_31=Isoler
+ RSDN_32=Kun WiFi
+ RSDN_33=WiFi og LAN-porter
+ RSDN_34=Kun WiFi: trådløse enheter kan ikke nå hverandre; kablede enheter kan fortsatt nås. WiFi og LAN-porter: ruterens LAN-porter holdes også atskilt, fra hverandre og fra WiFi; enheter bak én ekstern svitsj når fortsatt hverandre; AiMesh-backhaul-porter isoleres aldri.
++RFWU_62=Dette er en testversjon (alfa). Den søker ikke etter og tilbyr ikke oppdateringer. Installer neste testversjon manuelt fra prosjektets Releases-side.
+diff --git a/release/src/router/www/PL.dict b/release/src/router/www/PL.dict
+index 23e3612f35..69e0ea1eff 100644
+--- a/release/src/router/www/PL.dict
++++ b/release/src/router/www/PL.dict
+@@ -9240,3 +9240,4 @@ RSDN_31=Izoluj
+ RSDN_32=Tylko WiFi
+ RSDN_33=WiFi i porty LAN
+ RSDN_34=Tylko WiFi: urządzenia bezprzewodowe nie mogą się ze sobą łączyć; urządzenia przewodowe pozostają osiągalne. WiFi i porty LAN: porty LAN routera również są rozdzielone, od siebie nawzajem i od WiFi; urządzenia za jednym zewnętrznym przełącznikiem nadal się ze sobą łączą; porty backhaul AiMesh nigdy nie są izolowane.
++RFWU_62=To jest wersja testowa (alfa). Nie wyszukuje ani nie proponuje aktualizacji. Następną wersję testową zainstaluj ręcznie ze strony Releases projektu.
+diff --git a/release/src/router/www/RO.dict b/release/src/router/www/RO.dict
+index 102eed73bb..fc5a19754c 100644
+--- a/release/src/router/www/RO.dict
++++ b/release/src/router/www/RO.dict
+@@ -9240,3 +9240,4 @@ RSDN_31=Izolează
+ RSDN_32=Doar WiFi
+ RSDN_33=WiFi și porturi LAN
+ RSDN_34=Doar WiFi: dispozitivele wireless nu se pot accesa între ele; dispozitivele prin cablu rămân accesibile. WiFi și porturi LAN: porturile LAN ale routerului sunt și ele separate, între ele și de WiFi; dispozitivele din spatele aceluiași switch extern se accesează în continuare între ele; porturile de backhaul AiMesh nu sunt niciodată izolate.
++RFWU_62=Aceasta este o versiune de test (alfa). Nu caută și nu oferă actualizări. Instalați manual următoarea versiune de test din pagina Releases a proiectului.
+diff --git a/release/src/router/www/RU.dict b/release/src/router/www/RU.dict
+index 8db1bd42ef..057006db56 100644
+--- a/release/src/router/www/RU.dict
++++ b/release/src/router/www/RU.dict
+@@ -9240,3 +9240,4 @@ RSDN_31=Изолировать
+ RSDN_32=Только WiFi
+ RSDN_33=WiFi и порты LAN
+ RSDN_34=Только WiFi: беспроводные устройства не могут связаться друг с другом; проводные устройства остаются доступными. WiFi и порты LAN: порты LAN роутера также разделяются, между собой и от WiFi; устройства за одним внешним коммутатором по-прежнему видят друг друга; порты транзитного соединения AiMesh никогда не изолируются.
++RFWU_62=Это тестовая сборка (альфа). Она не ищет и не предлагает обновления. Следующую тестовую сборку установите вручную со страницы Releases проекта.
+diff --git a/release/src/router/www/Reaper_Firmware.asp b/release/src/router/www/Reaper_Firmware.asp
+index e43b71f729..07e3fde836 100644
+--- a/release/src/router/www/Reaper_Firmware.asp
++++ b/release/src/router/www/Reaper_Firmware.asp
+@@ -210,6 +210,9 @@ var BETA_EN = <% nvram_get_js("reaper_fwbeta"); %>;
+ /* the noMCP build stamps "_noMCP" into EXTENDNO (same signal the backend
+    scripts read from the filesystem) - no extra probe needed */
+ var IS_MCP = EXTENDNO.indexOf('_noMCP') < 0;
++/* 2026-11-14: a test build (_ALPHA, published from the Dev-Uni branch) never looks for or offers another image -
++   reaper_webs_update.sh ends before it fetches anything and reports webs_state_channel=alpha */
++var IS_ALPHA = /_ALPHA(_|$)/.test(EXTENDNO);
+ var busy = 0;
+ 
+ /* ---- mesh nodes -------------------------------------------------------- *
+@@ -337,7 +340,7 @@ function prettyVer(s){
+ function verKey(s){
+   var m = String(s||'').match(/Reaper_v([0-9][0-9a-z.\-]*)/);
+   if(!m) return '';
+-  return m[1] + (/_BETA(_|$)/.test(String(s)) ? '-beta' : '');
++  return m[1] + (/_BETA(_|$)/.test(String(s)) ? '-beta' : (/_ALPHA(_|$)/.test(String(s)) ? '-alpha' : ''));
+ }
+ 
+ /* ONE-SHOT completion guard. A failed XMLHttpRequest fires readystatechange
+@@ -432,7 +435,7 @@ function checkDone(r){
+     return;
+   }
+   if(FW.flag === '1'){ showAvail(); }
+-  else setStat('chkStat', esc(`<#RFWU_5#>`), 'ok');
++  else setStat('chkStat', esc((IS_ALPHA || FW.chan === 'alpha') ? `<#RFWU_62#>` : `<#RFWU_5#>`), 'ok');
+ }
+ 
+ /* v2.7.3: explicit override for a signature-refused manifest. Deliberately
+@@ -866,6 +869,10 @@ function boot(){
+   showLastRefusal();
+   $id('rvVariant').innerHTML = IS_MCP ? `<#Reaper_c_ai_advisor#> <span class="badge">MCP</span>` : `<#RFWU_48#> <span class="badge">noMCP</span>`;
+   $id('rvVer').textContent = prettyVer(EXTENDNO);
++  if(IS_ALPHA){
++    $id('rvVer').innerHTML = esc(prettyVer(EXTENDNO)) + ' <span class="badge">ALPHA</span>';
++    setStat('chkStat', esc(`<#RFWU_62#>`), 'ok');
++  }
+   $id('rvBase').textContent = FIRMVER + '.' + BUILDNO;
+   loadNodes();
+   $id('schedChk').checked = (CHK_EN === '1');
+diff --git a/release/src/router/www/SL.dict b/release/src/router/www/SL.dict
+index d74a63cc62..859fd454cf 100644
+--- a/release/src/router/www/SL.dict
++++ b/release/src/router/www/SL.dict
+@@ -9240,3 +9240,4 @@ RSDN_31=Izoliraj
+ RSDN_32=Samo WiFi
+ RSDN_33=WiFi in vrata LAN
+ RSDN_34=Samo WiFi: brezžične naprave ne morejo doseči druga druge; žične naprave ostanejo dosegljive. WiFi in vrata LAN: tudi vrata LAN usmerjevalnika so ločena, med seboj in od WiFi; naprave za istim zunanjim stikalom se še vedno dosežejo med seboj; vrata hrbtenične povezave AiMesh niso nikoli izolirana.
++RFWU_62=To je preizkusna različica (alfa). Ne išče in ne ponuja posodobitev. Naslednjo preizkusno različico namestite ročno s strani Releases projekta.
+diff --git a/release/src/router/www/SV.dict b/release/src/router/www/SV.dict
+index 24b8da97a4..5ae0e3c1ee 100644
+--- a/release/src/router/www/SV.dict
++++ b/release/src/router/www/SV.dict
+@@ -9240,3 +9240,4 @@ RSDN_31=Isolera
+ RSDN_32=Endast WiFi
+ RSDN_33=WiFi och LAN-portar
+ RSDN_34=Endast WiFi: trådlösa enheter kan inte nå varandra; trådanslutna enheter går fortfarande att nå. WiFi och LAN-portar: routerns LAN-portar hålls också åtskilda, från varandra och från WiFi; enheter bakom en och samma externa switch når fortfarande varandra; AiMesh-backhaulportar isoleras aldrig.
++RFWU_62=Detta är en testversion (alfa). Den söker inte efter och erbjuder inte uppdateringar. Installera nästa testversion för hand från projektets Releases-sida.
+diff --git a/release/src/router/www/TH.dict b/release/src/router/www/TH.dict
+index cdb0cd32c8..2722bf35d1 100644
+--- a/release/src/router/www/TH.dict
++++ b/release/src/router/www/TH.dict
+@@ -9240,3 +9240,4 @@ RSDN_31=ขอบเขตการแยก
+ RSDN_32=เฉพาะ WiFi
+ RSDN_33=WiFi และพอร์ต LAN
+ RSDN_34=เฉพาะ WiFi: อุปกรณ์ไร้สายไม่สามารถเข้าถึงกันได้ แต่ยังเข้าถึงอุปกรณ์แบบมีสายได้ WiFi และพอร์ต LAN: พอร์ต LAN ของเราเตอร์จะถูกแยกออกจากกันและจาก WiFi ด้วย อุปกรณ์ที่อยู่หลังสวิตช์ภายนอกตัวเดียวกันยังเข้าถึงกันได้ พอร์ตแบ็คฮอล AiMesh จะไม่ถูกแยกเลย
++RFWU_62=นี่คือรุ่นทดสอบ (อัลฟา) ซึ่งจะไม่ตรวจหาหรือเสนอการอัปเดต โปรดติดตั้งรุ่นทดสอบถัดไปด้วยตนเองจากหน้า Releases ของโครงการ
+diff --git a/release/src/router/www/TR.dict b/release/src/router/www/TR.dict
+index f079a9b505..917303d1c3 100644
+--- a/release/src/router/www/TR.dict
++++ b/release/src/router/www/TR.dict
+@@ -9240,3 +9240,4 @@ RSDN_31=Yalıt
+ RSDN_32=Yalnızca WiFi
+ RSDN_33=WiFi ve LAN bağlantı noktaları
+ RSDN_34=Yalnızca WiFi: kablosuz cihazlar birbirine erişemez; kablolu cihazlar erişilebilir kalır. WiFi ve LAN bağlantı noktaları: yönlendiricinin LAN bağlantı noktaları da birbirinden ve WiFi ağından ayrılır; aynı harici anahtarın arkasındaki cihazlar birbirine erişmeye devam eder; AiMesh ana bağlantı noktaları hiçbir zaman yalıtılmaz.
++RFWU_62=Bu bir test sürümüdür (alfa). Güncelleme aramaz ve sunmaz. Sonraki test sürümünü projenin Releases sayfasından elle yükleyin.
+diff --git a/release/src/router/www/TW.dict b/release/src/router/www/TW.dict
+index ca16a498c8..41f891b754 100644
+--- a/release/src/router/www/TW.dict
++++ b/release/src/router/www/TW.dict
+@@ -9240,3 +9240,4 @@ RSDN_31=隔離範圍
+ RSDN_32=僅限 WiFi
+ RSDN_33=WiFi 和 LAN 連接埠
+ RSDN_34=僅限 WiFi：無線裝置之間無法互相存取；有線裝置仍可存取。WiFi 和 LAN 連接埠：路由器的 LAN 連接埠之間以及與 WiFi 之間也會相互隔離；接在同一台外部交換器後方的裝置仍可互相存取；AiMesh 回程連接埠永遠不會被隔離。
++RFWU_62=這是測試版本（alpha）。它不會檢查或提供更新。請從專案的 Releases 頁面手動安裝下一個測試版本。
+diff --git a/release/src/router/www/UK.dict b/release/src/router/www/UK.dict
+index dff7a41d66..92b47f55c1 100644
+--- a/release/src/router/www/UK.dict
++++ b/release/src/router/www/UK.dict
+@@ -9240,3 +9240,4 @@ RSDN_31=Ізолювати
+ RSDN_32=Лише WiFi
+ RSDN_33=WiFi і порти LAN
+ RSDN_34=Лише WiFi: бездротові пристрої не можуть зв’язатися один з одним; дротові пристрої залишаються доступними. WiFi і порти LAN: порти LAN роутера також розділяються, між собою та від WiFi; пристрої за одним зовнішнім комутатором і далі бачать один одного; порти транзитного з’єднання AiMesh ніколи не ізолюються.
++RFWU_62=Це тестова збірка (альфа). Вона не шукає і не пропонує оновлення. Наступну тестову збірку встановіть вручну зі сторінки Releases проєкту.
+-- 
+2.25.1
+

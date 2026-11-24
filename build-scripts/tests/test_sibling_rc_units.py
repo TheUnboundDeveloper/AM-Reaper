@@ -9,10 +9,18 @@ line that compiles it looks dead, so the 2026-10-07 audit listed it (B4) and the
 removed it - and all eight jobs of those four models failed to link rc in CI. A canon-only view
 cannot see this class; this suite looks at what the siblings actually carry.
 
+SINCE THE UNIFICATION (2026-11-04) those stubs live in canon instead:
+rc/reaper_legacy_blobs_shim.c and httpd/reaper_legacy_blobs_httpd.c, compiled only under
+RTCONFIG_REAPER_LEGACY_BLOBS (set by the four models' target.mak blocks), and no overlay or
+archive carries reaper_chanlist_shim.c any more. The generic rule below still holds: an rc
+source that a sibling ships must be compiled, so a stale archive that still carries the old
+shim fails here (its file would be named by nothing).
+
 WHAT IT DOES. Lists every release/src/router/rc/*.c that an overlays/*.patch touches or an
 overlays/*-platform.tar.gz carries, then requires canon's rc/Makefile (comment lines stripped)
-to name each one's .o. Needs the router source (argv[1] or REAPER_ROUTER_SRC).
-Exit 0 pass, 1 fail, 77 skipped."""
+to name each one's .o; and requires canon's compatibility layer to be wired: both shim sources
+present and each named by its Makefile inside an RTCONFIG_REAPER_LEGACY_BLOBS block.
+Needs the router source (argv[1] or REAPER_ROUTER_SRC). Exit 0 pass, 1 fail, 77 skipped."""
 import glob, os, re, sys, tarfile
 
 def skip(msg):
@@ -53,9 +61,18 @@ for stem in sorted(need):
     print(("ok   " if ok else "FAIL ") + "%s.o compiled by rc/Makefile  (from %s)" % (stem, ", ".join(sorted(set(need[stem])))))
     if not ok:
         fails.append(stem)
-if "reaper_chanlist_shim" not in need:
-    print("FAIL no overlay/archive carries rc/reaper_chanlist_shim.c - the scan itself is broken")
-    fails.append("scan")
+for sub, src, obj in (("rc", "reaper_legacy_blobs_shim.c", "reaper_legacy_blobs_shim.o"),
+                      ("httpd", "reaper_legacy_blobs_httpd.c", "reaper_legacy_blobs_httpd.o")):
+    path = os.path.join(SRC, sub, src)
+    text = "\n".join(l for l in open(os.path.join(SRC, sub, "Makefile"), encoding="utf-8",
+                                     errors="surrogateescape").read().split("\n")
+                     if not l.lstrip().startswith("#"))
+    wired = re.search(r"ifeq \(\$\(RTCONFIG_REAPER_LEGACY_BLOBS\),y\)\s*\nOBJS \+= %s\s*\nendif" % re.escape(obj),
+                      text) is not None
+    ok = os.path.isfile(path) and wired
+    print(("ok   " if ok else "FAIL ") + "%s/%s present and compiled under RTCONFIG_REAPER_LEGACY_BLOBS" % (sub, src))
+    if not ok:
+        fails.append(src)
 if fails:
     print("\n%d sibling rc source(s) not linked: %s - a sibling that ships the file will fail to link rc"
           % (len(fails), ", ".join(fails)))

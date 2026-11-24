@@ -1,0 +1,124 @@
+From 65ad7731faf5df20dbd5d9c3fcf689e0e1198311 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Wed, 18 Nov 2026 17:55:49 -0500
+Subject: [PATCH] unify: BQ16 Pro on its ASUS GPL 102_39442 objects; the
+ BQ16-only guards narrowed
+
+The BQ16 Pro now builds with the closed objects of ASUS GPL 102_39442, which carry the
+fixes the guards below worked around; the guards stay for the BQ16, still on 102_39256:
+- the deferred switch initialisation and the LAN power-cycle exclusion (rc) apply to the BQ16 only;
+- the upload_config_sync route is built where the legacy objects are not in use, and for the BQ16 Pro;
+- the legacy Broadcom licence set is kept for the BQ16 only (the BQ16 Pro takes licence 1296, as its stock
+  firmware does).
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ release/src-rt-5.04behnd.4916/targets/buildFS |  9 +++++----
+ release/src-rt/target.mak                     |  2 ++
+ release/src/router/httpd/web.c                |  7 ++++---
+ release/src/router/rc/init.c                  |  4 ++--
+ release/src/router/rc/sysdeps/init-broadcom.c | 14 ++++++++------
+ 5 files changed, 21 insertions(+), 15 deletions(-)
+
+diff --git a/release/src-rt-5.04behnd.4916/targets/buildFS b/release/src-rt-5.04behnd.4916/targets/buildFS
+index 550e49cf1b..090dac4a20 100755
+--- a/release/src-rt-5.04behnd.4916/targets/buildFS
++++ b/release/src-rt-5.04behnd.4916/targets/buildFS
+@@ -668,10 +668,11 @@ fi
+ if [ "$BCM_CHIP" == "6813" ]; then
+ 	mkdir -p $TARGETS_DIR/$ROOTFS/rom/etc/licenses
+ 	cp $TARGETS_DIR/pakl/*BQ16*.bin $TARGETS_DIR/$ROOTFS/rom/etc/licenses
+-	# reaper: BQ16 and BQ16 Pro run their 102_39256 closed objects and keep the licence set of their
+-	# own stock firmware (1077, 1079, 1080, 1119, 1212). The three older files sit in a sub-directory
+-	# so the *BQ16* glob above cannot pick 1080 up for every other 6813 model.
+-	if [ "$BUILD_NAME" = "BQ16" ] || [ "$BUILD_NAME" = "BQ16_PRO" ]; then
++	# reaper: the BQ16 runs its 102_39256 closed objects and keeps the licence set of that stock
++	# firmware (1077, 1079, 1080, 1119, 1212). The three older files sit in a sub-directory
++	# so the *BQ16* glob above cannot pick 1080 up for every other 6813 model. The BQ16 Pro moved to
++	# 102_39442 (2026-11-18), whose stock image ships 1119, 1212, 1296 like every other model.
++	if [ "$BUILD_NAME" = "BQ16" ]; then
+ 		cp $TARGETS_DIR/pakl/legacy-39256/*.bin $TARGETS_DIR/$ROOTFS/rom/etc/licenses
+ 		rm -f $TARGETS_DIR/$ROOTFS/rom/etc/licenses/*1296*.bin
+ 	fi
+diff --git a/release/src-rt/target.mak b/release/src-rt/target.mak
+index d5ef4a6e87..6cfaafbb5a 100644
+--- a/release/src-rt/target.mak
++++ b/release/src-rt/target.mak
+@@ -558,6 +558,8 @@ export BQ16_PRO += BUILD_NAME="BQ16_PRO" SWITCH2="BCM53134" NVSIZE="128" DHDAP=y
+ 		MLO_DEFAULT_ACTIVE=y MLO_BH_BAND=y MLO_CONFIG_566=y AMAS_DIS_HASH_KEY_GEN_CHECK=y
+ export BQ16_PRO += NFS=n SNMPD=y TOR=y UPNPIGD2=y NANO=y NTPD=y IPSET=y VPN_FUSION_MERLIN=y
+ export BQ16_PRO += SAMBA4=y SAMBA3=
++# reaper 2026-11-18: closed objects from ASUS GPL 102_39442; REAPER_LEGACY_BLOBS stays for the five shims
++# 39442 still lacks and the one-argument find_dms_dbdir_candidate its broadcom.o calls.
+ export BQ16_PRO += REAPER_LEGACY_BLOBS=y
+ export BQ16_PRO_CFG := $(BQ16_PRO)
+ 
+diff --git a/release/src/router/httpd/web.c b/release/src/router/httpd/web.c
+index b32c2247e8..90e3a0849e 100644
+--- a/release/src/router/httpd/web.c
++++ b/release/src/router/httpd/web.c
+@@ -39631,9 +39631,10 @@ struct mime_handler mime_handlers[] =
+ 	#if 0	/* reaper (audit 2026-10-07 G1): pre-auth China-market CTA endpoint in the closed web_hook.o; no page uses it */
+ 	{ "get_cta_info.cgi*", "text/html", no_cache, do_html_post_and_get, do_get_cta_info_cgi, NULL },
+ 	#endif
+-#ifndef RTCONFIG_REAPER_LEGACY_BLOBS	/* reaper (CVE-2026-19386): on the models built with older closed objects the
+-	 * config-upload handler is the one the advisory names (a crafted file overflows a stack buffer);
+-	 * nothing on this firmware posts it, so their route is not served */
++#if !defined(RTCONFIG_REAPER_LEGACY_BLOBS) || defined(BQ16_PRO)	/* reaper (CVE-2026-19386): on the models built with
++	 * older closed objects the config-upload handler is the one the advisory names (a crafted file overflows a stack
++	 * buffer); nothing on this firmware posts it, so their route is not served. The BQ16 Pro's 102_39442 handler is
++	 * the 40585 one instruction for instruction (2026-11-18), so its route is served like the other models'. */
+ 	{ "upload_config_sync.cgi*", "text/html", no_cache, do_upload_config_sync_post, do_upload_config_sync_cgi, do_auth },
+ #endif
+ 	{ "upload_blacklist_config.cgi*", "text/html", no_cache, do_html_post_and_get, do_upload_blacklist_config_cgi, do_auth },
+diff --git a/release/src/router/rc/init.c b/release/src/router/rc/init.c
+index 8b674b0279..958056e15a 100644
+--- a/release/src/router/rc/init.c
++++ b/release/src/router/rc/init.c
+@@ -27392,8 +27392,8 @@ logmessage("ATE", "boot/continue fail= %d/%d\n", nvram_get_int("Ate_boot_fail"),
+ #if defined(RTCONFIG_AI_SERVICE)
+ 			renew_ai_key(ROUTER_PRIVATE_KEY, ROUTER_PUBLIC_KEY, ROUTER_PUBLIC_KEY);
+ #endif
+-#if defined(RTCONFIG_REAPER_LEGACY_BLOBS) && (defined(BQ16) || defined(BQ16_PRO))
+-			/* reaper: the 102_39256 switch-init timing of these two models (see init_switch()) */
++#if defined(RTCONFIG_REAPER_LEGACY_BLOBS) && defined(BQ16)
++			/* reaper: the 102_39256 switch-init timing of the BQ16 (see init_switch()); the BQ16 Pro left it with 39442 */
+ 			extern void init_switch_pre();
+ 			_dprintf("%s(%d): move init_switch_pre() here.\n", __func__, getpid());
+ 			init_switch_pre();
+diff --git a/release/src/router/rc/sysdeps/init-broadcom.c b/release/src/router/rc/sysdeps/init-broadcom.c
+index e862244557..d85b797826 100644
+--- a/release/src/router/rc/sysdeps/init-broadcom.c
++++ b/release/src/router/rc/sysdeps/init-broadcom.c
+@@ -2526,10 +2526,11 @@ void init_switch_pre()
+ 			doSystem("ethctl %s phy-power up", word);
+ 		}
+ #endif
+-/* reaper: BQ16 and BQ16 Pro keep their firmware's late init_switch_pre() call (after start_services(), see
++/* reaper: the BQ16 keeps its firmware's late init_switch_pre() call (after start_services(), see
+  * init_switch() and rc/init.c). A power-cycle of every LAN port at that point would drop LAN and wired-backhaul
+- * links once services are up, so it is left off there, as on the 3006.102.8 line. */
+-#if defined(BCM6813) && !(defined(RTCONFIG_REAPER_LEGACY_BLOBS) && (defined(BQ16) || defined(BQ16_PRO)))
++ * links once services are up, so it is left off there, as on the 3006.102.8 line. The BQ16 Pro left it with its
++ * 102_39442 objects (2026-11-18): ASUS's 39442 source calls init_switch_pre() in init_switch() like the rest. */
++#if defined(BCM6813) && !(defined(RTCONFIG_REAPER_LEGACY_BLOBS) && defined(BQ16))
+ 		ethctl_lan |= ETHCTL_PWRDOWNUP;
+ #endif
+ 		ethctl = find_in_list(wan_ifnames, word) ? ethctl_wan : ethctl_lan;
+@@ -2974,9 +2975,10 @@ void init_switch()
+ {
+ 	int model = get_model();
+ 
+-#if defined(RTCONFIG_REAPER_LEGACY_BLOBS) && (defined(BQ16) || defined(BQ16_PRO))
+-	/* reaper: BQ16 and BQ16 Pro run their closed 102_39256 objects, whose firmware calls
+-	 * init_switch_pre() after start_services() (init.c), not here. Kept until their newer GPL. */
++#if defined(RTCONFIG_REAPER_LEGACY_BLOBS) && defined(BQ16)
++	/* reaper: the BQ16 runs its closed 102_39256 objects, whose firmware calls
++	 * init_switch_pre() after start_services() (init.c), not here. Kept until its newer GPL; the BQ16 Pro
++	 * moved to 102_39442 (2026-11-18), whose source calls it here. */
+ 	_dprintf("%s(%d): skip init_switch_pre() here.\n", __func__, getpid());
+ #else
+ 	init_switch_pre();
+-- 
+2.25.1
+

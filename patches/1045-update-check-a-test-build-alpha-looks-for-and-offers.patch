@@ -1,0 +1,347 @@
+From 28e40c034ed4baf26860647dff0222951fad19e8 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Sat, 14 Nov 2026 12:29:36 -0500
+Subject: [PATCH] update check: a test build (alpha) looks for and offers no
+ update
+
+A build stamped _ALPHA is a test build of the unified tree, published from
+the lean branch Dev-Uni and installed by hand. It must never be offered
+another image: the stable line is older, and a Dev beta would take the
+router off the tree it is testing.
+
+- reaper_webs_update.sh ends before the manifest is fetched when EXTENDNO
+  carries _ALPHA, and reports webs_state_channel=alpha. The scheduled check
+  and an AiMesh-triggered one end there too.
+- Firmware page: says why in place of "up to date" (RFWU_62, 25 packs), an
+  ALPHA badge beside the installed version, and the node comparison knows
+  an alpha build from a beta of the same number.
+
+No effect on a stable or beta build.
+
+Co-Authored-By: Claude Fable 5.2 <noreply@anthropic.com>
+---
+ .../router/rom/webs_scripts/reaper_webs_update.sh  | 14 ++++++++++++++
+ release/src/router/www/BR.dict                     |  1 +
+ release/src/router/www/CN.dict                     |  1 +
+ release/src/router/www/CZ.dict                     |  1 +
+ release/src/router/www/DA.dict                     |  1 +
+ release/src/router/www/DE.dict                     |  1 +
+ release/src/router/www/EN.dict                     |  1 +
+ release/src/router/www/ES.dict                     |  1 +
+ release/src/router/www/FI.dict                     |  1 +
+ release/src/router/www/FR.dict                     |  1 +
+ release/src/router/www/HU.dict                     |  1 +
+ release/src/router/www/IT.dict                     |  1 +
+ release/src/router/www/JP.dict                     |  1 +
+ release/src/router/www/KR.dict                     |  1 +
+ release/src/router/www/MS.dict                     |  1 +
+ release/src/router/www/NL.dict                     |  1 +
+ release/src/router/www/NO.dict                     |  1 +
+ release/src/router/www/PL.dict                     |  1 +
+ release/src/router/www/RO.dict                     |  1 +
+ release/src/router/www/RU.dict                     |  1 +
+ release/src/router/www/Reaper_Firmware.asp         | 11 +++++++++--
+ release/src/router/www/SL.dict                     |  1 +
+ release/src/router/www/SV.dict                     |  1 +
+ release/src/router/www/TH.dict                     |  1 +
+ release/src/router/www/TR.dict                     |  1 +
+ release/src/router/www/TW.dict                     |  1 +
+ release/src/router/www/UK.dict                     |  1 +
+ 27 files changed, 48 insertions(+), 2 deletions(-)
+
+diff --git a/release/src/router/rom/webs_scripts/reaper_webs_update.sh b/release/src/router/rom/webs_scripts/reaper_webs_update.sh
+index 51cb70543e..6d3aa7ccf4 100644
+--- a/release/src/router/rom/webs_scripts/reaper_webs_update.sh
++++ b/release/src/router/rom/webs_scripts/reaper_webs_update.sh
+@@ -68,6 +68,20 @@ esac
+ 
+ echo "---- model=$model variant=$variant running=$cur_ver ----" >> "$LOG"
+ 
++# 2026-11-14 (owner): a TEST build - EXTENDNO carries _ALPHA, the unified-tree builds published from the Dev-Uni
++# branch - is installed by hand and is never offered another image: not the stable line, and not a Dev beta, which
++# would take the box off the tree it is testing. Nothing is fetched. The Firmware page says why
++# (webs_state_channel=alpha); the scheduled check and an AiMesh-triggered one end here too.
++case "$(nvram get extendno)" in
++*_ALPHA*)
++	echo "---- test build (alpha): no update is looked for or offered ----" >> "$LOG"
++	logger -t reaper-fw "update check: this is a test build (alpha) - updates are installed by hand, nothing is offered"
++	nvram set webs_state_channel=alpha
++	nvram set webs_state_flag=0
++	nvram set webs_state_update=1
++	exit 0 ;;
++esac
++
+ /usr/sbin/wget $wget_options "$MANIFEST_URL" -O "$TMP"
+ if [ "$?" != "0" ] || [ ! -s "$TMP" ]; then
+ 	echo "---- manifest fetch failed ----" >> "$LOG"
+diff --git a/release/src/router/www/BR.dict b/release/src/router/www/BR.dict
+index d30a5430bc..4a51e50ada 100644
+--- a/release/src/router/www/BR.dict
++++ b/release/src/router/www/BR.dict
+@@ -9356,3 +9356,4 @@ RSDN_45=Excluir selecionadas
+ RSDN_46=Excluir estas redes: #NAMES? Elas são removidas juntas e o Wi-Fi reinicia uma única vez.
+ RSDN_47=Excluir várias
+ RSDN_48=Marque as redes a excluir. A rede principal e as redes com uma porta LAN vinculada ou um tronco VLAN são excluídas uma de cada vez.
++RFWU_62=Esta é uma versão de teste (alfa). Ela não procura nem oferece atualizações. Instale a próxima versão de teste manualmente a partir da página Releases do projeto.
+diff --git a/release/src/router/www/CN.dict b/release/src/router/www/CN.dict
+index d764c4ce15..1ada99b1c9 100644
+--- a/release/src/router/www/CN.dict
++++ b/release/src/router/www/CN.dict
+@@ -9356,3 +9356,4 @@ RSDN_45=删除所选
+ RSDN_46=删除这些网络：#NAMES？它们会一起删除，Wi-Fi 只重启一次。
+ RSDN_47=批量删除
+ RSDN_48=勾选要删除的网络。主网络以及绑定了 LAN 端口或 VLAN 中继的网络需逐个删除。
++RFWU_62=这是测试版本（alpha）。它不会检查或提供更新。请从项目的 Releases 页面手动安装下一个测试版本。
+diff --git a/release/src/router/www/CZ.dict b/release/src/router/www/CZ.dict
+index 6df5714809..7b235733e0 100644
+--- a/release/src/router/www/CZ.dict
++++ b/release/src/router/www/CZ.dict
+@@ -9356,3 +9356,4 @@ RSDN_45=Smazat vybrané
+ RSDN_46=Smazat tyto sítě: #NAMES? Odstraní se společně a Wi-Fi se restartuje jen jednou.
+ RSDN_47=Smazat více
+ RSDN_48=Zaškrtněte sítě ke smazání. Hlavní síť a sítě s přiřazeným portem LAN nebo trunkem VLAN se mažou po jedné.
++RFWU_62=Toto je testovací sestavení (alfa). Nehledá ani nenabízí aktualizace. Další testovací sestavení nainstalujte ručně ze stránky Releases projektu.
+diff --git a/release/src/router/www/DA.dict b/release/src/router/www/DA.dict
+index 1d3db4e267..831b3b68c6 100644
+--- a/release/src/router/www/DA.dict
++++ b/release/src/router/www/DA.dict
+@@ -9356,3 +9356,4 @@ RSDN_45=Slet valgte
+ RSDN_46=Slet disse netværk: #NAMES? De fjernes samlet, og Wi-Fi genstarter én gang.
+ RSDN_47=Slet flere
+ RSDN_48=Markér de netværk, der skal slettes. Hovednetværket og netværk med en tilknyttet LAN-port eller en VLAN-trunk slettes ét ad gangen.
++RFWU_62=Dette er en testversion (alfa). Den søger ikke efter og tilbyder ikke opdateringer. Installer den næste testversion manuelt fra projektets Releases-side.
+diff --git a/release/src/router/www/DE.dict b/release/src/router/www/DE.dict
+index ead249e66a..b43a659598 100644
+--- a/release/src/router/www/DE.dict
++++ b/release/src/router/www/DE.dict
+@@ -9356,3 +9356,4 @@ RSDN_45=Ausgewählte löschen
+ RSDN_46=Diese Netzwerke löschen: #NAMES? Sie werden zusammen entfernt und das WLAN startet einmal neu.
+ RSDN_47=Mehrere löschen
+ RSDN_48=Haken Sie die zu löschenden Netzwerke an. Das Hauptnetzwerk und Netzwerke mit gebundenem LAN-Port oder VLAN-Trunk werden einzeln gelöscht.
++RFWU_62=Dies ist ein Test-Build (Alpha). Er sucht nicht nach Updates und bietet keine an. Installieren Sie den nächsten Test-Build von Hand von der Releases-Seite des Projekts.
+diff --git a/release/src/router/www/EN.dict b/release/src/router/www/EN.dict
+index 004399d509..62ef5a69b7 100644
+--- a/release/src/router/www/EN.dict
++++ b/release/src/router/www/EN.dict
+@@ -9356,3 +9356,4 @@ RSDN_45=Delete selected
+ RSDN_46=Delete these networks: #NAMES? They are removed together and the Wi-Fi restarts once.
+ RSDN_47=Delete several
+ RSDN_48=Tick the networks to delete. The main network and networks with a bound LAN port or a VLAN trunk are deleted one at a time.
++RFWU_62=This is a test build (alpha). It does not look for or offer updates. Install the next test build by hand from the Releases page of the project.
+diff --git a/release/src/router/www/ES.dict b/release/src/router/www/ES.dict
+index cd5e1d4833..54f36c9d1d 100644
+--- a/release/src/router/www/ES.dict
++++ b/release/src/router/www/ES.dict
+@@ -9356,3 +9356,4 @@ RSDN_45=Eliminar seleccionadas
+ RSDN_46=¿Eliminar estas redes: #NAMES? Se eliminan juntas y el Wi-Fi se reinicia una sola vez.
+ RSDN_47=Eliminar varias
+ RSDN_48=Marque las redes que desea eliminar. La red principal y las redes con un puerto LAN asignado o un troncal VLAN se eliminan de una en una.
++RFWU_62=Esta es una compilación de prueba (alfa). No busca ni ofrece actualizaciones. Instale la siguiente compilación de prueba a mano desde la página Releases del proyecto.
+diff --git a/release/src/router/www/FI.dict b/release/src/router/www/FI.dict
+index e98612c75d..d6de38bb56 100644
+--- a/release/src/router/www/FI.dict
++++ b/release/src/router/www/FI.dict
+@@ -9356,3 +9356,4 @@ RSDN_45=Poista valitut
+ RSDN_46=Poistetaanko nämä verkot: #NAMES? Ne poistetaan yhdessä ja Wi-Fi käynnistyy uudelleen kerran.
+ RSDN_47=Poista useita
+ RSDN_48=Valitse poistettavat verkot. Pääverkko ja verkot, joilla on sidottu LAN-portti tai VLAN-runko, poistetaan yksi kerrallaan.
++RFWU_62=Tämä on testiversio (alfa). Se ei etsi eikä tarjoa päivityksiä. Asenna seuraava testiversio käsin projektin Releases-sivulta.
+diff --git a/release/src/router/www/FR.dict b/release/src/router/www/FR.dict
+index 94984de45b..46d10683c5 100644
+--- a/release/src/router/www/FR.dict
++++ b/release/src/router/www/FR.dict
+@@ -9356,3 +9356,4 @@ RSDN_45=Supprimer la sélection
+ RSDN_46=Supprimer ces réseaux : #NAMES ? Ils sont supprimés ensemble et le Wi-Fi redémarre une seule fois.
+ RSDN_47=Supprimer plusieurs
+ RSDN_48=Cochez les réseaux à supprimer. Le réseau principal et les réseaux avec un port LAN associé ou un trunk VLAN se suppriment un par un.
++RFWU_62=Ceci est une version de test (alpha). Elle ne recherche ni ne propose de mises à jour. Installez la prochaine version de test à la main depuis la page Releases du projet.
+diff --git a/release/src/router/www/HU.dict b/release/src/router/www/HU.dict
+index f30a24b455..4591af2677 100644
+--- a/release/src/router/www/HU.dict
++++ b/release/src/router/www/HU.dict
+@@ -9356,3 +9356,4 @@ RSDN_45=Kijelöltek törlése
+ RSDN_46=Törli ezeket a hálózatokat: #NAMES? Együtt törlődnek, és a Wi-Fi egyszer indul újra.
+ RSDN_47=Több törlése
+ RSDN_48=Jelölje be a törlendő hálózatokat. A fő hálózat és a hozzárendelt LAN-porttal vagy VLAN-trönkkel rendelkező hálózatok egyenként törölhetők.
++RFWU_62=Ez egy tesztverzió (alfa). Nem keres és nem kínál frissítéseket. A következő tesztverziót kézzel telepítse a projekt Releases oldaláról.
+diff --git a/release/src/router/www/IT.dict b/release/src/router/www/IT.dict
+index c44b964874..861012f43c 100644
+--- a/release/src/router/www/IT.dict
++++ b/release/src/router/www/IT.dict
+@@ -9356,3 +9356,4 @@ RSDN_45=Elimina selezionate
+ RSDN_46=Eliminare queste reti: #NAMES? Vengono rimosse insieme e il Wi-Fi si riavvia una sola volta.
+ RSDN_47=Elimina più reti
+ RSDN_48=Seleziona le reti da eliminare. La rete principale e le reti con una porta LAN associata o un trunk VLAN si eliminano una alla volta.
++RFWU_62=Questa è una versione di prova (alfa). Non cerca e non propone aggiornamenti. Installare a mano la prossima versione di prova dalla pagina Releases del progetto.
+diff --git a/release/src/router/www/JP.dict b/release/src/router/www/JP.dict
+index b115f1e0a0..8fcbb8fd20 100644
+--- a/release/src/router/www/JP.dict
++++ b/release/src/router/www/JP.dict
+@@ -9356,3 +9356,4 @@ RSDN_45=選択したものを削除
+ RSDN_46=次のネットワークを削除しますか: #NAMES。まとめて削除され、Wi-Fi の再起動は 1 回です。
+ RSDN_47=複数削除
+ RSDN_48=削除するネットワークにチェックを入れてください。メインネットワークと、LAN ポートが割り当てられたネットワークや VLAN トランクのあるネットワークは 1 つずつ削除します。
++RFWU_62=これはテストビルド（アルファ）です。更新の確認や提供は行いません。次のテストビルドは、プロジェクトの Releases ページから手動でインストールしてください。
+diff --git a/release/src/router/www/KR.dict b/release/src/router/www/KR.dict
+index 7f38a5a3bc..fddcceea69 100644
+--- a/release/src/router/www/KR.dict
++++ b/release/src/router/www/KR.dict
+@@ -9356,3 +9356,4 @@ RSDN_45=선택 항목 삭제
+ RSDN_46=다음 네트워크를 삭제할까요: #NAMES? 함께 삭제되며 Wi-Fi는 한 번만 재시작됩니다.
+ RSDN_47=여러 개 삭제
+ RSDN_48=삭제할 네트워크를 선택하세요. 기본 네트워크와 LAN 포트가 지정되었거나 VLAN 트렁크가 있는 네트워크는 하나씩 삭제합니다.
++RFWU_62=이것은 테스트 빌드(알파)입니다. 업데이트를 확인하거나 제공하지 않습니다. 다음 테스트 빌드는 프로젝트의 Releases 페이지에서 수동으로 설치하십시오.
+diff --git a/release/src/router/www/MS.dict b/release/src/router/www/MS.dict
+index f37c5457fb..051ea05eb2 100644
+--- a/release/src/router/www/MS.dict
++++ b/release/src/router/www/MS.dict
+@@ -9356,3 +9356,4 @@ RSDN_45=Padam yang dipilih
+ RSDN_46=Padam rangkaian ini: #NAMES? Ia dibuang bersama dan Wi-Fi dimulakan semula sekali.
+ RSDN_47=Padam beberapa
+ RSDN_48=Tanda rangkaian yang hendak dipadam. Rangkaian utama dan rangkaian dengan port LAN terikat atau trunk VLAN dipadam satu demi satu.
++RFWU_62=Ini ialah binaan ujian (alfa). Ia tidak mencari atau menawarkan kemas kini. Pasang binaan ujian seterusnya secara manual dari halaman Releases projek.
+diff --git a/release/src/router/www/NL.dict b/release/src/router/www/NL.dict
+index 5afa53cb37..1105b3df95 100644
+--- a/release/src/router/www/NL.dict
++++ b/release/src/router/www/NL.dict
+@@ -9356,3 +9356,4 @@ RSDN_45=Selectie verwijderen
+ RSDN_46=Deze netwerken verwijderen: #NAMES? Ze worden samen verwijderd en de Wi-Fi herstart één keer.
+ RSDN_47=Meerdere verwijderen
+ RSDN_48=Vink de te verwijderen netwerken aan. Het hoofdnetwerk en netwerken met een gekoppelde LAN-poort of een VLAN-trunk worden één voor één verwijderd.
++RFWU_62=Dit is een testbuild (alfa). Deze zoekt niet naar updates en biedt er geen aan. Installeer de volgende testbuild handmatig vanaf de Releases-pagina van het project.
+diff --git a/release/src/router/www/NO.dict b/release/src/router/www/NO.dict
+index 61e8de85ae..4aca0e6148 100644
+--- a/release/src/router/www/NO.dict
++++ b/release/src/router/www/NO.dict
+@@ -9356,3 +9356,4 @@ RSDN_45=Slett valgte
+ RSDN_46=Slette disse nettverkene: #NAMES? De fjernes samlet, og Wi-Fi starter på nytt én gang.
+ RSDN_47=Slett flere
+ RSDN_48=Kryss av nettverkene som skal slettes. Hovednettverket og nettverk med en tilknyttet LAN-port eller en VLAN-trunk slettes ett om gangen.
++RFWU_62=Dette er en testversjon (alfa). Den søker ikke etter og tilbyr ikke oppdateringer. Installer neste testversjon manuelt fra prosjektets Releases-side.
+diff --git a/release/src/router/www/PL.dict b/release/src/router/www/PL.dict
+index 78a707cd87..cc6c459c1e 100644
+--- a/release/src/router/www/PL.dict
++++ b/release/src/router/www/PL.dict
+@@ -9356,3 +9356,4 @@ RSDN_45=Usuń zaznaczone
+ RSDN_46=Usunąć te sieci: #NAMES? Zostaną usunięte razem, a Wi-Fi uruchomi się ponownie tylko raz.
+ RSDN_47=Usuń kilka
+ RSDN_48=Zaznacz sieci do usunięcia. Sieć główną oraz sieci z przypisanym portem LAN lub trunkiem VLAN usuwa się pojedynczo.
++RFWU_62=To jest wersja testowa (alfa). Nie wyszukuje ani nie proponuje aktualizacji. Następną wersję testową zainstaluj ręcznie ze strony Releases projektu.
+diff --git a/release/src/router/www/RO.dict b/release/src/router/www/RO.dict
+index 06959e8efe..fe0347597b 100644
+--- a/release/src/router/www/RO.dict
++++ b/release/src/router/www/RO.dict
+@@ -9356,3 +9356,4 @@ RSDN_45=Șterge selectate
+ RSDN_46=Ștergeți aceste rețele: #NAMES? Sunt eliminate împreună și Wi-Fi repornește o singură dată.
+ RSDN_47=Șterge mai multe
+ RSDN_48=Bifați rețelele de șters. Rețeaua principală și rețelele cu un port LAN asociat sau un trunk VLAN se șterg pe rând.
++RFWU_62=Aceasta este o versiune de test (alfa). Nu caută și nu oferă actualizări. Instalați manual următoarea versiune de test din pagina Releases a proiectului.
+diff --git a/release/src/router/www/RU.dict b/release/src/router/www/RU.dict
+index 89e4eeea8a..8ddc269bde 100644
+--- a/release/src/router/www/RU.dict
++++ b/release/src/router/www/RU.dict
+@@ -9356,3 +9356,4 @@ RSDN_45=Удалить выбранные
+ RSDN_46=Удалить эти сети: #NAMES? Они удаляются вместе, и Wi-Fi перезапускается один раз.
+ RSDN_47=Удалить несколько
+ RSDN_48=Отметьте сети для удаления. Основная сеть и сети с привязанным портом LAN или транком VLAN удаляются по одной.
++RFWU_62=Это тестовая сборка (альфа). Она не ищет и не предлагает обновления. Следующую тестовую сборку установите вручную со страницы Releases проекта.
+diff --git a/release/src/router/www/Reaper_Firmware.asp b/release/src/router/www/Reaper_Firmware.asp
+index e43b71f729..07e3fde836 100644
+--- a/release/src/router/www/Reaper_Firmware.asp
++++ b/release/src/router/www/Reaper_Firmware.asp
+@@ -210,6 +210,9 @@ var BETA_EN = <% nvram_get_js("reaper_fwbeta"); %>;
+ /* the noMCP build stamps "_noMCP" into EXTENDNO (same signal the backend
+    scripts read from the filesystem) - no extra probe needed */
+ var IS_MCP = EXTENDNO.indexOf('_noMCP') < 0;
++/* 2026-11-14: a test build (_ALPHA, published from the Dev-Uni branch) never looks for or offers another image -
++   reaper_webs_update.sh ends before it fetches anything and reports webs_state_channel=alpha */
++var IS_ALPHA = /_ALPHA(_|$)/.test(EXTENDNO);
+ var busy = 0;
+ 
+ /* ---- mesh nodes -------------------------------------------------------- *
+@@ -337,7 +340,7 @@ function prettyVer(s){
+ function verKey(s){
+   var m = String(s||'').match(/Reaper_v([0-9][0-9a-z.\-]*)/);
+   if(!m) return '';
+-  return m[1] + (/_BETA(_|$)/.test(String(s)) ? '-beta' : '');
++  return m[1] + (/_BETA(_|$)/.test(String(s)) ? '-beta' : (/_ALPHA(_|$)/.test(String(s)) ? '-alpha' : ''));
+ }
+ 
+ /* ONE-SHOT completion guard. A failed XMLHttpRequest fires readystatechange
+@@ -432,7 +435,7 @@ function checkDone(r){
+     return;
+   }
+   if(FW.flag === '1'){ showAvail(); }
+-  else setStat('chkStat', esc(`<#RFWU_5#>`), 'ok');
++  else setStat('chkStat', esc((IS_ALPHA || FW.chan === 'alpha') ? `<#RFWU_62#>` : `<#RFWU_5#>`), 'ok');
+ }
+ 
+ /* v2.7.3: explicit override for a signature-refused manifest. Deliberately
+@@ -866,6 +869,10 @@ function boot(){
+   showLastRefusal();
+   $id('rvVariant').innerHTML = IS_MCP ? `<#Reaper_c_ai_advisor#> <span class="badge">MCP</span>` : `<#RFWU_48#> <span class="badge">noMCP</span>`;
+   $id('rvVer').textContent = prettyVer(EXTENDNO);
++  if(IS_ALPHA){
++    $id('rvVer').innerHTML = esc(prettyVer(EXTENDNO)) + ' <span class="badge">ALPHA</span>';
++    setStat('chkStat', esc(`<#RFWU_62#>`), 'ok');
++  }
+   $id('rvBase').textContent = FIRMVER + '.' + BUILDNO;
+   loadNodes();
+   $id('schedChk').checked = (CHK_EN === '1');
+diff --git a/release/src/router/www/SL.dict b/release/src/router/www/SL.dict
+index 84b8ab39d8..d725ae7940 100644
+--- a/release/src/router/www/SL.dict
++++ b/release/src/router/www/SL.dict
+@@ -9356,3 +9356,4 @@ RSDN_45=Izbriši izbrane
+ RSDN_46=Izbrišem ta omrežja: #NAMES? Odstranijo se skupaj in Wi-Fi se znova zažene enkrat.
+ RSDN_47=Izbriši več
+ RSDN_48=Označite omrežja za izbris. Glavno omrežje in omrežja z dodeljenimi vrati LAN ali deblom VLAN se brišejo posamično.
++RFWU_62=To je preizkusna različica (alfa). Ne išče in ne ponuja posodobitev. Naslednjo preizkusno različico namestite ročno s strani Releases projekta.
+diff --git a/release/src/router/www/SV.dict b/release/src/router/www/SV.dict
+index b56bfeed98..d404c6e9e8 100644
+--- a/release/src/router/www/SV.dict
++++ b/release/src/router/www/SV.dict
+@@ -9356,3 +9356,4 @@ RSDN_45=Ta bort valda
+ RSDN_46=Ta bort dessa nätverk: #NAMES? De tas bort tillsammans och Wi-Fi startar om en gång.
+ RSDN_47=Ta bort flera
+ RSDN_48=Markera nätverken som ska tas bort. Huvudnätverket och nätverk med en kopplad LAN-port eller en VLAN-trunk tas bort ett i taget.
++RFWU_62=Detta är en testversion (alfa). Den söker inte efter och erbjuder inte uppdateringar. Installera nästa testversion för hand från projektets Releases-sida.
+diff --git a/release/src/router/www/TH.dict b/release/src/router/www/TH.dict
+index bdb804a509..ba5ca6b7b1 100644
+--- a/release/src/router/www/TH.dict
++++ b/release/src/router/www/TH.dict
+@@ -9356,3 +9356,4 @@ RSDN_45=ลบที่เลือก
+ RSDN_46=ลบเครือข่ายเหล่านี้: #NAMES ใช่หรือไม่ ระบบจะลบพร้อมกันและ Wi-Fi จะรีสตาร์ทครั้งเดียว
+ RSDN_47=ลบหลายรายการ
+ RSDN_48=เลือกเครือข่ายที่จะลบ เครือข่ายหลักและเครือข่ายที่ผูกพอร์ต LAN หรือมี VLAN trunk ต้องลบทีละรายการ
++RFWU_62=นี่คือรุ่นทดสอบ (อัลฟา) ซึ่งจะไม่ตรวจหาหรือเสนอการอัปเดต โปรดติดตั้งรุ่นทดสอบถัดไปด้วยตนเองจากหน้า Releases ของโครงการ
+diff --git a/release/src/router/www/TR.dict b/release/src/router/www/TR.dict
+index ab94e170bc..38e69ceae4 100644
+--- a/release/src/router/www/TR.dict
++++ b/release/src/router/www/TR.dict
+@@ -9356,3 +9356,4 @@ RSDN_45=Seçilenleri sil
+ RSDN_46=Bu ağlar silinsin mi: #NAMES? Birlikte kaldırılır ve Wi-Fi bir kez yeniden başlar.
+ RSDN_47=Birkaçını sil
+ RSDN_48=Silinecek ağları işaretleyin. Ana ağ ile bağlı bir LAN bağlantı noktası veya VLAN trunk içeren ağlar tek tek silinir.
++RFWU_62=Bu bir test sürümüdür (alfa). Güncelleme aramaz ve sunmaz. Sonraki test sürümünü projenin Releases sayfasından elle yükleyin.
+diff --git a/release/src/router/www/TW.dict b/release/src/router/www/TW.dict
+index f7e2e4fdbb..7ecec9cec7 100644
+--- a/release/src/router/www/TW.dict
++++ b/release/src/router/www/TW.dict
+@@ -9356,3 +9356,4 @@ RSDN_45=刪除所選
+ RSDN_46=刪除這些網路：#NAMES？它們會一起刪除，Wi-Fi 只重新啟動一次。
+ RSDN_47=批次刪除
+ RSDN_48=勾選要刪除的網路。主網路以及綁定 LAN 連接埠或 VLAN 主幹的網路需逐一刪除。
++RFWU_62=這是測試版本（alpha）。它不會檢查或提供更新。請從專案的 Releases 頁面手動安裝下一個測試版本。
+diff --git a/release/src/router/www/UK.dict b/release/src/router/www/UK.dict
+index c6c8735c52..c8f9a1a420 100644
+--- a/release/src/router/www/UK.dict
++++ b/release/src/router/www/UK.dict
+@@ -9356,3 +9356,4 @@ RSDN_45=Видалити вибрані
+ RSDN_46=Видалити ці мережі: #NAMES? Їх буде видалено разом, і Wi-Fi перезапуститься один раз.
+ RSDN_47=Видалити кілька
+ RSDN_48=Позначте мережі для видалення. Основну мережу та мережі з призначеним портом LAN або транком VLAN видаляють по одній.
++RFWU_62=Це тестова збірка (альфа). Вона не шукає і не пропонує оновлення. Наступну тестову збірку встановіть вручну зі сторінки Releases проєкту.
+-- 
+2.25.1
+

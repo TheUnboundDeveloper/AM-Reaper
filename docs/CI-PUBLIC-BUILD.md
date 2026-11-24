@@ -24,15 +24,17 @@ same file that produces the published releases, and runs the same
    - `MCP` — the standard image (includes the read-only Advisor MCP server).
    - `noMCP` — the same firmware with the MCP server compiled out.
    - `both` — builds each in its own job, in parallel.
-5. Choose a model. Any one of the four <!--@modelcount--> — `RT-BE96U` (the default), `RT-BE86U`,
-   `RT-BE88U`, `GT-BE98_PRO` <!--@models--> — or `all`, which
-   fans out to every model. `all` with `both` is 8 <!--@fleetjobs--> concurrent jobs.
-   *The GT-BE98, GT-BE19000, ZenWiFi BQ16 and ZenWiFi BQ16 Pro build from the `Dev-102.8`
-   branch instead. This branch is on the 3006.102.10 base (ASUS GPL 102_40585), and the
-   newest ASUS GPL for those four is 102_39274 / 102_39256, whose closed components the
-   40585 source cannot link against. They stay on the 3006.102.8 base, with this branch's
-   Reaper changes backported, until ASUS publishes a 40585-era GPL for them. The GT-BE19000,
-   BQ16 and BQ16 Pro publish only as prereleases until field testers have run them.*
+5. Choose a model. Any one of the eight <!--@modelcount--> — `RT-BE96U` (the default), `RT-BE86U`,
+   `RT-BE88U`, `GT-BE98_PRO`, `GT-BE98`, `GT-BE19000`, `BQ16`, `BQ16_PRO` <!--@models--> — or `all`, which
+   fans out to every model. `all` with `both` is 16 <!--@fleetjobs--> concurrent jobs.
+   *Every model builds from the same 3006.102.10 tree (ASUS GPL 102_40585). The GT-BE19000,
+   ZenWiFi BQ16 and ZenWiFi BQ16 Pro keep the model-specific closed components of their own,
+   older ASUS GPL (102_39274 / 102_39256): their platform archives carry them, the closed
+   components every 3006.102.10 model shares come from this tree, and a compatibility layer
+   (`RTCONFIG_REAPER_LEGACY_BLOBS`, set in their `target.mak` blocks) supplies what the newer
+   source expects from the older components. The GT-BE98's platform archive carries its
+   102_40585 components (its boot loader objects stay at 102_39274), so it builds without
+   that layer. The four publish only as prereleases until field testers have run them.*
 6. When the run finishes, download the artifacts from the run summary page.
 
 It runs on free GitHub-hosted runners and uses your fork's Actions minutes.
@@ -74,6 +76,31 @@ The workflow passes `REAPER_BETA` into the container and the **build engine**
 does the stamping, the same code path a local build uses, so CI and a local
 build produce identically named images by construction. `release.yml` refuses
 to publish assets whose names contradict the channel its tag publishes on.
+
+### The `Dev-Uni` branch: the ALPHA test channel
+
+`Dev-Uni` builds all eight models from the one 3006.102.10 tree and is the
+**alpha** channel: test builds for people who agreed to run them.
+
+```
+Dev-Uni  ->  GT-BE98_3006_102.10_Reaper_v3.7.7_ALPHA_nand_squashfs.pkgtb
+```
+
+- **Publishing.** Dispatch the workflow from `Dev-Uni` with *publish* ticked.
+  Tags are `vX.Y.Z-alpha-<MODEL>`, and each release is a pre-release. A re-spin
+  of the same version needs its own tags: put a number in *test build number*
+  (`2` gives `vX.Y.Z-alpha2-<MODEL>`).
+- **Not on the Firmware page.** The job that writes the update manifest runs for
+  `main` and `Dev` only, so an alpha build is never listed and no router is
+  offered one. `Dev` and `Dev-102.8` publish and refresh the manifest exactly as
+  before; their tags (`-beta-`) and the alpha tags never collide.
+- **A router running an alpha build looks for no update.** The update check ends
+  before it fetches anything and the Firmware page says so: the next test build
+  is installed by hand from the Releases page. Otherwise the next `Dev` beta
+  would be offered and would take the router off the tree it is testing. To
+  leave the test, flash a beta or stable release for the model.
+- The workflow passes `REAPER_CHANNEL=alpha` for this branch only; a local build
+  takes `alpha` on the launcher's command line.
 
 ---
 
@@ -314,7 +341,7 @@ If you see any of these, something is genuinely wrong and the job will fail:
 | Toolchains | `Asuswrt-Merlin/am-toolchains` commit `d1af80e6b6686a4edc680386c09a8361453dd5c1` (crosstools gcc-10.3) |
 | Build OS | Ubuntu 20.04 container, non-root user `reaper` (uid 1001) |
 | GitHub Actions | every `uses:` is pinned to a full commit SHA with a `# vN.N.N` comment (`actions/checkout`, `actions/cache`, `actions/cache/restore`, `actions/upload-artifact`); `build-scripts/tests/test_workflow_pins.py` fails the hygiene run on a tag pin, and `.github/dependabot.yml` proposes bumps as pull requests. A major tag is a moving pointer that runs new code in the build job unseen - security review 2026-10-20, F-5. |
-| Reaper version built | `Reaper_v3.8.4` <!--@treever--> (patch series `0001`–`1043` <!--@patchcount-->) — the pinned `EXPECTED_VERSION` in `public-build.yml`. A blank-version dispatch builds exactly this; the pin and the series move together, so if a newer rung has been exported without bumping the pin, a blank dispatch still builds the pinned one and a mismatched override fails the assertion. |
+| Reaper version built | `Reaper_v3.8.4` <!--@treever--> (patch series `0001`–`1048` <!--@patchcount-->) — the pinned `EXPECTED_VERSION` in `public-build.yml`. A blank-version dispatch builds exactly this; the pin and the series move together, so if a newer rung has been exported without bumping the pin, a blank dispatch still builds the pinned one and a mismatched override fails the assertion. |
 
 The version is not something you choose — the patch series sets `EXTENDNO`
 itself. The workflow declares the version it expects (`EXPECTED_VERSION`) and
@@ -332,7 +359,8 @@ pin has not been bumped yet.
 
 The base pin moves only at a deliberate rebase onto a new upstream release (v3.6.0
 moved the 3006.102.10 line from `a7ebfa133a` to `ca72a61f8bc` and regenerated its
-series; the 3006.102.8 line stays on `a7ebfa133a`). Between rebases upstream
+series; the separate 3006.102.8 line for GT-BE98, GT-BE19000, BQ16 and BQ16 Pro stayed on
+`a7ebfa133a` until those four joined the 3006.102.10 tree). Between rebases upstream
 carry-forwards are cherry-picked into the series, so this reproduction recipe stays
 stable across releases.
 

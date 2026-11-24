@@ -192,11 +192,18 @@ static void logmessage(const char *t, const char *fmt, ...) { (void)t; (void)fmt
 static int reaper_script_ok(const char *p) { (void)p; return 0; }
 static int t_eval(int x, ...) { return x; }
 #define eval(...) t_eval(0, __VA_ARGS__)
+/* 2026-11-22 (REAPER-FW-LISTS): rfw_emit_sets asks whether a fetched list (asn / geo) is in use; none is here */
+static int nvram_match(const char *k, const char *v) { (void)k; (void)v; return 0; }
+static int reaper_pbr_uses_object(const char *name) { (void)name; return 0; }
 '''
     parts = [STUB, "\n".join(defs), mt.group(0) if mt else ""]
-    for sig in ("static int rfw_valid_name(", "static int rfw_valid_cidr(", "static int rfw_valid_cidr6(", "static int rfw_valid_ip(", "static int rfw_valid_range(",
-                "static int rfw_valid_mac(", "static int rfw_valid_fqdn(", "static int rfw_field(", "static void rfw_emit_one_set(",
-                "static void rfw_emit_sets(", "static void rfw_gen_resolve("):
+    sigs = ["static int rfw_valid_name(", "static int rfw_valid_cidr(", "static int rfw_valid_cidr6(", "static int rfw_valid_ip(", "static int rfw_valid_range(",
+            "static int rfw_valid_mac(", "static int rfw_valid_fqdn(", "static int rfw_field(", "static void rfw_emit_one_set(",
+            "static void rfw_emit_sets(", "static void rfw_gen_resolve("]
+    if "static void rfw_emit_fetched_set(" in fw:      # the fetched-list helpers rfw_emit_sets calls (test_fw_fetched_lists.py covers them)
+        sigs[8:8] = ["static int rfw_valid_cc(", "static unsigned long rfw_asn_num(", "static int rfw_fetched_type(", "static int rfw_word_in(",
+                     "static int rfw_fetched_keys(", "static int rfw_fetched_wanted(", "static void rfw_emit_fetched_set("]
+    for sig in sigs:
         parts.append(extract(fw, sig))
     parts.append(r'''
 int main(int argc, char **argv) { rfw_cfg_t c; static char keep[8192]; memset(&c, 0, sizeof(c)); c.obj = argv[2];

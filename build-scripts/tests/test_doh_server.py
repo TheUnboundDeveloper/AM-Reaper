@@ -248,6 +248,77 @@ legs = cut(pg, "function encLegs(j, st, running){", "\n}\n"); devs = cut(pg, "fu
 check("page: status and device text is set as text, never as markup", "innerHTML" not in legs and "innerHTML" not in devs and "innerHTML" not in sv)
 check("page: every upstream failure has its own red text",
       all(("<#RENC_%d#>" % n) in legs for n in (84, 85, 86, 87, 88, 89)) and legs.count("'bad'") + legs.count("leg bad") >= 9, legs.count("bad"))
+# 2026-11-20 REAPER-UPTLS: the upstream leg shows the automatic fallback (rc/rdnshc.c) - which state, why, since when
+check("page: the upstream fallback states have their own red text (fb / plain / down) and reasons",
+      all(("<#RENC_%d#>" % n) in legs for n in (106, 107, 108, 109, 110, 111)) and "up.fb" in legs)
+up_fn = cut(web, "static void renc_upstream(FILE *stream)", "\n}\n")
+check("httpd: the upstream data carries the fallback state, its age and its reason, each checked against a fixed list",
+      '"reaper_uptls_state"' in up_fn and '\\"fb\\":{\\"st\\":\\"%s\\",\\"age\\":%ld,\\"why\\":\\"%s\\"}' in up_fn
+      and '"off", "unk", "held", "ok", "fb", "plain", "down", NULL' in up_fn and '"-", "clock", "wan", "dead", "fwd", "tls", NULL' in up_fn, up_fn[:400])
+UPC = r'''
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <stdarg.h>
+static int NA; static char **NV;
+static char *nvram_safe_get(const char *k) { int i; size_t l = strlen(k); for (i = 2; i < NA; i++) if (!strncmp(NV[i], k, l) && NV[i][l] == '=') return NV[i] + l + 1; return ""; }
+static int nvram_get_int(const char *k) { return atoi(nvram_safe_get(k)); }
+static int pidof(const char *n) { (void)n; return 1; }
+static long uptime(void) { return atol(NV[1]); }
+static int renc_up_probe(void) { return 1; }
+static size_t strlcpy(char *d, const char *s, size_t n) { size_t l = strlen(s); if (n) { size_t c = l >= n ? n - 1 : l; memcpy(d, s, c); d[c] = 0; } return l; }
+static int websWrite(FILE *f, const char *fmt, ...) { va_list ap; int r; va_start(ap, fmt); r = vfprintf(f, fmt, ap); va_end(ap); return r; }
+''' + up_fn + "\n}\n" + r'''
+int main(int argc, char **argv) { NA = argc; NV = argv; putchar('{'); renc_upstream(stdout); puts("}"); return 0; }
+'''
+upx, err = build("renc_up", UPC)
+check("httpd: renc_upstream compiles on the host", bool(upx), err[:800])
+if upx:
+    def up(now, state):
+        o = subprocess.run([upx, str(now), "dnspriv_enable=1", "dnspriv_rulelist=<1.1.1.1>853>x>", "ntp_ready=1", "reaper_uptls_state=" + state],
+                           capture_output=True, text=True).stdout.strip()
+        try: return json.loads("{" + o[2:])["up"]["fb"]
+        except Exception: return {"raw": o}
+    check("httpd: a fallback state becomes its age in seconds", up(1000, "fb 880 fwd") == {"st": "fb", "age": 120, "why": "fwd"}, up(1000, "fb 880 fwd"))
+    check("httpd: no state (rdnshc not running) - st empty", up(1000, "") == {"st": "", "age": 0, "why": "-"}, up(1000, ""))
+    check("httpd: an unknown state or reason never reaches the page",
+          up(1000, "evil 5 x") == {"st": "", "age": 0, "why": "-"} and up(1000, "fb 5 <img>")["why"] == "-" and up(1000, 'fb 5 "') ["why"] == "-", (up(1000, "evil 5 x"), up(1000, "fb 5 <img>")))
+    check("httpd: an entry time in the future (an older boot) gives age 0", up(100, "down 500 dead") == {"st": "down", "age": 0, "why": "dead"}, up(100, "down 500 dead"))
+NODE = shutil.which("node")
+if NODE and legs:
+    import re as _re
+    en_map = {}
+    for line in open(os.path.join(SRC, "www", "EN.dict"), encoding="utf-8"):
+        if "=" in line:
+            k, v = line.rstrip("\n").split("=", 1); en_map[k] = v
+    legs_en = _re.sub(r"<#([A-Za-z0-9_]+)#>", lambda mm: en_map.get(mm.group(1), "MISSING:" + mm.group(1)), legs + "\n}\n")
+    js = ("var E={};function $(i){if(!E[i])E[i]={className:'',textContent:'',href:''};return E[i];}\n"
+          "var NV={on:'0',doh:'0'},UP=null,LINK_DNS=['WAN DNS','#'],curTrusted=true;\n"
+          "function encFill(el,txt,a,b){el.textContent=txt.replace('%1',a);}\n" + legs_en +
+          "\nvar base={on:1,profile:0,servers:2,stubby:1,clock:1,probe:1},out={};\n"
+          "function run(name,fb,extra){var u=JSON.parse(JSON.stringify(base));if(fb)u.fb=fb;for(var k in (extra||{}))u[k]=extra[k];E={};encLegs({up:u},{},true);out[name]=[E.leg_up.className,E.leg_up.textContent];}\n"
+          "run('ok',{st:'ok',age:5,why:'-'});run('none',null);run('fb',{st:'fb',age:120,why:'fwd'});run('fbdead',{st:'fb',age:60,why:'dead'},{stubby:0});"
+          "run('plain',{st:'plain',age:30,why:'tls'});run('down',{st:'down',age:10,why:'fwd'},{profile:1,probe:0});run('held',{st:'held',age:3,why:'clock'},{clock:0});"
+          "run('fboff',{st:'fb',age:9,why:'fwd'},{on:0});console.log(JSON.stringify(out));\n")
+    jf = os.path.join(tmp, "legs.js"); open(jf, "w", encoding="utf-8").write(js)
+    r = subprocess.run([NODE, jf], capture_output=True, text=True, timeout=60)
+    try: lo = json.loads(r.stdout)
+    except Exception: lo = {}
+    check("page: the upstream leg renders in node", bool(lo), r.stderr[:500])
+    if lo:
+        good = en_map["RENC_81"].replace("%1", en_map["RENC_83"])
+        check("page: working, fallback state ok or absent (older rdnshc) - the green line as before", lo["ok"] == ["leg good", good] and lo["none"] == ["leg good", good], (lo["ok"], lo["none"]))
+        t = lo["fb"][1]
+        check("page: fallback in place - red, names the leg's reason and the time it started",
+              lo["fb"][0] == "leg bad" and t.startswith(en_map["RENC_106"].split("%1")[0]) and en_map["RENC_110"] in t and "%2" not in t and "%1" not in t, lo["fb"])
+        check("page: fallback because the forwarder is not running - that reason, not the bare 'not running' line",
+              lo["fbdead"][0] == "leg bad" and en_map["RENC_109"] in lo["fbdead"][1] and lo["fbdead"][1] != en_map["RENC_86"], lo["fbdead"])
+        check("page: the forwarder asks in the clear - its own red line with the TLS reason", lo["plain"][0] == "leg bad" and en_map["RENC_111"] in lo["plain"][1] and lo["plain"][1].startswith(en_map["RENC_107"].split("%1")[0]), lo["plain"])
+        check("page: Strict, down - red, says nothing is sent in the clear", lo["down"][0] == "leg bad" and lo["down"][1].startswith(en_map["RENC_108"].split("%1")[0]), lo["down"])
+        check("page: held (clock) - the existing clock line, not a fallback line", lo["held"] == ["leg bad", en_map["RENC_87"]], lo["held"])
+        check("page: DNS-over-TLS switched off - the switched-off line wins over a stale fallback state", lo["fboff"][1] == en_map["RENC_84"].replace("%1", "WAN DNS"), lo["fboff"])
+else:
+    print("skip page render: no node")
 packs = sorted(p for p in glob.glob(os.path.join(SRC, "www", "*.dict")) if os.path.basename(p) != "temp.dict")
 check("packs: 25 language packs", len(packs) == 25, len(packs))
 used = sorted(set(int(m) for m in __import__("re").findall(r"<#RENC_(\d+)#>", pg)))
@@ -336,10 +407,13 @@ static long UP = 1000;	/* review 2026-11-11 (C-8): red_public_name tries an unve
 static long uptime(void) { return UP; }
 struct rb { char b[8]; };
 static void rb_add(struct rb *r, const char *fmt, ...) { (void)r; (void)fmt; }
+/* REAPER-DNR-STEP (2026-11-22): no DNS Director part in this harness - test_dnr_policy_step.py runs the real reader */
+static int red_dd_each(void (*cb)(const char *mac, int ok, void *arg), void *arg) { (void)cb; (void)arg; return 0; }
+static int red_dd_refused(int mode) { (void)mode; return 0; }
 ''' % {"dir": tmp.replace("\\", "/"), "ca": P("good.pem")} + rcfn + dnr + r'''
 int main(int argc, char **argv) {
   NA = argc; NV = argv; RED_CERT = nvram_safe_get("t_cert"); RED_KEY = nvram_safe_get("t_key");
-  if (!strcmp(argv[1], "m=opt")) { rednsd_dnr_option(stdout, nvram_safe_get("t_tag"), nvram_safe_get("t_addr")); rednsd_dnr_option(stdout, "br52", "10.20.0.1"); }
+  if (!strcmp(argv[1], "m=opt")) { rednsd_dnr_option(stdout, nvram_safe_get("t_tag"), nvram_safe_get("t_addr"), 0); rednsd_dnr_option(stdout, "br52", "10.20.0.1", 0); }
   if (!strcmp(argv[1], "m=sync")) { red_dnr_sync(); printf("restarts=%%d\n", RESTARTS); red_dnr_sync(); printf("restarts=%%d\n", RESTARTS); }
   if (!strcmp(argv[1], "m=mark")) rednsd_dnr_mark();
   if (!strcmp(argv[1], "m=retry")) {	/* the CA bundle is away for the first look, back for the second and third */
@@ -434,14 +508,14 @@ int main(int argc, char **argv) {
     else:
         print("skip dnr parser run: no dnsmasq on this host")
 srv = rd(os.path.join(SRC, "rc", "services.c")); sdn = rd(os.path.join(SRC, "rc", "sdn.c"))
-a = srv.find('"dhcp-option=lan,6%s%s%s%s%s\\n"'); b = srv.find('rednsd_dnr_option(fp, "lan", lan_ipaddr);')
+a = srv.find('"dhcp-option=lan,6%s%s%s%s%s\\n"'); b = srv.find('rednsd_dnr_option(fp, "lan", lan_ipaddr, nvram_get_int("dnsfilter_mode"));')
 check("dnr: the LAN gets it only in the else of 'custom DNS servers for clients'", 0 < a < b and b - a < 700 and "else" in srv[a:b] and srv[a:b].count(";") == 1, (a, b))
 a = sdn.find('fprintf(fp, "dhcp-option=%s,6,%s\\n", pmtl->nw_t.ifname, pmtl->nw_t.dns[1]);', sdn.find("else if(pmtl->nw_t.dns[1][0] != '\\0')"))
-b = sdn.find("rednsd_dnr_option(fp, pmtl->nw_t.ifname, pmtl->nw_t.addr);")
+b = sdn.find("rednsd_dnr_option(fp, pmtl->nw_t.ifname, pmtl->nw_t.addr, pmtl->sdn_t.dnsf_idx);")
 check("dnr: a guest network gets it only when it has no DNS server of its own", 0 < a < b and b - a < 700 and "else" in sdn[a:b], (a, b))
 # 2026-11-15: isolated guest networks and portals reach the router on DHCP / port 53 only (REAPER_GUI) - no DNR offer there
 check("dnr: never offered on an isolated guest network or a portal",
-      "if (!reaper_sdn_hide_lan_names(pmtl) && pmtl->sdn_t.cp_idx <= 0)\n\t\t\t\t\trednsd_dnr_option(fp, pmtl->nw_t.ifname, pmtl->nw_t.addr);" in sdn
+      "if (!reaper_sdn_hide_lan_names(pmtl) && pmtl->sdn_t.cp_idx <= 0)\n\t\t\t\t\trednsd_dnr_option(fp, pmtl->nw_t.ifname, pmtl->nw_t.addr, pmtl->sdn_t.dnsf_idx);" in sdn
       and 0 < sdn.find("static int reaper_sdn_hide_lan_names(") < b)
 check("dnr: start_dnsmasq records the published state before the refresh", 0 < srv.find("rednsd_dnr_mark();") < srv.find("rednsd_refresh();", srv.find("rednsd_dnr_mark();")))
 check("dnr: the restart uses calls that exist on every platform (restart_dnsmasq() is not linked on this one)", "restart_dnsmasq(0)" not in dnr and "stop_dnsmasq(ALL_SDN);" in dnr and "start_dnsmasq(ALL_SDN);" in dnr)

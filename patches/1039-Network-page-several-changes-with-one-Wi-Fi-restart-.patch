@@ -1,0 +1,949 @@
+From 6e17872da15c39e52e5e4f7e08695eb71d95cd0b Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Tue, 24 Nov 2026 11:43:41 -0500
+Subject: [PATCH] Network page: several changes with one Wi-Fi restart;
+ main-network guard; RADIUS in one place
+
+- Optional (off by default): a network created, edited or switched on is saved at once and its Wi-Fi restart waits
+  for Apply now; a bar lists the waiting networks and the dashboard says so. Anything that must run at once still
+  does and takes the waiting changes with it. If something else restarts Wi-Fi meanwhile, the router finishes the
+  waiting networks' services by itself; with AiMesh nodes the changes stay waiting until they have been sent.
+- Delete works on a main-network card again: it counts only main networks that broadcast, the Smart Connect clean-up
+  runs on a main network's own Apply only, and the confirm opens in view.
+- Guest networks: the "Device discovery with the main network" switch is no longer held by the AP Isolation note
+  while AP Isolation is off.
+- RADIUS: the main network's server is shown read-only on the RADIUS tab from the Network page's own store, so it is
+  kept in one place.
+- Wireless > Settings: the auto-channel options switches save and show their state.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ release/src/router/rc/reaper_guest.c          |   8 +
+ release/src/router/rc/sdn.c                   |  95 +++++-
+ release/src/router/www/Reaper_RADIUS.asp      |  62 +++-
+ .../src/router/www/Reaper_WiFiSettings.asp    |  26 +-
+ .../src/router/www/reaper/reaper_sdn_defer.js | 276 ++++++++++++++++++
+ .../www/sysdep/FUNCTION/SDN/SDN/mlo.html      |   3 +
+ .../www/sysdep/FUNCTION/SDN/SDN/sdn.html      |   3 +
+ .../router/www/sysdep/FUNCTION/SDN/SDN/sdn.js | 260 ++++++++++++++++-
+ 8 files changed, 717 insertions(+), 16 deletions(-)
+ create mode 100644 release/src/router/www/reaper/reaper_sdn_defer.js
+
+diff --git a/release/src/router/rc/reaper_guest.c b/release/src/router/rc/reaper_guest.c
+index fcba04d14a..c375cc62f8 100644
+--- a/release/src/router/rc/reaper_guest.c
++++ b/release/src/router/rc/reaper_guest.c
+@@ -408,6 +408,14 @@ static int rg_mdns_types(const char *in, char *out, size_t on)
+ }
+ /* REAPER-GUEST-MDNS-END */
+ 
++/* reaper 2026-11-20 (REAPER-MDNS-CORETYPES, owner): the same expansion for the main reflector's own list -
++ * reaper_mdns_types (Tweaks > mDNS across networks, "" = every type), which rc/services.c generate_mdns_config writes
++ * as avahi's reflect-core-types */
++int reaper_mdns_types(const char *in, char *out, size_t on)
++{
++	return rg_mdns_types(in, out, on);
++}
++
+ /* Merlin's vpnc_idx: 1..5 WireGuard client N (wgcN), 6..10 OpenVPN client idx-5 (tun1N) - shared/mtlan_utils.c
+  * get_vpnx_by_vpnc_idx; the static mapping, not vpncN_ifname, which exists only while the tunnel is up */
+ static void rg_vpnif(int vpnc_idx, char *out, size_t n)
+diff --git a/release/src/router/rc/sdn.c b/release/src/router/rc/sdn.c
+index b68061c2d7..babdd132d5 100644
+--- a/release/src/router/rc/sdn.c
++++ b/release/src/router/rc/sdn.c
+@@ -1207,7 +1207,7 @@ static int _gen_sdn_dnsmasq_conf(const MTLAN_T *pmtl, char *config_file, const s
+ 				/* 2026-11-15: not on an isolated guest network or a portal - REAPER_GUI lets those guests reach
+ 				 * the router on DHCP / port 53 only, so a DNR offer (DoH / DoT) would name a resolver they cannot use */
+ 				if (!reaper_sdn_hide_lan_names(pmtl) && pmtl->sdn_t.cp_idx <= 0)
+-					rednsd_dnr_option(fp, pmtl->nw_t.ifname, pmtl->nw_t.addr);
++					rednsd_dnr_option(fp, pmtl->nw_t.ifname, pmtl->nw_t.addr, pmtl->sdn_t.dnsf_idx);	/* REAPER-DNR-STEP */
+ 			}
+ 		}
+ 
+@@ -2711,12 +2711,105 @@ static int rsdn_settle_step(int second, long t0, int have, long t, long applied,
+ }
+ /* RSDN-PURE-END */
+ 
++/* ---- reaper 2026-11-20 REAPER-SDN-DEFER (plan item 1): Network-page changes waiting for Apply ----
++ * With the Network page's switch on, httpd stores a create / edit / switch-on at once but holds its service list in
++ * RDEFER_MARK ("<uptime> <list>" + a line of network items) until Apply now or the next request that runs
++ * (httpd/web.c REAPER-SDN-DEFER). A held save never reaches RSDN_PENDING, so the settle above never applies it.
++ * If another change restarts the radios meanwhile (the Wireless page, a node, a script, the settle itself), the
++ * radios have built every stored network - including the waiting ones - so rc runs the rest of the waiting list
++ * (each network's DHCP / DNS / firewall service) once rc is idle again; otherwise a new network would be up without
++ * its DHCP server. The marker is cleared only when every waiting change was saved before that radio restart began.
++ * REAPER-SDN-DEFER-KEYS (2026-11-24): and only when httpd holds no settings for the AiMesh nodes - it sends those only
++ * together with a service list, so the marker stays and the page keeps offering Apply now until they have gone. */
++#define RDEFER_MARK	RSDN_DIR "/sdn_defer"
++#define RDEFER_KEYS	RSDN_DIR "/sdn_defer.json"	/* httpd's held settings for the AiMesh sync service (REAPER-SDN-DEFER-KEYS) */
++
++/* RDEFER-RC-PURE-BEGIN (compiled on the host by test_sdn_defer.py) */
++/* is p[0..n) a radio restart (whole service name) */
++static int rdefer_radio_tok(const char *p, size_t n)
++{
++	return (n == 16 && strncmp(p, "restart_wireless", 16) == 0) || (n == 19 && strncmp(p, "restart_net_and_phy", 19) == 0);
++}
++
++/* does a ';' service list restart the radios (and so build every stored network) */
++int reaper_sdn_defer_radio(const char *list)
++{
++	const char *p, *q;
++
++	for (p = list; p && *p; p = *q ? q + 1 : q) {
++		q = p + strcspn(p, ";");
++		if (rdefer_radio_tok(p, (size_t)(q - p)))
++			return 1;
++	}
++	return 0;
++}
++
++/* the waiting list without the radio restart a radio restart already did ("" when nothing is left) */
++static void rdefer_remainder(const char *list, char *out, size_t cap)
++{
++	const char *p, *q;
++	size_t n, o = 0;
++
++	out[0] = 0;
++	for (p = list; p && *p; p = *q ? q + 1 : q) {
++		q = p + strcspn(p, ";");
++		n = (size_t)(q - p);
++		if (!n || rdefer_radio_tok(p, n))
++			continue;
++		if (o + n + 2 > cap)
++			break;
++		memcpy(out + o, p, n);
++		o += n;
++		out[o++] = ';';
++		out[o] = 0;
++	}
++}
++/* RDEFER-RC-PURE-END */
++
++/* rc, at the end of handle_notifications: the list it ran restarted the radios while changes wait -> the settle
++ * applet in its own process (never rc's own queue) runs what is left once rc is idle */
++void reaper_sdn_defer_backstop(const char *list, long t0)
++{
++	char ts[24];
++	char *argv[] = { "/sbin/reaper_sdn_settle", "defer", ts, NULL };
++	pid_t pid;
++
++	if (!reaper_sdn_defer_radio(list) || access(RDEFER_MARK, F_OK) != 0)
++		return;
++	snprintf(ts, sizeof(ts), "%ld", t0);
++	_eval(argv, NULL, 0, &pid);
++}
++
++static int rdefer_backstop_main(long t0)
++{
++	char list[256], rest[256];
++	long t = 0;
++	int i;
++
++	for (i = 0; i < RSDN_SETTLE_MAX && *nvram_safe_get("rc_service"); i++)
++		sleep(1);	/* the radio restart's own list is still finishing */
++	if (!rsdn_read_pending(RDEFER_MARK, &t, list, sizeof(list)))
++		return 0;	/* nothing waits any more (Apply now took it) */
++	rdefer_remainder(list, rest, sizeof(rest));
++	if (t < t0 && access(RDEFER_KEYS, F_OK) != 0)
++		unlink(RDEFER_MARK);	/* every waiting change was stored before this radio restart began */
++	else if (t < t0)	/* REAPER-SDN-DEFER-KEYS: the nodes have not had them yet */
++		logmessage("sdn", "the AiMesh nodes have not received the waiting Network-page changes yet - they wait for Apply on the Network page");
++	if (rest[0]) {
++		logmessage("sdn", "the Wi-Fi was restarted by another change - running the rest of the waiting Network-page changes (%s)", rest);
++		notify_rc_and_wait_2min(rest);
++	}
++	return 0;
++}
++
+ int reaper_sdn_settle_main(int argc, char *argv[])
+ {
+ 	char list[256];
+ 	long t0, t = 0;
+ 	int i, have, step;
+ 
++	if (argc >= 3 && strcmp(argv[1], "defer") == 0)	/* 2026-11-20: REAPER-SDN-DEFER backstop */
++		return ((t0 = strtol(argv[2], NULL, 10)) > 0) ? rdefer_backstop_main(t0) : 1;
+ 	if (argc < 2 || (t0 = strtol(argv[1], NULL, 10)) <= 0)
+ 		return 1;
+ 	for (i = 1; ; i++) {
+diff --git a/release/src/router/www/Reaper_RADIUS.asp b/release/src/router/www/Reaper_RADIUS.asp
+index a3ec528972..a2bd7ce291 100644
+--- a/release/src/router/www/Reaper_RADIUS.asp
++++ b/release/src/router/www/Reaper_RADIUS.asp
+@@ -13,12 +13,19 @@
+        wlN_radius_ipaddr   server address: IPv4, or IPv6 in router mode (stock); "" = none
+        wlN_radius_port     1-65535 (default 1812)
+        wlN_radius_key      shared secret, up to 64 printable ASCII, no leading / trailing double quote (stock)
+-     Consumer: the prebuilt hostapd writer (rc/prebuild hostapd_config_be.o) reads them ONLY for a band whose
+-     wlN_auth_mode_x is an Enterprise / 802.1X mode (wpa wpa2 wpawpa2 wpa3 wpa2wpa3 suite-b radius). No Reaper page
+-     sets those modes today (Wireless Settings has no authentication control; setup forces WPA2/WPA3-Personal), so
+-     each band shows whether its server is in use and why not - the owner asked for the page anyway (2026-10-31)
+-     rather than deleting it. With Smart Connect grouping bands, rc copies the lead band's server to the others at
+-     restart (init-broadcom.c). Guest Network Pro Enterprise networks keep their own servers (Network page).
++     These keys are used ONLY for an interface whose auth mode is an Enterprise / 802.1X mode (wpa wpa2 wpawpa2
++     wpa3 wpa2wpa3 suite-b radius). With Smart Connect grouping bands, rc copies the lead band's server to the
++     others at restart (init-broadcom.c).
++     reaper 2026-11-20 (REAPER-MAINRADIUS, bug review 2026-11-16 #13): once the main network is a Network-page
++     profile (sdn_rl has a MAINFH row, as on every configured router) it runs on wlN.1, not on the primary wlN, and
++     the Network page sets its mode (WPA2/WPA3-Enterprise among them) and its RADIUS server: the MAINFH row of
++     radius_list, applied to the interface by the profile sync. Employee and other Network-page networks keep their
++     own servers there too. The wlN_ keys below then belong to the hidden primary interface and change nothing a
++     client joins, so in that state this page shows the main network's server read-only from the
++     reaper_main_radius hook (servers, ports, its mode from apmN_security, and only whether each secret is set -
++     radius_list itself never reaches the page) with a link to the Network page, and offers no editor. It never
++     posts apm* or radius_list (an AiMesh node takes the profile through the sync service). The editor below is
++     kept for a router whose main network is not a Network-page profile yet.
+      Apply = /applyapp.cgi with rc_service restart_wireless (stock), only changed keys. Differences from stock: every
+      radio on one page (stock cycled the global wl_unit); a blank address is accepted (clears the server); port 0
+      refused (stock allowed it); the secret field starts masked with a show switch. -->
+@@ -68,6 +75,14 @@ var NV = {
+   wl2_auth_mode_x: <% nvram_get_js("wl2_auth_mode_x"); %>, wl2_radius_ipaddr: <% nvram_get_js("wl2_radius_ipaddr"); %>, wl2_radius_port: <% nvram_get_js("wl2_radius_port"); %>, wl2_radius_key: '',
+   wl3_auth_mode_x: <% nvram_get_js("wl3_auth_mode_x"); %>, wl3_radius_ipaddr: <% nvram_get_js("wl3_radius_ipaddr"); %>, wl3_radius_port: <% nvram_get_js("wl3_radius_port"); %>, wl3_radius_key: ''
+ };
++/* REAPER-MAINRADIUS: the main network's own server when it is a Network-page profile (see the head comment) */
++var SDN_RL = rp.dec('<% nvram_char_to_ascii("","sdn_rl"); %>');
++var MIGRATED = SDN_RL.indexOf('>MAINFH') >= 0 || SDN_RL.indexOf('MAINFH') >= 0;
++var MR = rp.dec('<% reaper_main_radius(); %>').split('<').filter(Boolean).map(function(r){
++  var f = r.split('>');
++  return {ok: f[2] === 'ok', modes: (f[3] || '').split(',').filter(Boolean),
++    srv: [[f[4], f[5], f[6]], [f[7], f[8], f[9]], [f[10], f[11], f[12]], [f[13], f[14], f[15]]]};
++});
+ var ENT = {wpa: 1, wpa2: 1, wpawpa2: 1, wpa3: 1, wpa2wpa3: 1, 'suite-b': 1, radius: 1};
+ var AUTH = {open: `<#CTL_open#>`, shared: 'Shared Key', psk: 'WPA-Personal', psk2: 'WPA2-Personal', pskpsk2: 'WPA/WPA2-Personal',
+   sae: 'WPA3-Personal', psk2sae: 'WPA2/WPA3-Personal', owe: 'Enhanced Open', openowe: 'Enhanced Open Transition',
+@@ -88,7 +103,42 @@ var BANDS = (function(){
+ function K(b, f){ return 'wl' + b.u + '_radius_' + f; }
+ function msg(t){ var m = q('topmsg'); m.textContent = t || ''; m.style.display = t ? 'block' : 'none'; }
+ 
++function srvText(s){ var a = s[0] || '', p = s[1] || ''; return a ? (a.indexOf(':') >= 0 ? '[' + a + ']' : a) + (p ? ':' + p : '') : ''; }
++function renderMain(){
++  ['applybtn', 'discardbtn', 'chgpill'].forEach(function(id){ q(id).style.display = 'none'; });
++  var NS = `<#RFW_198#>`, KS = `<#RNW_16#>`;
++  var h = '<div class="panel"><h2>' + hx(`<#RMOD_11#>`) + '</h2><div class="use">' + hx(`<#RNW_10#>`) + '</div>' +
++    '<button type="button" class="btn" id="b_sdn">' + hx(`<#RNT_80#>`) + '</button></div>';
++  /* one panel per distinct setting: with Smart Connect off there is a MAINFH row per band, usually alike; a row with
++     no mode and no server (a profile without bands) is left out when another row has one */
++  var G = [], seen = {}, has = function(r){ return r.srv.some(function(s){ return s[0] || s[2] === '1'; }); };
++  MR.forEach(function(r){ var k = JSON.stringify([r.ok, r.modes, r.srv]); if (!seen[k]){ seen[k] = 1; G.push(r); } });
++  var full = G.filter(function(r){ return r.modes.length || has(r); });
++  if (full.length) G = full;
++  if (!G.length) h += '<div class="panel"><div class="use">' + hx(`<#RNW_18#>`) + '</div></div>';
++  G.forEach(function(r, i){
++    var lab = r.modes.map(function(m){ return AUTH[m] || m; }).join(' / ') || '-';
++    var on = r.modes.some(function(m){ return !!ENT[m]; });
++    h += '<div class="panel"><h2>' + hx(`<#RMOD_11#>` + (G.length > 1 ? ' ' + (i + 1) : '')) + '</h2>' +
++      '<div class="use' + (on ? ' on' : '') + '">' + hx(rp.sub(on ? `<#RNW_11#>` : `<#RNW_12#>`, lab)) + '</div>';
++    if (!r.ok){ h += '<div class="use">' + hx(`<#RNW_17#>`) + '</div></div>'; return; }
++    if (!has(r)){ h += '<div class="use">' + hx(`<#RNW_18#>`) + '</div></div>'; return; }   /* radius_list has no row for it */
++    var a = r.srv[0];
++    h += '<div class="frow"><div class="fl">' + hx(`<#WLANAuthentication11a_ExAuthDBIPAddr_itemname#>`) + '</div><div class="fc"><span class="fv mono">' + hx(a[0] || NS) + '</span></div></div>' +
++      '<div class="frow"><div class="fl">' + hx(`<#WLANAuthentication11a_ExAuthDBPortNumber_itemname#>`) + '</div><div class="fc"><span class="fv mono">' + hx(a[1] || '-') + '</span></div></div>' +
++      '<div class="frow"><div class="fl">' + hx(`<#WLANAuthentication11a_ExAuthDBPassword_itemname#>`) + '</div><div class="fc"><span class="fv">' + hx(a[2] === '1' ? KS : NS) + '</span></div></div>';
++    [[1, `<#RNW_13#>`], [2, `<#RNW_14#>`], [3, `<#RNW_15#>`]].forEach(function(e){
++      var s = r.srv[e[0]];
++      if (!s[0]) return;   /* the Network page sets only the first server; another writer may set these */
++      h += '<div class="frow"><div class="fl">' + hx(e[1]) + '</div><div class="fc"><span class="fv mono">' + hx(srvText(s)) + '</span> &middot; <span class="fv">' + hx(s[2] === '1' ? KS : NS) + '</span></div></div>';
++    });
++    h += '</div>';
++  });
++  q('bands').innerHTML = h;
++  q('b_sdn').addEventListener('click', function(){ top.location.href = '/reaper_shell.asp#SDN.asp'; });
++}
+ function render(){
++  if (MIGRATED){ renderMain(); return; }
+   var h = '';
+   BANDS.forEach(function(b, i){
+     h += '<div class="panel" id="p' + i + '"><h2>' + hx(b.title) + '</h2>';
+diff --git a/release/src/router/www/Reaper_WiFiSettings.asp b/release/src/router/www/Reaper_WiFiSettings.asp
+index 9bc39ed02e..fa0bfa66ae 100644
+--- a/release/src/router/www/Reaper_WiFiSettings.asp
++++ b/release/src/router/www/Reaper_WiFiSettings.asp
+@@ -105,9 +105,23 @@ a{color:var(--ice)}
+ .tog:focus-visible{outline:2px solid var(--red);outline-offset:2px}
+ .togrow{display:flex;align-items:center;justify-content:center;gap:8px}
+ .togrow.col{flex-direction:column;align-items:stretch;gap:4px}
+-.chk{display:flex;align-items:center;gap:7px;font-size:11.5px;color:var(--bone-dim);justify-content:center;cursor:pointer;text-align:left}
+-.chk input{accent-color:#8a8f95;width:14px;height:14px;margin:0;flex:0 0 auto}
+-.chks{display:flex;flex-direction:column;gap:5px}
++/* reaper 2026-11-21 (owner): the auto-channel options are boxed switches with short labels - the long stock
++   sentences ran out of the band column. The input stays a checkbox (hidden), so the page logic is unchanged. */
++.chks{display:flex;flex-direction:column;gap:6px}
++.sw{display:flex;align-items:center;justify-content:space-between;gap:10px;width:100%;min-width:0;position:relative;
++ font-size:12.5px;line-height:1.3;color:var(--bone-dim);text-align:left;cursor:pointer;user-select:none;
++ background:var(--raised);border:1px solid var(--line2);border-radius:8px;padding:6px 10px}
++.sw:hover{border-color:var(--steel)}
++.sw input{position:absolute;opacity:0;width:1px;height:1px;margin:0;pointer-events:none}
++.sw .swl{order:1;flex:1 1 auto;min-width:0;white-space:normal;overflow-wrap:anywhere}
++.sw .trk{order:2;flex:0 0 auto;width:34px;height:18px;border-radius:999px;border:1px solid var(--line2);background:#26262b;
++ position:relative;transition:background .15s}
++.sw .trk::after{content:"";position:absolute;top:2px;left:2px;width:12px;height:12px;border-radius:50%;background:#8a8f95;
++ transition:transform .16s,background .16s}
++.sw input:checked+.trk{background:#3a3f45}
++.sw input:checked+.trk::after{transform:translateX(16px);background:var(--bone)}
++.sw input:checked~.swl{color:var(--bone)}
++.sw input:focus-visible+.trk{outline:2px solid var(--red);outline-offset:2px}
+ .mini{font-family:var(--hdr);font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--bone);background:var(--raised);
+  border:1px solid var(--line2);border-radius:8px;padding:6px 10px;cursor:pointer}
+ .mini:hover{border-color:var(--steel)}
+@@ -278,7 +292,8 @@ a{color:var(--ice)}
+      {name:`<#WLANConfig_BW320_Channel_Range#>`,key:"@range",type:"sel",bands:["6"],options:"range"},
+      {name:`<#WLANConfig11b_EChannel_itemname#>`,key:"@ext",type:"sel",bands:["2.4"],help:`<#WLANConfig11b_EChannel_itemdesc#>`,options:[["l",EXTLAB.l],["u",EXTLAB.u]]},
+      {name:`<#RWFP_66#>`,key:"acs",type:"chks",global:true,help:`<#RWFP_49#>`,
+-      chk:{"2.4":[["acs_ch13",`<#WLANConfig11b_EChannel_acs_ch13#>`]],"5":[["acs_dfs",`<#WLANConfig11b_EChannel_dfs#>`],["acs_unii4",`<#WLANConfig11b_EChannel_U-NII-4#>`]],"6":[["psc6g",`<#RWFP_50#>`]]}},
++      /* [setting, short label on the switch, the full sentence as its tooltip] */
++      chk:{"2.4":[["acs_ch13",`<#RWFP_140#>`,`<#WLANConfig11b_EChannel_acs_ch13#>`]],"5":[["acs_dfs",`<#RWFP_141#>`,`<#WLANConfig11b_EChannel_dfs#>`],["acs_unii4",`<#RWFP_142#>`,`<#WLANConfig11b_EChannel_U-NII-4#>`]],"6":[["psc6g",`<#RWFP_143#>`,`<#RWFP_50#>`]]}},
+      /* reaper v3.2.8: static preamble puncturing, two VIRTUAL rows folded into wlN_punct at apply
+         ("<chanspec>|0x<bitmap>" = Fixed, "w<width>|0x<bitmap>" = Follow, "" = off; rc/reaper_punct.c) */
+      {name:`<#RWFP_84#>`,key:"@pmode",type:"sel",bands:["5","6"],help:`<#RWFP_85#>`,options:"pmode"},
+@@ -623,7 +638,8 @@ a{color:var(--ice)}
+     if(row.type==="chks"){
+       var list=row.chk[radio.band]||[]; if(!list.length) return `<div class="cell"><div class="na" title="<#RWFP_36#>">&mdash;</div></div>`;
+       return '<div class="cell" data-acs="'+u+'"><div class="ctl chks">'+list.map(function(c){ var g=GNV[c[0]]; if(g==null) g="";
+-        return '<label class="chk"><input type="checkbox" data-g="'+c[0]+'" data-nv="'+esc(g)+'"'+(g==="1"?' checked':'')+'>'+esc(c[1])+'</label>'; }).join("")+'</div></div>';
++        return '<label class="sw" title="'+esc(c[2])+'"><input type="checkbox" data-g="'+c[0]+'" data-nv="'+esc(g)+'"'+(g==="1"?' checked':'')+'>'+
++               '<span class="trk"></span><span class="swl">'+esc(c[1])+'</span></label>'; }).join("")+'</div></div>';
+     }
+     var list=optsFor(row,u)||[];
+     if(dv!=="" && !list.some(function(o){ return o[0]===dv; })) list=list.concat([[dv,dv]]);
+diff --git a/release/src/router/www/reaper/reaper_sdn_defer.js b/release/src/router/www/reaper/reaper_sdn_defer.js
+new file mode 100644
+index 0000000000..616feb5cf4
+--- /dev/null
++++ b/release/src/router/www/reaper/reaper_sdn_defer.js
+@@ -0,0 +1,276 @@
++/* REAPER-SDN-DEFER (2026-11-20, owner-approved plan item 1; design 2026-11-16) - the Network page side.
++   Loaded after sdn.js (and mlo.js) by SDN/sdn.html and SDN/mlo.html; these pages get no serve-time injection.
++
++   1. Hold Wi-Fi restarts until Apply (switch reaper_sdn_defer, OFF at factory, kept in backups). Every save of the
++      page goes through httpApi.nvramSet; while the switch is on, a save that carries a service list is marked
++      reaper_defer "1" and httpd decides (httpd/web.c REAPER-SDN-DEFER): a create / edit / switch-on that leaves every
++      enabled network as it is is stored at once and its restart held (reply reaper_deferred "1"); anything else -
++      switch-off, delete, LAN-port change, portal - runs at once and takes the held changes with it. A held save gets
++      no long wait and no reconnect card: the page's own after-save code runs with a one-second wait. The bar lists
++      the waiting networks (new / edited / switched on) and has Apply now (one request, the Wi-Fi restarts once).
++      There is no Discard: the settings are already stored. A reboot applies everything stored.
++   2. Delete selected: tick boxes on the network cards and one button; ONE request through the stock multi-delete
++      form (reaper_sdn_multi_del in sdn.js); it runs at once and takes any held changes with it.
++   All state lives in this closure (window.reaperSdnDefer only marks the file as loaded). The pure helpers are
++   reaperSdnDefer.kinds / .names, run under node by test_sdn_defer.py. */
++(function(){
++	'use strict';
++	if(window.reaperSdnDefer || typeof httpApi != "object" || typeof httpApi.nvramSet != "function" || typeof $ != "function")
++		return;
++	var st = {"on": 0, "wait": 0, "list": "", "items": []};
++	var sel = null;	/* Delete selected: null = not choosing, else {idx: true} */
++	var orig = httpApi.nvramSet;
++	var KIND = {"n": "<#RSDN_40#>", "e": "<#RSDN_41#>", "o": "<#RSDN_42#>"};
++
++	function esc(s){
++		return String(s == undefined ? "" : s).replace(/[&<>"']/g, function(c){
++			return {"&": "&amp;", "<": "&lt;", ">": "&gt;", "\"": "&quot;", "'": "&#39;"}[c];
++		});
++	}
++	/* [[idx, kind], ...] + the page's network list -> [{"idx", "name", "kind"}] (name: SSID, else the type) */
++	function names(items, nets){
++		var out = [];
++		(Array.isArray(items) ? items : []).forEach(function(it){
++			if(!Array.isArray(it) || !/^\d+$/.test(String(it[0])) || !KIND.hasOwnProperty(it[1]))
++				return;
++			var hit = (Array.isArray(nets) ? nets : []).filter(function(n){ return n && n.sdn_rl && String(n.sdn_rl.idx) == String(it[0]); })[0];
++			var nm = hit ? ((hit.apg_rl && hit.apg_rl.ssid) ? hit.apg_rl.ssid : hit.sdn_rl.sdn_name) : ("#" + it[0]);
++			out.push({"idx": String(it[0]), "name": String(nm), "kind": it[1]});
++		});
++		return out;
++	}
++	function kinds(list){
++		return list.map(function(x){ return x.name + " (" + KIND[x.kind] + ")"; }).join(", ");
++	}
++	function nets(){
++		return (typeof sdn_all_rl_json == "object" && Array.isArray(sdn_all_rl_json)) ? sdn_all_rl_json : [];
++	}
++	function page(){
++		return ((typeof PAGE_CONTAINER == "string" && PAGE_CONTAINER == "mlo") ? "MLO" : "SDN") + ".asp";
++	}
++	function wait_time(list){
++		try{ return get_showLoading_status(list || "restart_wireless;").time; }catch(e){ return 20; }
++	}
++
++	function css(){
++		if(document.getElementById("rsdn_defer_css"))
++			return;
++		var s = document.createElement("style");
++		s.id = "rsdn_defer_css";
++		s.textContent = "#rsdn_defer_bar{box-sizing:border-box;margin:0 0 12px;padding:10px 14px;border-radius:6px;" +
++			"border:1px solid rgba(224,169,59,.38);background:rgba(224,169,59,.08);box-shadow:inset 3px 0 0 #E0A93B;font-size:13px}" +
++			"#rsdn_defer_bar .rsd_row{display:flex;align-items:center;gap:10px;flex-wrap:wrap}" +
++			"#rsdn_defer_bar .rsd_t{font-weight:600;flex:1 1 auto;min-width:0}" +
++			"#rsdn_defer_bar .rsd_hint{margin-top:6px;opacity:.8;line-height:1.4}" +
++			"#rsdn_defer_bar .rsd_wait{margin-top:10px;padding-top:10px;border-top:1px solid rgba(224,169,59,.3)}" +
++			"#rsdn_defer_bar .rsd_wait b{color:#E0A93B}" +
++			"#rsdn_defer_bar .rsd_btn{display:inline-block;cursor:pointer;padding:5px 12px;border-radius:6px;" +
++			"border:1px solid rgba(224,169,59,.6);white-space:nowrap;user-select:none}" +
++			"#rsdn_defer_bar .rsd_btn.off{opacity:.45;pointer-events:none}" +
++			".rsdn_wait_tag{border:1px solid #E0A93B !important;color:#E0A93B !important}" +
++			".rsdn_mdel_cb{display:inline-flex;align-items:center;justify-content:center;width:18px;height:18px;margin:0 8px 0 0;" +
++			"border:2px solid #E0A93B;border-radius:4px;cursor:pointer;flex:0 0 auto;font-weight:700;line-height:1}" +
++			".rsdn_mdel_cb.on:after{content:'x'}";
++		(document.head || document.documentElement).appendChild(s);
++	}
++
++	function draw(){
++		var $bar = $("#rsdn_defer_bar");
++		if($bar.length == 0)
++			return;
++		css();
++		var w = names(st.items, nets());
++		var h = "<div class='rsd_row'><span class='rsd_t'><#RSDN_35#></span>" +
++			"<div id='rsdn_defer_sw' class='icon_switch " + (st.on ? "on" : "off") + "' role='switch' aria-checked='" + (st.on ? "true" : "false") + "'></div></div>" +
++			"<div class='rsd_hint'><#RSDN_36#></div>";
++		if(st.wait){
++			h += "<div class='rsd_wait'><div class='rsd_row'><span class='rsd_t'><b><#RSDN_37#>" + (w.length ? ": " + w.length : "") + "</b>" +
++				(w.length ? " &mdash; " + esc(kinds(w)) : "") + "</span>" +
++				"<span class='rsd_btn' id='rsdn_defer_apply'><#RSDN_38#></span></div>" +
++				"<div class='rsd_hint'><#RSDN_39#></div></div>";
++		}
++		var can = nets().some(function(n){ return typeof reaper_mdel_ok == "function" && reaper_mdel_ok(n, (typeof vlan_trunklist_orig == "string") ? vlan_trunklist_orig : ""); });
++		if(can && typeof reaper_sdn_multi_del == "function"){
++			if(sel == null){
++				h += "<div class='rsd_wait'><div class='rsd_row'><span class='rsd_t'></span><span class='rsd_btn' id='rsdn_mdel_start'><#RSDN_47#></span></div></div>";
++			}
++			else{
++				var n = Object.keys(sel).length;
++				h += "<div class='rsd_wait'><div class='rsd_row'><span class='rsd_t'><#RSDN_48#></span>" +
++					"<span class='rsd_btn" + (n ? "" : " off") + "' id='rsdn_mdel_go'><#RSDN_45#>" + (n ? " (" + n + ")" : "") + "</span>" +
++					"<span class='rsd_btn' id='rsdn_mdel_cancel'><#CTL_Cancel#></span></div></div>";
++			}
++		}
++		$bar.html(h).show();
++		$("#rsdn_defer_sw").on("click", toggle);
++		$("#rsdn_defer_apply").on("click", function(){ apply_now(); });
++		$("#rsdn_mdel_start").on("click", function(){ sel = {}; draw(); marks(); });
++		$("#rsdn_mdel_cancel").on("click", function(){ sel = null; draw(); marks(); });
++		$("#rsdn_mdel_go").on("click", confirm_del);
++		if(typeof resize_iframe_height == "function")
++			try{ resize_iframe_height(); }catch(e){}
++	}
++
++	/* the waiting badge on each waiting network's card, and the tick boxes while choosing networks to delete */
++	function marks(){
++		var $list = $("#profile_list_content");
++		$list.find(".rsdn_wait_tag, .rsdn_mdel_cb").remove();
++		if(st.wait){
++			names(st.items, nets()).forEach(function(x){
++				$list.find("[sdn_idx='" + x.idx + "'] .item_tag_container").first()
++					.append($("<div>").addClass("item_tag no_icon rsdn_wait_tag").text("<#RSDN_43#>"));
++			});
++		}
++		if(sel != null){
++			var trunk = (typeof vlan_trunklist_orig == "string") ? vlan_trunklist_orig : "";
++			nets().forEach(function(n){
++				if(!reaper_mdel_ok(n, trunk))
++					return;
++				var idx = String(n.sdn_rl.idx);
++				var $cb = $("<span>").addClass("rsdn_mdel_cb" + (sel[idx] ? " on" : "")).attr({"role": "checkbox", "aria-checked": sel[idx] ? "true" : "false"});
++				$cb.on("click", function(e){
++					e.stopPropagation();
++					e.preventDefault();
++					if(sel[idx]) delete sel[idx]; else sel[idx] = true;
++					draw();
++					marks();
++				});
++				$list.find("[sdn_idx='" + idx + "']").first().prepend($cb);
++			});
++		}
++	}
++
++	function refresh(){
++		try{
++			httpApi.hookGetAsync({"data": "reaper_sdn_defer", "error": function(){}, "success": function(d){
++				if(d && typeof d == "object"){
++					st = {"on": d.on ? 1 : 0, "wait": d.wait ? 1 : 0, "list": String(d.list || ""), "items": Array.isArray(d.items) ? d.items : []};
++					draw();
++					marks();
++				}
++			}});
++		}catch(e){}
++	}
++
++	/* the page's own after-save code, with a one-second wait and no reconnect card (nothing restarted) */
++	function run_held(handler, resp){
++		var sv = {"sl": window.showLoading, "sg": window.showLoading_gaming, "wl": window.isWLclient, "to": window.setTimeout};
++		try{
++			if(typeof sv.sl == "function") window.showLoading = function(){ return sv.sl.call(window, 1); };
++			if(typeof sv.sg == "function") window.showLoading_gaming = function(){ return sv.sg.call(window, 1); };
++			window.isWLclient = function(){ return false; };
++			window.setTimeout = function(fn, ms){
++				var rest = Array.prototype.slice.call(arguments, 2);
++				return sv.to.apply(window, [fn, Math.min(parseInt(ms, 10) || 0, 1000)].concat(rest));
++			};
++			if(typeof handler == "function")
++				handler.call(resp);
++		}
++		finally{
++			window.showLoading = sv.sl;
++			if(typeof sv.sg == "function") window.showLoading_gaming = sv.sg;
++			window.isWLclient = sv.wl;
++			window.setTimeout = sv.to;
++		}
++	}
++
++	httpApi.nvramSet = function(postData, handler, async, postMessageToAppFlag){
++		if(postData && typeof postData == "object" && postData.action_mode == "apply" && st.on &&
++		   typeof postData.rc_service == "string" && postData.rc_service != "")
++			postData.reaper_defer = "1";
++		var h = function(){
++			var resp = this;
++			if(resp && resp.reaper_deferred == "1")
++				run_held(handler, resp);
++			else if(typeof handler == "function")
++				handler.call(resp);
++			if(resp && (resp.reaper_deferred == "1" || resp.reaper_applied == "1" || st.wait))
++				refresh();
++		};
++		return orig.call(httpApi, postData, h, async, postMessageToAppFlag);
++	};
++
++	/* one request: the waiting list (and settings) go now; the radios restart once */
++	function apply_now(extra){
++		var t = wait_time(st.list), o = $.extend({"action_mode": "apply", "reaper_defer_apply": "1"}, extra || {});
++		if(typeof showLoading == "function") showLoading();
++		orig.call(httpApi, o, function(){
++			if(typeof isWLclient == "function" && isWLclient()){
++				if(typeof showWlHintContainer == "function") showWlHintContainer();
++				if(typeof reaperMaskWlHintKey == "function") reaperMaskWlHintKey();
++				if(typeof check_isAlive_and_redirect == "function"){
++					check_isAlive_and_redirect({"page": page(), "time": t});
++					return;
++				}
++			}
++			if(typeof showLoading == "function") showLoading(t);
++			setTimeout(function(){ location.reload(); }, t * 1000);
++		});
++	}
++
++	function toggle(){
++		var on = st.on ? 0 : 1;
++		if(!on && st.wait){	/* switched off with changes waiting: they are applied with the switch */
++			apply_now({"reaper_sdn_defer": "0"});
++			return;
++		}
++		orig.call(httpApi, {"action_mode": "apply", "reaper_sdn_defer": on ? "1" : "0"}, function(){
++			st.on = on;
++			draw();
++		});
++	}
++
++	function confirm_del(){
++		var idxs = Object.keys(sel || {});
++		if(idxs.length == 0)
++			return;
++		var picked = nets().filter(function(n){ return idxs.indexOf(String(n.sdn_rl.idx)) != -1; })
++			.map(function(n){ return (n.apg_rl && n.apg_rl.ssid) ? n.apg_rl.ssid : n.sdn_rl.sdn_name; });
++		$(".container").addClass("blur_effect");
++		$(".popup_element_second").css("display", "flex");
++		var $pop = $(".popup_container.popup_element_second").empty();
++		var $c = Get_Component_Del_Profile().appendTo($pop);
++		$c.find(".del_profile .title").text("<#RSDN_45#>");
++		$c.find(".del_profile .desc").text("<#RSDN_46#>".replace(/#NAMES/g, picked.join(", ")));
++		$c.find("[data-btn=del]").click(function(e){
++			e.stopPropagation();
++			var obj = reaper_sdn_multi_del(idxs);
++			close_popup_container("all");
++			if(obj == null){
++				sel = null;
++				draw();
++				marks();
++				return;
++			}
++			var t = wait_time(obj.rc_service);
++			sel = null;
++			if(typeof showLoading == "function") showLoading();
++			httpApi.nvramSet(obj, function(){
++				if(typeof isWLclient == "function" && isWLclient()){
++					if(typeof showWlHintContainer == "function") showWlHintContainer();
++					if(typeof reaperMaskWlHintKey == "function") reaperMaskWlHintKey();
++					if(typeof check_isAlive_and_redirect == "function"){
++						check_isAlive_and_redirect({"page": page(), "time": t});
++						return;
++					}
++				}
++				if(typeof showLoading == "function") showLoading(t);
++				setTimeout(function(){ location.reload(); }, t * 1000);
++			});
++		});
++	}
++
++	["show_sdn_profilelist", "show_mlo_profilelist"].forEach(function(fn){
++		var f = window[fn];
++		if(typeof f != "function")
++			return;
++		window[fn] = function(){
++			var r = f.apply(this, arguments);
++			try{ marks(); }catch(e){}
++			return r;
++		};
++	});
++
++	window.reaperSdnDefer = {"names": names, "kinds": kinds};
++	$(function(){ refresh(); });
++})();
+diff --git a/release/src/router/www/sysdep/FUNCTION/SDN/SDN/mlo.html b/release/src/router/www/sysdep/FUNCTION/SDN/SDN/mlo.html
+index 0c98be13b9..19faf15e94 100644
+--- a/release/src/router/www/sysdep/FUNCTION/SDN/SDN/mlo.html
++++ b/release/src/router/www/sysdep/FUNCTION/SDN/SDN/mlo.html
+@@ -14,6 +14,8 @@
+ <script type="text/javascript" src="/RWD_UI/rwd_component.js"></script>
+ <script type="text/javascript" src="/SDN/sdn.js"></script>
+ <script type="text/javascript" src="/SDN/mlo.js"></script>
++<!-- reaper 2026-11-20 REAPER-SDN-DEFER: hold Wi-Fi restarts until Apply, Delete selected (this page gets no injection) -->
++<script type="text/javascript" src="/reaper/reaper_sdn_defer.js"></script>
+ <!-- reaper 2026-11-01: this page's Reaper theme - last stylesheet in the head, where httpd used to inject it -->
+ <link rel="stylesheet" type="text/css" href="/reaper/reaper_content_network.css">
+ </head>
+@@ -529,6 +531,7 @@ function initial(){
+ 				</div>
+ 			</div>
+ 		</div>
++		<div id="rsdn_defer_bar" style="display:none;"></div><!-- reaper 2026-11-20 REAPER-SDN-DEFER -->
+ 		<div class="content_container">
+ 			<div class="profile_list_container">
+ 				<div class="title_container">
+diff --git a/release/src/router/www/sysdep/FUNCTION/SDN/SDN/sdn.html b/release/src/router/www/sysdep/FUNCTION/SDN/SDN/sdn.html
+index eccd7ea2fc..1cfff8fe2d 100644
+--- a/release/src/router/www/sysdep/FUNCTION/SDN/SDN/sdn.html
++++ b/release/src/router/www/sysdep/FUNCTION/SDN/SDN/sdn.html
+@@ -12,6 +12,8 @@
+ <script type="text/javascript" src="/general.js"></script>
+ <script type="text/javascript" src="/RWD_UI/rwd_component.js"></script>
+ <script type="text/javascript" src="/SDN/sdn.js"></script>
++<!-- reaper 2026-11-20 REAPER-SDN-DEFER: hold Wi-Fi restarts until Apply, Delete selected (this page gets no injection) -->
++<script type="text/javascript" src="/reaper/reaper_sdn_defer.js"></script>
+ <!-- reaper 2026-11-01: this page's Reaper theme - last stylesheet in the head, where httpd used to inject it -->
+ <link rel="stylesheet" type="text/css" href="/reaper/reaper_content_network.css">
+ </head>
+@@ -233,6 +235,7 @@ if(false){ /* reaper: AdGuard removed */
+ 			<div class="title"></div>
+ 			<div class="help_icon"></div>
+ 		</div>
++		<div id="rsdn_defer_bar" style="display:none;"></div><!-- reaper 2026-11-20 REAPER-SDN-DEFER -->
+ 		<div class="content_container">
+ 			<div class="profile_list_container">
+ 				<!--div class="title_container">
+diff --git a/release/src/router/www/sysdep/FUNCTION/SDN/SDN/sdn.js b/release/src/router/www/sysdep/FUNCTION/SDN/SDN/sdn.js
+index 39376b7985..9dbc888b9b 100644
+--- a/release/src/router/www/sysdep/FUNCTION/SDN/SDN/sdn.js
++++ b/release/src/router/www/sysdep/FUNCTION/SDN/SDN/sdn.js
+@@ -8331,12 +8331,12 @@ function Update_Setting_Profile(_obj, _profile_data){
+ 	else{
+ 		$(_obj).find("#access_intranet, [data-container='access_intranet_cntr']").remove();
+ 	}
+-	reaper_guest_cross_fill(_obj, _profile_data);//REAPER-GUEST-CROSS-FILL (2026-11-19): after Access Intranet, whose Main Network tick it reads
+ 
+ 	$(_obj).find("#ap_isolate").removeClass("off on").addClass((function(){
+ 		return ((_profile_data.apg_rl.ap_isolate == "1") ? "on" : "off");
+ 	})());
+ 	reaper_apiso_lan_fill(_obj, _profile_data);//REAPER-APISO-LAN-FILL (2026-11-19): after the switch, whose state it follows
++	reaper_guest_cross_fill(_obj, _profile_data);//REAPER-GUEST-CROSS-FILL (2026-11-19): after Access Intranet, whose Main Network tick it reads, and (2026-11-22, field report) after the AP Isolation switch is set: its gate reads that switch, which Get_Component_Switch builds "on"
+ 
+ 	if(_profile_data.sdn_rl.sdn_name == "MLO"){
+ 		$(_obj).find("#wifi7_11be").closest(".profile_setting_item").remove();
+@@ -8774,8 +8774,14 @@ function Update_Setting_Profile(_obj, _profile_data){
+ 
+ 	$(_obj).find("#title_del_btn, #action_container #del_btn, [data-container=action_container] > [data-component=del_btn]").click(function(){
+ 		if(is_sdn_mainfh){
+-			if(sdn_all_rl_json.filter(item => item.sdn_rl.sdn_name === "MAINFH").length == 1){
++			//REAPER-MAINFH-GUARD: a main network that broadcasts stays; the empty rows a Smart Connect change leaves (no name,
++			//no bands) are not counted - before, with two of them present the live main network could be deleted
++			const mfh_rows = sdn_all_rl_json.filter(item => item.sdn_rl.sdn_name === "MAINFH");
++			const mfh_me = mfh_rows.find(item => item.sdn_rl.idx == _profile_data.sdn_rl.idx) || _profile_data;
++			if(mfh_rows.length <= 1 || (reaper_mainfh_live(mfh_me) &&
++				!mfh_rows.some(item => item.sdn_rl.idx != mfh_me.sdn_rl.idx && reaper_mainfh_live(item)))){
+ 				show_customize_alert(`<#SDN_MainFH_keep_Hint#>`);
++				reaper_popup_into_view(".popup_container.popup_customize_alert");
+ 				return;
+ 			}
+ 		}
+@@ -8785,6 +8791,7 @@ function Update_Setting_Profile(_obj, _profile_data){
+ 		}
+ 		$(".popup_element_second").css("display", "flex");
+ 		$(".popup_container.popup_element_second").empty();
++		setTimeout(function(){ reaper_popup_into_view(".popup_container.popup_element_second"); }, 0);//REAPER-MAINFH-GUARD: opened out of sight from a card further down
+ 		Get_Component_Del_Profile().appendTo($(".popup_container.popup_element_second")).find("[data-btn=del]").click(function(e){
+ 			e = e || event;
+ 			e.stopPropagation();
+@@ -9819,10 +9826,10 @@ function set_apply_btn_status(_obj){
+ 						nvramSet_obj.rc_service = nvramSet_obj.rc_service + rc_append;
+ 					}
+ 
+-					if(isSupport("sdn_mwl")){
++					if(isSupport("sdn_mwl") && is_sdn_mainfh){//REAPER-MAINFH-GUARD: a main network's Apply only (it ran for every network)
+ 						let sdn_all_rl_tmp = JSON.parse(JSON.stringify(sdn_all_rl_json));
+ 						let del_sdn_rl = [];
+-						const smart_connect_enable = $("[data-component=checkbox_val].clicked").length > 1 ? true : false;
++						const smart_connect_enable = $(_obj).find("#checkbox_wifi_band [data-component=checkbox_val].clicked").length > 1 ? true : false;//REAPER-MAINFH-GUARD: this panel's band boxes, not the whole page's
+ 						if(smart_connect_enable){
+ 							let del_rl = sdn_all_rl_tmp.find(item =>
+ 								item.mainfh_smart_connect.status &&
+@@ -9890,6 +9897,10 @@ function set_apply_btn_status(_obj){
+ 					if(reaper_guest_cross_save(nvramSet_obj, sdn_profile.apg_rl.apg_idx)){
+ 						showLoading_status = get_showLoading_status(nvramSet_obj.rc_service);
+ 					}
++					/* REAPER-SDN-NORADIO (2026-11-20): Access Intranet / VPN / DNS / DHCP only -> no radio restart */
++					else if(!isNewProfile && reaper_sdn_noradio_save(nvramSet_obj, sdn_profile)){
++						showLoading_status = get_showLoading_status(nvramSet_obj.rc_service);
++					}
+ 					if(!httpApi.app_dataHandler){
+ 						if(sdn_profile.sdn_rl.sdn_name == "Gaming"){
+ 							showLoading_gaming();
+@@ -11315,6 +11326,247 @@ function reaper_guest_cross_save(_nvramSet_obj, _apg_idx){
+ 	return true;
+ }
+ /* REAPER-GUEST-CROSS-END */
++/* REAPER-SDN-NORADIO-BEGIN (2026-11-20, owner-approved plan item 1, stage 3): an edit that changes only Access
++   Intranet, the VPN binding / kill switch, or the network's DNS / DHCP settings needs no radio restart - the
++   network's own service (restart_sdn N: its DHCP / DNS server, encrypted DNS, routing, VPN and every network's
++   Access Intranet rules) carries all of it, and restart_wireless rebuilds only radios and bridges. Such a save keeps
++   stock's list without restart_wireless, so no Wi-Fi client is dropped. Any key or field not listed here (SSID,
++   security, bands, schedule, isolation, limiter, VLAN, address, portal...), any list that is not the plain
++   "restart_wireless;restart_sdn N;..." shape, or any failed read keeps stock's list unchanged.
++   The reaper_nr_* helpers take no page state: test_sdn_noradio.py runs them under node. */
++/* "<a>b<c>d" -> {"a": ["a", "b"], "c": [...]} by the first field; null when a first field repeats */
++function reaper_nr_rows(_s){
++	let out = {};
++	const rows = String((_s == undefined) ? "" : _s).split("<");
++	for(let i = 0; i < rows.length; i++){
++		if(rows[i] === "")
++			continue;
++		const f = rows[i].split(">");
++		if(Object.prototype.hasOwnProperty.call(out, f[0]))
++			return null;
++		out[f[0]] = f;
++	}
++	return out;
++}
++/* true when the row lists _new and _cur hold the same rows and differ only in the given field numbers of row _idx */
++function reaper_nr_rl_ok(_new, _cur, _idx, _fields){
++	const a = reaper_nr_rows(_new), b = reaper_nr_rows(_cur);
++	if(a == null || b == null)
++		return false;
++	const ka = Object.keys(a), kb = Object.keys(b);
++	if(ka.length != kb.length)
++		return false;
++	for(let i = 0; i < ka.length; i++){
++		const k = ka[i];
++		if(!Object.prototype.hasOwnProperty.call(b, k))
++			return false;
++		const n = Math.max(a[k].length, b[k].length);
++		for(let j = 0; j < n; j++){
++			const va = (a[k][j] == undefined) ? "" : a[k][j], vb = (b[k][j] == undefined) ? "" : b[k][j];
++			if(va === vb)
++				continue;
++			if(k !== String(_idx) || _fields.indexOf(j) == -1)
++				return false;
++		}
++	}
++	return true;
++}
++/* the list without its radio restart, or "" when the list is not one this applies to:
++   [restart_ledg;]restart_wireless;restart_sdn N;[restart_sdn K; restart_qos; restart_firewall; restart_stubby;
++   start_vpnclientU; restart_ledg;]... - nothing else (no portal, delete, LAN-port or reboot service) */
++function reaper_nr_list(_rc, _idx){
++	if(typeof _rc != "string" || !/^\d+$/.test(String(_idx)) || _rc.slice(-1) != ";")
++		return "";
++	const toks = _rc.slice(0, -1).split(";");
++	let out = [], radio = 0, own = 0;
++	for(let i = 0; i < toks.length; i++){
++		const t = toks[i];
++		if(t == "restart_wireless"){
++			radio++;
++			continue;
++		}
++		if(t == "restart_sdn " + _idx)
++			own++;
++		else if(!/^(restart_sdn \d+|restart_qos|restart_firewall|restart_stubby|restart_ledg|start_vpnclient\d+)$/.test(t))
++			return "";
++		out.push(t);
++	}
++	if(radio != 1 || own != 1)
++		return "";
++	return out.join(";") + ";";
++}
++/* true when every key the save writes either equals the stored value or is one this class covers, and one at least
++   differs. _info = {"idx": network, "subnet_idx": its subnet ("0" = rides the main network)} */
++function reaper_nr_only(_set, _cur, _info){
++	if(_info == undefined || !/^\d+$/.test(String(_info.idx)))
++		return false;
++	const skip = ["action_mode", "action_script", "action_wait", "rc_service", "current_page", "next_page"];
++	const sub = String((_info.subnet_idx == undefined) ? "" : _info.subnet_idx);
++	const keys = Object.keys(_set || {});
++	let changed = false;
++	for(let i = 0; i < keys.length; i++){
++		const k = keys[i];
++		if(skip.indexOf(k) != -1)
++			continue;
++		const want = (_set[k] == undefined) ? "" : String(_set[k]);
++		const now = (_cur == undefined || _cur[k] == undefined) ? "" : String(_cur[k]);
++		if(want === now)
++			continue;
++		let ok = false;
++		if(k == "sdn_access_rl")
++			ok = true;		/* Access Intranet: every network's pairs are rebuilt by restart_sdn */
++		else if(k == "sdn_rl")
++			ok = reaper_nr_rl_ok(want, now, _info.idx, [6, 7, 14]);	/* VPN client, VPN server, kill switch */
++		else if(k == "subnet_rl")	/* DHCP on/range/lease, domain, DNS, WINS, reservations, DNS6, encrypted DNS */
++			ok = /^[1-9]\d*$/.test(sub) && reaper_nr_rl_ok(want, now, sub, [4, 5, 6, 7, 8, 9, 10, 11, 12, 18, 19, 20]);
++		else if(/^dhcpres\d+_rl$/.test(k) || (/^[1-9]\d*$/.test(sub) && k == "dot" + sub + "_rl"))
++			ok = true;		/* reservations / encrypted DNS servers of a network: its own DNS / DHCP server */
++		else if(/^wgc[1-5]_enable$/.test(k) || k == "vpn_clientx_eas")
++			ok = true;		/* a bound VPN client switched on with the binding (reaper_vpnc_on_demand) */
++		if(!ok)
++			return false;
++		changed = true;
++	}
++	return changed;
++}
++/* page side: nvramSet_obj complete; swaps in the list without restart_wireless when reaper_nr_only holds */
++function reaper_sdn_noradio_save(_nvramSet_obj, _sdn_profile){
++	if(_nvramSet_obj == undefined || _sdn_profile == undefined || _sdn_profile.sdn_rl == undefined)
++		return false;
++	const idx = String(_sdn_profile.sdn_rl.idx);
++	const list = reaper_nr_list(_nvramSet_obj.rc_service, idx);
++	if(list == "")
++		return false;
++	const skip = ["action_mode", "action_script", "action_wait", "rc_service", "current_page", "next_page"];
++	const keys = Object.keys(_nvramSet_obj).filter(function(k){ return skip.indexOf(k) == -1; });
++	let cur = {};
++	try{
++		const got = httpApi.nvramCharToAscii(keys, true);
++		if(got == undefined || got.isError)
++			return false;
++		for(let i = 0; i < keys.length; i++){
++			if(got[keys[i]] == undefined)
++				return false;	/* a key the router did not answer for: keep stock's list */
++			cur[keys[i]] = decodeURIComponent(got[keys[i]]);
++		}
++	}
++	catch(e){
++		return false;
++	}
++	if(!reaper_nr_only(_nvramSet_obj, cur, {"idx": idx, "subnet_idx": _sdn_profile.sdn_rl.subnet_idx}))
++		return false;
++	_nvramSet_obj.rc_service = list;
++	return true;
++}
++/* REAPER-SDN-NORADIO-END */
++/* REAPER-SDN-MULTIDEL-BEGIN (2026-11-20, owner's proposal 2026-11-16, plan item 1 stage 2): Delete selected removes
++   the ticked networks in ONE request through the stock multi-delete form - every removed row goes into sdn_rl_x
++   (parse_JSONToStr_del_sdn_all_rl takes a list; rc's start_sdn_del removes each of them) and the Wi-Fi restarts once.
++   Each removed network gets what the single delete above gives it (its radio group off, its guest paths, discovery
++   and AP Isolation choice cleared, its reservations / encrypted DNS / gaming port forwards removed, Access Intranet
++   pairs naming it dropped, the LED group of a type no longer present switched off). Never offered for the main
++   network, the backhaul, or a network whose removal needs the LAN ports restarted (a bound LAN port, or a VLAN while
++   trunks exist): the single delete handles those. The page side is www/reaper/reaper_sdn_defer.js. */
++/* may Delete selected remove this network (_trunk = the stored vlan_trunklist) */
++/* REAPER-MAINFH-GUARD (2026-11-23): a main-network row that broadcasts - switched on, a name, bands. The empty rows a Smart
++   Connect change leaves have apmN_enable 0, no SSID and no dut_list; apmN_disabled 1 = a row the firmware set aside. */
++function reaper_mainfh_live(_item){
++	return !!(_item && _item.apg_rl && _item.apg_rl.enable == "1" && _item.apg_rl.disabled != "1" &&
++		(_item.apg_rl.ssid || "") != "" && (_item.apg_rl.dut_list || "") != "");
++}
++/* the page's pop-ups sit 4% from the top of a frame the shell grows to its full height: bring one into view (every
++   frame above it scrolls too) */
++function reaper_popup_into_view(_sel){
++	try{ const el = $(_sel).filter(":visible")[0]; if(el && el.scrollIntoView) el.scrollIntoView({block: "start"}); }catch(e){}
++}
++function reaper_mdel_ok(_item, _trunk){
++	if(_item == undefined || _item.sdn_rl == undefined || _item.apg_rl == undefined || !/^\d+$/.test(String(_item.sdn_rl.idx)))
++		return false;
++	const name = _item.sdn_rl.sdn_name;
++	if(String(_item.sdn_rl.idx) == "0" || name == "MAINFH" || name == "MAINBH" || (name == "MLO" && String(_item.apg_rl.mlo) == "1"))
++		return false;
++	if(!/^\d+$/.test(String(_item.apg_rl.apg_idx)))
++		return false;
++	const duts = String((_item.apg_rl.dut_list == undefined) ? "" : _item.apg_rl.dut_list).split("<");
++	for(let i = 0; i < duts.length; i++){
++		if(duts[i] != "" && (duts[i].split(">")[2] || "") != "")
++			return false;	/* a bound LAN port */
++	}
++	if(String((_trunk == undefined) ? "" : _trunk) != "" && _item.vlan_rl != undefined && parseInt(_item.vlan_rl.vid, 10) > 1)
++		return false;	/* a VLAN while trunks exist (the single delete restarts the LAN ports) */
++	return true;
++}
++/* the LED-group value after removing networks of these types: a type with no network left is switched off */
++function reaper_mdel_ledg(_gone_types, _left, _cur){
++	const v = function(t){
++		const left = (Array.isArray(_left) ? _left : []).some(function(n){ return n.sdn_rl && n.sdn_rl.sdn_name === t; });
++		return (_gone_types.indexOf(t) != -1 && !left) ? "0" : ((_cur && _cur[t] != undefined) ? _cur[t] : "0");
++	};
++	return v("Gaming") + "<" + v("Kids") + "<" + v("VPN");
++}
++/* the one request for the ticked network indexes; null when any of them cannot be removed this way */
++function reaper_sdn_multi_del(_idx_list){
++	const idxs = (Array.isArray(_idx_list) ? _idx_list : []).map(String);
++	const trunk = (typeof vlan_trunklist_orig == "string") ? vlan_trunklist_orig : "";
++	let sdn_all_rl_tmp = JSON.parse(JSON.stringify(sdn_all_rl_json));
++	const del_sdn_rl = sdn_all_rl_tmp.filter(function(item){ return idxs.indexOf(String(item.sdn_rl.idx)) != -1; });
++	if(idxs.length == 0 || del_sdn_rl.length != idxs.length || !del_sdn_rl.every(function(item){ return reaper_mdel_ok(item, trunk); }))
++		return null;
++	sdn_all_rl_tmp = sdn_all_rl_tmp.filter(function(item){ return idxs.indexOf(String(item.sdn_rl.idx)) == -1; });
++	$.each(sdn_all_rl_tmp, function(index, sdn_all_rl){
++		sdn_all_rl.sdn_access_rl = sdn_all_rl.sdn_access_rl.filter(function(item){
++			return idxs.indexOf(String(item.access_sdn_idx)) == -1 && idxs.indexOf(String(item.sdn_idx)) == -1;
++		});
++	});
++	const del_vlan = del_sdn_rl.filter(function(item){ return item.vlan_rl != undefined && item.vlan_rl.vlan_idx != undefined; })
++		.map(function(item){ return String(item.vlan_rl.vlan_idx); });
++	vlan_rl_json = vlan_rl_json.filter(function(item){ return del_vlan.indexOf(String(item.vlan_idx)) == -1; });
++	const sdn_all_list = parse_JSONToStr_sdn_all_list({"sdn_all_rl": sdn_all_rl_tmp, "vlan_rl": JSON.parse(JSON.stringify(vlan_rl_json))});
++	let nvramSet_obj = {"action_mode": "apply", "rc_service": "start_sdn_del;restart_wireless;"};
++	let gone_types = [], game_changed = false;
++	const adguard = (typeof support_adguard_dns != "undefined" && support_adguard_dns && $("#adguard_iframe")[0]) ? true : false;
++	$.each(del_sdn_rl, function(index, item){
++		const apg = item.apg_rl.apg_idx;
++		nvramSet_obj["apg" + apg + "_enable"] = "0";
++		nvramSet_obj["apg" + apg + "_disabled"] = "0";
++		nvramSet_obj["apg" + apg + "_rg_devs"] = "";
++		nvramSet_obj["apg" + apg + "_rg_mdns"] = "";
++		nvramSet_obj["apg" + apg + "_ap_isolate_lan"] = "";
++		if(["Gaming", "Kids", "VPN"].indexOf(item.sdn_rl.sdn_name) != -1 && gone_types.indexOf(item.sdn_rl.sdn_name) == -1)
++			gone_types.push(item.sdn_rl.sdn_name);
++		if(adguard && item.subnet_rl != undefined && item.subnet_rl.dot_enable == "1")
++			nvramSet_obj["dot" + item.subnet_rl.subnet_idx + "_rl"] = "";
++		if(typeof support_gaming != "undefined" && support_gaming && item.sdn_rl.sdn_name == "Gaming" && !$.isEmptyObject(item.subnet_rl)){
++			const sdn_addr = item.subnet_rl.addr;
++			const sdn_subnet_arr = sdn_addr.substr(0, sdn_addr.lastIndexOf(".")).split(".");
++			game_vts_rulelist_json = game_vts_rulelist_json.filter(function(rule){
++				const ip_arr = rule.internal_ip.split(".");
++				return !(ip_arr[0] === sdn_subnet_arr[0] && ip_arr[1] === sdn_subnet_arr[1] && ip_arr[2] === sdn_subnet_arr[2]);
++			});
++			game_changed = true;
++		}
++		if(!$.isEmptyObject(item.dhcpres_rl) && item.dhcpres_rl.idx != "")
++			nvramSet_obj["dhcpres" + item.dhcpres_rl.idx + "_rl"] = "";
++	});
++	if(typeof support_ledg_sdn != "undefined" && support_ledg_sdn && gone_types.length > 0){
++		nvramSet_obj["ledg_sdn"] = reaper_mdel_ledg(gone_types, sdn_all_rl_tmp, (typeof ledg_sdn_json == "object") ? ledg_sdn_json : {});
++		nvramSet_obj.rc_service = "restart_ledg;" + nvramSet_obj.rc_service;
++	}
++	if(httpApi.nvramGet(["qos_enable"]).qos_enable == "1")
++		nvramSet_obj.rc_service += "restart_qos;restart_firewall;";
++	if(adguard)
++		nvramSet_obj.rc_service += "restart_stubby;";
++	if(game_changed){
++		nvramSet_obj["game_vts_rulelist"] = parse_JSONToStr_game_vts_rulelist_json(game_vts_rulelist_json);
++		if(nvramSet_obj.rc_service.indexOf("restart_firewall;") == -1)
++			nvramSet_obj.rc_service += "restart_firewall;";
++	}
++	$.extend(nvramSet_obj, sdn_all_list);
++	$.extend(nvramSet_obj, parse_JSONToStr_del_sdn_all_rl(del_sdn_rl));
++	selected_sdn_idx = "";
++	return nvramSet_obj;
++}
++/* REAPER-SDN-MULTIDEL-END */
+ /* REAPER-APISO-LAN-BEGIN (2026-11-19, owner decision): AP Isolation is a choice on every network that has the
+    switch - Off / Wi-Fi only (default) / Wi-Fi and LAN ports. The switch stays the stock key (apmN_ap_isolate for the
+    main network, apgN_ap_isolate for the others); the choice row under it, shown while the switch is on, stores
+-- 
+2.25.1
+

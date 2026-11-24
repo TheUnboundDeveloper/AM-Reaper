@@ -106,15 +106,17 @@ harness = r'''
 #include <string.h>
 #include <strings.h>
 #include <ctype.h>
+#include "reaper_dut_redir.h"	/* 2026-11-20 (item 9): reaper_host_is_self checks the typed login-redirect name */
 #define DUT_DOMAIN_NAME "www.asusrouter.com"
 #define OLD_DUT_DOMAIN_NAME "router.asus.com"
 static char referer_url[128], host_name[64];
-static const char *nv_ip = "192.168.50.1", *nv_hn = "RT-BE96U-1234", *nv_dom = "lan";
+static const char *nv_ip = "192.168.50.1", *nv_hn = "RT-BE96U-1234", *nv_dom = "lan", *nv_dut = "";
 static const char *nvram_safe_get(const char *k)
 {
 	if (!strcmp(k, "lan_ipaddr")) return nv_ip;
 	if (!strcmp(k, "lan_hostname")) return nv_hn;
 	if (!strcmp(k, "lan_domain")) return nv_dom;
+	if (!strcmp(k, "reaper_dut_redir_host")) return nv_dut;
 	return "";
 }
 static long now_t = 1000;
@@ -148,7 +150,7 @@ int main(void)
 	memcpy(longq, "cfg_onboarding.cgi?flag=AMesh&id=", 33);
 	C("same_origin_xhr",      "netool.cgi", "netool.cgi", "post", "same-origin", L, "http://192.168.50.1/Reaper_NetTools.asp\r\n");
 	C("xsite_foreign_ref",    "netool.cgi", "netool.cgi?x=1", "get", "cross-site", L, "https://evil.example/a.html\r\n");
-	C("xsite_no_ref",         "set_iperf3_cli.cgi", "set_iperf3_cli.cgi?x=1", "get", "cross-site", L, "");
+	C("xsite_no_ref",         "apply.cgi", "apply.cgi?x=1", "get", "cross-site", L, "");	/* was set_iperf3_cli.cgi (removed, v3.8.4 batch C) */
 	CX("curl_no_headers",     "netool.cgi", "netool.cgi", "post", "", L, "", "curl/8.4.0", 0);
 	C("typed_url_none",       "netool.cgi", "netool.cgi", "get", "none", L, "");
 	/* review 2026-11-17 (P6-2-1): a row with an output function of its own is looked at whatever its name is */
@@ -164,10 +166,18 @@ int main(void)
 	C("plainfile_xsite",      "ikev2_cert_mobile.pem", "ikev2_cert_mobile.pem", "get", "cross-site", L, "https://evil.example/\r\n");
 	/* review 2026-10-24 S-B-1: the plain-HTTP listener */
 	CX("http_browser_no_headers",      "netool.cgi", "netool.cgi?x=1", "get", "", L, "", MOZ, 0);
-	CX("http_browser_no_headers_post", "wl_apply.cgi", "wl_apply.cgi", "post", "", L, "", MOZ, 0);
+	CX("http_browser_no_headers_post", "apply.cgi", "apply.cgi", "post", "", L, "", MOZ, 0);	/* was wl_apply.cgi (removed, batch C) */
 	CX("https_browser_no_headers",     "netool.cgi", "netool.cgi?x=1", "get", "", L, "", MOZ, 1);
 	CX("http_browser_same_ref",        "netool.cgi", "netool.cgi", "post", "", L, "http://192.168.50.1/Reaper_Analysis.asp\r\n", MOZ, 0);
 	CX("http_browser_self_ref",        "netool.cgi", "netool.cgi", "get", "", L, "http://www.asusrouter.com/x.asp\r\n", MOZ, 0);
+	/* 2026-11-20 (item 9): the name typed for the login redirect is this router too; a bad stored one never is */
+	CX("http_typed_ref_unset",         "netool.cgi", "netool.cgi", "get", "", L, "http://router.example.net/x.asp\r\n", MOZ, 0);
+	nv_dut = "router.example.net";
+	CX("http_typed_ref",               "netool.cgi", "netool.cgi", "get", "", L, "http://Router.Example.NET/x.asp\r\n", MOZ, 0);
+	CX("http_typed_ref_other",         "netool.cgi", "netool.cgi", "get", "", L, "http://router.example.net.evil.example/x.asp\r\n", MOZ, 0);
+	nv_dut = "evil.example/x";
+	CX("http_typed_ref_bad",           "netool.cgi", "netool.cgi", "get", "", L, "http://evil.example/x.asp\r\n", MOZ, 0);
+	nv_dut = "";
 	CX("http_browser_sfs_same_origin", "netool.cgi", "netool.cgi", "get", "same-origin", L, "", MOZ, 0);
 	CX("http_no_ua_no_headers",        "netool.cgi", "netool.cgi", "get", "", L, "", NULL, 0);
 	CX("http_script_no_headers",       "netool.cgi", "netool.cgi", "get", "", L, "", "python-requests/2.32", 0);
@@ -179,8 +189,8 @@ int main(void)
 	C("aimesh_other_case_not_lock",    "cfg_onboarding.cgi", "cfg_onboarding.cgi?flag=AMesh&id=x&%52e_mac=AA", "get", "cross-site", "www.asusrouter.com", "");
 	CX("aimesh_conncap_http_browser",  "cfg_onboarding.cgi", "cfg_onboarding.cgi?flag=AMesh&id=AABBCCDDEEFF", "get", "", "www.asusrouter.com", "", MOZ, 0);
 	C("aimesh_long_query_refused",     "cfg_onboarding.cgi", longq, "get", "cross-site", "www.asusrouter.com", "");
-	C("old_browser_foreign",  "wl_apply.cgi", "wl_apply.cgi?x=1", "get", "", L, "http://evil.example/\r\n");
-	C("old_browser_same",     "wl_apply.cgi", "wl_apply.cgi", "post", "", L, "http://192.168.50.1/Advanced_Wireless_Content.asp\r\n");
+	C("old_browser_foreign",  "apply.cgi", "apply.cgi?x=1", "get", "", L, "http://evil.example/\r\n");
+	C("old_browser_same",     "apply.cgi", "apply.cgi", "post", "", L, "http://192.168.50.1/Advanced_Wireless_Content.asp\r\n");
 	C("page_not_cgi",         "Main_Analysis_Content.asp", "Main_Analysis_Content.asp", "get", "cross-site", L, "https://evil.example/\r\n");
 	C("same_site_foreign",    "netool.cgi", "netool.cgi", "get", "same-site", "router.example.lan", "http://evil.example.lan/\r\n");
 	C("self_ip_to_domain",    "netool.cgi", "netool.cgi", "get", "cross-site", "www.asusrouter.com", "http://192.168.50.1/x.asp\r\n");
@@ -259,7 +269,7 @@ EXPECT = {
     # review 2026-10-24 S-B-1: plain HTTP, a browser with neither header is cross-site; scripts as before
     # review 2026-11-03 A-1: and on HTTPS too (a browser without Fetch Metadata whose Referer a page suppressed)
     "http_browser_no_headers": 1, "http_browser_no_headers_post": 1, "https_browser_no_headers": 1,
-    "http_browser_same_ref": 0, "http_browser_self_ref": 0, "http_browser_sfs_same_origin": 0,
+    "http_browser_same_ref": 0, "http_browser_self_ref": 0, "http_typed_ref_unset": 1, "http_typed_ref": 0, "http_typed_ref_other": 1, "http_typed_ref_bad": 1, "http_browser_sfs_same_origin": 0,
     "http_no_ua_no_headers": 0, "http_script_no_headers": 0, "http_browser_page_not_cgi": 0,
     # review 2026-11-17 (P6-2-1): rows with an output function of their own, whatever the name; pages stay out
     "ownout_cert_xsite": 1, "ownout_http_nav": 1, "ownout_same_click": 0, "ownout_http_click": 0, "ownout_typed": 0,
@@ -272,7 +282,7 @@ EXPECT = {
 with tempfile.TemporaryDirectory() as td:
     c = os.path.join(td, "t.c"); exe = os.path.join(td, "t")
     open(c, "w").write(harness)
-    r = subprocess.run([CC, "-std=gnu99", "-Wall", "-Wextra", "-Werror", "-Wno-unused-function", "-Wno-unused-parameter", "-o", exe, c],
+    r = subprocess.run([CC, "-std=gnu99", "-Wall", "-Wextra", "-Werror", "-Wno-unused-function", "-Wno-unused-parameter", "-I", os.path.join(SRC, "shared"), "-o", exe, c],
                        capture_output=True, text=True)
     check("the guard helpers compile cleanly on the host (-Wall -Wextra -Werror)", r.returncode == 0, r.stderr)
     if r.returncode != 0:

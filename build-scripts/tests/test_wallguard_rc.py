@@ -146,7 +146,9 @@ check("rc: rednsd's conf and the REAPER_EDNS rule write the normalised MAC",
       enc.count("ether_etoa(ea, macbuf)") == 2 and "--mac-source %s -j RETURN\\n\", mac)" not in enc)
 fwd = read("dnsmasq/src/forward.c"); eng = read("dnsmasq/src/wallguard.c")
 check("dnsmasq: a duplicate query joins one in flight only when Wallguard judges both askers alike (LOW: shared CNAME verdict)",
-      "(wallguard_merge_ok(&forward->frec_src.wallguard_client, reaper_client(udpaddr), now) || (forward = NULL, 0))" in fwd
+      # v3.8.4 (REAPER-DREAD-EXEMPT): ... and only when Dreadwatch judges both alike (test_dreadwatch_exempt.py)
+      "((wallguard_merge_ok(&forward->frec_src.wallguard_client, reaper_client(udpaddr), now) &&" in fwd
+      and "reaper_nx_merge_ok(&forward->frec_src.wallguard_client, reaper_client(udpaddr), now)) || (forward = NULL, 0)))" in fwd
       and "int wallguard_merge_ok(union mysockaddr *a, union mysockaddr *b, time_t now)" in eng)
 check("httpd: rednsd's status file is opened O_NONBLOCK (LOW: a FIFO hung httpd)",
       "RENC_NOTE : RENC_STATUS, O_RDONLY | O_NOFOLLOW | O_NONBLOCK)" in web)

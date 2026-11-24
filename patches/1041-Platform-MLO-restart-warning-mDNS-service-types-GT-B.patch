@@ -1,0 +1,1176 @@
+From 558ac01ac7fbfb545090dbdd656502b572b38e12 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Tue, 24 Nov 2026 11:43:44 -0500
+Subject: [PATCH] Platform: MLO restart warning, mDNS service types, GT-BE98
+ Pro pressure sensor, diagnostics v1.3.62
+
+- MLO: after a soft restart with MLO on, the router checks whether the radios' PCIe link came back and warns (dashboard
+  and MLO page) that a power cycle is needed when it did not. The check only counts once the router has logged the
+  link line on an earlier start, so a board that words it differently never warns falsely.
+- mDNS across networks: chosen service types can be limited on the main reflector too (avahi reflect-core-types).
+- GT-BE98 Pro: the pressure sensor driver is built; /bin/ceventd is linked for the event daemon's consumers.
+- IPsec: the strongSwan vici plugin is not loaded (nothing uses swanctl).
+- Diagnostics v1.3.62: the features of v3.4.9 - v3.8.3 in the report (sections 3c, 4d, 14h), the login redirect
+  host and the review seal masked.
+- Defaults for the new switches (all off where optional).
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ release/src-rt/target.mak                     |   4 +
+ release/src/router/Makefile                   |   4 +
+ release/src/router/avahi/avahi-core/core.h    |   1 +
+ release/src/router/avahi/avahi-core/server.c  |  28 ++-
+ release/src/router/avahi/avahi-daemon/main.c  |  37 +++
+ release/src/router/others/reaper_diag         | 225 +++++++++++++++++-
+ release/src/router/rc/Makefile                |   1 +
+ release/src/router/rc/lan.c                   |   1 +
+ release/src/router/rc/rc.h                    |  13 +-
+ release/src/router/rc/rc_ipsec.c              |   7 +
+ release/src/router/rc/reaper_mloboot.c        | 158 ++++++++++++
+ release/src/router/rc/services.c              |  37 ++-
+ release/src/router/shared/defaults.c          |  11 +
+ release/src/router/www/Main_ReaperDash.asp    |  44 +++-
+ release/src/router/www/Reaper_Diag.asp        |   2 +-
+ release/src/router/www/Reaper_MLO.asp         |   5 +-
+ .../src/router/www/reaper/reaper_mdns_svc.js  |  56 +++++
+ 17 files changed, 613 insertions(+), 21 deletions(-)
+ create mode 100644 release/src/router/rc/reaper_mloboot.c
+ create mode 100644 release/src/router/www/reaper/reaper_mdns_svc.js
+
+diff --git a/release/src-rt/target.mak b/release/src-rt/target.mak
+index 9b12f8ff87..b99f618983 100644
+--- a/release/src-rt/target.mak
++++ b/release/src-rt/target.mak
+@@ -371,6 +371,10 @@ export GT-BE98_PRO += BUILD_NAME="GT-BE98_PRO" EXT_PHY="BCM84880" NVSIZE="192" D
+ 		EXTRA_KERNEL_CONFIGS="BCM_JUMBO_FRAME=y BCM_MAX_MTU_SIZE=10240 CONFIG_BCM_IGNORE_BRIDGE_MTU=y" MAX_VPNF=4 \
+ 		WTFAST_V2=y AMAS_OB_DISABLE_DSAP=y USB_WAN_BACKUP=y AUTO_WANPORT=y MULTISERVICE_WAN=y \
+ 		NFS=n SNMPD=y TOR=y UPNPIGD2=y NANO=y NTPD=y IPSET=y VPN_FUSION_MERLIN=y
++# reaper 2026-11-20 (owner, v3.8.4 driver review, REAPER-GTBE98PRO-PRESSURE): stock 3006.102.39442 builds the ICP201XX pressure
++# sensor for the GT-BE98 Pro (the GT-BE98PRO_ICP board's icp201xx@63 node; /sbin/pressure, AFC LED GPIO); this
++# block lacked it. Same flag as GT-BE19000 / BQ16_PRO.
++export GT-BE98_PRO += PRESSURE_SENSOR=y
+ 
+ export RT-BE88U := $(HND-96813_BASE)
+ export RT-BE88U += BUILD_NAME="RT-BE88U" EXT_PHY="BCM84880" NVSIZE="192" DHDAP=y REPEATER=y IPV6SUPP=y HTTPS=y ARM=y AUTODICT=y \
+diff --git a/release/src/router/Makefile b/release/src/router/Makefile
+index 04e521f36e..de213df3bc 100644
+--- a/release/src/router/Makefile
++++ b/release/src/router/Makefile
+@@ -10958,6 +10958,10 @@ endif
+ 
+ cevent_app-install: cevent_app
+ 	+$(MAKE) -C $(CEVENT_APP_DIR) install EXTRA_LDFLAGS=$(EXTRA_LDFLAGS) INSTALLDIR=$(INSTALLDIR)/cevent_app
++	# reaper 2026-11-20 (owner, v3.8.4 driver review, REAPER-CEVENTD-BIN): rc starts /bin/ceventd (start_ceventd) but the app
++	# installs /usr/sbin/ceventd, so the daemon never ran; stock ships it in /bin. A link keeps one copy.
++	install -d $(INSTALLDIR)/cevent_app/bin
++	ln -sf ../usr/sbin/ceventd $(INSTALLDIR)/cevent_app/bin/ceventd
+ 
+ cevent_app-clean:
+ 	+$(MAKE) -C $(CEVENT_APP_DIR) clean EXTRA_LDFLAGS=$(EXTRA_LDFLAGS)
+diff --git a/release/src/router/avahi/avahi-core/core.h b/release/src/router/avahi/avahi-core/core.h
+index b703bd0c82..b4a707661c 100644
+--- a/release/src/router/avahi/avahi-core/core.h
++++ b/release/src/router/avahi/avahi-core/core.h
+@@ -73,6 +73,7 @@ typedef struct AvahiServerConfig {
+     char **aliases;                   /**< Additional names to publish as CNAME for this host. */
+     AvahiStringList *reflect_interfaces; /**< reaper 2026-11-14: if enable_reflector is 1 and this is set, only these interfaces take part in reflection */
+     AvahiStringList *reflect_guest;      /**< reaper 2026-11-19: one "<ifname>:<type>:<type>..." per guest interface - reflected only to and from the reflect_interfaces, through that guest's service types; never guest to guest; no local records on it */
++    char *reflect_core_types;            /**< reaper 2026-11-20: "<type>:<type>..." - between the reflect_interfaces only these service types (the reflect_guest filter); NULL = unfiltered */
+ } AvahiServerConfig;
+ 
+ /** Allocate a new mDNS responder object. */
+diff --git a/release/src/router/avahi/avahi-core/server.c b/release/src/router/avahi/avahi-core/server.c
+index 610d31062f..d41b596f5c 100644
+--- a/release/src/router/avahi/avahi-core/server.c
++++ b/release/src/router/avahi/avahi-core/server.c
+@@ -514,7 +514,8 @@ static int reflect_iface_ok(AvahiServer *s, AvahiInterface *i) {
+ /* REAPER-RGUEST-BEGIN reaper 2026-11-19 (owner): reflect-guest - device discovery between the main network and chosen
+  * guest networks, star only. An interface named in reflect-guest ("<ifname>:<type>:<type>...") is a GUEST interface;
+  * the interfaces in reflect-interfaces are the CORE (with reflect-guest set, an empty reflect-interfaces names none).
+- *   core <-> core   the reflect-interfaces rule above, unfiltered;
++ *   core <-> core   the reflect-interfaces rule above, unfiltered - or, with reflect-core-types set (reaper 2026-11-20,
++ *                   REAPER-MDNS-CORETYPES), through those service types by the same filter as below;
+  *   core <-> guest  reflected through THAT guest's service types, both directions;
+  *   guest <-> guest never; an interface in neither list never.
+  * The filter (only when one end is a guest): PTR whose owner is an allowed type (or its subtype) and whose target is
+@@ -647,7 +648,13 @@ static int reflect_pair_ok(AvahiServer *s, AvahiInterface *i, AvahiInterface *j,
+         *types = gi ? gi : gj;
+         return 1;
+     }
+-    return rg_core_ok(s, i) && rg_core_ok(s, j);
++    if (!rg_core_ok(s, i) || !rg_core_ok(s, j))
++        return 0;
++    /* reaper 2026-11-20 (REAPER-MDNS-CORETYPES): the main side's own type list (Tweaks), NULL = unfiltered. Its
++     * records cross as rg_cross_ok() with from_guest 0 = rg_record_ok() only; legacy unicast (relayed untouched,
++     * "!gt") then stays on its own network. */
++    *types = s->config.reflect_core_types;
++    return 1;
+ }
+ 
+ static void* rg_found_callback(AVAHI_GCC_UNUSED AvahiCache *c, AVAHI_GCC_UNUSED AvahiKey *pattern, AVAHI_GCC_UNUSED AvahiCacheEntry *e, void* userdata) {
+@@ -2019,6 +2026,7 @@ AvahiServerConfig* avahi_server_config_init(AvahiServerConfig *c) {
+     c->reflect_filters = NULL;
+     c->reflect_interfaces = NULL;
+     c->reflect_guest = NULL;
++    c->reflect_core_types = NULL;
+     c->add_service_cookie = 0;
+     c->enable_wide_area = 0;
+     c->n_wide_area_servers = 0;
+@@ -2044,12 +2052,13 @@ void avahi_server_config_free(AvahiServerConfig *c) {
+     avahi_string_list_free(c->reflect_filters);
+     avahi_string_list_free(c->reflect_interfaces);
+     avahi_string_list_free(c->reflect_guest);
++    avahi_free(c->reflect_core_types);
+     avahi_string_list_free(c->allow_interfaces);
+     avahi_string_list_free(c->deny_interfaces);
+ }
+ 
+ AvahiServerConfig* avahi_server_config_copy(AvahiServerConfig *ret, const AvahiServerConfig *c) {
+-    char *d = NULL, *h = NULL;
++    char *d = NULL, *h = NULL, *rct = NULL;
+     AvahiStringList *browse = NULL, *allow = NULL, *deny = NULL, *reflect = NULL, *rifs = NULL, *rguest = NULL;
+     assert(ret);
+     assert(c);
+@@ -2115,6 +2124,18 @@ AvahiServerConfig* avahi_server_config_copy(AvahiServerConfig *ret, const AvahiS
+         return NULL;
+     }
+ 
++    if (c->reflect_core_types && !(rct = avahi_strdup(c->reflect_core_types))) {	/* reaper 2026-11-20 */
++        avahi_string_list_free(rguest);
++        avahi_string_list_free(rifs);
++        avahi_string_list_free(reflect);
++        avahi_string_list_free(allow);
++        avahi_string_list_free(browse);
++        avahi_string_list_free(deny);
++        avahi_free(h);
++        avahi_free(d);
++        return NULL;
++    }
++
+     *ret = *c;
+     ret->host_name = h;
+     ret->domain_name = d;
+@@ -2124,6 +2145,7 @@ AvahiServerConfig* avahi_server_config_copy(AvahiServerConfig *ret, const AvahiS
+     ret->reflect_filters = reflect;
+     ret->reflect_interfaces = rifs;
+     ret->reflect_guest = rguest;
++    ret->reflect_core_types = rct;
+ 
+     return ret;
+ }
+diff --git a/release/src/router/avahi/avahi-daemon/main.c b/release/src/router/avahi/avahi-daemon/main.c
+index ca21568734..a0b3048cc3 100644
+--- a/release/src/router/avahi/avahi-daemon/main.c
++++ b/release/src/router/avahi/avahi-daemon/main.c
+@@ -662,6 +662,37 @@ static char *reaper_rg_entry(const char *v) {
+     return out;
+ }
+ 
++/* reaper 2026-11-20 (REAPER-MDNS-CORETYPES, owner): reflect-core-types=<type>:<type>... - the service types the
++ * reflector relays between the reflect-interfaces (rc writes them expanded and validated from reaper_mdns_types).
++ * Each must pass reaper_rg_type_ok(), at most 32 are kept. An empty value = unfiltered (NULL); a value with no valid
++ * type at all relays none (an empty list, never unfiltered by mistake). */
++static char *reaper_core_types(const char *v) {
++    const char *t, *e;
++    size_t tl;
++    unsigned n = 0;
++    char *out, *o;
++
++    if (!v || !*v)
++        return NULL;
++    if (!(out = avahi_new(char, strlen(v) + 1)))
++        return NULL;
++    o = out;
++    for (t = v; t; t = e ? e + 1 : NULL) {
++        e = strchr(t, ':');
++        tl = e ? (size_t) (e - t) : strlen(t);
++        if (reaper_rg_type_ok(t, tl) && n < 32) {
++            if (o != out)
++                *o++ = ':';
++            memcpy(o, t, tl);
++            o += tl;
++            n++;
++        } else if (tl)
++            avahi_log_warn("reflect-core-types: service type \"%.*s\" ignored", (int) tl, t);
++    }
++    *o = 0;
++    return out;
++}
++
+ static int load_config_file(DaemonConfig *c) {
+     int r = -1;
+     AvahiIniFile *f;
+@@ -929,6 +960,10 @@ static int load_config_file(DaemonConfig *c) {
+ 
+                     avahi_strfreev(e);
+                 }
++                else if (strcasecmp(p->key, "reflect-core-types") == 0) {	/* reaper 2026-11-20 */
++                    avahi_free(c->server_config.reflect_core_types);
++                    c->server_config.reflect_core_types = reaper_core_types(p->value);
++                }
+                 else if (strcasecmp(p->key, "reflect-guest") == 0) {	/* reaper 2026-11-19 */
+                     char **e, **t;
+ 
+@@ -1817,6 +1852,8 @@ int main(int argc, char *argv[]) {
+             if (config.server_config.enable_reflector)
+                 for (l = config.server_config.reflect_guest; l; l = l->next)
+                     avahi_log_info("reflect-guest %s: a guest network - only these service types cross to and from the main network; the router's own records stay off it.", (const char*) l->text);
++            if (config.server_config.enable_reflector && config.server_config.reflect_core_types)	/* reaper 2026-11-20 */
++                avahi_log_info("reflect-core-types %s: between the main-side networks only these service types are relayed.", config.server_config.reflect_core_types);
+         }
+ 
+         if (run_server(&config) == 0)
+diff --git a/release/src/router/others/reaper_diag b/release/src/router/others/reaper_diag
+index b0237ac72b..5263014162 100644
+--- a/release/src/router/others/reaper_diag
++++ b/release/src/router/others/reaper_diag
+@@ -1,6 +1,15 @@
+ #!/bin/sh
+ # ============================================================================
+-#  REAPER-DIAG v1.3.61 (2026-11-18) - sanitized one-shot diagnostic bundle
++#  REAPER-DIAG v1.3.62 (2026-11-20) - sanitized one-shot diagnostic bundle
++#  v1.3.62 (owner 2026-11-20, REAPER-DIAG-V1362): the features of v3.4.9-v3.8.3 in the report. New 3c (mount flags,
++#  conntrack helpers, the system log flood cap, the USB 3 levers), 4d (guest networks: isolation per network, the
++#  v3.8.3 opt-ins, AP Isolation and its LAN choice, bridge-port flags, the Guest Portal, the mDNS reflector) and 14h
++#  (Bastion: Wallguard, Encrypted DNS, Let's Encrypt via DNS, the web certificate). 6 prints the delegated prefix
++#  length, 11 the saved lease copies and the device-name stores, 12c SNMP and backhaul parking, 14c the AiMesh
++#  exemption set and the guest layer in the front-chain order. Counts, states, bridge names and the firmware's own
++#  type words only; a network or device name, a list address and a certificate name are never printed.
++#  2026-11-22 (REAPER-FW-LISTS): 14d reports the fetched lists of Policy Routing (ASN / country): lists in use,
++#  the source and size of each saved list, the last check, the daily job. No list name, no address.
+ #  v1.3.61 (review 2026-11-17, Phase 6): a new sanitizer stage (arg) masks secrets written into free text - a
+ #  `name=value` whose name ends in token / password / secret / apikey and the like, the user:password part of a URL,
+ #  a "Bearer" value - wherever they stand (a cron line the user added, a process command line, an add-on's log
+@@ -46,8 +55,8 @@
+ #  12 and 17, and the threat-domain list state (names loaded, cache, last build,
+ #  which dnsmasq instances include it) in 14, each with a FINDING when something
+ #  is on but not in force.
+-#  Runs on ANY Reaper model (RT-BE96U / RT-BE86U / RT-BE88U / GT-BE98 /
+-#  GT-BE98_PRO) - radios, ports and features are discovered at runtime.
++#  Runs on ANY Reaper model (RT-BE96U / RT-BE86U / RT-BE88U / GT-BE98 / GT-BE98_PRO /
++#  GT-BE19000 / BQ16 / BQ16_PRO) - radios, ports and features are discovered at runtime.
+ #
+ #  PRIVACY BY ARCHITECTURE: everything is gathered raw into a private temp
+ #  file, then pushed through ONE sanitizer pass before anything is written
+@@ -197,7 +206,7 @@
+ #  not add an unbounded command here.
+ # ============================================================================
+ PATH=/sbin:/bin:/usr/sbin:/usr/bin
+-VER="REAPER-DIAG v1.3.61"
++VER="REAPER-DIAG v1.3.62"
+ T0="$(date +%s 2>/dev/null)"
+ MODEL="$(nvram get productid 2>/dev/null)"
+ EXTNO="$(nvram get extendno 2>/dev/null)"
+@@ -358,7 +367,7 @@ awk -F= '
+     if (k ~ /passwd|password|_psk|wpa_psk|_key[0-9]?$|radius_key|_secret|secret_|token|private|pincode|pin_code|_pin$|wps_.*pin|serial_no|acc_list|auth_pass|_priv$|_ppsk|ipsec_profile_|_clientlist$|_security$|sshd_authkeys/) cls="SEC"
+     else if (k ~ /username|_user$|_account|http_username|login_name/) cls="USR"
+     else if (k ~ /_ssid$/) cls="SSID"
+-    else if (k ~ /ddns_hostname|_hostname$|computer_name|lan_domain|ddns_username|reaper_ledns_domain|reaper_landns_domain|https_crt_cn/) cls="HOST"
++    else if (k ~ /ddns_hostname|_hostname$|computer_name|lan_domain|ddns_username|reaper_ledns_domain|reaper_landns_domain|https_crt_cn|^reaper_dut_redir_host$/) cls="HOST"
+     # v1.3.61 (review P6-4-G2 / G3, rule diag-sanitizer-name-sources): the ISP-given DHCP domain (wanN_domain - dnsmasq
+     # prints it as "using nameserver ... for domain <d>"), the remote log server, the server of each VPN client
+     # (WireGuard endpoint name and the addresses it resolved to, OpenVPN server) and a typed NTP server. The public
+@@ -939,6 +948,31 @@ else
+ fi
+ GKNV="$(nvram get gk_rl 2>/dev/null | wc -c)"; [ "$GKNV" -gt 1 ] && finding INFO "gk_rl still in nvram ($GKNV bytes) - Gatekeeper list not migrated to /jffs yet (pre-v2.6.3 or Gatekeeper never restarted)"
+ 
++# REAPER-DIAG-3C-BEGIN
++sec "3c. HARDENING (mount flags, conntrack helpers, log flood cap, USB 3 levers)"
++# v1.3.62: hardening a page does not show. /tmp, /var and /jffs are mounted nosuid,nodev at boot (v3.7.6); the kernel
++# attaches no conntrack helper by itself (v3.7.2: nf_conntrack_helper=0, the helpers ride raw-table rules in
++# REAPER_CTH / REAPER_CTHO, FTP passthrough nf_ftp off at factory); syslogd holds back a message that repeats fast
++# and says how many it held back (v3.7.7); the USB 3 write-speed levers are unset unless an A/B test set them (v3.7.0).
++for _mp in /tmp /var /jffs; do
++  _mo="$(awk -v m="$_mp" '$2 == m { o = $4 } END { print o }' /proc/mounts 2>/dev/null)"
++  if [ -z "$_mo" ]; then echo "  mount $_mp        : not a separate mount"; continue; fi
++  _ms=""
++  case ",$_mo," in *,nosuid,*) _ms="nosuid";; *) _ms="SUID-ALLOWED";; esac
++  case ",$_mo," in *,nodev,*) _ms="$_ms,nodev";; *) _ms="$_ms,DEV-ALLOWED";; esac
++  echo "  mount $_mp        : $_ms"
++  case "$_ms" in *ALLOWED*) finding WARN "$_mp is mounted without nosuid/nodev ($_ms) - rc mounts it with both since v3.7.6 (see 3c)";; esac
++done
++_cth="$(cat /proc/sys/net/netfilter/nf_conntrack_helper 2>/dev/null)"
++_cthr=0; for _c in REAPER_CTH REAPER_CTHO; do _n="$(iptables -t raw -S "$_c" 2>/dev/null | grep -c -- '-j CT')"; _cthr=$((_cthr + ${_n:-0})); done
++echo "  conntrack helpers : automatic=${_cth:-?} (0 = only by rule)  raw CT rules=$_cthr  ftp passthrough nf_ftp=$(nvram get nf_ftp 2>/dev/null)  pptp passthrough=$(nvram get fw_pt_pptp 2>/dev/null)"
++[ "$_cth" = 1 ] && finding WARN "the kernel attaches conntrack helpers to every connection on their port (nf_conntrack_helper=1) - rc sets 0 since v3.7.2 (see 3c)"
++_lcs="$(cat /tmp/syslog.log-1 /tmp/syslog.log 2>/dev/null | grep -c 'were suppressed')"
++echo "  log flood cap     : ${_lcs:-0} line(s) saying repeated messages were held back (19 and 19b show which)"
++_u3="$(sed -n 's/^reaper_usb3_\([a-z0-9_]*\)=\(..*\)$/\1=\2/p' "$NVS" 2>/dev/null | tr '\n' ' ')"
++echo "  usb3 levers       : ${_u3:-none set (driver defaults)}"
++# REAPER-DIAG-3C-END
++
+ sec "4. LAN / BRIDGE"
+ for k in lan_proto lan_ipaddr lan_netmask lan_ifname lan_ifnames lanports wanports dhcp_enable_x dhcp_start dhcp_end; do
+   echo "  $k = $(nvram get $k 2>/dev/null)"
+@@ -1070,6 +1104,66 @@ else
+   echo "  ipv6 filter FORWARD: no chain"
+ fi
+ 
++# REAPER-DIAG-4D-BEGIN
++sec "4d. GUEST NETWORKS (isolation, opt-in paths, Guest Portal, device discovery - bridges and counts, no names)"
++# v1.3.62: guest isolation (rc/reaper_guest.c, v3.7.7 on) and the v3.8.3 opt-ins, per enabled network. sdn_rl fields:
++# 1 idx, 2 type, 3 enable, 5 subnet_idx, 6 apg_idx, 7 vpnc_idx, 12 cp_idx, 15 kill switch; subnet_rl field 1 is the
++# subnet index and field 2 its bridge; apgN_* are keyed by apg_idx. The type is printed only when it is one of the
++# firmware's own words. Access Intranet with the main network = an sdn_access_rl pair with sdn_idx 0. "isolated" is
++# read from the live chain: REAPER_GUI rules for that bridge. Chosen devices are counted (apgN_rg_devs holds MACs);
++# discovery service types are printed as the preset words, anything typed is counted.
++_acc="$(nvram get sdn_access_rl 2>/dev/null)"
++nvram get subnet_rl 2>/dev/null | tr '<' '\n' | awk -F'>' 'NF >= 2 && $1 != "" { print $1, $2 }' > "$DFS.br"
++nvram get sdn_rl 2>/dev/null | tr '<' '\n' | awk -F'>' 'function d(x) { gsub(/[ \t]/, "_", x); return (x == "" ? "-" : x) } NF >= 12 && $1 != "" && $3 == "1" { print d($1), d($2), d($5), d($6), d($7), d($12), (NF >= 15 ? d($15) : "-") }' | \
++while read -r SI TY SU AI VC CP KS; do
++  [ "$SU" = - ] && SU=0; [ "$AI" = - ] && AI=0; [ "$VC" = - ] && VC=0; [ "$CP" = - ] && CP=0; [ "$KS" = - ] && KS=0
++  BR="$(awk -v s="$SU" '$1 == s { print $2; exit }' "$DFS.br" 2>/dev/null)"; [ -n "$BR" ] || BR="br0"
++  case "$TY" in MAINFH|MAINBH|Guest|Portal|IoT|Kids|Employee|VPN|LEGACY|Sched|WISP|Customized) ;; *) TY="custom";; esac
++  [ "$SI" = 0 ] && { echo "  sdn=0 main network on br0"; continue; }
++  _am=no; echo "<$_acc" | tr '<' '\n' | awk -F'>' -v s="$SI" '($1 == "0" && $2 == s) || ($2 == "0" && $1 == s) { f = 1 } END { exit !f }' && _am=yes
++  _gi="$(iptables -S REAPER_GUI 2>/dev/null | grep -c -- "-i $BR ")"
++  _ga="$(iptables -S REAPER_GUA 2>/dev/null | grep -c -- "-i $BR ")"
++  _rd="$(nvram get apg${AI}_rg_devs 2>/dev/null | tr -cd '<' | wc -c | tr -d ' ')"
++  _rm="$(nvram get apg${AI}_rg_mdns 2>/dev/null | tr -c 'a-z0-9._-' ' ' | awk '{ for (i = 1; i <= NF; i++) if ($i ~ /^(print|airplay|cast|homekit|audio)$/) p = p $i "+"; else c++ } END { if (p == "" && !c) print "off"; else { sub(/\+$/, "", p); print (p == "" ? "" : p) (c ? (p == "" ? "" : "+") c "-typed" : "") } }')"
++  echo "  sdn=$SI $BR type=$TY  isolated=$( [ "${_gi:-0}" -gt 0 ] && echo "yes($_gi rules)" || echo no)  intranet-with-main=$_am  portal=$( [ "${CP:-0}" != 0 ] && echo yes || echo no)  vpn=$( [ "${VC:-0}" != 0 ] && echo "client-$VC" || echo none)  killswitch=${KS:-0}"
++  echo "         ap-isolation=$(nvram get apg${AI}_ap_isolate 2>/dev/null)  lan-ports-too=$(nvram get apg${AI}_ap_isolate_lan 2>/dev/null)  chosen-devices=${_rd:-0} (live REAPER_GUA rules ${_ga:-0})  discovery=$_rm"
++  [ "${CP:-0}" != 0 ] && [ "${_gi:-0}" = 0 ] && finding WARN "Guest Portal network $BR has no guest isolation rules (REAPER_GUI) - a portal is always isolated; a firewall restart re-applies the layer (see 4d)"
++  [ "${_rd:-0}" -gt 0 ] && [ "${_ga:-0}" = 0 ] && [ "${_gi:-0}" -gt 0 ] && finding WARN "network $BR names ${_rd} main-network device(s) its guests may reach, but no REAPER_GUA rule is live - check that each device has a DHCP reservation inside the LAN (see 4d)"
++done
++rm -f "$DFS.br"
++echo "  main network      : ap-isolation keys on=$(grep -cE '^(wl[0-9]|apm[0-9]+)_ap_isolate=1$' "$NVS" 2>/dev/null)  lan-ports-too=$(nvram get reaper_ap_isolate_lan 2>/dev/null)"
++echo "  -- guest isolation chains (deny-only; REAPER_GUA is the chosen-devices ACCEPT, hooked last) --"
++for CH in REAPER_GUI REAPER_GUF REAPER_GUA; do printf "  %-11s v4=%s v6=%s rules\n" "$CH" "$(iptables -nL $CH 2>/dev/null | tail -n +3 | wc -l)" "$(ip6tables -nL $CH 2>/dev/null | tail -n +3 | wc -l)"; done
++echo "  nat REAPER_GUN    : $(iptables -t nat -nL REAPER_GUN 2>/dev/null | tail -n +3 | wc -l) rules, PREROUTING jump $(iptables -t nat -S PREROUTING 2>/dev/null | grep -c -- '-j REAPER_GUN') (guest DNS held to the network's own resolver)"
++echo "  front-chain jumps : HOOK->GUI v4 $(iptables -nL REAPER_HOOK 2>/dev/null | grep -c REAPER_GUI) v6 $(ip6tables -nL REAPER_HOOK 2>/dev/null | grep -c REAPER_GUI)  HOOK_F->GUF v4 $(iptables -nL REAPER_HOOK_F 2>/dev/null | grep -c REAPER_GUF) v6 $(ip6tables -nL REAPER_HOOK_F 2>/dev/null | grep -c REAPER_GUF)  HOOK_F->GUA v4 $(iptables -nL REAPER_HOOK_F 2>/dev/null | grep -c REAPER_GUA)"
++echo "  apply script      : $( [ -f /tmp/rguest/apply.sh ] && echo "present, written $(date -r /tmp/rguest/apply.sh '+%F %R' 2>/dev/null)" || echo absent)"
++[ -s /tmp/rguest/devskip ] && echo "  chosen devices left out: $(head -c 300 /tmp/rguest/devskip)"
++echo "  zone paths        : reaper_fw_zpol_guest=$(nvram get reaper_fw_zpol_guest 2>/dev/null) (Firewall > Zones; needs the rules engine, reaper_fw_enable=$(nvram get reaper_fw_enable 2>/dev/null))"
++[ "$(nvram get reaper_fw_zpol_guest 2>/dev/null)" = 1 ] && [ "$(nvram get reaper_fw_enable 2>/dev/null)" != 1 ] && finding INFO "zone paths into guest networks are switched on but the rules engine is off - no zone policy opens a path (see 4d)"
++[ -f /tmp/rguest/apply.sh ] && [ "$(iptables -nL REAPER_GUF 2>/dev/null | tail -n +3 | wc -l)" = 0 ] && finding WARN "guest isolation wrote its rules (/tmp/rguest/apply.sh) but REAPER_GUF is empty or absent - guest networks are not isolated until the firewall restarts (see 4d)"
++grep -q -- '-A REAPER_GUN' /tmp/rguest/apply.sh 2>/dev/null && [ "$(iptables -t nat -S PREROUTING 2>/dev/null | grep -c -- '-j REAPER_GUN')" = 0 ] && finding WARN "the guest DNS redirect (nat REAPER_GUN) is written but not hooked - a guest with a hand-set resolver bypasses its network's DNS (see 4d)"
++echo "  -- bridge-port isolation (/sys/class/net/<port>/brport/isolated) --"
++for B in $(ls /sys/class/net 2>/dev/null | grep '^br' | sort); do
++  _fi=0; _ft=0; _wi=0; _wt=0
++  for P in $(ls /sys/class/net/$B/brif 2>/dev/null); do
++    _iso="$(cat /sys/class/net/$P/brport/isolated 2>/dev/null)"
++    case "$P" in wl*|wds*) _ft=$((_ft+1)); [ "$_iso" = 1 ] && _fi=$((_fi+1));; *) _wt=$((_wt+1)); [ "$_iso" = 1 ] && _wi=$((_wi+1));; esac
++  done
++  echo "  $B  isolated ports: wifi $_fi/$_ft  wired $_wi/$_wt"
++  [ "$B" = br0 ] && [ "$_wi" -gt 0 ] && [ "$(nvram get reaper_ap_isolate_lan 2>/dev/null)" != 1 ] && finding INFO "br0 has $_wi isolated wired port(s) although AP Isolation is Wi-Fi only - a VLAN profile with port isolation keeps its ports apart; otherwise the next rwatch tick re-opens them (see 4d)"
++done
++echo "  -- Guest Portal --"
++_cpn="$(nvram get sdn_rl 2>/dev/null | tr '<' '\n' | awk -F'>' 'NF >= 12 && $3 == "1" && $12 != "" && $12 != "0"' | wc -l | tr -d ' ')"
++_chn="$(pidof chilli 2>/dev/null | wc -w)"
++echo "  portal networks=$_cpn  chilli=$_chn  tunnels=$(ls /sys/class/net 2>/dev/null | grep -cE '^tun2[23]$')  portal page listener(8083)=$(netstat -ltn 2>/dev/null | grep -c ':8083 ')  stubby processes=$(pidof stubby 2>/dev/null | wc -w)  watchdog restarts=$(grep -c 'its portal is not running - starting it' /tmp/syslog.log 2>/dev/null)"
++[ "${_cpn:-0}" -gt 0 ] && [ "${_chn:-0}" = 0 ] && finding WARN "a Guest Portal network is on but chilli is not running - guests get no sign-in page; the watchdog restarts it at most three times a boot (see 4d)"
++echo "  -- mDNS across networks (avahi) --"
++_ac=/tmp/avahi/avahi-daemon.conf
++echo "  reaper_mdns_reflect=$(nvram get reaper_mdns_reflect 2>/dev/null) (empty = on)  avahi=$(pidof avahi-daemon 2>/dev/null | wc -w)  enable-reflector=$(sed -n 's/^enable-reflector=//p' $_ac 2>/dev/null)"
++echo "  reflect-interfaces=$(sed -n 's/^reflect-interfaces=//p' $_ac 2>/dev/null)  deny-interfaces=$(sed -n 's/^deny-interfaces=//p' $_ac 2>/dev/null)"
++echo "  discovery star    : $(sed -n 's/^reflect-guest=//p' $_ac 2>/dev/null | tr ',' '\n' | awk -F: 'NF { printf "%s(%d type%s) ", $1, NF - 1, (NF == 2 ? "" : "s") }')"
++# REAPER-DIAG-4D-END
++
+ sec "5. WAN"
+ for k in wans_dualwan wan0_proto wan0_state_t wan0_sbstate_t wan0_auxstate_t link_wan switch_wantag; do
+   echo "  $k = $(nvram get $k 2>/dev/null)"
+@@ -1271,6 +1365,9 @@ V6A="$(nvram get ipv6_autoconf_type 2>/dev/null)"
+ V6F="$(nvram get ipv6_fw_enable 2>/dev/null)"
+ case "$V6A" in 1) V6AN=stateful;; 0|"") V6AN=stateless;; *) V6AN="type $V6A";; esac
+ echo "  ipv6_autoconf_type = ${V6A:-unset} ($V6AN)  ipv6_radvd = $(nvram get ipv6_radvd 2>/dev/null)  ipv6_dhcp_pd = $(nvram get ipv6_dhcp_pd 2>/dev/null)"
++# REAPER-DIAG-6PD: the delegated prefix length decides how many networks get public IPv6 (v3.8.3: /57-/63 are divided
++# too; a /60 serves 15 networks). A network left without a /64 falls back to a private prefix and rc logs it once.
++echo "  delegated prefix  : /$(nvram get ipv6_prefix_length 2>/dev/null)  networks on a private fallback prefix: $(ls /tmp/reaper/v6split_ula.* 2>/dev/null | wc -l)"
+ V6R="$(grep '^dhcp-range=lan,.*:' /etc/dnsmasq.conf 2>/dev/null | head -1)"
+ V6M=""
+ for w in slaac ra-stateless ra-only ra-names ra-advrouter; do
+@@ -1612,6 +1709,13 @@ for LF in /var/lib/misc/dnsmasq.leases /tmp/var/lib/misc/dnsmasq.leases; do
+   fi
+ done
+ 
++# REAPER-DIAG-11-SAVED: the lease files rc keeps on flash (v3.8.0, shared/reaper_leases.c) and the stores the one
++# device-name rule reads (v3.8.0): Names given on the Devices page, reservations, announced hostnames. Counts only.
++_lsv="$(cat /tmp/reaper/leases.saved 2>/dev/null)"; _upt="$(cut -d. -f1 /proc/uptime 2>/dev/null)"
++echo "  saved lease copies: $(ls /jffs/reaper/leases 2>/dev/null | wc -l) file(s) in /jffs/reaper/leases, last written $(case "$_lsv" in ''|*[!0-9]*) echo never;; *) echo "$((${_upt:-0} - _lsv))s ago";; esac)"
++echo "  per-network leases: $(for LF in /var/lib/misc/dnsmasq-*.leases; do [ -f "$LF" ] && printf "%s=%s " "$(basename "$LF" .leases)" "$(grep -vc '^duid' "$LF")"; done)"
++echo "  device names      : given (custom_clientlist)=$(sed -n 's/^custom_clientlist=//p' "$NVS" 2>/dev/null | tr -cd '<' | wc -c | tr -d ' ')  reservations (dhcp_staticlist)=$(sed -n 's/^dhcp_staticlist=//p' "$NVS" 2>/dev/null | tr -cd '<' | wc -c | tr -d ' ')  announced hostnames=$(grep -c . /var/lib/misc/reaper_hostnames 2>/dev/null)"
++
+ sec "11b. CONNTRACK (counts, timeouts - no flows printed)"
+ # v3.3.4: the passive DNS name map behind the Flow Explorer destination names (rdnsmapd,
+ # shared/reaper_dnsmap.h) - counts only: replies parsed, A records written, the table size.
+@@ -1729,12 +1833,18 @@ _rv="$(nvram get rwatch_review 2>/dev/null)"; _rvb=none; _rvu=0; _rvn=0
+ [ -s /jffs/reaper/review/baseline ] && _rvb="$(wc -l < /jffs/reaper/review/baseline | tr -d ' ') items, accepted $(ls -le /jffs/reaper/review/baseline 2>/dev/null | awk '{print $6,$7,$8,$9,$10}')"
+ if [ -r /tmp/reaper/review.json ]; then
+   _rva=$(sed -n 's/.*"armed":\([0-9]*\),"ts":.*/\1/p' /tmp/reaper/review.json); _rvs=$(sed -n 's/.*"armed":[0-9]*,"ts":\([0-9]*\),.*/\1/p' /tmp/reaper/review.json)
+-  _rvu=$(sed -n 's/.*"unreviewed":\([0-9]*\),.*/\1/p' /tmp/reaper/review.json); _rvt=$(sed -n 's/.*"total":\([0-9]*\),.*/\1/p' /tmp/reaper/review.json); _rvn=$(sed -n 's/.*"notices_n":\([0-9]*\)}.*/\1/p' /tmp/reaper/review.json)
++  _rvu=$(sed -n 's/.*"unreviewed":\([0-9]*\),.*/\1/p' /tmp/reaper/review.json); _rvt=$(sed -n 's/.*"total":\([0-9]*\),.*/\1/p' /tmp/reaper/review.json); _rvn=$(sed -n 's/.*"notices_n":\([0-9]*\)[,}].*/\1/p' /tmp/reaper/review.json)
+   _rvr="armed=${_rva:-?} items=${_rvt:-?} unreviewed=${_rvu:-0} login_notices=${_rvn:-0} checked=$(date -d @${_rvs:-0} '+%F %R' 2>/dev/null || echo ${_rvs:-?})"
+ else _rvr="no report yet"; fi
+-echo "  security review   : rwatch_review=${_rv:-unset}  baseline=$_rvb  report: $_rvr"
++# v3.8.4: the seal of the accepted baseline - its STATE only (ok none changed removed unsealed), never the fingerprint
++_rvl=$(sed -n 's/.*"seal":"\([a-z]*\)".*/\1/p' /tmp/reaper/review.json 2>/dev/null)
++[ -n "$_rvl" ] || { [ -n "$(nvram get rwatch_review_seal 2>/dev/null)" ] && _rvl="set, no report yet" || _rvl="not set, no report yet"; }
++echo "  security review   : rwatch_review=${_rv:-unset}  baseline=$_rvb  seal=$_rvl  report: $_rvr"
+ case "$_rvu$_rvn" in *[!0-9]*) _rvu=0; _rvn=0;; esac
+ [ "$_rv" = 1 ] && [ "$_rvb" = none ] && finding INFO "the security review is switched on but no baseline has been accepted - nothing is reported until Accept on the Firewall page, Status tab (see 12)"
++case "$_rvl" in changed|removed) [ "$_rv" = 1 ] && finding WARN "security review: the accepted baseline or the watch rules were changed, or the baseline deleted, outside the Firewall page (state $_rvl) - the Firewall page, Status tab, lists every item as unreviewed (see 12)";;
++  unsealed) [ "$_rv" = 1 ] && finding INFO "security review: the baseline has no seal yet - one Accept on the Firewall page, Status tab, seals it (expected once after the update to v3.8.4)";; esac
++case "$_rvl" in changed|removed|unsealed) _rvu=0;; esac
+ [ "$_rv" = 1 ] && [ "${_rvu:-0}" -gt 0 ] && finding WARN "security review: ${_rvu} unreviewed change(s) to /jffs scripts, configs, SSH keys, add-ons, cron or the exposure settings since the accepted baseline - the Firewall page, Status tab, lists them (see 12)"
+ [ "$_rv" = 1 ] && [ "${_rvn:-0}" -gt 0 ] && finding WARN "security review: ${_rvn} failed-login burst(s) - 10 or more failed SSH or web logins from one source inside a 5 min check; the sources are on the Firewall page, Status tab (counts only here)"
+ echo "  warden            : rwarden_enable=$(nvram get rwarden_enable 2>/dev/null)  cron=$(cru l 2>/dev/null | grep -cE '#rwarden')  chain=$(iptables -nL REAPER_WARDEN >/dev/null 2>&1 && echo present || echo absent)  chain6=$(ip6tables -nL REAPER_WARDEN >/dev/null 2>&1 && echo present || echo absent)"
+@@ -1742,6 +1852,8 @@ echo "  rules engine      : reaper_fw_enable=$(nvram get reaper_fw_enable 2>/dev
+ echo "  policy routing    : reaper_pbr_enable=$(nvram get reaper_pbr_enable 2>/dev/null) active=$(nvram get reaper_pbr_active 2>/dev/null)"
+ echo "  exporter          : reaper_export_mode=$(nvram get reaper_export_mode 2>/dev/null)"
+ echo "  wallguard         : wallguard_enable=$(nvram get wallguard_enable 2>/dev/null) table=$([ -s /tmp/wallguard/db ] && echo built || echo none)"
++echo "  snmp              : snmpd_enable=$(nvram get snmpd_enable 2>/dev/null) wan=$(nvram get snmpd_wan 2>/dev/null) running=$(pidof snmpd 2>/dev/null | wc -w)  (REAPER-DIAG-12C-SNMP)"
++echo "  backhaul parking  : amas_bh_park=$(nvram get amas_bh_park 2>/dev/null) state=$(nvram get amas_bh_state 2>/dev/null)"
+ echo "  -- cron (cru l) --"; cru l 2>/dev/null | sed 's/^/  /'
+ [ "$(nvram get rwarden_enable 2>/dev/null)" = 1 ] && ! iptables -nL REAPER_WARDEN >/dev/null 2>&1 && finding WARN "Warden enabled but REAPER_WARDEN chain absent"
+ _wdir="$(nvram get rwarden_dir 2>/dev/null)"
+@@ -1879,6 +1991,9 @@ echo "  threat domains    : rwarden_dns=${_td:-unset}  names=$_tdn  counted=$_td
+ echo "  threat table      : /tmp/reaper_nx/threat.db $( [ "$_tdt" -gt 0 ] && echo "$_tdt bytes" || echo MISSING )  mapped_by=$_tdm/${_tdc:-0} dnsmasq instance(s)  (one copy in RAM for all; an instance maps it at its first query)"
+ _tdk=/jffs/rwarden/dns.counters; [ "$(nvram get rwarden_stats_save 2>/dev/null)" = 0 ] && _tdk=/tmp/rwarden/dns.counters
+ echo "  dreadwatch        : $(awk '$1=="TOTAL"{t=$2} $1=="DROPPED"{d=$2} $1=="SINCE"{s=$2} $1=="FEED"{f=f " " $2 "=" $3} $1=="CLIENT"{c++} END{printf "blocked=%d not_recorded=%d devices=%d since=%s per_feed:%s", t, d, c, (s ? s : "-"), (f ? f : " none")}' $_tdk 2>/dev/null || echo "no counters")  pending=$( [ -f /tmp/dreadwatch/dns.hits ] && wc -l < /tmp/dreadwatch/dns.hits || echo 0 )  feeds: $(awk '{printf "%s%s=%s/%s", (NR>1?" ":""), $1, $7, $4}' /jffs/rwarden/dns.feeds 2>/dev/null)"
++# v3.8.4 (REAPER-DREAD-EXEMPT): the devices that skip Dreadwatch - counts only, never an address or a name
++_dxe=$(grep -c . /tmp/reaper_nx/dns.exempt 2>/dev/null)
++echo "  dreadwatch exempt : devices=${_dxe:-0} listed-lookups-let-through=$(awk '$1=="PASS"{n+=$3} END{print n+0}' "$_tdk" 2>/dev/null)"
+ [ "$_td" = 1 ] && [ "$_tdn" = 0 ] && finding WARN "threat domains are switched on but no list is loaded - the feeds have not been fetched yet, or every fetch failed (see 14 and the rwarden lines in the log)"
+ [ "$_td" = 1 ] && [ "$_tdn" -gt 0 ] && [ "$_tdt" = 0 ] && finding WARN "threat domains: $_tdn names are counted but the compiled table /tmp/reaper_nx/threat.db is missing - they resolve unfiltered until rc rebuilds it (the nightly update, or a dnsmasq restart)"
+ [ "$_td" = 1 ] && [ "$_tdn" -gt 0 ] && [ "${_tdi:-0}" -lt "${_tdc:-0}" ] && finding WARN "threat domains: the list is built but $((_tdc-_tdi)) dnsmasq instance(s) run without it - a dnsmasq restart loads it (Dreadwatch page: Save, or the nightly update)"
+@@ -1978,7 +2093,8 @@ echo "  onboarding window : status=$(nvram get cfg_obstatus 2>/dev/null) gate=$(
+ 
+ sec "14c. FIREWALL LAYER ORDER + RULES ENGINE (chain order, counts, set sizes)"
+ # v2.6.2: one jump per base chain into REAPER_HOOK/_F/_O; inside, the fixed
+-# order is Warden -> Gatekeeper -> rules engine. Anything else is a defect.
++# order is Warden -> guest isolation (REAPER_GUI/GUF, v3.7.7) -> Gatekeeper -> rules engine, and
++# REAPER_GUA (the chosen main-network devices, v3.8.3) last in REAPER_HOOK_F. Anything else is a defect.
+ LEGACY=0
+ for P in INPUT:REAPER_HOOK FORWARD:REAPER_HOOK_F OUTPUT:REAPER_HOOK_O; do
+   H="${P%%:*}"; C="${P##*:}"
+@@ -1988,6 +2104,12 @@ for P in INPUT:REAPER_HOOK FORWARD:REAPER_HOOK_F OUTPUT:REAPER_HOOK_O; do
+   L="$(iptables -S $H 2>/dev/null | grep -cE -- '-j (REAPER_FW[IFO]|REAPER_WARDEN|REAPER_GK[IF]|RW_SELF)$')"; LEGACY=$((LEGACY + L))
+ done
+ echo "  legacy direct jumps left in INPUT/FORWARD/OUTPUT: $LEGACY (must be 0 on v2.6.2+)"
++# REAPER-DIAG-14C-AIMESH: the shared AiMesh exemption set (v3.6.5) every enforcement layer RETURNs first
++_amr="$(nvram get cfg_relist 2>/dev/null | grep -o ':..:..:..:..:' | wc -l | tr -d ' ')"
++_ams="$(ipset list -t reaper_aimesh 2>/dev/null | sed -n 's/.*Number of entries: //p')"
++echo "  aimesh exemption  : set reaper_aimesh ${_ams:-absent} entries  cfg_relist MAC records $_amr"
++_aml=0; for k in gk_enable reaper_fw_enable reaper_pbr_enable reaper_dot_block; do [ "$(nvram get $k 2>/dev/null)" = 1 ] && _aml=1; done
++[ "$_aml" = 1 ] && [ "${_amr:-0}" -gt 0 ] && { [ -z "$_ams" ] || [ "$_ams" = 0 ]; } && finding WARN "AiMesh nodes are registered but the shared exemption set reaper_aimesh is ${_ams:-absent} - a broad rule can cut a node off; the next rwatch tick refreshes it (see 14c)"
+ [ "$LEGACY" -gt 0 ] && finding WARN "$LEGACY pre-v2.6.2 direct firewall jump(s) still in the base chains - layer order not guaranteed (see 14c)"
+ ANYL=0; for k in rwarden_enable gk_enable reaper_fw_enable; do [ "$(nvram get $k 2>/dev/null)" = 1 ] && ANYL=1; done
+ [ "$ANYL" = 1 ] && ! iptables -nL REAPER_HOOK_F >/dev/null 2>&1 && finding WARN "a Reaper firewall layer is enabled but REAPER_HOOK_F is absent (pre-v2.6.2 image, or hook.sh never ran)"
+@@ -2024,6 +2146,28 @@ done
+ sec "14d. POLICY ROUTING + VPN (rule bands, tunnel state - no keys, no endpoints)"
+ echo "  reaper_pbr        : enable=$(nvram get reaper_pbr_enable 2>/dev/null) active=$(nvram get reaper_pbr_active 2>/dev/null) armed=$(nvram get reaper_pbr_armed 2>/dev/null) rules=$([ -f /jffs/reaper_pbr/lastgood/rulelist ] && grep -o '<' /jffs/reaper_pbr/lastgood/rulelist | wc -l || cnt reaper_pbr_rulelist) store=$([ -f /jffs/reaper_pbr/lastgood/.committed ] && echo /jffs || echo nvram-legacy)"
+ [ -f /tmp/reaper_pbr/expect ] && echo "  mark rules        : expected $(cat /tmp/reaper_pbr/expect) live $(( $(iptables -t mangle -S REAPER_PBR 2>/dev/null | grep -c 'MARK --set') + $(ip6tables -t mangle -S REAPER_PBR 2>/dev/null | grep -c 'MARK --set') )) failed-on-last-apply $(cat /tmp/reaper_pbr/failcount 2>/dev/null || echo ?)"
++# REAPER-FW-LISTS DIAG-BEGIN (2026-11-22): the fetched lists of Policy Routing - ASN lists and country lists
++# (rc/reaper_fw.c rfw_gen_lists, /tmp/reaper_fw/lists.status). AS numbers, country codes and source names are
++# public facts, not the user's; the lists are numbered here, their names are not printed.
++if [ -f /tmp/reaper_fw/lists.status ]; then
++  echo "  -- fetched lists (ASN / country) --"
++  awk -F'|' -v now="$(date +%s)" '
++    $1 == "T" { printf "  last run          : %s, %d s ago\n", $3, now - $2 }
++    $1 == "K" { nk++; printf "  %-17s : source=%s v4=%s v6=%s last-check=%s (%s / %s / %s)%s\n", $2, $3, $5, $6, $8, $9, $10, $11, ($7 > 0 ? sprintf(", %d s ago", now - $7) : "") }
++    $1 == "O" { no++; printf "  list %-2d %-9s : v4 %s=%s v6 %s=%s\n", no, "(" $3 ")", $4, $5, $6, $7 }
++    END { printf "  lists in use=%d saved lists=%d\n", no, nk }' /tmp/reaper_fw/lists.status
++  _fln=$(awk -F'|' '$1 == "O" { n++ } END { print n + 0 }' /tmp/reaper_fw/lists.status)
++  _flf=$(awk -F'|' '$1 == "K" && $8 == "fail" { n++ } END { print n + 0 }' /tmp/reaper_fw/lists.status)
++  _flb=$(awk -F'|' '$1 == "O" && ($4 == "big" || $6 == "big" || $4 == "mem" || $6 == "mem" || $4 == "busy" || $6 == "busy") { n++ } END { print n + 0 }' /tmp/reaper_fw/lists.status)
++  _flc=$(cru l 2>/dev/null | grep -c 'reaper_fw_lists')
++  echo "  daily job=$_flc update-running=$([ -f /tmp/reaper_fw/lists.run ] && echo yes || echo no) saved-on-jffs=$(ls /jffs/reaper_fw/lists 2>/dev/null | wc -l) file(s) $(du -sk /jffs/reaper_fw/lists 2>/dev/null | cut -f1) KB kept-in-memory=$(ls /tmp/reaper_fw/lists.w/c 2>/dev/null | wc -l) file(s)"
++  [ "$_flf" -gt 0 ] && finding WARN "Policy Routing: $_flf fetched list(s) got no answer from any source at the last check - the saved list is still in use (see 14d)"
++  [ "$_flb" -gt 0 ] && finding WARN "Policy Routing: $_flb fetched list(s) are NOT loaded (too large, no free memory, or the set could not be replaced) (see 14d)"
++  [ "$_fln" -gt 0 ] && [ "$_flc" = 0 ] && finding WARN "Policy Routing: fetched lists are in use but their daily update job is not installed (see 14d)"
++else
++  echo "  fetched lists     : none in use"
++fi
++# REAPER-FW-LISTS DIAG-END
+ # v1.3.2 (14e): the routing half of policy routing - the mark rules, the
+ # ip-rule band (9000-9199), the WireGuard flow-cache bypass list, and the
+ # commit-confirm state. Addresses in rules and the bypass list are sanitized
+@@ -2187,6 +2331,69 @@ else
+   echo "  reaper_fwsim not present in this image"
+ fi
+ 
++# REAPER-DIAG-14H-BEGIN
++sec "14h. BASTION: WALLGUARD + ENCRYPTED DNS + CERTIFICATES (switches, counts, list states - no names, no addresses)"
++# v1.3.62: the four Bastion tools side by side, then Wallguard (rc/wallguard.c + wallguard.sh: the compiled table every
++# dnsmasq maps, the subscribed lists and their last download, the operator's rules counted, pauses, the counters),
++# Encrypted DNS (rednsd: listeners by protocol, queries and refusals, devices by protocol; the DHCP option 162 offer;
++# the REAPER_EDNS block), Let's Encrypt via DNS and the web certificate. A list address, a list entry, a device
++# address and an API key are never printed; the certificate names are on the literal list (section 1) and masked.
++echo "  bastion switches  : warden=$(nvram get rwarden_enable 2>/dev/null) dreadwatch=$(nvram get rwarden_dns 2>/dev/null) wallguard=$(nvram get wallguard_enable 2>/dev/null) encrypted-dns dot=$(nvram get reaper_dot_srv 2>/dev/null) doh=$(nvram get reaper_doh_srv 2>/dev/null)  block 853=$(nvram get reaper_dot_block 2>/dev/null) block doh=$(nvram get reaper_doh_block 2>/dev/null)"
++_lc() { if [ -f "$1" ] && [ ! -L "$1" ]; then grep -c . "$1" 2>/dev/null; else echo 0; fi; }
++_wgd=/tmp/wallguard; _wgj=/jffs/wallguard; _wge="$(nvram get wallguard_enable 2>/dev/null)"
++_wgb=0; [ -s $_wgd/db ] && _wgb="$(wc -c < $_wgd/db 2>/dev/null | tr -d ' ')"; case "$_wgb" in ''|*[!0-9]*) _wgb=0;; esac
++_wgm=0; for _p in $(pidof dnsmasq 2>/dev/null); do grep -q "$_wgd/db" /proc/$_p/maps 2>/dev/null && _wgm=$((_wgm+1)); done
++_wgc="$(ls /etc/dnsmasq.conf /etc/dnsmasq-*.conf 2>/dev/null | wc -l | tr -d ' ')"
++echo "  wallguard         : enable=${_wge:-unset} mode=$(nvram get wallguard_mode 2>/dev/null) table=$( [ "$_wgb" -gt 0 ] && echo "$_wgb bytes" || echo none) mapped_by=$_wgm/$_wgc dnsmasq instance(s)  lists in RAM=$(du -sk $_wgd/lists 2>/dev/null | cut -f1) KB"
++echo "  wallguard config  : lists=$(_lc $_wgj/lists) profiles=$(_lc $_wgj/profiles) assignments=$(_lc $_wgj/assign) my-block=$(_lc $_wgj/block) my-allow=$(_lc $_wgj/allow) unbreak-24h=$(_lc $_wgj/allow24) adguard-rules=$(_lc $_wgj/adv) rewrites=$(_lc $_wgj/rewrite) blocked-services=$(_lc $_wgj/services) schedules=$(_lc $_wgj/sched) api-keys=$(_lc $_wgj/keys)"
++if [ -s $_wgd/state ] && [ ! -L $_wgd/state ]; then
++  echo "  list states       : $(awk -v n="$(date +%s)" '$1 ~ /^[a-z0-9_]+$/ { a = ($3 + 0 > 0) ? int((n - $3) / 3600) "h" : "never"; printf "%s=%s(last good %s ago) ", $1, $2, a }' $_wgd/state)"
++  _wgf="$(awk '$1 ~ /^[a-z0-9_]+$/ && $2 != "ok" { printf "%s(%s) ", $1, $2 }' $_wgd/state)"
++  [ "$_wge" = 1 ] && [ -n "$_wgf" ] && finding WARN "Wallguard: list(s) $_wgf did not download on the last run (failed = the previous copy is kept, missing = nothing loaded); the Wallguard page, Lists tab, says why (see 14h)"
++fi
++[ -s $_wgd/build.st ] && [ ! -L $_wgd/build.st ] && echo "  last build        : $(head -n 1 $_wgd/build.st | sed 's/"t":\([0-9]*\)/"age_s":\1/')"
++_wgs="$(sed -n 's/.*"skip":"\([a-z]*\)".*/\1/p' $_wgd/build.st 2>/dev/null)"
++[ "$_wge" = 1 ] && [ -n "$_wgs" ] && finding WARN "Wallguard: the last table build was skipped ($_wgs) - the table in use is older than the lists (see 14h)"
++echo "  pauses            : all=$(awk '$1 == "all"' $_wgd/pause 2>/dev/null | wc -l | tr -d ' ') devices=$(awk '$1 == "mac"' $_wgd/pause 2>/dev/null | wc -l | tr -d ' ')  live view=$( [ -f $_wgd/live.on ] && echo on || echo off)  retry owed=$( [ -f $_wgd/pending ] && echo "yes (tries $(cat $_wgd/tries 2>/dev/null || echo 0))" || echo no)  safe-search addresses=$(_lc $_wgd/safesearch)"
++echo "  wallguard counts  : $(awk '$1 == "TOTAL" { t = $2 } $1 == "SINCE" { s = $2 } $1 == "DROPPED" { d = $2 } $1 == "CNAME" { c = $2 } END { printf "blocked=%d via-cname=%d not_recorded=%d since=%s", t, c, d, (s ? s : "-") }' $_wgj/counters 2>/dev/null)"
++[ "$_wge" = 1 ] && [ "$_wgb" = 0 ] && finding WARN "Wallguard is switched on but its table /tmp/wallguard/db is missing - nothing is blocked until a list arrives (see 14h)"
++[ "$_wge" = 1 ] && [ "$_wgb" -gt 0 ] && [ "$_wgm" = 0 ] && [ "${_wgc:-0}" -gt 0 ] && finding INFO "Wallguard's table is built but no dnsmasq instance has mapped it yet - each maps it at its first query; a restart of DNS is not needed (see 14h)"
++echo "  -- Encrypted DNS (rednsd) --"
++_rs=/tmp/rednsd/run/status.json
++_rsv() { _v="$(sed -n "s/.*\"$1\":\([0-9]*\).*/\1/p" "$_rs" 2>/dev/null | head -1)"; echo "${_v:-0}"; }
++_rst="$(sed -n 's/^{"state":"\([a-z_]*\)".*/\1/p' "$_rs" 2>/dev/null)"
++echo "  rednsd            : running=$(pidof rednsd 2>/dev/null | wc -w) state=${_rst:-no status} up=$(_rsv up)s strict=$(nvram get reaper_dot_strict 2>/dev/null)  rc note: $(sed -n 's/.*"state":"\([^"]*\)".*/\1/p' /tmp/rednsd/note.json 2>/dev/null)"
++echo "  listeners         : $(grep -o '"p":[0-9]*,"wan":[01],"ok":[01],"proto":"do[ht]"' "$_rs" 2>/dev/null | sed 's/"p":\([0-9]*\),"wan":\([01]\),"ok":\([01]\),"proto":"\(do[ht]\)"/\4:\1(wan=\2,ok=\3)/' | sort | uniq -c | awk '{ printf "%s x%s  ", $2, $1 }')"
++echo "  traffic           : conns_open=$(_rsv conns) conns_total=$(_rsv conns_total) queries=$(_rsv queries) doh_queries=$(_rsv doh_queries) refused peer=$(_rsv refused_peer) policy=$(_rsv refused_policy) busy=$(_rsv refused_busy) tls_fail=$(_rsv hs_fail) servfail=$(_rsv servfail) h2_errors=$(_rsv h2_errors)"
++echo "  devices           : $(grep -o '"proto":"do[ht]","q":' "$_rs" 2>/dev/null | sort | uniq -c | awk '{ split($2, a, "\""); printf "%s=%s ", a[4], $1 }')"
++echo "  certificate       : $(sed -n 's/.*"cert":\({[^}]*}\).*/\1/p' "$_rs" 2>/dev/null)"
++_dnr="$(cat /tmp/rednsd/dnr 2>/dev/null)"
++echo "  dhcp option 162   : $( [ -n "$_dnr" ] && echo "$_dnr" | awk '{ printf "published (dot=%s doh=%s)", $2, $3 }' || echo "not published (needs a publicly trusted certificate for the router's name)")"
++# v3.8.4 (REAPER-DNR-STEP): the offer skips the devices DNS Director sends to another server (counts only)
++echo "  option 162 offer  : configs offering=$(grep -l ',162,' /etc/dnsmasq.conf /etc/dnsmasq-*.conf 2>/dev/null | wc -l) device rules left out=$(cat /etc/dnsmasq.conf /etc/dnsmasq-*.conf 2>/dev/null | grep '^dhcp-mac=set:rednodnr,' | sort -u | wc -l) kept in on a redirected network=$(cat /etc/dnsmasq.conf /etc/dnsmasq-*.conf 2>/dev/null | grep '^dhcp-mac=set:reddnr,' | sort -u | wc -l)"
++for T in iptables ip6tables; do
++  if $T -nL REAPER_EDNS >/dev/null 2>&1; then
++    $T -nvxL REAPER_EDNS 2>/dev/null | tail -n +3 | awk -v f="$T" '{ n++; if ($3 == "REJECT" || $3 == "DROP") r += $1 } END { printf "  block chain %-9s: REAPER_EDNS rules=%d refused-pkts=%d\n", f, n + 0, r + 0 }'
++  else
++    echo "  block chain $T: REAPER_EDNS absent"
++  fi
++done
++echo "  doh resolver sets : redns_doh=$(ipset list -t redns_doh 2>/dev/null | sed -n 's/.*Number of entries: //p') redns_doh6=$(ipset list -t redns_doh6 2>/dev/null | sed -n 's/.*Number of entries: //p')"
++{ [ "$(nvram get reaper_dot_srv 2>/dev/null)" = 1 ] || [ "$(nvram get reaper_doh_srv 2>/dev/null)" = 1 ]; } && [ "$(pidof rednsd 2>/dev/null | wc -w)" = 0 ] && finding WARN "Encrypted DNS is switched on but rednsd is not running (rc note: $(sed -n 's/.*"state":"\([^"]*\)".*/\1/p' /tmp/rednsd/note.json 2>/dev/null)) - devices fall back to plain DNS (see 14h)"
++grep -q '"ok":0' "$_rs" 2>/dev/null && [ "$(pidof rednsd 2>/dev/null | wc -w)" -gt 0 ] && finding WARN "Encrypted DNS: a listener could not bind (ok=0 in 14h) - another service holds that port"
++{ [ "$(nvram get reaper_dot_block 2>/dev/null)" = 1 ] || [ "$(nvram get reaper_doh_block 2>/dev/null)" = 1 ]; } && ! iptables -nL REAPER_EDNS >/dev/null 2>&1 && finding WARN "the Encrypted DNS block is switched on but the REAPER_EDNS chain is absent - encrypted DNS around the router is not blocked (see 14h)"
++echo "  -- certificates --"
++_lt="$(nvram get reaper_ledns_token 2>/dev/null)"; _lw="$(nvram get reaper_ledns_when 2>/dev/null)"
++echo "  lets encrypt dns  : enable=$(nvram get reaper_ledns_enable 2>/dev/null) provider=$(nvram get reaper_ledns_provider 2>/dev/null) domain=$( [ -n "$(nvram get reaper_ledns_domain 2>/dev/null)" ] && echo SET || echo EMPTY) token=$( [ -n "$_lt" ] && echo SET || echo EMPTY) state=$(nvram get reaper_ledns_state 2>/dev/null) last=$(case "$_lw" in ''|*[!0-9]*) echo "${_lw:-never}";; *) date -d @$_lw '+%F %R' 2>/dev/null;; esac)"
++_le="$(nvram get reaper_ledns_err 2>/dev/null)"; [ -n "$_le" ] && echo "  last error        : $_le"
++[ "$(nvram get reaper_ledns_enable 2>/dev/null)" = 1 ] && [ "$(nvram get reaper_ledns_state 2>/dev/null)" = fail ] && finding WARN "Let's Encrypt via DNS failed on its last run - the DDNS page shows the provider's answer (see 14h)"
++echo "  stock le_enable   : $(nvram get le_enable 2>/dev/null) (0 none, 1 Let's Encrypt via DDNS, 2 imported)"
++if have openssl && [ -r /etc/cert.pem ]; then
++  echo "  web certificate   : $(openssl x509 -in /etc/cert.pem -noout -issuer 2>/dev/null | sed 's/^issuer= *//')  expires $(openssl x509 -in /etc/cert.pem -noout -enddate 2>/dev/null | sed 's/^notAfter=//')"
++  openssl x509 -in /etc/cert.pem -noout -checkend 0 >/dev/null 2>&1 || finding WARN "the web certificate (/etc/cert.pem) has expired - browsers and Encrypted DNS devices refuse it (see 14h)"
++fi
++# REAPER-DIAG-14H-END
++
+ sec "15. DATAPLANE ACCELERATOR (one-shot reads)"
+ # ONE-SHOT, on operator demand only. rwatch's equivalent check is opt-in
+ # (rwatch_gdx=1) and default OFF because a PERIODIC kernel-facing /proc reader
+@@ -2270,7 +2477,7 @@ probe "Google-DNS-v4     " 8.8.8.8
+ [ -z "$PROBE_OK" ] && finding WARN "every connectivity probe from the router lost 100 % (gateway, Cloudflare, Google) - the router itself has no path out, or Warden's self chain drops the probes (section 14 IN SET); read 5 and 16 before anything about DNS or clients"
+ 
+ sec "17. RWATCH (self-monitor state + durable store)"
+-grep -E '^(rwatch_|reaper_store)' "$NVS" 2>/dev/null | sort | sed 's/^/  /'
++grep -E '^(rwatch_|reaper_store)' "$NVS" 2>/dev/null | sort | sed -e 's/^rwatch_review_seal=..*/rwatch_review_seal=<set>/' -e 's/^/  /'
+ # reaper v2.6.1: resolve the durable store the way rwatch.sh / rdev_store_base()
+ # do, and report the syslog mirror. The old section only looked at /jffs/rwatch,
+ # which is the INCIDENT-DUMP dir (created on first incident) - "none" there was
+diff --git a/release/src/router/rc/Makefile b/release/src/router/rc/Makefile
+index 81d60dd028..e637f47c4f 100644
+--- a/release/src/router/rc/Makefile
++++ b/release/src/router/rc/Makefile
+@@ -490,6 +490,7 @@ OBJS += reaper_ledns.o
+ OBJS += reaper_fwlog.o
+ OBJS += reaper_cthelper.o	# 2026-11-05 audit E-13: conntrack helpers by explicit rule only
+ OBJS += reaper_mountflags.o	# 2026-11-10: nosuid,nodev on /tmp, /var and /jffs
++OBJS += reaper_mloboot.o	# 2026-11-20: MLO on + a restart without power-off -> warn (no automatic reboot)
+ ifeq ($(RTCONFIG_SINGLEIMG_B),y)
+ OBJS += fwupg_flashing.o
+ endif
+diff --git a/release/src/router/rc/lan.c b/release/src/router/rc/lan.c
+index e2143a3377..c10ee99f05 100644
+--- a/release/src/router/rc/lan.c
++++ b/release/src/router/rc/lan.c
+@@ -547,6 +547,7 @@ void start_wl(void)
+ 	nvram_set_int("wlready", 1);
+ 	timecheck();
+ #endif
++	reaper_mlo_coldboot_check();	/* reaper 2026-11-20 (REAPER-MLOBOOT): once per boot, the radios are up; reads the kernel log early */
+ #ifdef RTCONFIG_CFGSYNC
+ 	if (
+ #ifdef RTCONFIG_WIFI_SON
+diff --git a/release/src/router/rc/rc.h b/release/src/router/rc/rc.h
+index 12465abc63..3b510a278a 100644
+--- a/release/src/router/rc/rc.h
++++ b/release/src/router/rc/rc.h
+@@ -1938,6 +1938,8 @@ extern void wan6_up(const char *wan_ifname);
+ extern void wan_down(char *wan_ifname);
+ extern void update_wan_state(char *prefix, int state, int reason);
+ extern int update_resolvconf(void);
++extern int update_resolvconf_plain(void);	/* reaper 2026-11-20 REAPER-UPTLS (rc/wan.c) */
++extern int reaper_uptls_plain;
+ extern void wan_add_resolv_conf(FILE* fp, int wan_unit);
+ extern void wan_add_resolv_dnsmasq(FILE* fp, int wan_unit);
+ #ifdef RTCONFIG_IPV6
+@@ -3026,7 +3028,7 @@ extern void rednsd_refresh(void);
+ extern void rednsd_dnr_watch(void);	/* review 2026-11-11 (C-4) */
+ extern void rednsd_cert_changed(void);
+ extern void rednsd_wan_drop(FILE *fp);
+-extern void rednsd_dnr_option(FILE *fp, const char *tag, const char *addr);
++extern void rednsd_dnr_option(FILE *fp, const char *tag, const char *addr, int dd_mode);
+ extern void rednsd_dnr_mark(void);
+ /* reaper 2026-10-21: block encrypted DNS that goes around the router (rc/encdns.c) */
+ extern int edns_block_enabled(void);
+@@ -3075,6 +3077,7 @@ extern void reaper_dhd_ioto_watch(void);
+ extern void stop_rwarden(void);	/* reaper v1.8.0 Warden ipset threat-feed/geo/manual-IP firewall (rc/rwarden.c) */
+ extern void start_rwarden(void);
+ extern void rwarden_ddns_seed(void);	/* 2026-10-22: ASUS DDNS + Let's Encrypt whitelisted once (rc/rwarden.c) */
++extern void rwarden_listsrc_seed(void);	/* REAPER-FW-LISTS-SEED: the list-source hosts whitelisted once, on first use (rc/rwarden.c) */
+ extern const char *reaper_warden_dns_conf(void);	/* 2026-10-19: the threat-domain include for every dnsmasq instance, or NULL (rc/services.c, rc/sdn.c) */
+ /* reaper v2.3.8 native firewall: object-model custom rules engine (rc/reaper_fw.c).
+  * start/stop apply the COMMITTED ruleset; apply/confirm/rollback drive the
+@@ -3118,6 +3121,10 @@ extern void reaper_fw_confirm(void);
+ extern void reaper_fw_rollback(void);
+ extern void reaper_fw_dryrun(void);
+ extern void reaper_fw_sets_only(void);
++extern void reaper_fw_lists_wanup(void);	/* REAPER-FW-LISTS-WANUP: a list that has never arrived is asked for at WAN up */
++extern void reaper_fw_lists_sync(void);	/* REAPER-FW-LISTS: the ASN / country lists Policy Routing uses (rc/reaper_fw.c) */
++extern void reaper_fw_lists_update(void);
++extern int reaper_pbr_uses_object(const char *name);
+ extern void reaper_fw_promote_objects(void);	/* v2.6.9: policy-routing confirm persists the object/group lists */	/* object ipsets + dnsmasq + resolver, no chains (policy routing with the engine off) */
+ /* reaper v2.5.x ipset policy routing (rc/reaper_pbr.c): marks ipset/selector
+  * matches in mangle and steers them via `ip rule fwmark lookup <tunnel>`, BELOW
+@@ -3168,6 +3175,8 @@ extern int reaper_aimesh_macs(char macs[][18], int max, int *dropped);	/* the cf
+ extern void reaper_sdn_applied_stamp(void);
+ extern void reaper_sdn_vpn_rules(void);	/* 2026-11-19: guest VPN-binding ip rules back after add_multi_routes() (rc/sdn.c) */
+ extern int reaper_sdn_list_has_svc(const char *list);
++extern int reaper_sdn_defer_radio(const char *list);	/* 2026-11-20: REAPER-SDN-DEFER (rc/sdn.c) */
++extern void reaper_sdn_defer_backstop(const char *list, long t0);
+ extern int reaper_rc_rest_has(const char *rest, const char *svc);	/* 2026-11-12: one portal start per request */
+ extern const char *reaper_wl_rest;
+ extern void reaper_guest_gen(void);	/* 2026-11-12: guest isolation (rc/reaper_guest.c) */
+@@ -3178,6 +3187,7 @@ extern void reaper_guest_resv_follow(void);	/* 2026-11-19: chosen devices follow
+ extern int reaper_guest_resv_changed(void);	/* 2026-11-19: reservations / LAN / AiMesh nodes changed since the build */
+ extern void reaper_guest_zpol_follow(void);	/* 2026-11-19: zone paths follow a rules-engine apply / Keep / revert */
+ extern void reaper_mdns_ifaces(char *deny, size_t dn, char *refl, size_t rn, char *why, size_t wn, char *guest, size_t gn);	/* 2026-11-14: mDNS across networks (rc/reaper_guest.c); 2026-11-19: + discovery guests */
++extern int reaper_mdns_types(const char *in, char *out, size_t on);	/* 2026-11-20: the main reflector's service types (reaper_mdns_types, rc/reaper_guest.c) */
+ extern void reaper_mdns_follow(void);	/* 2026-11-14: rc/services.c, restart avahi when its networks changed */
+ extern void reaper_guest_dot_watch(void);	/* 2026-11-13: Guest Portal encrypted DNS forwarders (rc/sdn.c) */
+ extern int reaper_sdn_settle_main(int argc, char *argv[]);
+@@ -3189,6 +3199,7 @@ extern void start_reaper_ledns(int now);	/* 2026-11-05: Let's Encrypt by DNS val
+ extern void stop_reaper_ledns(void);
+ extern void reaper_ct_helpers(void);	/* 2026-11-05 audit E-13 (rc/reaper_cthelper.c) */
+ extern void reaper_mount_harden(const char *path);	/* 2026-11-10: nosuid,nodev on /tmp, /var, /jffs (rc/reaper_mountflags.c) */
++extern void reaper_mlo_coldboot_check(void);	/* 2026-11-20: MLO link missing after a soft restart -> warn (rc/reaper_mloboot.c) */
+ extern int reaper_ledns_main(int argc, char *argv[]);
+ #ifdef RTCONFIG_REAPER_MCP
+ extern void stop_rmcp(void);	/* reaper v1.4.0 read-only MCP advisor */
+diff --git a/release/src/router/rc/rc_ipsec.c b/release/src/router/rc/rc_ipsec.c
+index e6252dc61b..399292b06e 100644
+--- a/release/src/router/rc/rc_ipsec.c
++++ b/release/src/router/rc/rc_ipsec.c
+@@ -1013,6 +1013,13 @@ void rc_strongswan_conf_set()
+ 		"	i_dont_care_about_security_and_use_aggressive_mode_psk = yes\n"
+ 		"	plugins {\n"
+ 		"		include strongswan.d/charon/*.conf\n"
++		/* reaper 2026-11-20 (REAPER-VICI-OFF, review 2026-11-17 D-12): load_modular loads every shipped plugin, so
++		 * vici opened its control socket though nothing here uses it (rc drives ipsec through the starter /
++		 * stroke). A later value replaces an earlier one for the same key in strongswan.conf, so this entry
++		 * after the include switches it off whatever the included vici.conf says. */
++		"		vici {\n"
++		"			load = no\n"
++		"		}\n"
+ 		"	}\n"
+ 		"	filelog {\n"
+ 		"		charon {\n"
+diff --git a/release/src/router/rc/reaper_mloboot.c b/release/src/router/rc/reaper_mloboot.c
+new file mode 100644
+index 0000000000..7912d91519
+--- /dev/null
++++ b/release/src/router/rc/reaper_mloboot.c
+@@ -0,0 +1,158 @@
++/*
++ * reaper 2026-11-20 (REAPER-MLOBOOT, owner: warn only, no automatic reboot): MLO on - a restart without a power-off
++ * can leave Wi-Fi accepting no devices until the router is unplugged (RT-BE96U, seen 2026-07 and 2026-10, 1 of 6
++ * soft restarts on 2026-10-17).
++ *
++ * What is observable: on every power-on with MLO on the kernel log carries the Wi-Fi driver's
++ * "dhdpcie_bus_bridge_init" lines (the link between the radio chips that MLO uses); on a failed soft restart they
++ * are missing. The SoC's reset status (/proc/bootstate/reset_status, printed as plain hex such as "20000000") tells
++ * a power-on reset (0x80000000) from a hardware (0x40000000), software (0x20000000) or PCIe (0x10000000) reset.
++ * No software path gives the radios a power-on reset, so the router can only say so.
++ *
++ * Once per boot, when start_lan has brought the radios up (wlready), rc reads the kernel log at once - the ring is
++ * 128 KB and a busy boot can rotate the early lines out, so it is read early and a log that no longer holds the
++ * start of this boot ("Linux version") decides nothing. MLO on (mld_enable=1) + a known reset that is not a
++ * power-on + the log still complete + no bridge line = one syslog line and reaper_mlo_coldboot_owed=1; every other
++ * boot writes 0 (the flag is never committed here, but another save may commit it, so each boot sets it). The
++ * dashboard shows a banner from the flag (Main_ReaperDash.asp). The decision is a pure function between the
++ * REAPER-MLOBOOT-PURE markers, compiled on the host by test_mlo_coldboot.py.
++ *
++ * 2026-11-23 (REAPER-MLOBOOT-SEEN): the missing line counts only on a router that has printed it on an earlier start
++ * (an empty file on /jffs, written the first time it is seen). The line comes from the closed dongle driver and was
++ * read on one board; until this router has shown it, its absence decides nothing.
++ */
++#include <rc.h>
++#include <shared.h>
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++#include <sys/klog.h>
++#include <sys/stat.h>
++#include <fcntl.h>
++#include <unistd.h>
++
++/* REAPER-MLOBOOT-PURE-BEGIN */
++#define RMB_POR		0x80000000UL	/* bcm_bootstate.h POR_RESET_STATUS */
++#define RMB_HW		0x40000000UL	/* HW_RESET_STATUS */
++#define RMB_SW		0x20000000UL	/* SW_RESET_STATUS */
++#define RMB_PCIE	0x10000000UL	/* PCIE_RESET_STATUS */
++#define RMB_MASK	0xF0000000UL	/* RESET_STATUS_MASK */
++
++/* reset_status as the kernel prints it: hex digits, an optional 0x, trailing white space; 1 = parsed */
++static int rmb_parse_status(const char *s, unsigned long *st)
++{
++	unsigned long v = 0;
++	int n = 0;
++
++	if (!s)
++		return 0;
++	while (*s == ' ' || *s == '\t')
++		s++;
++	if (s[0] == '0' && (s[1] == 'x' || s[1] == 'X'))
++		s += 2;
++	for (; *s; s++, n++) {
++		int d;
++
++		if (*s >= '0' && *s <= '9')
++			d = *s - '0';
++		else if (*s >= 'a' && *s <= 'f')
++			d = *s - 'a' + 10;
++		else if (*s >= 'A' && *s <= 'F')
++			d = *s - 'A' + 10;
++		else
++			break;
++		if (n >= 8)
++			return 0;
++		v = (v << 4) | (unsigned long)d;
++	}
++	while (*s == ' ' || *s == '\t' || *s == '\n' || *s == '\r')
++		s++;
++	if (!n || *s)
++		return 0;
++	*st = v;
++	return 1;
++}
++
++static int rmb_has(const char *buf, size_t len, const char *needle)
++{
++	size_t nl = strlen(needle), i;
++
++	if (!buf || nl == 0 || len < nl)
++		return 0;
++	for (i = 0; i + nl <= len; i++)
++		if (buf[i] == needle[0] && !memcmp(buf + i, needle, nl))
++			return 1;
++	return 0;
++}
++
++/* 1 = a power cycle is owed: MLO on, a known reset other than power-on, the kernel log still holds this boot's
++ * start and no MLO bridge line - and `seen`: this router has printed that line on an earlier start, so its radios
++ * are known to log it (a radio revision that words it differently must never get the banner on every restart).
++ * Anything unknown (no status, no log, a rotated log, a line never seen) = 0. */
++static int rmb_owed(const char *mld, const char *reset_status, const char *klog, size_t klen, int seen)
++{
++	unsigned long st;
++
++	if (!mld || strcmp(mld, "1"))
++		return 0;
++	if (!rmb_parse_status(reset_status, &st) || !(st & RMB_MASK) || (st & RMB_POR))
++		return 0;
++	if (!rmb_has(klog, klen, "Linux version"))
++		return 0;
++	return seen && !rmb_has(klog, klen, "dhdpcie_bus_bridge_init");
++}
++/* REAPER-MLOBOOT-PURE-END */
++
++/* REAPER-MLOBOOT-SEEN: one empty file, written the first time a start with MLO on logs the bridge line. Never
++ * followed through a link, never rewritten; when /jffs is reset it is only learned again. */
++#define RMB_SEEN_DIR	"/jffs/reaper"
++#define RMB_SEEN	RMB_SEEN_DIR "/mlo_bridge_seen"
++
++static int rmb_seen(void)
++{
++	struct stat st;
++
++	return lstat(RMB_SEEN, &st) == 0 && S_ISREG(st.st_mode);
++}
++
++static void rmb_mark_seen(void)
++{
++	int fd;
++
++	mkdir(RMB_SEEN_DIR, 0700);
++	fd = open(RMB_SEEN, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW, 0600);
++	if (fd >= 0)
++		close(fd);
++}
++
++void reaper_mlo_coldboot_check(void)
++{
++	static int done;
++	char rs[32] = "";
++	char *klog = NULL;
++	int sz, n = 0, owed, seen;
++
++	if (done)
++		return;
++	done = 1;
++	if (nvram_match("mld_enable", "1")) {
++		f_read_string("/proc/bootstate/reset_status", rs, sizeof(rs));
++		rs[strcspn(rs, "\r\n")] = '\0';
++		sz = klogctl(10, NULL, 0);	/* SYSLOG_ACTION_SIZE_BUFFER */
++		if (sz > 0 && sz <= (4 << 20) && (klog = malloc(sz)) != NULL) {
++			n = klogctl(3, klog, sz);	/* SYSLOG_ACTION_READ_ALL: the ring as it is, nothing consumed */
++			if (n < 0)
++				n = 0;
++		}
++	}
++	seen = rmb_seen();
++	owed = rmb_owed(nvram_safe_get("mld_enable"), rs, klog, (size_t)n, seen);
++	if (!seen && n > 0 && rmb_has(klog, (size_t)n, "dhdpcie_bus_bridge_init"))
++		rmb_mark_seen();
++	free(klog);
++	nvram_set("reaper_mlo_coldboot_owed", owed ? "1" : "0");
++	if (owed)
++		logmessage("mlo", "MLO is on, but this start was a restart without a power-off (reset status %s) and the "
++			   "radios' MLO link did not form: Wi-Fi may accept no devices. Unplug the router for about 10 seconds "
++			   "and plug it back in; a restart from the web page is not enough.", rs);
++}
+diff --git a/release/src/router/rc/services.c b/release/src/router/rc/services.c
+index 3b9eae5c38..74b996994f 100644
+--- a/release/src/router/rc/services.c
++++ b/release/src/router/rc/services.c
+@@ -2138,7 +2138,7 @@ void start_dnsmasq(void)
+ 			             (*value2 && inet_addr(value2) ? value2 : ""),
+ 			             (nvram_match("dhcpd_dns_router","1") ? ",0.0.0.0" : ""));
+ 		else	/* 2026-11-10: the router is this network's DNS server - offer its encrypted DNS (rc/encdns.c) */
+-			rednsd_dnr_option(fp, "lan", lan_ipaddr);
++			rednsd_dnr_option(fp, "lan", lan_ipaddr, nvram_get_int("dnsfilter_mode"));	/* REAPER-DNR-STEP */
+ 
+ 		/* LAN Domain */
+ 		value = nvram_conf_safe_get("lan_domain");
+@@ -9556,7 +9556,9 @@ void stop_lltd(void)
+ /* reaper 2026-11-19: device discovery on guest networks (reaper_mdns_ifaces' guest list, avahi reflect-guest) */
+ #define REAPER_MDNS_DBUF	1024	/* deny-interfaces part */
+ #define REAPER_MDNS_GBUF	2048	/* reflect-guest value: "<bridge>:<type>:...,<bridge>:..." (avahi reads the whole line) */
+-#define REAPER_MDNS_SIGBUF	3600
++/* reaper 2026-11-20 (REAPER-MDNS-CORETYPES): the main reflector's service types, "<type>:<type>..." (16 at most) */
++#define REAPER_MDNS_CBUF	640
++#define REAPER_MDNS_SIGBUF	4400
+ /* avahi-daemon reads its config a line at a time into 4096 bytes (avahi-daemon/ini-file-parser.c ln[4096], raised from
+  * 256 by Reaper 2026-11-19); a longer line splits, the rest has no '=' and avahi refuses the WHOLE file - it would not
+  * start. So the reflect-guest value stays well within one line: "reflect-guest=" (14) + this - 1 + "\n" = 2062 bytes.
+@@ -9590,8 +9592,10 @@ static int reaper_mdns_plan(char *deny, size_t dn, char *refl, size_t rn, char *
+ {
+ 	const char *p;
+ 	int on, n = 0, ng = 0;
++	char ct[REAPER_MDNS_CBUF];
+ 
+ 	reaper_mdns_ifaces(deny, dn, refl, rn, why, wn, guest, gn < REAPER_MDNS_GLINE ? gn : REAPER_MDNS_GLINE);
++	reaper_mdns_types(nvram_safe_get("reaper_mdns_types"), ct, sizeof(ct));	/* reaper 2026-11-20 */
+ 	if (*refl)
+ 		for (n = 1, p = refl; (p = strchr(p, ',')) != NULL; p++)
+ 			n++;
+@@ -9604,7 +9608,7 @@ static int reaper_mdns_plan(char *deny, size_t dn, char *refl, size_t rn, char *
+ 		reaper_mdns_guest_deny(deny, dn, guest);
+ 		guest[0] = '\0';
+ 	}
+-	snprintf(sig, sn, "%d|%s|%s|%s", on, deny, on ? refl : "", guest);
++	snprintf(sig, sn, "%d|%s|%s|%s|%s", on, deny, on ? refl : "", guest, on ? ct : "");
+ 	return on;
+ }
+ 
+@@ -9615,7 +9619,7 @@ int generate_mdns_config(void)
+ 	int ret = 0;
+ 	char *wan1_ifname;
+ 	char rm_deny[REAPER_MDNS_DBUF], rm_refl[256], rm_why[384], rm_guest[REAPER_MDNS_GBUF], rm_sig[REAPER_MDNS_SIGBUF];
+-	char rm_old[REAPER_MDNS_SIGBUF] = "";
++	char rm_old[REAPER_MDNS_SIGBUF] = "", rm_ct[REAPER_MDNS_CBUF];
+ 	int rm_on;
+ 
+ 	sprintf(avahi_config, "%s/%s", AVAHI_CONFIG_PATH, AVAHI_CONFIG_FN);
+@@ -9623,12 +9627,15 @@ int generate_mdns_config(void)
+ 	/* reaper 2026-11-14: mDNS across networks - log the plan when it changes */
+ 	rm_on = reaper_mdns_plan(rm_deny, sizeof(rm_deny), rm_refl, sizeof(rm_refl), rm_why, sizeof(rm_why), rm_guest, sizeof(rm_guest),
+ 				 rm_sig, sizeof(rm_sig));
++	reaper_mdns_types(nvram_safe_get("reaper_mdns_types"), rm_ct, sizeof(rm_ct));	/* reaper 2026-11-20 */
+ 	f_read_string(REAPER_MDNS_SIG, rm_old, sizeof(rm_old));
+ 	if (strcmp(rm_old, rm_sig)) {
+ 		if (rm_on) {
+ 			logmessage("mdns", "devices can find each other across %s%s%s", rm_refl, *rm_why ? "; left out: " : "", rm_why);
+ 			if (*rm_guest)	/* reaper 2026-11-19 */
+ 				logmessage("mdns", "device discovery with the main network (picked service types only): %s", rm_guest);
++			if (*rm_ct)	/* reaper 2026-11-20 */
++				logmessage("mdns", "across the main side only these service types are relayed: %s", rm_ct);
+ 		} else if (nvram_match("reaper_mdns_reflect", "0"))
+ 			logmessage("mdns", "mDNS across networks is off");
+ 		else if (*rm_why)
+@@ -9689,6 +9696,13 @@ int generate_mdns_config(void)
+ 		 * reflect-interfaces, not in deny-interfaces */
+ 		if (*rm_guest)
+ 			fprintf(fp, "reflect-guest=%s\n", rm_guest);
++		/* reaper 2026-11-20 (REAPER-MDNS-CORETYPES, owner): Tweaks' chosen service types for the main side
++		 * (main LAN + Access Intranet networks) - avahi then relays between those only these types, their SRV / TXT
++		 * and the addresses of the hosts they name (the guest filter); "" = every type, as before. The router's own
++		 * announcements are not reflected and are not affected. Never stock reflect-filters (a substring match that
++		 * leaves addresses unfiltered). */
++		if (*rm_ct)
++			fprintf(fp, "reflect-core-types=%s\n", rm_ct);
+ 	}
+ 
+ 	/* Set [rlimits] configuration */
+@@ -17660,6 +17674,10 @@ void handle_notifications(void)
+ 	char env_unit[32];
+ #endif
+ 	char *fwpart[2] __attribute__((unused)) = { LINUX_MTD_NAME, LINUX2_MTD_NAME };
++#ifdef RTCONFIG_MULTILAN_CFG
++	char reaper_defer_nv[256];	/* 2026-11-20 REAPER-SDN-DEFER: the whole list, for the backstop at the end */
++	long reaper_defer_t0;
++#endif
+ 
+ #if defined(RTCONFIG_LANTIQ)
+ 	f_write_string("/proc/sys/vm/drop_caches", "1", 0, 0);
+@@ -17674,6 +17692,8 @@ void handle_notifications(void)
+ 	 * again while it runs (a portal create ran 72 s on the owner's router; stamped only at the end, it ran twice) */
+ 	if (reaper_sdn_list_has_svc(nv))
+ 		reaper_sdn_applied_stamp();
++	strlcpy(reaper_defer_nv, nv, sizeof(reaper_defer_nv));
++	reaper_defer_t0 = uptime();
+ #endif
+ 	nvptr = nv;
+ again:
+@@ -23471,6 +23491,10 @@ retry_wps_enr:
+ 	{
+ 		if(action & RC_SERVICE_START) reaper_fw_dryrun();
+ 	}
++	else if (strcmp(script, "reaper_fw_lists") == 0)	/* REAPER-FW-LISTS: fetch the ASN / country lists now (Policy Routing page, Update now) */
++	{
++		if(action & RC_SERVICE_START) reaper_fw_lists_update();
++	}
+ 	else if (strcmp(script, "reaper_pbr_apply") == 0)	/* v2.6.7: apply the DRAFT and arm commit-confirm */
+ 	{
+ 		if(action & RC_SERVICE_START) reaper_pbr_apply();
+@@ -24661,6 +24685,11 @@ _dprintf("goto again(%d)...\n", getpid());
+ 			){
+ 		unsetenv("unit");
+ 	}
++#endif
++#ifdef RTCONFIG_MULTILAN_CFG
++	/* 2026-11-20 REAPER-SDN-DEFER: the radios were restarted while Network-page changes wait - the rest of them runs
++	 * once rc is idle (rc/sdn.c) */
++	reaper_sdn_defer_backstop(reaper_defer_nv, reaper_defer_t0);
+ #endif
+ 	nvram_set("rc_service", "");
+ 	nvram_set("rc_service_pid", "");
+diff --git a/release/src/router/shared/defaults.c b/release/src/router/shared/defaults.c
+index 2926c3b719..25494f01e9 100644
+--- a/release/src/router/shared/defaults.c
++++ b/release/src/router/shared/defaults.c
+@@ -3187,8 +3187,19 @@ struct nvram_tuple router_defaults[] = {
+ 	{ "reaper_bgdfs_stock", "0", CKN_STR1, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },
+ 	/* review 2026-11-11 (B-C4, owner): 0 = the Guest Portal secret is this router's random one (rc), 1 = the admin's own */
+ 	{ "reaper_cp_secret_own", "0", CKN_STR1, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },
++	{ "reaper_mlo_coldboot_owed", "0", CKN_STR1, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* 2026-11-20: state - MLO link missing after a soft restart (rc/reaper_mloboot.c; set every boot, never committed by rc) */
+ 	{ "reaper_mdns_reflect", "1", CKN_STR1, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* 2026-11-14 (owner): Tweaks > mDNS across networks, on */
++	/* reaper 2026-11-20 (owner): REAPER-DUT-REDIR - the address the login redirect goes to, in three parts
++	 * (shared/reaper_dut_redir.h). An empty host = the stock router domain name; an empty port = the router's own
++	 * port for the protocol. Read by Main_Login.asp and httpd only; nothing restarts on a change. */
++	{ "reaper_dut_redir_proto", "https", CKN_STR8, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },
++	{ "reaper_dut_redir_host", "", CKN_STR64, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },
++	{ "reaper_dut_redir_port", "", CKN_STR8, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },
++	{ "reaper_mdns_types", "", CKN_STR256, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* 2026-11-20 (owner): Tweaks > mDNS across networks, the service types relayed on the main side; "" = every type */
+ 	{ "reaper_ap_isolate_lan", "0", CKN_STR1, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* 2026-11-19 (owner): AP Isolation of the main network - 0 Wi-Fi only, 1 Wi-Fi and LAN ports */
++	/* 2026-11-20 (owner): Network page - hold the Wi-Fi restart of a create / edit / switch-on until Apply now
++	 * (httpd/web.c REAPER-SDN-DEFER); OFF by default, the Network page has the switch */
++	{ "reaper_sdn_defer", "0", CKN_STR1, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },
+ 	/* review 2026-11-11 (A-C1): the driver's wait for a radio to answer one call, in ms (rc/services.c
+ 	 * reaper_dhd_ioto_apply). 0 = OFF = the driver's own 5000; the Tweaks page has the switch (2000-5000, 3000 recommended) */
+ 	{ "reaper_dhd_ioto", "0", CKN_STR8, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },
+diff --git a/release/src/router/www/Main_ReaperDash.asp b/release/src/router/www/Main_ReaperDash.asp
+index 03c9cb6858..10d8824a3b 100644
+--- a/release/src/router/www/Main_ReaperDash.asp
++++ b/release/src/router/www/Main_ReaperDash.asp
+@@ -203,6 +203,11 @@ main{min-width:0}
+ .fwbar .go{margin-left:auto;font-family:var(--hdr);font-weight:600;text-transform:uppercase;letter-spacing:.1em;
+   font-size:11px;color:var(--bone-dim);border:1px solid var(--line);border-radius:7px;padding:5px 10px;white-space:nowrap}
+ .fwbar:hover .go{color:var(--bone);border-color:var(--crimson)}
++/* 2026-11-20: the amber twin - Network-page changes waiting for Apply (REAPER-SDN-DEFER) */
++.fwbar.amb{border-color:var(--amber);animation:none;background:linear-gradient(90deg,rgba(224,169,59,.14),rgba(224,169,59,.04) 55%,transparent)}
++.fwbar.amb:hover{background:linear-gradient(90deg,rgba(224,169,59,.22),rgba(224,169,59,.07) 55%,transparent)}
++.fwbar.amb .dot{background:var(--amber);box-shadow:0 0 0 3px rgba(224,169,59,.18)}
++.fwbar.amb:hover .go{border-color:var(--amber)}
+ @keyframes fwpulse{0%,100%{box-shadow:0 0 0 0 rgba(225,6,0,0)}50%{box-shadow:0 0 0 3px rgba(225,6,0,.14)}}
+ .dot{width:8px;height:8px;border-radius:50%;background:var(--jade);box-shadow:0 0 0 3px rgba(79,178,134,.15);flex:0 0 auto}
+ .spacer{flex:1}
+@@ -495,6 +500,10 @@ main{min-width:0}
+ .rvb.on{display:flex}
+ .rvb a{font-family:'Rajdhani',system-ui,sans-serif;font-weight:600;letter-spacing:.07em;text-transform:uppercase;font-size:11.5px;color:#ECE7DB;background:rgba(224,169,59,.18);border:1px solid rgba(224,169,59,.6);border-radius:7px;padding:6px 13px;text-decoration:none;margin-left:auto;white-space:nowrap}
+ .rvb a:hover{background:rgba(224,169,59,.3)}
++/* 2026-11-21: red when the accepted baseline or the watch rules were changed, or the baseline deleted, outside the Firewall page */
++.rvb.red{background:linear-gradient(180deg,rgba(255,59,48,.18),rgba(255,59,48,.07)),#160c0b;border-bottom-color:rgba(255,59,48,.5);box-shadow:inset 3px 0 0 #FF3B30}
++.rvb.red a{background:rgba(255,59,48,.2);border-color:rgba(255,59,48,.6)}
++.rvb.red a:hover{background:rgba(255,59,48,.32)}
+ </style>
+ <div class="rvb" id="rvb"><span id="rvb_txt"></span><a id="rvb_go" href="/reaper_shell.asp#Reaper_Firewall.asp?t=status"><#RDSH_105#></a></div>
+ <script>(function(){
+@@ -512,11 +521,15 @@ main{min-width:0}
+       window.RVJ=j; if(typeof paintReview==='function')paintReview();
+       /* drift needs an accepted baseline; a failed-login burst (notices_n) does not */
+       var u=(j&&j.ok&&j.armed)?(j.unreviewed||0):0, nn=(j&&j.ok)?(j.notices_n||0):0, ww=(j&&j.ok)?(j.ww||0):0, wwt=(j&&j.ok)?(j.wwt||0):0, t=[];
++      /* 2026-11-21: the seal of the accepted baseline comes first - changed / removed turn the bar red, a baseline
++         with no seal yet is amber (the field is in the report and in httpd's answer before the first report) */
++      var sl=(j&&(j.enabled===1||j.enabled==='1'))?(j.seal||''):'';
++      if(sl==='changed')t.push(`<#RDSH_127#>`); else if(sl==='removed')t.push(`<#RDSH_128#>`); else if(sl==='unsealed')t.push(`<#RDSH_129#>`);
+       if(u>0)t.push(`<#RDSH_104#>`.replace('%1',u));
+       if(nn>0)t.push(`<#RDSH_106#>`.replace('%1',nn));
+       if(ww>0)t.push(`<#RDSH_117#>`.replace('%1',ww));
+       if(wwt>0)t.push(`<#RDSH_119#>`.replace('%1',wwt));
+-      if(t.length){txt.textContent=t.join(' - ');bar.className='rvb on';}
++      if(t.length){txt.textContent=t.join(' - ');bar.className='rvb on'+((sl==='changed'||sl==='removed')?' red':'');}
+       else bar.className='rvb';
+     };
+     x.onerror=x.ontimeout=x.onabort=function(){busy=false;};
+@@ -607,6 +620,25 @@ main{min-width:0}
+           if(b) b.style.display='';
+         }
+       })();</script>
++      <!-- 2026-11-20 REAPER-SDN-DEFER: Network-page changes waiting for Apply (server-rendered, no polling; the hook
++           is absent on a build without guest networks, so it is read through an array) -->
++      <a class="fwbar amb" id="rsdn_wait_badge" href="/reaper_shell.asp#SDN.asp" style="display:none">
++        <span class="dot"></span><span class="k"><#RSDN_44#></span><span class="go"><#btn_go#> &rarr;</span></a>
++      <script>(function(){
++        var d=[<% reaper_sdn_defer(); %>][0];
++        if(d&&d.wait){ var b=document.getElementById('rsdn_wait_badge'); if(b) b.style.display=''; }
++      })();</script>
++
++      <!-- reaper 2026-11-20 (REAPER-MLOBOOT, owner: warn only): MLO is on and this start was a restart without a
++           power-off in which the radios' MLO link did not form (rc/reaper_mloboot.c sets reaper_mlo_coldboot_owed
++           each boot). Server-rendered like the update banner; only a power cycle clears it. -->
++      <div class="fwbar" id="mlo_coldboot_badge" style="display:none;cursor:default">
++        <span class="dot"></span><span class="k"><#RDSH_124#></span><span style="flex:1 1 280px;font-size:12.5px;line-height:1.5;color:var(--bone)"><#RDSH_125#></span></div>
++      <script>(function(){
++        if (<% nvram_get_js("reaper_mlo_coldboot_owed"); %> === '1' && <% nvram_get_js("mld_enable"); %> === '1'){
++          var b = document.getElementById('mlo_coldboot_badge'); if (b) b.style.display = '';
++        }
++      })();</script>
+ 
+       <div class="grid">
+ 
+@@ -1237,6 +1269,16 @@ function paintReview(){
+     function set(txt,cls,sub){ t.textContent=txt; t.className='tag '+cls; s.textContent=sub; s.title=sub; }
+     var on=(String(SSI.review)==='1'), j=RVJ;
+     if(!on){ set(`<#btn_Disabled#>`,'warn',`<#RDSH_110#>`); return; }
++    /* 2026-11-21: the seal first. The accepted baseline or the watch rules changed, or the baseline deleted, outside
++       the Firewall page: Review (danger). A baseline with no seal yet: amber. Login notices and the write-for-
++       everyone count still show, and turn the amber state red as they do on their own. */
++    var sl=(j&&j.seal)||'';
++    if(sl==='changed'||sl==='removed'||sl==='unsealed'){
++      var q=[sl==='changed'?`<#RDSH_127#>`:(sl==='removed'?`<#RDSH_128#>`:`<#RDSH_129#>`)], n2=j.ok?(j.notices_n||0):0, w2=j.ok?((j.ww||0)+(j.wwt||0)):0;
++      if(n2>0)q.push(`<#RDSH_115#>`.replace('%1',n2)); if(w2>0)q.push(`<#RDSH_118#>`.replace('%1',w2));
++      if(sl==='unsealed'&&!n2&&!w2) set(`<#RDSH_108#>`,'warn',q.join(' - ')); else set(`<#RDSH_105#>`,'danger',q.join(' - '));
++      return;
++    }
+     /* no report yet: after a boot the first check can take up to 10 minutes -
+        a baseline on disk keeps the Baseline word, amber until it is checked */
+     if(!j||!j.ok){ if(j&&j.armed){ set(`<#RDSH_108#>`,'warn',`<#RDSH_116#>`); } else { set(`<#RDSH_109#>`,'warn',`<#RDSH_114#>`); } return; }
+diff --git a/release/src/router/www/Reaper_Diag.asp b/release/src/router/www/Reaper_Diag.asp
+index 9208ca9a43..c49e6ac7db 100644
+--- a/release/src/router/www/Reaper_Diag.asp
++++ b/release/src/router/www/Reaper_Diag.asp
+@@ -69,7 +69,7 @@ pre.sample .g{color:var(--jade)} pre.sample .r{color:#e0837d} pre.sample .w{colo
+ 
+ <div class="pagehead">
+   <h1><#RDIAG_00#> <a href="https://github.com/TheUnboundDeveloper/AM-Reaper/blob/main/docs/REAPER-GUIDE.md#413-diagnostics" target="_blank" rel="noopener noreferrer" title="<#RABT_43#>" style="display:inline-flex;align-items:center;justify-content:center;width:22px;height:22px;margin-left:8px;border-radius:50%;border:1px solid #4a4a4e;color:#8d897f;font:700 13px Arial,sans-serif;text-decoration:none;vertical-align:middle">?</a></h1>
+-  <span class="ver"><#RDIAG_01#> &middot; REAPER-DIAG v1.3.61</span>
++  <span class="ver"><#RDIAG_01#> &middot; REAPER-DIAG v1.3.62</span>
+ </div>
+ <p class="lede"><#RDIAG_02#></p>
+ 
+diff --git a/release/src/router/www/Reaper_MLO.asp b/release/src/router/www/Reaper_MLO.asp
+index 1facf1315b..88d4cd4d23 100644
+--- a/release/src/router/www/Reaper_MLO.asp
++++ b/release/src/router/www/Reaper_MLO.asp
+@@ -236,7 +236,8 @@ function switchOn(){
+     if (off.length) lines.push('- ' + `<#WLANConfig11b_WirelessCtrl_button1name#>` + ' ' + off.join(', ') + ' ' + `<#Wireless_Radio#>`);
+     if (sched.length) lines.push('- ' + `<#WLANConfig11b_WirelessCtrl_buttonname#>` + ' ' + sched.join(', ') + ' ' + `<#menu5_1#>` + ' ' + `<#Time_Scheduling#>`);
+   }
+-  lines.push(`<#AiMesh_System_Reboot_Hint#>`, `<#AiMesh_Are_U_Sure_Proceed#>`);
++  /* reaper 2026-11-20 (REAPER-MLOBOOT): the restart that follows may not bring the radios' MLO link up - say how to recover */
++  lines.push(`<#AiMesh_System_Reboot_Hint#>`, `<#RDSH_126#>`, `<#AiMesh_Are_U_Sure_Proceed#>`);
+   if (!confirm(lines.join('\n'))) return false;
+   var o = {action_mode: 'apply', rc_service: 'reboot;', mld_enable: '1'};
+   SLOTS.forEach(function(s){ o[s.key + '_11be'] = '1'; o[s.key + '_crypto'] = 'aes+gcmp256'; o[s.key + '_radio'] = '1'; o[s.key + '_timesched'] = '0'; });
+@@ -244,7 +245,7 @@ function switchOn(){
+ }
+ function switchOff(){
+   var fh = ROWS.filter(function(x){ var a = AP[pfx(x) + x.apg]; return x.on && a && a.mlo === '2'; });
+-  if (!confirm((fh.length ? `<#WiFi_mlo_disable_Hint#>` + '\n' : '') + `<#AiMesh_System_Reboot_Hint#>`)) return false;
++  if (!confirm((fh.length ? `<#WiFi_mlo_disable_Hint#>` + '\n' : '') + `<#AiMesh_System_Reboot_Hint#>` + '\n' + `<#RDSH_126#>`)) return false;
+   var o = {action_mode: 'apply', rc_service: 'reboot;', mld_enable: '0'}, rl = false;
+   fh.forEach(function(x){
+     var a = AP[pfx(x) + x.apg];
+diff --git a/release/src/router/www/reaper/reaper_mdns_svc.js b/release/src/router/www/reaper/reaper_mdns_svc.js
+new file mode 100644
+index 0000000000..fdc7deaa19
+--- /dev/null
++++ b/release/src/router/www/reaper/reaper_mdns_svc.js
+@@ -0,0 +1,56 @@
++/* SPDX-License-Identifier: GPL-2.0-only
++ * Copyright (C) 2026 the Reaper project maintainer
++ * Part of the Reaper hardened Asuswrt-Merlin build. See LICENSE / LICENSE.reaper.
++ *
++ * reaper_mdns_svc.js - mDNS service-type picker logic for kit pages (reaper 2026-11-20, REAPER-MDNS-CORETYPES).
++ * A careful copy of the Network page helpers in SDN/sdn.js (reaper_gc_svc_types, reaper_gc_mdns_parse,
++ * reaper_gc_mdns_serialise; that page loads no kit files) so Tweaks > mDNS across networks stores reaper_mdns_types in
++ * exactly the format of apgN_rg_mdns: a comma list of presets (print, airplay, cast, homekit, audio) and service types
++ * _name._tcp / _name._udp, at most 16 types expanded, at most 255 characters. rc expands it again with the same table
++ * (rc/reaper_guest.c rg_mdns_presets). test_mdns_reflector.py runs this file and the sdn.js helpers under node and
++ * requires the same answers. No page state, no strings: the page supplies the labels.
++ */
++(function(){
++  'use strict';
++  var RE = /^_[a-z0-9-]{1,32}\._(tcp|udp)$/;
++  function types(){
++    return [
++      ['print', ['_ipp._tcp', '_ipps._tcp', '_printer._tcp', '_pdl-datastream._tcp', '_uscan._tcp']],
++      ['airplay', ['_airplay._tcp', '_raop._tcp']],
++      ['cast', ['_googlecast._tcp']],
++      ['homekit', ['_hap._tcp', '_hap._udp', '_matter._tcp', '_matterc._udp']],
++      ['audio', ['_spotify-connect._tcp', '_sonos._tcp']]
++    ];
++  }
++  /* stored value -> picker state: presets and well-formed service types (anything else is dropped) */
++  function parse(value){
++    var presets = types().map(function(p){ return p[0]; }), out = {presets: [], extra: []};
++    String(value == undefined ? '' : value).toLowerCase().split(',').forEach(function(t){
++      t = t.trim();
++      if (t === '') return;
++      if (presets.indexOf(t) !== -1){ if (out.presets.indexOf(t) === -1) out.presets.push(t); }
++      else if (RE.test(t) && out.extra.indexOf(t) === -1) out.extra.push(t);
++    });
++    return out;
++  }
++  /* picker state -> stored value. Presets in a fixed order, then free entries (lower case, commas or spaces between
++     them); an entry a chosen preset already covers is dropped. Refused: a malformed entry, nothing chosen, more than
++     16 service types after expansion, more than 255 characters. */
++  function serialise(presets, extraText){
++    var chosen = (presets || []).map(function(p){ return String(p).toLowerCase(); }), ty = [], tokens = [], i;
++    types().forEach(function(p){
++      if (chosen.indexOf(p[0]) === -1) return;
++      tokens.push(p[0]);
++      p[1].forEach(function(t){ if (ty.indexOf(t) === -1) ty.push(t); });
++    });
++    var extra = String(extraText == undefined ? '' : extraText).toLowerCase().split(/[\s,]+/).filter(function(t){ return t !== ''; });
++    for (i = 0; i < extra.length; i++){
++      if (!RE.test(extra[i])) return {ok: false, bad: extra[i]};
++      if (ty.indexOf(extra[i]) === -1){ ty.push(extra[i]); tokens.push(extra[i]); }
++    }
++    var value = tokens.join(',');
++    if (tokens.length === 0 || ty.length > 16 || value.length > 255) return {ok: false, bad: ''};
++    return {ok: true, value: value, types: ty.length};
++  }
++  window.ReaperMdnsSvc = {types: types, parse: parse, serialise: serialise};
++})();
+-- 
+2.25.1
+

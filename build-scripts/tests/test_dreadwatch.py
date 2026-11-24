@@ -128,13 +128,14 @@ try:
     J = os.path.join(work, "jffs"); T = os.path.join(work, "tmp"); HD = os.path.join(work, "hits"); NV = os.path.join(work, "nv")
     def setnv(k, v): open(os.path.join(NV, k), "w").write(v)
     def run(shell, mode, extra=None):
-        body = re.sub(r"^(HF|CONF|CNT|DCTR|FEEDS|REC|UPD)=.*$", lambda m: {
-            "HF": "HF=%s/dns.hits" % HD, "CONF": "CONF=%s/dns.conf" % T, "CNT": "CNT=%s/dns.count" % T, "DCTR": "DCTR=%s/dns.counters" % J,
+        body = re.sub(r"^(HF|PF|CONF|CNT|DCTR|FEEDS|REC|UPD)=.*$", lambda m: {
+            "HF": "HF=%s/dns.hits" % HD, "PF": "PF=%s/dns.hits.pass" % HD, "CONF": "CONF=%s/dns.conf" % T, "CNT": "CNT=%s/dns.count" % T, "DCTR": "DCTR=%s/dns.counters" % J,
             "FEEDS": "FEEDS=%s/dns.feeds" % J, "REC": "REC=%s/dns.recent" % T, "UPD": "UPD=%s/dns.upd" % T}[m.group(1)],
             script, flags=re.M)
         body = body.replace("LOCK=/tmp/rwarden/dns.lock", "LOCK=%s/dns.lock" % T)
         body = body.replace("DCTR=/tmp/rwarden/dns.counters", "DCTR=%s/dns.counters.tmpfs" % T)
         body = body.replace("W=/tmp/rwarden/dns.work.$$", "W=%s/dns.work.$$" % T)
+        body = body.replace("_pw=/tmp/rwarden/dns.pass.$$", "_pw=%s/dns.pass.$$" % T)	# v3.8.4: the let-through counts
         head = '_nv() { cat "$NVDIR/$1" 2>/dev/null; }\nlogger() { printf "%s\\n" "$*" >> "$LOGF"; }\n'
         sp = os.path.join(work, "dns.sh"); open(sp, "w").write(head + body)
         env = dict(os.environ, NVDIR=NV, LOGF=os.path.join(work, "logger.out"), LC_ALL="C", **(extra or {}))
@@ -207,6 +208,37 @@ try:
         check("[%s] fold: a record without feed ids keeps the feed the name was banked under" % tag,
               "NAME c2.example 2 threatfox 1792500200" in c and "FEED threatfox 5" in c, c)
 
+        # v3.8.4 (REAPER-DREAD-EXEMPT): listed names let through for the devices that skip Dreadwatch - dnsmasq writes
+        # "<epoch> <mac>" per lookup, never the name; banked as PASS <mac> <count> <last> rows beside the other counters
+        check("dns.sh: PF comes from the C define, beside the hit file", "\nPF=/tmp/dreadwatch/dns.hits.pass\n" in script)
+        PASSF = os.path.join(HD, "dns.hits.pass")
+        c0, rec0 = list(c), open(os.path.join(T, "dns.recent")).read()	# put back below: the checks after this block count from here
+        open(PASSF, "w").write("1792500210 aa:bb:cc:dd:ee:05\n1792500211 aa:bb:cc:dd:ee:05\n1792500212 aa:bb:cc:dd:ee:06\n"
+                               "1792500213 AA:BB:CC:DD:EE:07\nnot a record\n1792500214 aa:bb:cc:dd:ee:05 evil.example\n1792500215 aa:bb:cc:dd:ee:0\n"
+                               "x792500216 aa:bb:cc:dd:ee:05\n")
+        r = run(shell, "fold"); cp = ctr()
+        check("[%s] pass fold: the records are moved away and banked per device (count, last time)" % tag,
+              r.returncode == 0 and not os.path.exists(PASSF) and "PASS aa:bb:cc:dd:ee:05 2 1792500211" in cp and "PASS aa:bb:cc:dd:ee:06 1 1792500212" in cp, (r.stderr, cp))
+        check("[%s] pass fold: only \"<epoch> <lower-case mac>\" counts - a third field (a name), upper case, a short address and junk are dropped" % tag,
+              len([l for l in cp if l.startswith("PASS ")]) == 2 and "evil.example 2" not in " ".join(l for l in cp if l.startswith("PASS")), cp)
+        check("[%s] pass fold: the other counters are untouched, no work file stays" % tag,
+              [l for l in cp if not l.startswith("PASS ")] == c and not [f for f in os.listdir(T) if f.startswith("dns.pass")]
+              and not os.path.exists(os.path.join(J, "dns.counters.ptmp")), (cp, os.listdir(T)))
+        open(PASSF, "w").write("1792500220 aa:bb:cc:dd:ee:05\n")
+        open(os.path.join(HD, "dns.hits"), "w").write("1792500221 192.168.50.20 c2.example\n")
+        run(shell, "fold"); c = ctr()
+        check("[%s] pass fold: counts add up, and a fold of blocked lookups keeps the PASS rows" % tag,
+              "PASS aa:bb:cc:dd:ee:05 3 1792500220" in c and "PASS aa:bb:cc:dd:ee:06 1 1792500212" in c and "NAME c2.example 3 threatfox 1792500221" in c, c)
+        os.symlink(secret, PASSF)
+        run(shell, "fold")
+        check("[%s] pass fold: a link at the file is never read through" % tag, os.path.exists(secret) and not os.path.lexists(PASSF) and ctr() == c, ctr())
+        open(PASSF, "w").write("".join("1792500300 aa:bb:cc:dd:%02x:%02x\n" % (i // 256, i % 256) for i in range(300)))
+        run(shell, "fold")
+        check("[%s] pass fold: at most 32 devices are kept, whatever the unprivileged writer put there" % tag,
+              len([l for l in ctr() if l.startswith("PASS ")]) <= 32, len(ctr()))
+        open(os.path.join(J, "dns.counters"), "w").write("\n".join(c0 + ["PASS aa:bb:cc:dd:ee:05 3 1792500220", "PASS aa:bb:cc:dd:ee:06 1 1792500212"]) + "\n")
+        open(os.path.join(T, "dns.recent"), "w").write(rec0)
+
         r = run(shell, "stats")
         try:
             j = json.loads(r.stdout)
@@ -220,6 +252,9 @@ try:
                   [f["id"] for f in j["feeds"]] == ["urlhaus", "threatfox"] and j["feeds"][0]["kept"] == 2 and j["feeds"][0]["st"] == "ok", j["feeds"])
             check("[%s] stats: totals and per-feed counts" % tag,
                   j["total"] == 6 and j["dropped"] == 5 and {f["id"]: f["n"] for f in j["fcount"]} == {"urlhaus": 3, "threatfox": 5, "-": 1}, j)
+            check("[%s] stats: the let-through counts per exempt device - address, count, last time, nothing else (v3.8.4)" % tag,
+                  sorted((p["mac"], p["n"], p["t"]) for p in j.get("pass", [])) == [("aa:bb:cc:dd:ee:05", 3, 1792500220), ("aa:bb:cc:dd:ee:06", 1, 1792500212)]
+                  and all(set(p) == {"mac", "n", "t"} for p in j["pass"]), j.get("pass"))
             check("[%s] stats: top names sorted by count, with feeds" % tag,
                   [t["d"] for t in j["top"]][:2] == ["evil.example", "c2.example"] and j["top"][0]["n"] == 3 and j["top"][0]["f"] == "urlhaus,threatfox", j["top"])
             check("[%s] stats: top devices sorted by count" % tag, j["clients"][0]["ip"] == "192.168.50.10" and j["clients"][0]["n"] == 3, j["clients"])
@@ -228,7 +263,7 @@ try:
             check("[%s] stats: coverage hints present (DNS Director, DoH canary)" % tag, "director" in j and "canary" in j)
         # a counters file that someone edited: junk is never emitted
         with open(os.path.join(J, "dns.counters"), "a") as f:
-            f.write('NAME bad"name 9 urlhaus 1\nCLIENT x"y 9 1\nFEED bad"id 9\n')
+            f.write('NAME bad"name 9 urlhaus 1\nCLIENT x"y 9 1\nFEED bad"id 9\nPASS bad"aa:bb:cc:dd:e 9 1\nPASS AA:BB:CC:DD:EE:09 9 1\n')
         r = run(shell, "stats")
         check("[%s] stats: a quote or other junk in the counters file never reaches the JSON" % tag,
               r.returncode == 0 and '"' not in "".join(re.findall(r'"d":"([^"]*)"', r.stdout)) and "bad" not in r.stdout and json.loads(r.stdout)["ok"] == 1, r.stdout[:300])
@@ -250,9 +285,13 @@ try:
         setnv("rwarden_stats_save", "1")
         # operator reset
         open(os.path.join(HD, "dns.hits"), "w").write("1792500400 192.168.50.10 evil.example\n")
+        open(PASSF, "w").write("1792500401 aa:bb:cc:dd:ee:05\n")
+        with open(os.path.join(J, "dns.counters"), "a") as f:
+            f.write("PASS aa:bb:cc:dd:ee:05 4 1792500300\n")
         r = run(shell, "reset"); c = ctr()
         check("[%s] reset: the store restarts, the recent log and pending records go" % tag,
               len(c) == 1 and c[0].startswith("SINCE ") and not os.path.exists(os.path.join(T, "dns.recent")) and not os.path.exists(os.path.join(HD, "dns.hits")), c)
+        check("[%s] reset: the let-through counts and their pending records go too (v3.8.4)" % tag, not os.path.exists(PASSF) and not any(l.startswith("PASS") for l in c), c)
         check("[%s] reset: logged" % tag, "Dreadwatch counters reset by the operator" in open(os.path.join(work, "logger.out")).read())
         # the recent log is bounded
         open(os.path.join(HD, "dns.hits"), "w").write("".join("%d 10.0.0.1 evil.example\n" % (1792600000 + i) for i in range(620)))

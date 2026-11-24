@@ -180,7 +180,7 @@ int main(int argc, char **argv) { unsigned char b[600], o[600]; size_t n = 0; co
 
     # ======================= P6-4-G1/G2/G3 diag =======================
     dg = read("others/reaper_diag")
-    check("diag: v1.3.61 in the script and on the page", 'VER="REAPER-DIAG v1.3.61"' in dg and "REAPER-DIAG v1.3.61</span>" in read("www/Reaper_Diag.asp"))
+    check("diag: v1.3.61 in the script and on the page", 'VER="REAPER-DIAG v1.3.62"' in dg and "REAPER-DIAG v1.3.62</span>" in read("www/Reaper_Diag.asp"))
     check("diag: the arg stage runs second - after the literals, before client names and e-mail (URL credentials before the e-mail shape)",
           re.search(r'^SAN_STAGES="lit arg ctx mail mac ip6 ip4"$', dg, re.M) is not None)
     ma = re.search(r"^cat > \"\$AWKP\.arg\" <<'AWKEOF'\n(.*?)^AWKEOF$", dg, re.S | re.M)

@@ -62,37 +62,28 @@ check("rcfg_flags: the zone switch is in the fw section, 0 / 1 (max 2)", '{ "fw"
 check("rcfg_flags: listed once", web.count('"reaper_fw_zpol_guest"') == 1)
 
 # ---- the create paths ----
-helper = body(web, "static void reaper_apg_rg_clear(int apg_idx)")
-check("reaper_apg_rg_clear: defined once, unsets both keys of a real index",
-      web.count("static void reaper_apg_rg_clear(int apg_idx)") == 1 and "if (apg_idx <= 0)" in helper
-      and 'snprintf(k, sizeof(k), "apg%d_rg_devs", apg_idx);\n\tnvram_unset(k);' in helper
-      and 'snprintf(k, sizeof(k), "apg%d_rg_mdns", apg_idx);\n\tnvram_unset(k);' in helper and web.count("REAPER-RG-CLEAR") == 1, helper)
-# 2026-11-19: the AP Isolation choice (apgN_ap_isolate_lan, read by rc/lan.c reaper_brport_wired_open) goes with them
-check("reaper_apg_rg_clear: also unsets the AP Isolation choice apgN_ap_isolate_lan",
-      re.search(r'snprintf\(k, sizeof\(k\), "apg%d_ap_isolate_lan", apg_idx\);[^\n]*\n\tnvram_unset\(k\);', helper) is not None, helper)
-hpos =web.find("static void reaper_apg_rg_clear(int apg_idx)")
-calls = [m.start() for m in re.finditer(r"\treaper_apg_rg_clear\(apg_idx\);", web)]
-check("reaper_apg_rg_clear: three calls, all after the definition", len(calls) == 3 and all(c > hpos for c in calls), len(calls))
-check("reaper_apg_rg_clear: defined and called under RTCONFIG_MULTILAN_CFG (one build flag for both)",
-      any("RTCONFIG_MULTILAN_CFG" in g for g in guards_at(web, hpos)) and all(any("RTCONFIG_MULTILAN_CFG" in g for g in guards_at(web, c)) for c in calls))
-for fn, hdr in (("create_alexa_ifttt_sdn_profile", "\ncreate_alexa_ifttt_sdn_profile(int from_app, char *ssid"),
-                ("create_sdn_profile", "int create_sdn_profile(struct json_object *wgn_obj)\n{"),
-                ("create_sdn_guest_profile", "int create_sdn_guest_profile(struct json_object *wl_obj)\n{")):
-    b = body(web, hdr)
-    k = b.find('nvram_set("sdn_rl", b);\n')
-    check("%s: clears the two keys of its new apg index once, right after the sdn_rl record" % fn,
-          b.count("reaper_apg_rg_clear(apg_idx);") == 1 and k > 0
-          and b[k:].startswith('nvram_set("sdn_rl", b);\n\treaper_apg_rg_clear(apg_idx);'), b[k:k + 120] if k > 0 else fn)
-for fn, hdr in (("update_apgx_profile", "update_apgx_profile(int from_app, char *apg_idx, int expiretime, int bss_enabled)\n{"),
-                ("create_sdn_mwl_profile", "int create_sdn_mwl_profile(struct json_object *mwl_obj)\n{")):
-    b = body(web, hdr)
-    check("%s: does not clear (an existing network / a main network)" % fn, b and "reaper_apg_rg_clear" not in b, fn)
+# v3.8.4 batch C (REAPER-UNUSED-V384C): the addresses that created a network without the Network page are gone
+# (create_sdn_profile.cgi, create_sdn_mwl.cgi, create_sdn_legacy.cgi, auto_guestnetwork.cgi - no page called them and
+# the phone app is not a supported client), and with them the functions only they reached: the three create paths
+# that had to clear the per-network Reaper keys of a re-used apg index, and reaper_apg_rg_clear() itself (REAPER-RG-CLEAR),
+# which had no other caller. The Network page creates and deletes networks through the generic save and clears the
+# keys itself on delete (sdn.js). Before v3.8.4 this block pinned: reaper_apg_rg_clear defined once, called once in
+# each of create_alexa_ifttt_sdn_profile / create_sdn_profile / create_sdn_guest_profile right after the sdn_rl record,
+# never in update_apgx_profile / create_sdn_mwl_profile.
+code = re.sub(r"/\*.*?\*/", " ", web, flags=re.S)
+gone = ("create_alexa_ifttt_sdn_profile", "create_sdn_profile", "create_sdn_guest_profile", "create_sdn_mwl_profile",
+        "update_apgx_profile", "reaper_apg_rg_clear")
+left = [f for f in gone if re.search(r"(?<![A-Za-z0-9_])" + f + r"\s*\(", code)]
+check("no httpd path creates or edits a network outside the Network page: the app / Alexa / IFTTT create paths are gone, "
+      "and reaper_apg_rg_clear() with them", not left and "REAPER-RG-CLEAR" not in web, left)
+check("the addresses that reached those paths have no row", not [n for n in ("create_sdn_profile.cgi*", "create_sdn_mwl.cgi*",
+      "create_sdn_legacy.cgi*", "auto_guestnetwork.cgi") if '{ "%s"' % n in web])
 
 # ---- router-only keys ----
 m = re.search(r"APGx_NVRAM_LIST\[\] = \{(.*?)\};", apg, re.S)
 check("APGx_NVRAM_LIST (stock writers, AiMesh sync) does not carry the Reaper keys", m and "RG_" not in m.group(1).upper(), m and m.group(1)[:200])
-m = re.search(r"APXx_NVRAM_LIST\[\] = \{(.*?)\};", web, re.S)
-check("APXx_NVRAM_LIST does not carry them either", m and "RG_" not in m.group(1).upper())
+# APXx_NVRAM_LIST (web.c) fed only the removed create paths and went with them (batch C)
+check("APXx_NVRAM_LIST is gone with the create paths (it had no other user)", "APXx_NVRAM_LIST[]" not in code)
 
 # ---- the light save on an AiMesh router (cfg_server path) ----
 # The Network page sends "restart_reaper_guest;" when only a network's chosen devices / discovery changed. On an AiMesh

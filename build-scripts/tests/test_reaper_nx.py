@@ -248,14 +248,15 @@ try:
     # ---- 5. the rc / httpd / layout side
     rw = read("rc/rwarden.c")
     for needle, what in (
-        ('echo \\"reaper-nx-db=$RW_NXDB\\"; } > $RW_DNSC.new', "update.sh: the include is two lines - the hit log and the table"),
+        # v3.8.4 (REAPER-DREAD-EXEMPT): a third line, the devices that skip Dreadwatch - the same bytes from both writers
+        ('echo \\"reaper-nx-db=$RW_NXDB\\"; echo \\"reaper-nx-exempt=$RW_NXDIR/dns.exempt\\"; } > $RW_DNSC.new', "update.sh: the include is three lines - the hit log, the table, the exempt devices"),
         # 2026-10-27: the ids gain your own sources' slots ($RW_DCUST)
         ('build --subtree --out $RW_NXDB.new --kfile $DN.k --kids \\"$RW_DIDS other $RW_DCUST\\"', "update.sh: wallguardc compiles the feeds list itself (--kfile, review 2026-10-24 Q-A-3b) with --subtree, then checks the table before it is installed"),
         ("check --db $RW_NXDB.new >/dev/null 2>&1 && mv -f $RW_NXDB.new $RW_NXDB", "update.sh: ...renamed into place only when the check passes"),
         ('#define RW_DIDS_STR  "urlhaus phish c2 crypto ransom certpl threatview threatfox"', "rwarden.c: the feed order is one define (bit = position in it)"),
         ('--kids \\"$RW_DIDS other $RW_DCUST\\"', "update.sh: a name no feed claims goes under 'other', never left out"),
         ("static const char rw_nx_rebuild_sh[] =", "boot: the table is rebuilt from the /jffs copy before the first update"),
-        ('fprintf(f, "reaper-hitlog=%s\\nreaper-nx-db=%s\\n", RW_HITS, RW_NX_DB);', "boot: the two-line include is written when missing"),
+        ('fprintf(f, "reaper-hitlog=%s\\nreaper-nx-db=%s\\nreaper-nx-exempt=%s\\n", RW_HITS, RW_NX_DB, RW_DNS_EXEMPT);', "boot: the three-line include is written when missing"),
         ("_dvalid() { awk '(NF == 3 || NF == 4)", "dns.sh: a record may carry the feed ids (4th field), charset-checked"),
         ("if (NF >= 4 && $4 != \\\"-\\\") lf[$3]=$4;", "dns.sh: attribution comes from the record, not from a text list"),
         ("_mc=$((_ma * 1024 / 4 / 90))", "update.sh: the memory guard counts one copy (~90 B a name while built), not one per instance"),

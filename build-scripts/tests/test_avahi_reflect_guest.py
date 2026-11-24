@@ -70,8 +70,24 @@ isrc = read("avahi/avahi-daemon/ini-file-parser.c")
 
 # ---------------------------------------------------------------- pins
 check("server.c: one REAPER-RGUEST block", asrc.count("/* REAPER-RGUEST-BEGIN") == 1 and asrc.count("/* REAPER-RGUEST-END */") == 1)
-check("core.h: reflect_guest is the LAST member, right after reflect_interfaces (nothing before it moves)",
-      re.search(r"AvahiStringList \*reflect_interfaces;[^\n]*\n    AvahiStringList \*reflect_guest;[^\n]*\n\} AvahiServerConfig;", core) is not None)
+check("core.h: reflect_guest right after reflect_interfaces, then reflect_core_types (2026-11-20) as the LAST member "
+      "(nothing before them moves)",
+      re.search(r"AvahiStringList \*reflect_interfaces;[^\n]*\n    AvahiStringList \*reflect_guest;[^\n]*\n"
+                r"    char \*reflect_core_types;[^\n]*\n\} AvahiServerConfig;", core) is not None)
+# ---- reaper 2026-11-20 (REAPER-MDNS-CORETYPES): the main side's own service-type list ----
+check("server.c config: reflect_core_types initialised, freed, copied (with the unwind on failure) and set",
+      "c->reflect_core_types = NULL;" in asrc and "avahi_free(c->reflect_core_types);" in asrc
+      and "if (c->reflect_core_types && !(rct = avahi_strdup(c->reflect_core_types))) {" in asrc
+      and "        avahi_string_list_free(rguest);\n        avahi_string_list_free(rifs);" in asrc
+      and "ret->reflect_core_types = rct;" in asrc)
+check("avahi-daemon: [reflector] reflect-core-types is parsed through reaper_core_types and logged at start",
+      'strcasecmp(p->key, "reflect-core-types") == 0' in msrc
+      and "c->server_config.reflect_core_types = reaper_core_types(p->value);" in msrc
+      and "avahi_free(c->server_config.reflect_core_types);" in msrc
+      and "config.server_config.enable_reflector && config.server_config.reflect_core_types" in msrc)
+_rp = cfunc(asrc, "static int reflect_pair_ok(") or ""
+check("server.c reflect_pair_ok: core<->core hands back reflect_core_types (NULL = unfiltered, as before)",
+      "*types = s->config.reflect_core_types;" in _rp and _rp.count("*types = NULL;") == 1)
 check("server.c config: reflect_guest initialised, freed, deep-copied (with the unwind on failure) and set",
       "c->reflect_guest = NULL;" in asrc and "avahi_string_list_free(c->reflect_guest);" in asrc
       and "if (!(rguest = avahi_string_list_copy(c->reflect_guest)) && c->reflect_guest) {" in asrc
@@ -169,6 +185,7 @@ parts = {
     "ANN": na or None,
     "NTYPE": cfunc(msrc, "static int reaper_rg_type_ok("),
     "NENTRY": cfunc(msrc, "static char *reaper_rg_entry("),
+    "NCORE": cfunc(msrc, "static char *reaper_core_types("),
 }
 missing = [k for k, v in parts.items() if not v]
 check("the patched functions are all there to compile", not missing, missing)
@@ -207,7 +224,7 @@ typedef struct AvahiInterface { AvahiHwInterface *hardware; struct AvahiInterfac
 typedef struct { AvahiInterface *interfaces; } AvahiInterfaceMonitor;
 typedef struct AvahiEntry { int dead, interface, protocol; AvahiAnnouncer *announcers; AvahiRecord *record;
 	struct AvahiEntry *entries_next; } AvahiEntry;
-typedef struct AvahiServer { struct { int enable_reflector, reflect_ipv; AvahiStringList *reflect_interfaces, *reflect_guest; } config;
+typedef struct AvahiServer { struct { int enable_reflector, reflect_ipv; AvahiStringList *reflect_interfaces, *reflect_guest; char *reflect_core_types; } config;
 	AvahiInterfaceMonitor *monitor; const char *host_name_fqdn; void *record_list; AvahiEntry *entries;
 	struct RgSeen *reaper_rg_seen; } AvahiServer;
 struct AvahiAnnouncer { AvahiServer *server; AvahiInterface *interface; AvahiEntry *entry; void *time_event;
@@ -256,6 +273,7 @@ static void go_to_initial_state(AvahiAnnouncer *a) { (void) a; }
 @@ANN@@
 @@NTYPE@@
 @@NENTRY@@
+@@NCORE@@
 
 /* ---- fixtures ---- */
 static AvahiStringList *sl(const char *t, AvahiStringList *next)
@@ -502,6 +520,47 @@ int main(void)
 	setup(1, 1); HW[4].name = "br5";
 	printf("prefix.guest=%s\n", avahi_reflect_guest_types(&S, &IF[4]) ? "yes" : "no");
 
+	/* ---- reaper 2026-11-20: reflect-core-types - the main side relays only these types (guest lists unchanged) ---- */
+	setup(1, 1); fill_caches(); locals(); S.config.reflect_core_types = (char *) "_ipp._tcp";
+	n = reflect_pair_ok(&S, &IF[0], &IF[1], &gt); printf("ct.pair.core=%d:%s\n", n, gt ? gt : "-");
+	n = reflect_pair_ok(&S, &IF[0], &IF[2], &gt); printf("ct.pair.guest=%d:%s\n", n, gt ? gt : "-");
+	n = reflect_pair_ok(&S, &IF[2], &IF[3], &gt); printf("ct.pair.gg=%d:%s\n", n, gt ? gt : "-");
+	FLOW("ct.resp.ipp", reflect_response(&S, &IF[0], rec("_ipp._tcp.local", AVAHI_DNS_TYPE_PTR, "Office._ipp._tcp.local"), 0));
+	FLOW("ct.resp.ipps", reflect_response(&S, &IF[0], rec("_ipps._tcp.local", AVAHI_DNS_TYPE_PTR, "Box._ipps._tcp.local"), 0));
+	FLOW("ct.resp.cast", reflect_response(&S, &IF[0], rec("_googlecast._tcp.local", AVAHI_DNS_TYPE_PTR, "Cast._googlecast._tcp.local"), 0));
+	FLOW("ct.resp.srv", reflect_response(&S, &IF[0], rec("Office._ipp._tcp.local", AVAHI_DNS_TYPE_SRV, "office.local"), 1));
+	FLOW("ct.resp.a_allowed", reflect_response(&S, &IF[0], rec("office.local", AVAHI_DNS_TYPE_A, NULL), 1));
+	FLOW("ct.resp.aaaa_allowed", reflect_response(&S, &IF[0], rec("office.local", AVAHI_DNS_TYPE_AAAA, NULL), 1));
+	FLOW("ct.resp.a_other", reflect_response(&S, &IF[0], rec("box.local", AVAHI_DNS_TYPE_A, NULL), 1));
+	FLOW("ct.resp.hinfo", reflect_response(&S, &IF[0], rec("office.local", AVAHI_DNS_TYPE_HINFO, NULL), 0));
+	FLOW("ct.resp.enum_ipp", reflect_response(&S, &IF[0], rec("_services._dns-sd._udp.local", AVAHI_DNS_TYPE_PTR, "_ipp._tcp.local"), 0));
+	FLOW("ct.resp.enum_cast", reflect_response(&S, &IF[0], rec("_services._dns-sd._udp.local", AVAHI_DNS_TYPE_PTR, "_googlecast._tcp.local"), 0));
+	FLOW("ct.query.ipp", reflect_query(&S, &IF[1], key("_ipp._tcp.local", AVAHI_DNS_TYPE_PTR)));
+	FLOW("ct.query.ipps", reflect_query(&S, &IF[1], key("_ipps._tcp.local", AVAHI_DNS_TYPE_PTR)));
+	FLOW("ct.query.any_office", reflect_query(&S, &IF[1], key("office.local", AVAHI_DNS_TYPE_ANY)));
+	FLOW("ct.query.a_box", reflect_query(&S, &IF[1], key("box.local", AVAHI_DNS_TYPE_A)));
+	FLOW("ct.probe.other", reflect_probe(&S, &IF[0], rec("Box._ipps._tcp.local", AVAHI_DNS_TYPE_SRV, "box.local")));
+	FLOW("ct.probe.ipp", reflect_probe(&S, &IF[0], rec("Office._ipp._tcp.local", AVAHI_DNS_TYPE_SRV, "office.local")));
+	FLOW("ct.guest.ipp", reflect_response(&S, &IF[2], rec("_ipp._tcp.local", AVAHI_DNS_TYPE_PTR, "Printer._ipp._tcp.local"), 0));
+	FLOW("ct.guest.airplay", reflect_response(&S, &IF[2], rec("TV._airplay._tcp.local", AVAHI_DNS_TYPE_SRV, "tv.local"), 1));
+	memset(&e, 0, sizeof(e)); e.interface = AVAHI_IF_UNSPEC; e.protocol = AVAHI_PROTO_UNSPEC;
+	for (a = 0; a < NI; a++) new_announcer(&S, &IF[a], &e);
+	LOG[0] = 0; for (a = 0; a < NI; a++) if (IF[a].announcers) logf_("%s ", NAMES[a]); printf("ct.ann=%s\n", LOG);
+	/* without guests too, and an empty list (a value with no valid type) relays nothing between the core */
+	setup(1, 0); fill_caches(); S.config.reflect_core_types = (char *) "_ipp._tcp";
+	FLOW("ct.noguest.ipp", reflect_response(&S, &IF[0], rec("_ipp._tcp.local", AVAHI_DNS_TYPE_PTR, "Office._ipp._tcp.local"), 0));
+	FLOW("ct.noguest.hinfo", reflect_response(&S, &IF[0], rec("office.local", AVAHI_DNS_TYPE_HINFO, NULL), 0));
+	S.config.reflect_core_types = (char *) "";
+	FLOW("ct.empty.ipp", reflect_response(&S, &IF[0], rec("_ipp._tcp.local", AVAHI_DNS_TYPE_PTR, "Office._ipp._tcp.local"), 0));
+	{
+		static const char *cin[] = { "_ipp._tcp:_IPPS._tcp", "", "junk", ":_ipp._tcp::_x._sctp:", "_airplay._tcp", NULL };
+		char many[2048]; int k;
+		for (k = 0; cin[k]; k++) { char *o; LOG[0] = 0; o = reaper_core_types(cin[k]); printf("cnorm%d=%s|%s\n", k, o ? o : "(null)", LOG); free(o); }
+		many[0] = 0;
+		for (k = 0; k < 40; k++) sprintf(many + strlen(many), "%s_t%d._tcp", k ? ":" : "", k);
+		{ char *o = reaper_core_types(many); int c = 0; const char *q; for (q = o; q && *q; q++) c += *q == ':'; printf("cnorm.cap=%d\n", c + 1); free(o); }
+	}
+
 	/* ---- main.c normaliser ---- */
 	{
 		static const char *in[] = { "br52:_ipp._tcp:_IPPS._tcp", "br52:_ipp._tcp:junk:_x._sctp:_a b._tcp:", "br52", "", ":_ipp._tcp",
@@ -652,6 +711,43 @@ with tempfile.TemporaryDirectory() as td:
             check("an interface in both lists is a guest; an entry without types allows nothing; br5 is not br52",
                   o.get("both.pair") == "1:_ipp._tcp" and o.get("notypes.pair") == "1:[]" and o.get("notypes.rec") == "0"
                   and o.get("prefix.guest") == "no", (o.get("both.pair"), o.get("notypes.pair"), o.get("notypes.rec"), o.get("prefix.guest")))
+            I, C2 = "_ipp._tcp", "_googlecast._tcp"
+            fl = {"ct.pair.core": "1:" + I, "ct.pair.guest": "1:" + T, "ct.pair.gg": "0:-"}
+            check("reflect-core-types: core<->core through the main list; core<->guest still THAT guest's list; guest<->guest never",
+                  all(o.get(k) == v for k, v in fl.items()), {k: o.get(k) for k in fl})
+            fl = {"ct.resp.ipp": "resp:br53:_ipp._tcp.local resp:br52:_ipp._tcp.local ",
+                  "ct.resp.ipps": "",
+                  "ct.resp.cast": "resp:br54:_googlecast._tcp.local ",
+                  "ct.resp.srv": "resp:br53:Office._ipp._tcp.local! resp:br52:Office._ipp._tcp.local! ",
+                  "ct.resp.a_allowed": "resp:br53:office.local! resp:br52:office.local! ",
+                  "ct.resp.aaaa_allowed": "resp:br53:office.local! resp:br52:office.local! ",
+                  "ct.resp.a_other": "", "ct.resp.hinfo": "",
+                  "ct.resp.enum_ipp": "resp:br53:_services._dns-sd._udp.local resp:br52:_services._dns-sd._udp.local ",
+                  "ct.resp.enum_cast": "resp:br54:_services._dns-sd._udp.local "}
+            check("reflect-core-types _ipp._tcp: an allowed type's PTR / SRV / enumeration and the A / AAAA of the host its SRV "
+                  "names cross core<->core (cache-flush kept); another type (_ipps never matches), another host's address, "
+                  "HINFO do not; a guest still gets its own types (Cast for br54)",
+                  all(o.get(k) == v for k, v in fl.items()), {k: o.get(k) for k in fl})
+            fl = {"ct.query.ipp": "query:br0:_ipp._tcp.local ans:_ipp._tcp.local/12 query:br52:_ipp._tcp.local ans:_ipp._tcp.local/12 ",
+                  "ct.query.ipps": "",
+                  "ct.query.any_office": "query:br0:office.local ans:office.local/1! query:br52:office.local ",
+                  "ct.query.a_box": "",
+                  "ct.probe.other": "", "ct.probe.ipp": "probe:br53:Office._ipp._tcp.local probe:br52:Office._ipp._tcp.local "}
+            check("reflect-core-types: questions and cache answers through the same list (ANY for an allowed host answers A, "
+                  "not HINFO); probes too", all(o.get(k) == v for k, v in fl.items()), {k: o.get(k) for k in fl})
+            fl = {"ct.guest.ipp": "resp:br0:_ipp._tcp.local resp:br53:_ipp._tcp.local ",
+                  "ct.guest.airplay": "resp:br0:TV._airplay._tcp.local resp:br53:TV._airplay._tcp.local ",
+                  "ct.ann": "br0 br53 br55 "}
+            check("reflect-core-types leaves the guest lists alone (a guest's airplay still reaches the core) and the router's "
+                  "own announcers as they were", all(o.get(k) == v for k, v in fl.items()), {k: o.get(k) for k in fl})
+            fl = {"ct.noguest.ipp": "resp:br53:_ipp._tcp.local ", "ct.noguest.hinfo": "", "ct.empty.ipp": ""}
+            check("reflect-core-types without guest networks filters the core the same way; an empty list relays nothing "
+                  "(never unfiltered by mistake)", all(o.get(k) == v for k, v in fl.items()), {k: o.get(k) for k in fl})
+            want = {"cnorm0": "_ipp._tcp:_IPPS._tcp|", "cnorm1": "(null)|", "cnorm2": "|warn ", "cnorm3": "_ipp._tcp|warn ",
+                    "cnorm4": "_airplay._tcp|", "cnorm.cap": "32"}
+            check("avahi-daemon reaper_core_types: well-formed types kept, others dropped with a warning, empty value = unset "
+                  "(NULL), no valid type = an empty list, at most 32", all(o.get(k) == v for k, v in want.items()),
+                  {k: o.get(k) for k in want})
             want = {"norm0": "br52:_ipp._tcp:_IPPS._tcp|", "norm1": "br52:_ipp._tcp|warn warn warn ",
                     "norm2": "br52|", "norm3": "(null)|", "norm4": "(null)|", "norm5": "(null)|", "norm6": "(null)|",
                     "norm7": "br0123456789abc:_hap._udp|", "norm8": "br52|warn ",

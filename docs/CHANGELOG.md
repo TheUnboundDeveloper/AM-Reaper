@@ -1,6 +1,6 @@
 # RT-BE Series "Reaper" — Changelog
 
-> **Doc status:** current as of **v3.8.3** · 2026-11-19 <!--@stamp-->
+> **Doc status:** current as of **v3.8.4** · 2026-11-24 <!--@stamp-->
 
 High-level history of the Reaper build. One entry per version, big changes only —
 the exhaustive security detail is in [`REAPER-FIXES.md`](REAPER-FIXES.md) and the
@@ -48,6 +48,63 @@ node, not only on the primary router.
 > design; compare `--exported` instead.
 
 ---
+
+## v3.8.4 — Policy Routing by ASN and by country; encrypted DNS falls back to plain DNS; Network page changes with one Wi-Fi restart; Security Review seal; unused web handlers removed
+
+Everything in v3.8.3 is included. Both lines carry the same changes: RT-BE96U, RT-BE86U, RT-BE88U and GT-BE98 Pro on
+3006.102.10; GT-BE98, GT-BE19000, BQ16 and BQ16 Pro on 3006.102.8.
+
+- **Policy Routing by ASN and by country.** Two new object types on the Policy Routing page, **ASN lists** (one or
+  more AS numbers, for example AS2906) and **Country lists**, usable in any rule. The router downloads their address
+  ranges itself: ASN from ipverse, then RIPEstat, then HackerTarget; a country from Warden's own list when Warden
+  already blocks it with both its IPv4 and IPv6 ranges, then ipdeny, then ipverse. Lists refresh daily at 05:17 and on
+  **Update now**; a new list is fetched right after Apply, asked for again as soon as the WAN connects if that fails,
+  then every 15 minutes until it arrives. A set is only ever replaced whole, and a failed or refused download leaves
+  the list in use as it was, each address family on its own. Nothing is taken on trust: no private or reserved range,
+  nothing wider than /8 (IPv4) or /16 (IPv6), and a reply covering more than half of the Internet is refused. Lists are
+  saved on `/jffs` and restored at boot before any download, and removed with the last rule that uses them. The list
+  sources are added once, on first use, to Warden's Whitelist and Dreadwatch's Never block names so the router's own
+  filters cannot stop the downloads; an entry you delete is never put back.
+- **Encrypted DNS falls back to plain DNS.** When the DNS-over-TLS upstreams stop answering, the router switches to
+  plain upstream DNS so names keep resolving, says so on the Encrypted DNS page and in the log, and returns to
+  DNS-over-TLS once it answers again. The Strict profile never falls back.
+- **iPhones and DNS Director.** DHCP option 162 (automatic encrypted DNS for devices) is now offered only to devices
+  the router's encrypted DNS server serves. A device with an unfiltered or outside-resolver DNS Director rule is left
+  out, so it no longer adopts a resolver that refuses it; iPhones with such a rule stopped dropping off Wi-Fi.
+- **Network page: several changes, one Wi-Fi restart** (optional, off by default). A network you create, edit or
+  switch on is saved at once and waits for **Apply now**; a bar lists the waiting networks and the dashboard says so.
+  Switching a network off, deleting one, or any save that must run at once still runs at once and takes the waiting
+  changes with it. If something else restarts Wi-Fi meanwhile, the router finishes the waiting networks' setup by
+  itself; with AiMesh nodes they stay waiting until the nodes have them.
+- **Network page fixes.** Delete works on a main-network card again. The guest network's **Device discovery with the
+  main network** switch is no longer held by the AP Isolation note while AP Isolation is off.
+- **Wallguard: a tab for the lists.** View and edit the allow and block lists, including names allowed for 24 hours:
+  remove, extend or make permanent.
+- **Dreadwatch: devices that skip the threat lists.** Up to 16 devices, by MAC address, counted per device.
+- **RADIUS in one place.** The main network's RADIUS server is shown read-only on the RADIUS tab from the Network
+  page, where it is set.
+- **Tweaks: login redirect to your own address.** The login page can send you to a name (and port) you type, not only
+  www.asusrouter.com.
+- **mDNS across networks:** chosen service types can be limited on the main reflector too.
+- **Wireless > Settings:** the auto-channel option switches save and show their state.
+- **MLO restart warning.** With MLO on, a soft restart can leave Wi-Fi accepting no devices until the router is
+  power-cycled; the router now detects that its radios' PCIe link did not come back and says so on the dashboard and
+  the MLO page. The cause stays open.
+- **Security Review: a sealed baseline and a wider watch.** The accepted baseline carries a seal kept outside `/jffs`,
+  so a baseline or watch rule changed outside the page shows every item as unreviewed; the review can be switched off
+  only with the page's switch. It also watches about 40 more settings and Warden's list files, adopts newly watched
+  items once on upgrade without an alarm, and recognises every form of Reaper's own scheduled jobs, matching each
+  line exactly. On the first boot after the upgrade the review reports the baseline as unsealed once; accept the list
+  to seal it.
+- **Unused web handlers removed.** 51 request addresses and 36 page hooks no shipped page uses are gone from the web
+  server; a request for one is logged once per address. The stock pages that only served them no longer ship, and
+  their old addresses go to the Reaper page that does the job.
+- **Data export:** a stale health snapshot is no longer pushed to Splunk or Datadog when the collector has stopped.
+- **GT-BE98 Pro:** the pressure sensor driver ships; `/bin/ceventd` is linked for the programs that look for it there.
+- **Diagnostics v1.3.62:** the features of v3.4.9 to v3.8.3 are in the report; the login redirect address and the
+  review seal are masked.
+- **Guide:** every menu covered again, including the Security Review, Operation Mode, the WAN verdict, the login lock
+  and the log cap.
 
 ## v3.8.3 — Guest networks can reach chosen main-network devices; AP Isolation keeps wired devices reachable; guest VPN routing after a WAN reconnect
 
@@ -881,7 +938,7 @@ Everything in v3.4.8 is included.
   names a device was refused in the last 15 minutes, allowed for 24 hours or always), **Why?**, **Pause**
   and an opt-in live view of all lookups (RAM only, off by itself after an hour). Only blocked lookups
   are recorded, under the list entry that matched. The router's own answers (local names, `address=`,
-  Dreadwatch) win. Off by default. Guide 4.3.11.
+  Dreadwatch) win. Off by default. Guide 4.3.3.
 - **Encrypted DNS for devices (Warden › Encrypted DNS).** `rednsd`, a DNS-over-TLS server on port 853
   of the LAN networks with the router's certificate, so a device encrypts its lookups to the router and
   Dreadwatch, Wallguard and DNS Director still apply: Android Private DNS, an Apple configuration profile
@@ -890,7 +947,7 @@ Everything in v3.4.8 is included.
   (TCP and UDP 853) to any other server and HTTPS to the known public DoH resolvers (a shipped seed plus a
   maintained list, refreshed nightly), and answers their names NXDOMAIN; browsers on automatic DNS fall
   back to the router. A device set to one named outside provider has no DNS while the block is on (the
-  page says so). Both off by default. Guide 4.3.12.
+  page says so). Both off by default. Guide 4.3.4.
 - **Reaper-native settings pages: System, LAN, WAN, VPN, Parental Controls, the logs and tools.** Pages
   on Reaper's component kit (`www/reaper/rp.js`, `rp.css`, one menu model in `menu.js`) replace the stock
   ones for System (with SNMP and Tweaks), the System Log group (log, wireless log, leases, routes, port
@@ -906,7 +963,7 @@ Everything in v3.4.8 is included.
   lists. The name limit is filled in priority order, Basics first, up to 1,000,000 names with a
   free-memory guard; each list is checked by dnsmasq before it is installed, over-long and
   parent-covered names are dropped, and the page names any list left out. The built-in never-block
-  names are now one-time entries in the *Never block* box that you can remove. Guide 4.3.10.
+  names are now one-time entries in the *Never block* box that you can remove. Guide 4.3.2.
 - **Dreadwatch: the list is held once, however many networks the router runs.** Every dnsmasq instance
   (the main one and each guest or VLAN network's own) loaded the threat list for itself, about 54 bytes
   a name in each plus the 21 MB text include in RAM; on an RT-BE96U with four instances that was the
@@ -918,7 +975,7 @@ Everything in v3.4.8 is included.
   Dreadwatch ahead of Wallguard. Each hit record now names the feed, so the per-feed counters no longer
   read the text list. The compiler checks each new table before it is installed; a missing or damaged
   table blocks nothing and is logged once. The `/jffs` copy is `dns.k.gz`, rebuilt into the table at
-  boot; `dns.nx.gz` is still written so a downgrade keeps blocking. Guide 4.3.10.
+  boot; `dns.nx.gz` is still written so a downgrade keeps blocking. Guide 4.3.2.
 - **Port Trigger and the URL filter work again; Port Trigger on no longer costs the LAN its internet.**
   The `TRIGGER` and `webstr` iptables extensions had been dropped from the build in 2026-07 while the
   kernel and rc kept using them. With Port Trigger on, rc's `-j TRIGGER` line made the whole nat restore
@@ -936,7 +993,7 @@ Everything in v3.4.8 is included.
   baseline predates (this update, or a later one that widens the list) is adopted into the baseline as
   it stands, with one log line naming it, and a setting the firmware stops watching (renamed or dropped)
   is retired from it the same way, so an upgrade never alarms by itself. A file or cron entry that
-  disappears is still a change. Guide 2.9.
+  disappears is still a change. Guide 4.1.1b.
 - **Security Review: select several rows and act once.** Owner request: a checkbox on every row and a
   select-all, with one bar of actions for the selection - Accept, Existence only, Ignore and Ignore
   folder, each offered only when it fits every selected row (a greyed one says why on hover). Accepting
@@ -1003,7 +1060,7 @@ Everything in v3.4.8 is included.
   navigation to a private address over plain HTTP, which the shipped default serves beside HTTPS; a
   header-less browser request on the HTTP listener is now cross-site (curl and scripts still pass, HTTPS
   unchanged). (4) The guard's AiMesh onboarding exception reads its query decoded the way the CGI parser
-  does, so an encoded key name no longer slips past it. Guide 4.3.11.
+  does, so an encoded key name no longer slips past it. Guide 4.3.3.
 - **Review 2026-10-24: the thirteen low findings, five correctness slips and the performance items.**
   The Encrypted DNS server asks for an oversized answer over TCP without stalling other devices, counts
   its per-device connection cap by the device rather than by address, makes room for a new connection
@@ -1078,7 +1135,7 @@ Everything in v3.4.7 is included.
   self-test (one query to the router's resolver, NXDOMAIN expected), a reset, and a coverage card (DNS
   Director forcing, the Firefox DoH canary). **Needs Warden on**, as before. **Behaviour change:** the
   list's `/jffs` copy is now `dns.nx`; the v3.4.7 `dns.cache` is replayed only when no `dns.nx` exists
-  and is removed once one is written, so a downgrade rebuilds its list at its first update. Guide 4.3.10.
+  and is removed once one is written, so a downgrade rebuilds its list at its first update. Guide 4.3.2.
 - **Security Review: watch rules, per-item accept, an acceptance log.** Reviewer feedback: expected
   `/jffs` churn turned every run into the same list. Rules in `/jffs/reaper/review/rules` (`hash`,
   `meta`, `exist`, `ignore` and a glob, or `cron:` / `nvram:` patterns; first match wins, 100 at most)
@@ -1087,7 +1144,7 @@ Everything in v3.4.7 is included.
   gets Accept, Existence only, Ignore and Ignore folder; Accept all stays. Every acceptance and rules
   save is audited, logged with counts and up to 20 items (`reaper-audit: review …`) and appended to
   `/jffs/reaper/review/accept.log` (200 kept; the card shows 10). The rules survive updates and ride
-  the settings export (`rwatch_rules`, validated on import). Guide 2.9.
+  the settings export (`rwatch_rules`, validated on import). Guide 4.1.1b.
 - **Traffic Analyzer: latency and loss get their own chart, with a real right axis.** Reviewer
   feedback: latency showed only on the history windows, under a *Latency (right axis)* legend with no
   right axis. A **Latency & loss** card under WAN throughput now draws round-trip time (left, ms) and
@@ -1099,7 +1156,7 @@ Everything in v3.4.7 is included.
   `feodotracker.abuse.ch` are Fastly anycast names answered from `151.101.2.49`, `.66.49`, `.130.49`
   and `.194.49`, inside the United States country list — the v3.4.7 ipdeny failure with US in place of
   FR. The four addresses are added like the ipdeny entry: only those missing (bare or `/32`), appended,
-  logged, under their own one-time marker, so a deleted entry is never put back. Guide 4.3.5.
+  logged, under their own one-time marker, so a deleted entry is never put back. Guide 4.3.1.7.
 - **Security review 2026-10-20: one medium and five low findings fixed.** IPv6 device names now honour
   dnsmasq's hosts-clash rule, so a LAN device can no longer have its IPv6 address served for the
   router's or another device's name (F-1; it was opt-in). The Connections page's name table ignores
@@ -1170,7 +1227,7 @@ Everything in v3.4.6 is included.
   DNS-over-TLS names, the LAN domain or the names you list; restarts dnsmasq once only when the list
   changed; `/jffs/rwarden/dns.cache` replays at boot. Only devices resolving through the router are
   covered (DoH, own-DNS and VPN clients are not). Keys `rwarden_dns`, `rwarden_dns_feeds`; list
-  `dnsallow`. Guide 4.3.10. Also: the country-list fetch is now redirect-pinned to https like the
+  `dnsallow`. Guide 4.3.2. Also: the country-list fetch is now redirect-pinned to https like the
   threat feeds, and the self-monitor's loopback-DNS check retries once before declaring a failure.
 - **Warden: the country-list host is whitelisted once.** `www.ipdeny.com` (51.15.12.186) is hosted in
   France; with FR selected and the router-self filter on, Warden dropped its own list downloads, the

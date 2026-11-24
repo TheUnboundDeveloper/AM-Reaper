@@ -109,7 +109,8 @@ finally:
     shutil.rmtree(tmp, ignore_errors=True)
 
 # wiring
-fn = rd[rd.find("static void landns_silent_upstreams("):rd.find("/* Called once per loop pass; does nothing until a check is due. */")]
+_s = rd.find("static void landns_silent_upstreams(")
+fn = rd[_s:rd.find("\n}\n", _s) + 3]  # the function body only (2026-11-20: the REAPER-UPTLS section now sits between it and landns_tick)
 check("landns_silent_upstreams() found", len(fn) > 200)
 i_conf = fn.find('fopen(LDNS_CONF, "r")'); i_file = fn.find('fopen(HC_DNSMASQ, "r")'); i_ask = fn.find("dns_ask_many(")
 check("the running configuration is read first, then the servers file, then the servers are asked", 0 <= i_conf < i_file < i_ask, (i_conf, i_file, i_ask))

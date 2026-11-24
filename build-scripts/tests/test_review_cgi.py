@@ -87,8 +87,10 @@ check("reset removes the baseline and the cached report, never the rules or the 
 check("reset is audited and written to the accept log",
       'reaper_audit("review", "baseline-reset", "");' in rs and 'rview_alog("reset",' in rs)
 fw = open(os.path.join(SRC, "www", "Reaper_Firewall.asp"), encoding="utf-8", errors="replace").read()
-check("the page's Accept-all honours Cancel (reaperConfirm calls back with false)",
-      re.search(r"function rvAck\(\)\{\s*reaperConfirm\([^;]*?function\(ok\)\{\s*if\(!ok\)return;", fw) is not None)
+# 2026-11-23 (owner, REAPER-REVIEW-NOPW): the dialogs ask no password (they did 2026-11-21..23)
+check("the page's Accept-all honours Cancel (reaperConfirm calls back with false) and asks no password",
+      re.search(r"function rvAck\(\)\{\s*reaperConfirm\([^;]*?function\(ok\)\{\s*if\(!ok\)return;", fw) is not None
+      and "admpw" not in fw and "password:" not in fw)
 check("the page's Reset baseline confirms as a danger action and honours Cancel",
       re.search(r"function rvReset\(\)\{\s*reaperConfirm\(`<#RFW_386#>`,\{okLabel:`<#RFW_385#>`,danger:true\},function\(ok\)\{\s*if\(!ok\)return;\s*rvpost\('action=reset'", fw) is not None)
 
@@ -228,6 +230,11 @@ static char *get_cgi(const char *n) { return strcmp(n, "items") ? NULL : ITEMS; 
 static int nvram_match(const char *k, const char *v) { (void)k; (void)v; return 1; }
 static void reaper_audit(const char *f, const char *a, const char *d) { audits++; fprintf(stderr, "AUDIT %s %s %s\n", f, a, d); }
 static void rview_kick(void) {}
+/* 2026-11-21: the branch folds only into a baseline whose seal holds, and re-seals (no password since 2026-11-23) */
+static int seals, seal_ok = 1;
+static int rview_seal_holds(const char *base) { (void)base; return seal_ok; }
+static int rview_seal_calc(const char *base, const char *rules, char hex[65]) { (void)base; (void)rules; strcpy(hex, "f"); return 0; }
+static void rview_seal_store(const char *hex) { (void)hex; seals++; }
 #define websWrite fprintf
 ''' + helpers + r'''
 static void ack_many(FILE *stream)
@@ -237,11 +244,11 @@ static void put(const char *p, const char *s) { FILE *f = fopen(p, "w"); fputs(s
 static void run(const char *tag, const char *items)
 {
 	char b[4096] = ""; FILE *f;
-	ITEMS = (char *)items; audits = 0;
+	ITEMS = (char *)items; audits = 0; seals = 0;
 	printf("%s: ", tag); ack_many(stdout);
 	if ((f = fopen(RVIEW_BASE, "r")) != NULL) { size_t n = fread(b, 1, sizeof(b) - 1, f); b[n] = 0; fclose(f); }
 	for (char *p = b; *p; p++) if (*p == '\n') *p = '|'; else if (*p == '\t') *p = '>';
-	printf(" audits=%d base=[%s]\n", audits, b);
+	printf(" audits=%d seals=%d base=[%s]\n", audits, seals, b);
 }
 int main(int argc, char **argv)
 {
@@ -261,6 +268,7 @@ int main(int argc, char **argv)
 	memset(huge, 'a', sizeof(huge) - 1); huge[0] = 'N'; huge[1] = '\t';
 	run("huge", huge);
 	run("empty", "");
+	seal_ok = 0; run("noseal", "N\tk\n"); seal_ok = 1;
 	return 0;
 }
 '''
@@ -289,6 +297,11 @@ int main(int argc, char **argv)
             check("ack_many: more than 100 items or more than 16 KB is refused with its reason (RFW_394); an empty list too",
                   '"ek":"RFW_394"' in ln.get("101", "") and '"ek":"RFW_394"' in ln.get("huge", "") and '"ok":0' in ln.get("empty", "")
                   and " audits=0 " in ln.get("101", ""))
+            # 2026-11-21: the seal (the password the branch asked for until 2026-11-23 is gone - REAPER-REVIEW-NOPW)
+            check("ack_many: re-seals exactly once after the write; a refused list seals nothing",
+                  " seals=1 " in ln.get("two", "") and all(" seals=0 " in ln.get(k, "") for k in ("unknown", "malformed", "badtype", "101", "huge", "empty")), ln)
+            check("ack_many: refused whole (RFW_430) while the seal of the baseline does not hold - nothing written, nothing audited, nothing sealed",
+                  '"ek":"RFW_430"' in ln.get("noseal", "") and " audits=0 seals=0 " in ln.get("noseal", "") and same in ln.get("noseal", ""), ln.get("noseal"))
 
 # 2026-10-26 (owner: "the way to remove a rule is not clear"): one way to act on each list. The review rows lose their
 # own buttons - the bar (shown with the list, greyed until rows are ticked) does it; the watch rules are a list with

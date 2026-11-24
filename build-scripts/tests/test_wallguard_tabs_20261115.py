@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Wallguard page in five tabs, the Devices tab and devcounts (owner-chosen concept B, 2026-11-15).
+"""Wallguard page in five tabs (six since 2026-11-20: Allowed), the Devices tab and devcounts (owner-chosen concept B, 2026-11-15).
 
 WHY. The owner's pain: Paramount+ on the Fire TV broke and the Wallguard page, one long wall of cards, showed nothing
 useful where he looked. Of three mockups (docs/mockups/wallguard-2026-11-15) he picked B: the Firewall page's tab row
@@ -38,18 +38,18 @@ def run(cmd, **kw):
     return subprocess.run(cmd, capture_output=True, text=True, **kw)
 
 pg = rd("www/Reaper_Wallguard.asp")
-TABS = ["overview", "lists", "rules", "devices", "activity"]
+TABS = ["overview", "lists", "rules", "allowed", "devices", "activity"]	# 2026-11-20: + Allowed (item 7)
 # ============================================================ page: the tab row
 w0 = pg.find('<div class="wins" id="wins"'); w1 = pg.find("\n</div>", w0)
 row = pg[w0:w1]
-check("five tabs in the tab row, in order, each with its amber-dot span",
-      w0 > 0 and re.findall(r'data-t="([a-z]+)"', row) == TABS and row.count('<span class="cdot"></span>') == 5, row[:400])
+check("six tabs in the tab row, in order, each with its amber-dot span (2026-11-20: Allowed after Rules)",
+      w0 > 0 and re.findall(r'data-t="([a-z]+)"', row) == TABS and row.count('<span class="cdot"></span>') == 6, row[:400])
 check("each tab has its panel (.tab#tab_<name>)", all(('<div class="tab" id="tab_%s"' % t) in pg for t in TABS))
 check("Save sits at the right end of the tab row (the only Save button)",
       '<span class="savebar"><button class="btn primary" data-act="save"><#RWDN_28#></button></span>' in row
       and re.sub(r"<script>.*?</script>", "", pg, flags=re.S).count('data-act="save"') == 1 and ".wins .savebar{margin-left:auto;" in pg)
 check("the tab switch: the Firewall page's classes, the last tab remembered per browser with try/catch",
-      "var TABS = ['overview', 'lists', 'rules', 'devices', 'activity']" in pg
+      "var TABS = ['overview', 'lists', 'rules', 'allowed', 'devices', 'activity']" in pg
       and "try{ localStorage.setItem('reaper_wg_tab', t); }catch(e){}" in pg
       and "try{ t0 = localStorage.getItem('reaper_wg_tab') || ''; }catch(e){}" in pg
       and "$('tab_' + x).classList.toggle('on', x === t);" in pg)
@@ -72,6 +72,8 @@ check("Lists: the lists table, your own sources, update, storage line, build war
       all(x in P["lists"] for x in ('id="listbody"', 'id="srcform"', 'data-act="update"', 'id="storeline"', 'id="buildwarn"', 'id="mode"')))
 check("Rules: my rules, advanced rules, rewrites, the services / schedule / safe-search editor",
       all(x in P["rules"] for x in ('id="block"', 'id="allow"', 'id="adv"', 'id="rwbody"', 'id="svcprof"', 'id="pedit"')))
+check("Allowed (2026-11-20): the 24 h table with select-all, the Never block and Always block tables, the filter",
+      all(x in P["allowed"] for x in ('id="a24body"', 'id="a24all"', 'id="nbbody"', 'id="abbody"', 'id="alfilter"', 'data-act="a24delsel"', 'data-act="a24delall"')))
 check("Devices: the device rows, then the profile grid", P["devices"].find('id="devrows"') > 0 and P["devices"].find('id="devrows"') < P["devices"].find('id="profbody"'))
 check("Activity: live view with its device filter, most-blocked names and devices, Reset counters",
       all(x in P["activity"] for x in ('id="livebtn"', 'id="livedev"', 'id="livebody"', 'id="topbody"', 'id="devbody"', 'data-act="reset"')))

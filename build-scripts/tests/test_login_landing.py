@@ -71,6 +71,29 @@ if m and CC and sys.platform.startswith("linux"):
 else:
     print("skip the compiled cases (no host compiler on Linux)")
 
+# ---- 2026-11-20 (item 9, REAPER-DUT-REDIR): the redirect goes to the address the admin typed on Tweaks
+LP = os.path.join(SRC, "www", "Main_Login.asp")
+lp = open(LP, encoding="utf-8", errors="replace").read() if os.path.isfile(LP) else ""
+blk = lp[lp.find("REAPER-DUT-REDIR"):lp.find("var chdom = function()")]
+check("login page: the address comes from the reaper_dut_redir_js hook (printed only while the redirect is on), never nvram_get",
+      "[<% reaper_dut_redir_js(); %>][0] || {}" in blk and 'nvram_get_js("reaper_dut_redir_' not in blk and "nvram_get(" not in blk
+      and 'nvram_get_js("https_lanport")' in blk and 'nvram_get_js("http_lanport")' in blk)
+check("login page: only a name of httpd's shape replaces the stock one (labels, 57 characters, no IP), proto http/https, port 1-65535",
+      "h.length <= 57" in blk and "/^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/" in blk and "!/^[0-9]+$/.test(h.split('.').pop())" in blk
+      and "(pr !== 'http' && pr !== 'https')" in blk and "if (!/^[1-9][0-9]{0,4}$/.test(pt) || +pt > 65535)" in blk
+      and "ROUTERHOSTNAME = h;" in blk)
+check("login page: the chdom.json probe still decides (an address that does not answer never moves the browser)",
+      "loadScript(`${domainNameUrl}/chdom.json?hostname=${header_info.host}`)" in lp and lp.find("REAPER-DUT-REDIR") < lp.find("loadScript(`${domainNameUrl}/chdom.json"))
+check("httpd: the typed name counts as this router in the cross-site check (exact, any case, checked again)",
+      re.search(r'const char \*dh = nvram_safe_get\("reaper_dut_redir_host"\);\n\n\t\tif \(dh\[0\] && rdr_host_ok\(dh\) && !strcasecmp\(h, dh\)\)\n\t\t\treturn 1;', src) is not None)
+
 if fails:
     print("\n".join("FAILED: " + f for f in fails)); sys.exit(1)
 print("all checks passed")
+# 2026-11-20 (owner): the hook prints the address only while the redirect is on, after the shared validators
+WEBC = open(os.path.join(SRC, "httpd", "web.c"), encoding="utf-8", errors="replace").read() if os.path.isfile(os.path.join(SRC, "httpd", "web.c")) else ""
+hk = WEBC[WEBC.find("static int ej_reaper_dut_redir_js("):WEBC.find("static int ej_reaper_main_radius(")]
+check("httpd: reaper_dut_redir_js prints {} unless the redirect is on and every part passes the shared checks",
+      'nvram_match("http_dut_redir", "1")' in hk and "rdr_host_ok(h)" in hk and "rdr_proto_ok(pr)" in hk and "rdr_port_ok(pt)" in hk
+      and 'websWrite(wp, "{}")' in hk and '{ "reaper_dut_redir_js", ej_reaper_dut_redir_js},' in WEBC)
+

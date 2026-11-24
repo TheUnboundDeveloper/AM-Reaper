@@ -25,10 +25,27 @@ the CGI gates first and writes the baseline with rjf_set, the ack runs the scrip
 detached through reaper_script_ok, the page carries http_id, the export row and the
 default exist.
 
+THE SEAL (2026-11-21). httpd keeps a fingerprint of the accepted baseline + the watch rules in nvram
+(rwatch_review_seal) and the script recomputes it at every run. The fixture plays httpd: accept() and
+seal() write the value with the same byte recipe (fingerprint() below; test_review_reauth.py proves the
+C side writes these bytes too). Checked under both shells: sealed and clean; a baseline edited behind
+the page; rules edited behind the page; the baseline deleted with its seal still set; a baseline with
+no seal (the state every router is in once after the upgrade - never sealed silently); a seal that is
+not a fingerprint; adopt / retire re-seal and only run while the seal holds; ONE syslog line per change
+of the state, with both fingerprints for a mismatch; nothing is healed. REVIEW_TEST_KEEP_GOING=1 lists
+every failing check instead of stopping at the first (used to show the new checks fail on the base).
+
+WATCH MORE (2026-11-23, REAPER-REVIEW-WATCH-MORE). More settings are watched; the admin password is NOT (owner,
+2026-11-23, REAPER-REVIEW-NOPW: no shell reads it on the router, and the C helper tried for it was removed); the
+Warden / Dreadwatch list files that let traffic through
+(/jffs/rwarden/allow cfeeds dnsallow dnssrc dnsexempt; not ban) are hashed. A baseline from an older firmware lacks the
+marker row rwatch_review_lists: the list files are adopted as they stand in that one pass, logged once and re-sealed;
+from then on an edited or a new list file is a change.
+
 Exit 0 pass, 1 fail, 77 skipped (no router source tree - pass release/src/router as
 argv[1] or REAPER_ROUTER_SRC - or no /bin/sh).
 """
-import json, os, re, shutil, subprocess, sys, tempfile
+import hashlib, json, os, re, shutil, subprocess, sys, tempfile, time
 
 def skip(msg):
     print("SKIP: " + msg); sys.exit(77)
@@ -37,11 +54,21 @@ def die(msg):
     print("FAIL: " + msg); sys.exit(1)
 
 passed = 0
+KEEP = os.environ.get("REVIEW_TEST_KEEP_GOING") == "1"   # list every failing check (for the fails-on-base run)
+failed = []
 def ok(cond, what):
     global passed
-    if not cond: die(what)
+    if not cond:
+        if not KEEP: die(what)
+        failed.append(what); print("FAIL " + what); return
     passed += 1
     print("ok   " + what)
+
+# 2026-11-21: the seal's fingerprint, byte for byte what rc/rwatch.c _rv_fp() and httpd rview_seal_hash() hash
+SEALNV = "rwatch_review_seal"
+def fingerprint(base_bytes, rules_bytes):
+    return hashlib.sha256(b"reaper-review-seal-1\nbaseline %d\n" % len(base_bytes) + base_bytes
+                          + b"\nrules %d\n" % len(rules_bytes) + rules_bytes + b"\n").hexdigest()
 
 SRC = sys.argv[1] if len(sys.argv) > 1 else os.environ.get("REAPER_ROUTER_SRC", "")
 if not SRC or not os.path.isfile(os.path.join(SRC, "rc", "rwatch.c")):
@@ -167,7 +194,7 @@ try:
     # `nvram show`, lifted from rc/reaper_nv.h) over a fake nvram built from the fixture files; usleep is the host's sleep
     NVS = c_unescape(macros_of(read("rc/reaper_nv.h").replace("\\\n", ""))["REAPER_NVS_HELPER"])
     ok("_nvs() {" in NVS and "nvram show >" in NVS and "REAPER_NVS_HELPER" in rw, "rwatch.sh carries _nvs (reaper_nv.h) and the review's inventory uses it")
-    NVRAM_OK = 'nvram() { case "$1" in show) for f in "$NVDIR"/*; do [ -f "$f" ] || continue; printf "%s=" "${f##*/}"; cat "$f"; echo; done;; get) cat "$NVDIR/$2" 2>/dev/null;; esac; }\n'
+    NVRAM_OK = 'nvram() { case "$1" in show) for f in "$NVDIR"/*; do [ -f "$f" ] || continue; printf "%s=" "${f##*/}"; cat "$f"; echo; done;; get) cat "$NVDIR/$2" 2>/dev/null;; set) printf "%s" "${2#*=}" > "$NVDIR/${2%%=*}";; unset) rm -f "$NVDIR/$2";; commit) :;; esac; }\n'
     def run(shell, extra="", nvram_fn=NVRAM_OK):
         base = os.path.join(jffs, "reaper", "review", "baseline")
         # functions, not only PATH stubs: busybox ash in standalone mode runs its own
@@ -179,9 +206,10 @@ try:
         sp = os.path.join(work, "run.sh"); open(sp, "w").write(head + block + tail)
         # RV_WWT_ROOTS: the /tmp + /var folder check (2026-11-06, C-8) must not read the host's own /tmp here
         env = dict(os.environ, NVDIR=nvd, LOGF=logf, CRU_FILE=cruf, LC_ALL="C", PATH=binp + os.pathsep + os.environ.get("PATH", ""),
-                   RV_WWT_ROOTS=os.path.join(work, "no-wwt-root"))
+                   RV_WWT_ROOTS=os.path.join(work, "no-wwt-root"), RV_SEAL_WAIT="0")   # 2026-11-21: no 1 s second look here
         cmd = [shell, sp] if shell != "busybox" else [BB, "ash", sp]
         p = subprocess.run(cmd, capture_output=True, text=True, env=env, cwd=work, timeout=60)
+        run.out = p.stdout
         if p.returncode != 0:
             die("review block failed under %s:\n%s" % (shell, p.stderr[-800:]))
         jp = os.path.join(tmpd, "review.json")
@@ -193,10 +221,22 @@ try:
         logs = open(logf).read().splitlines() if os.path.exists(logf) else []
         return j, logs
 
-    def accept():
+    BASEP = os.path.join(jffs, "reaper", "review", "baseline")
+    def getnv(k):
+        try: return open(os.path.join(nvd, k)).read()
+        except FileNotFoundError: return ""
+    def unsetnv(k):
+        try: os.unlink(os.path.join(nvd, k))
+        except FileNotFoundError: pass
+    def seal(rules=None, who="192.168.50.20"):
+        # what httpd stores after a legitimate write: "<fingerprint> <epoch> <who>" over the baseline and the rules on disk
+        rb = open(rules, "rb").read() if rules and os.path.exists(rules) else b""
+        setnv(SEALNV, "%s %d %s" % (fingerprint(open(BASEP, "rb").read(), rb), int(time.time()), who))
+    def accept(rules=None):
         base = os.path.join(jffs, "reaper", "review", "baseline")
         os.makedirs(os.path.dirname(base), exist_ok=True)
         shutil.copyfile(os.path.join(tmpd, "review.inv"), base)
+        seal(rules)                                   # 2026-11-21: Accept writes the baseline AND its seal
         for f in ("review.last",):
             try: os.unlink(os.path.join(tmpd, f))
             except FileNotFoundError: pass
@@ -205,7 +245,7 @@ try:
     for shell in shells:
         tag = "sh" if shell == SH else "ash"
         for f in os.listdir(tmpd): os.unlink(os.path.join(tmpd, f))
-        shutil.rmtree(os.path.join(jffs, "reaper"), ignore_errors=True)
+        shutil.rmtree(os.path.join(jffs, "reaper"), ignore_errors=True); unsetnv(SEALNV)
         if os.path.exists(logf): os.unlink(logf)
         setnv("sshd_enable", "2"); setnv("vts_rulelist", ""); setnv("rwatch_review", "1")
         sc = os.path.join(jffs, "scripts", "new.sh")
@@ -245,24 +285,34 @@ try:
         base = os.path.join(jffs, "reaper", "review", "baseline")
         bl = [l for l in open(base).read().splitlines() if not l.startswith("N\trwarden_dns\t") and not l.startswith("N\tgk_enable\t")]
         open(base, "w").write("\n".join(bl) + "\n")
+        seal()                                        # 2026-11-21: sealed as that older firmware left it
         j, logs = run(shell)
         bt = open(base).read()
         ok(j["armed"] == 1 and j["unreviewed"] == 0 and len(logs) == 1 and "now watching 2 setting(s)" in logs[0] and "rwarden_dns" in logs[0] and "gk_enable" in logs[0]
            and "N\trwarden_dns\t" in bt and "N\tgk_enable\t" in bt and not any(it["st"] == "added" for it in j["items"]),
            "[%s] a setting the baseline predates is adopted into the baseline and logged once, not reported as a change (got %s / %s)" % (tag, j["unreviewed"], logs))
+        sv = getnv(SEALNV).split()
+        ok(j.get("seal") == "ok" and len(sv) == 3 and sv[0] == fingerprint(open(base, "rb").read(), b"") and sv[2] == "rwatch",
+           "[%s] seal: the adopt edit is the watchdog's own - it re-seals the baseline it rewrote (who = rwatch) (got %s / %s)" % (tag, j.get("seal"), sv[1:]))
         j, logs = run(shell)
         ok(j["unreviewed"] == 0 and len(logs) == 1, "[%s] ...and the next tick is quiet (the baseline carries it now)" % tag)
+        ok(j.get("seal") == "ok" and j["armed"] == 1, "[%s] seal: ...and the seal holds on the next tick" % tag)
         os.unlink(logf)
         # 2026-10-25 (_r39 metal: "removed shroud_enable" after the rename): a setting row the baseline has and this firmware
         # no longer watches is retired from the baseline with one log line - never listed as a change; a removed FILE stays one
         open(base, "a").write("N\tshroud_enable\t1\n")
+        seal()                                        # 2026-11-21: as above
         j, logs = run(shell)
         bt = open(base).read()
         ok(j["armed"] == 1 and j["unreviewed"] == 0 and len(logs) == 1 and "no longer watched by this firmware" in logs[0]
            and "shroud_enable" in logs[0] and "shroud_enable" not in bt and not any(it["st"] == "removed" for it in j["items"]),
            "[%s] a setting this firmware no longer watches is retired from the baseline and logged once, not a change (got %s / %s)" % (tag, j["unreviewed"], logs))
+        sv = getnv(SEALNV).split()
+        ok(j.get("seal") == "ok" and len(sv) == 3 and sv[0] == fingerprint(open(base, "rb").read(), b"") and sv[2] == "rwatch",
+           "[%s] seal: the retire edit re-seals the baseline too (got %s / %s)" % (tag, j.get("seal"), sv[1:]))
         j, logs = run(shell)
         ok(j["unreviewed"] == 0 and len(logs) == 1, "[%s] ...and the next tick is quiet" % tag)
+        ok(j.get("seal") == "ok" and j["armed"] == 1, "[%s] seal: ...and the seal holds on the next tick after a retire" % tag)
         os.unlink(logf)
 
         # drift of every kind
@@ -316,7 +366,7 @@ try:
         # ---- rules (2026-10-20, reviewer: expected /jffs churn flagged every run): per-path modes,
         # exclusions, first match wins, a mode change is not a change, ignored paths never "removed"
         for f in os.listdir(tmpd): os.unlink(os.path.join(tmpd, f))
-        shutil.rmtree(os.path.join(jffs, "reaper"), ignore_errors=True)
+        shutil.rmtree(os.path.join(jffs, "reaper"), ignore_errors=True); unsetnv(SEALNV)
         if os.path.exists(logf): os.unlink(logf)
         setnv("rwatch_review", "1")
         rules = os.path.join(work, "rules")
@@ -336,6 +386,7 @@ try:
                                "ignore nvram:sshd_port\n"
                                "bogus /jffs/scripts/*\n"                      # unknown mode: skipped
                                "ignore\n")                                    # no pattern: skipped
+        seal(rules)                                   # 2026-11-21: a rules save on the page re-seals
         j, logs = run(shell, RX)
         it = {it["k"]: it for it in j["items"]}
         fs = os.path.join(jffs, "scripts", "firewall-start")
@@ -350,7 +401,7 @@ try:
         ok(not any(k.startswith("0 3 * * *") for k in it) and "sshd_port" not in it,
            "[%s] rules: cron:<glob> and nvram:<key> ignore drop those items - and they are not reported removed" % tag)
         ok(j["unreviewed"] == 0 and logs == [], "[%s] rules: mode changes are not changes - nothing unreviewed, nothing logged (got %d, %s)" % (tag, j["unreviewed"], logs))
-        accept()
+        accept(rules)
         open(fs, "a").write("# edited\n")                             # content change under 'exist'
         os.utime(os.path.join(jffs, "addons", "secaudit", "sub dir", "mod.sh"), (1, 1))   # size/date change under 'exist'
         j, logs = run(shell, RX)
@@ -363,6 +414,7 @@ try:
         open(rules, "a").write("ignore /jffs/addons/secaudit/link.sh\n")
         prev = open(rules).read()
         open(rules, "w").write("ignore /jffs/addons/*\n" + prev)
+        seal(rules)                                   # 2026-11-21: as above
         os.unlink(ra)
         j, logs = run(shell, RX)
         ok(not any(x["k"] in (ra, md) for x in j["items"]) and j["unreviewed"] == 0,
@@ -372,7 +424,7 @@ try:
 
         # ---- login watch (Rung 3, 2026-10-19): failed logins per source from the syslog cursor
         for f in os.listdir(tmpd): os.unlink(os.path.join(tmpd, f))
-        shutil.rmtree(os.path.join(jffs, "reaper"), ignore_errors=True)
+        shutil.rmtree(os.path.join(jffs, "reaper"), ignore_errors=True); unsetnv(SEALNV)
         if os.path.exists(logf): os.unlink(logf)
         setnv("rwatch_review", "1")
         slog = os.path.join(work, "syslog.log")
@@ -406,6 +458,176 @@ try:
         ok(j["notices_n"] == 5 and ("ssh", "192.0.2.77") in ns and ("ssh", "198.51.100.88") in ns and len(logs) == 5,
            "[%s] login watch: a rotated log loses nothing - the old file's tail and the new file both count (got %s)" % (tag, sorted(ns)))
         ok(os.path.exists(os.path.join(tmpd, "review.auth")) and len(open(os.path.join(tmpd, "review.auth")).read().splitlines()) == 5, "[%s] login watch: the notices file holds the five" % tag)
+
+        # ---- the seal (2026-11-21, owner-approved design). httpd writes rwatch_review_seal on every legitimate write;
+        # the script recomputes the fingerprint at every run. ok / none: as before. changed / removed: red on the pages.
+        # unsealed: amber. In those three every row is unreviewed, nothing is adopted, retired, healed or undone, and
+        # there is ONE syslog line per change of the state.
+        for f in os.listdir(tmpd): os.unlink(os.path.join(tmpd, f))
+        shutil.rmtree(os.path.join(jffs, "reaper"), ignore_errors=True); unsetnv(SEALNV)
+        if os.path.exists(logf): os.unlink(logf)
+        setnv("rwatch_review", "1"); setnv("sshd_enable", "2")
+        srules = os.path.join(work, "seal_rules")
+        if os.path.exists(srules): os.unlink(srules)
+        SX = "RV_RULES=%s" % srules
+        newsc = os.path.join(jffs, "scripts", "seal_new.sh")
+        def sj(j, k, d=None): return (j or {}).get(k, d)
+        j, logs = run(shell, SX)
+        ok(sj(j, "seal") == "none" and sj(j, "armed") == 0 and logs == [], "[%s] seal: no baseline and no seal is state none - the unarmed review as before, nothing logged (got %s)" % (tag, sj(j, "seal")))
+        accept(srules)
+        good = open(BASEP, "rb").read()
+        j, logs = run(shell, SX)
+        ok(sj(j, "seal") == "ok" and sj(j, "armed") == 1 and sj(j, "unreviewed") == 0 and logs == [],
+           "[%s] seal: sealed and clean - state ok, armed, nothing unreviewed, nothing logged (got %s)" % (tag, sj(j, "seal")))
+        # the byte recipe: the shell's fingerprint is the one Python (and httpd) computes - without and with a rules file
+        run(shell, SX + "\n_rv_fp 2>/dev/null; exit 0")
+        fp0 = (run.out or "").strip()
+        open(srules, "w").write("ignore /jffs/addons/none/*\n# a comment\n")
+        run(shell, SX + "\n_rv_fp 2>/dev/null; exit 0")
+        fp1 = (run.out or "").strip()
+        ok(fp0 == fingerprint(good, b"") and fp1 == fingerprint(good, open(srules, "rb").read()) and fp0 != fp1,
+           "[%s] seal: _rv_fp writes the documented bytes (sha256 over head, sized baseline, sized rules) - equal to the reference, with and without a rules file" % tag)
+        # the sizes fix where each file ends: the baseline's last byte moved into the rules file is another fingerprint
+        open(BASEP, "wb").write(good[:-1]); open(srules, "wb").write(good[-1:])
+        run(shell, SX + "\n_rv_fp 2>/dev/null; exit 0")
+        fp2 = (run.out or "").strip()
+        open(BASEP, "wb").write(good); os.unlink(srules)
+        ok(len(fp2) == 64 and fp2 != fp0 and fp2 == fingerprint(good[:-1], good[-1:]),
+           "[%s] seal: a byte moved from the end of the baseline into the rules file gives another fingerprint (the sizes are hashed)" % tag)
+
+        # a baseline edited behind the page: the classic hide - change a setting, then write the new value into the baseline
+        sealed = getnv(SEALNV)
+        setnv("sshd_enable", "1")
+        bad = good.replace(b"N\tsshd_enable\t2\n", b"N\tsshd_enable\t1\n")
+        open(BASEP, "wb").write(bad)
+        open(newsc, "w").write("#!/bin/sh\n:\n")
+        j, logs = run(shell, SX)
+        its = sj(j, "items", [])
+        ok(bad != good and sj(j, "seal") == "changed" and sj(j, "armed") == 0, "[%s] seal: an edited baseline is state changed and the report is not armed (got %s)" % (tag, sj(j, "seal")))
+        ok(sj(j, "seal") == "changed" and sj(j, "unreviewed") == sj(j, "total") and sj(j, "total", 0) > 0 and its and all(it["st"] != "baseline" for it in its),
+           "[%s] seal: with the seal broken EVERY inventory row is unreviewed - none is shown as baseline (got %s of %s)" % (tag, sj(j, "unreviewed"), sj(j, "total")))
+        ok(sj(j, "seal") == "changed" and its and its[0]["st"] == "added" and its[0]["k"] == newsc and all(it["st"] == "new" for it in its[1:]),
+           "[%s] seal: what differs from the file on disk still comes first, the rest follows as new" % tag)
+        ok(len(logs) == 1 and sealed.split()[0] in logs[0] and fingerprint(bad, b"") in logs[0] and "changed outside the Firewall page" in logs[0]
+           and "nothing is undone" in logs[0], "[%s] seal: ONE syslog line names the change with BOTH fingerprints (sealed and found) (%s)" % (tag, logs[:1]))
+        ok(sj(j, "seal") == "changed" and open(BASEP, "rb").read() == bad and getnv(SEALNV) == sealed, "[%s] seal: nothing is healed - the edited baseline and the seal are left as found" % tag)
+        j, logs = run(shell, SX)
+        ok(sj(j, "seal") == "changed" and len(logs) == 1, "[%s] seal: the same state on the next run logs nothing more" % tag)
+        # nothing is adopted while the seal does not hold (an adopt would re-seal the edited file)
+        open(BASEP, "wb").write(b"".join(l for l in bad.splitlines(True) if not l.startswith(b"N\trwarden_dns\t")))
+        cut = open(BASEP, "rb").read()
+        j, logs = run(shell, SX)
+        ok(cut != bad and sj(j, "seal") == "changed" and open(BASEP, "rb").read() == cut and getnv(SEALNV) == sealed and not any("now watching" in l for l in logs),
+           "[%s] seal: nothing is adopted into a baseline whose seal does not hold - no rewrite, no re-seal" % tag)
+        # the sealed bytes back: ok again, said once
+        open(BASEP, "wb").write(good); setnv("sshd_enable", "2"); os.unlink(newsc)
+        j, logs = run(shell, SX)
+        ok(sj(j, "seal") == "ok" and sj(j, "armed") == 1 and sj(j, "unreviewed") == 0 and len(logs) == 2 and "match their seal again" in logs[1],
+           "[%s] seal: the sealed bytes back = state ok again, one line says so (%s)" % (tag, logs[1:2]))
+
+        # rules edited behind the page: an ignore rule that would hide every script
+        open(srules, "w").write("ignore /jffs/scripts/*\n")
+        j, logs = run(shell, SX)
+        ok(sj(j, "seal") == "changed" and sj(j, "armed") == 0 and len(logs) == 3 and fingerprint(good, b"ignore /jffs/scripts/*\n") in logs[2] and sealed.split()[0] in logs[2],
+           "[%s] seal: a rule added behind the page is state changed too - the rules are part of the fingerprint (got %s)" % (tag, sj(j, "seal")))
+        os.unlink(srules)
+        j, logs = run(shell, SX)
+        ok(sj(j, "seal") == "ok" and len(logs) == 4, "[%s] seal: the rule gone = ok again (one more line)" % tag)
+
+        # the baseline deleted, its seal still set
+        os.unlink(BASEP)
+        j, logs = run(shell, SX)
+        its = sj(j, "items", [])
+        ok(sj(j, "seal") == "removed" and sj(j, "armed") == 0 and sj(j, "unreviewed") == sj(j, "total") and its and all(it["st"] == "new" for it in its),
+           "[%s] seal: a deleted baseline with its seal still set is state removed, every row unreviewed (got %s)" % (tag, sj(j, "seal")))
+        ok(len(logs) == 5 and "baseline is missing" in logs[4] and sealed.split()[0] in logs[4] and "no baseline" in logs[4],
+           "[%s] seal: one line says the baseline is missing and names the sealed fingerprint (%s)" % (tag, logs[4:5]))
+        j, logs = run(shell, SX)
+        ok(sj(j, "seal") == "removed" and len(logs) == 5 and not os.path.exists(BASEP), "[%s] seal: removed stays quiet on the next run and nothing is put back" % tag)
+
+        # a baseline without a seal: what every router has once after the upgrade - amber, never sealed silently
+        open(BASEP, "wb").write(good); unsetnv(SEALNV)
+        j, logs = run(shell, SX)
+        ok(sj(j, "seal") == "unsealed" and sj(j, "armed") == 0 and sj(j, "unreviewed") == sj(j, "total") and all(it["st"] != "baseline" for it in sj(j, "items", [{"st": "baseline"}])),
+           "[%s] seal: a baseline with no seal is state unsealed, every row unreviewed (got %s)" % (tag, sj(j, "seal")))
+        ok(len(logs) == 6 and "has no seal" in logs[5] and "Accept" in logs[5], "[%s] seal: one line says so and what to do (%s)" % (tag, logs[5:6]))
+        j, logs = run(shell, SX)
+        ok(sj(j, "seal") == "unsealed" and getnv(SEALNV) == "" and len(logs) == 6,
+           "[%s] seal: an unsealed baseline is NOT adopted silently - no seal is written by the watchdog, and the next run is quiet" % tag)
+        # a seal that is not a fingerprint
+        setnv(SEALNV, "zz;$(id) 1 x")
+        j, logs = run(shell, SX)
+        ok(sj(j, "seal") == "changed" and len(logs) == 7 and "not a fingerprint" in logs[6] and "$(id)" not in logs[6] and "zz" not in logs[6],
+           "[%s] seal: a stored value that is not a fingerprint is state changed, and its text never reaches the log (%s)" % (tag, logs[6:7]))
+        # one fresh Accept seals it
+        accept(srules)
+        j, logs = run(shell, SX)
+        ok(sj(j, "seal") == "ok" and sj(j, "armed") == 1 and len(logs) == 8 and "match their seal again" in logs[7], "[%s] seal: one Accept seals it - ok, armed, said once" % tag)
+        ok(open(os.path.join(tmpd, "review.seal")).read().strip() == "ok" if os.path.exists(os.path.join(tmpd, "review.seal")) else False,
+           "[%s] seal: the last state said is kept under /tmp (a boot says a broken state once more)" % tag)
+        had = os.path.exists(os.path.join(tmpd, "review.seal"))
+        setnv("rwatch_review", "0")
+        run(shell, SX)
+        ok(had and not os.path.exists(os.path.join(tmpd, "review.seal")) and getnv(SEALNV) != "", "[%s] seal: switching the review off forgets the state said, never the seal" % tag)
+        setnv("rwatch_review", "1")
+
+        # ---- REAPER-REVIEW-WATCH-MORE (2026-11-23): more settings, the admin password as a salted fingerprint only, and
+        # the Warden / Dreadwatch list files - adopted once on a baseline from an older firmware, a change after that
+        if os.path.exists(logf): os.unlink(logf)
+        rwd = os.path.join(jffs, "rwarden"); os.makedirs(rwd, exist_ok=True)
+        open(os.path.join(rwd, "allow"), "w").write("203.0.113.7\n")
+        open(os.path.join(rwd, "cfeeds"), "w").write("https://feeds.example/list.txt\n")
+        open(os.path.join(rwd, "ban"), "w").write("198.51.100.9\n")          # a list that only blocks: not watched
+        setnv("http_passwd", "Secr3t-Pass"); setnv("sshd_pass", "1"); setnv("restrict_rulelist", "<1>192.168.50.20>")
+        j, logs = run(shell, SX)
+        st = {it["t"] + " " + it["k"]: it for it in j["items"]}
+        ok(st.get("S " + os.path.join(rwd, "allow"), {}).get("st") == "added" and st.get("S " + os.path.join(rwd, "cfeeds"), {}).get("st") == "added"
+           and not any(k.endswith("/rwarden/ban") for k in st),
+           "[%s] watch more: the whitelist and the custom feeds are hashed list files; a new one on a current baseline is a change; ban is not watched" % tag)
+        ok(st.get("N sshd_pass", {}).get("st") == "changed" and re.fullmatch(r"[0-9a-f]{32}", st.get("N restrict_rulelist", {}).get("v", "")) is not None
+           and "N http_username" in st and "N reaper_fwsig_override" in st and "N wan1_nat_x" in st,
+           "[%s] watch more: new settings are in the inventory, a list-shaped one as a hash" % tag)
+        dump = open(os.path.join(tmpd, "review.json")).read() + open(os.path.join(tmpd, "review.inv")).read()
+        ok("N http_passwd" not in st and "http_passwd" not in dump and "Secr3t" not in dump
+           and not os.path.exists(os.path.join(jffs, "reaper", "review", "salt")),
+           "[%s] watch more: the admin password is not watched - no row, no value, no salt (owner, 2026-11-23)" % tag)
+        # a baseline from an older firmware: no marker, no list files, no new settings - all adopted, nothing alarms
+        accept(srules)
+        base = os.path.join(jffs, "reaper", "review", "baseline")
+        bl = [l for l in open(base).read().splitlines() if not l.startswith("N\trwatch_review_lists\t") and "/rwarden/" not in l
+              and not l.startswith("N\thttp_username\t")]
+        open(base, "w").write("\n".join(bl) + "\n"); seal(srules)
+        if os.path.exists(logf): os.unlink(logf)
+        j, logs = run(shell, SX)
+        bt = open(base).read()
+        lfl = [l for l in logs if "list file(s) this baseline predates" in l]
+        ok(sj(j, "unreviewed") == 0 and sj(j, "seal") == "ok" and len(lfl) == 1 and "allow" in lfl[0] and "cfeeds" in lfl[0]
+           and ("S\t" + os.path.join(rwd, "allow") + "\t") in bt and ("S\t" + os.path.join(rwd, "cfeeds") + "\t") in bt
+           and "N\trwatch_review_lists\t1" in bt and "N\thttp_username\t" in bt and not any(it["st"] == "added" for it in j["items"]),
+           "[%s] watch more: an older baseline adopts the list files (and the marker, the new settings) as they stand, one log line, no change (got %s / %s)" % (tag, sj(j, "unreviewed"), logs))
+        sv = getnv(SEALNV).split()
+        ok(len(sv) == 3 and sv[2] == "rwatch" and sv[0] == fingerprint(open(base, "rb").read(), open(srules, "rb").read() if os.path.exists(srules) else b""),
+           "[%s] watch more: that adoption re-seals once (who = rwatch)" % tag)
+        if os.path.exists(logf): os.unlink(logf)
+        j, logs = run(shell, SX)
+        ok(sj(j, "unreviewed") == 0 and logs == [], "[%s] watch more: ...and the next tick is quiet" % tag)
+        # after that: an edited whitelist and a new skip list are changes - never adopted
+        open(os.path.join(rwd, "allow"), "a").write("198.51.100.66\n")
+        open(os.path.join(rwd, "dnsexempt"), "w").write("aa:bb:cc:dd:ee:ff\n")
+        j, logs = run(shell, SX)
+        st = {it["t"] + " " + it["k"]: it for it in j["items"]}
+        ok(st.get("S " + os.path.join(rwd, "allow"), {}).get("st") == "changed" and st.get("S " + os.path.join(rwd, "dnsexempt"), {}).get("st") == "added"
+           and sj(j, "unreviewed") == 2 and not any("predates" in l for l in logs),
+           "[%s] watch more: once the baseline has the marker, an edited list and a new list file are changes (got %s)" % (tag, sj(j, "unreviewed")))
+        # a baseline that holds a password row (the _r7 test image wrote one) retires it quietly
+        open(os.path.join(jffs, "reaper", "review", "baseline"), "a").write("N\thttp_passwd\t\n"); seal(srules)
+        if os.path.exists(logf): os.unlink(logf)
+        j, logs = run(shell, SX)
+        ok(sj(j, "unreviewed") == 2 and "N\thttp_passwd\t" not in open(os.path.join(jffs, "reaper", "review", "baseline")).read()
+           and any("no longer watched" in l and "http_passwd" in l for l in logs),
+           "[%s] watch more: an old password row in the baseline is retired with one log line, not listed (got %s / %s)" % (tag, sj(j, "unreviewed"), logs))
+        shutil.rmtree(rwd, ignore_errors=True)
+        for k in ("http_passwd", "sshd_pass", "restrict_rulelist"): unsetnv(k)
 finally:
     shutil.rmtree(work, ignore_errors=True)
 ok('"RV_AUTH_N=10\\n"' in rw and "_rv_auth() {" in rw and "grep -v 'rmcpd-lab' $_win" in rw and "tail -n 50 $RV_TMP/review.auth" in rw,
@@ -478,7 +700,7 @@ ok("innerHTML" not in pr and "'rwatch_review'" in dash and "review:'rwatch_revie
 ok("window.RVJ=j; if(typeof paintReview==='function')paintReview();" in dash and "paintReview();" in between(dash, "function paintPosture(){", "\n}\n", "paintPosture"),
    "posture: the row repaints from the bar's poll and on every posture refresh")
 diag = read("others/reaper_diag")
-ok('VER="REAPER-DIAG v1.3.61"' in diag and 'echo "  security review   : rwatch_review=' in diag and 'echo "  threat domains    : rwarden_dns=' in diag,
+ok('VER="REAPER-DIAG v1.3.62"' in diag and 'echo "  security review   : rwatch_review=' in diag and 'echo "  threat domains    : rwarden_dns=' in diag,
    "diag v1.3.45: the review and threat-domain state lines")
 ok("finding WARN \"security review: ${_rvu} unreviewed change(s)" in diag and "finding WARN \"security review: ${_rvn} failed-login burst(s)" in diag
    and "finding WARN \"threat domains are switched on but no list is loaded" in diag, "diag: findings for unreviewed changes, login bursts and an unloaded domain list")
@@ -494,4 +716,70 @@ ok(arm in rw and '  : > $RV_TMP/review.boot\\n' in rw
    and 'if [ \\"$UP\\" -ge \\"$HEALGRACE\\" ] && [ ! -f /tmp/reaper_fw/armed ]; then _rv_run; fi\\n' in rw and "elif" not in rw[rw.index("# 3h) security review"):rw.index("# 4) GDX host-TCP pool")],
    "the first tick inside the grace arms ONE detached review at boot + HEALGRACE, BEFORE the grace exit (review on, no candidate armed); 3h unchanged")
 
+
+# ---- 2026-11-21: the seal - pins in source. seg() / inorder() never stop the run: on a tree without the seal
+# every pin below is a FAIL line, not a missing-anchor exit (REVIEW_TEST_KEEP_GOING=1 lists them all).
+def seg(text, a, b):
+    i = text.find(a)
+    j = text.find(b, i) if i >= 0 else -1
+    return text[i:j + len(b)] if i >= 0 and j >= 0 else ""
+def inorder(text, *needles):
+    pos = [text.find(n) for n in needles]
+    return all(x >= 0 for x in pos) and pos == sorted(pos) and len(set(pos)) == len(pos)
+seal_src = seg(rw, '"RV_SEAL=rwatch_review_seal\\n"', '"_rv_run() {\\n"')
+ok("printf 'reaper-review-seal-1\\\\nbaseline %s\\\\n'" in seal_src and "printf '\\\\nrules %s\\\\n'" in seal_src and "| sha256sum | cut -d' ' -f1" in seal_src,
+   "rwatch.c: the fingerprint is sha256 over the head line, the sized baseline and the sized rules")
+ok("md5sum" not in seal_src and "_rv_seal_get() {" in seal_src and "_rv_seal_log() {" in seal_src and "_rv_seal_put() {" in seal_src,
+   "rwatch.c: the seal has its three functions and does not fall back to md5")
+ok('nvram set \\"$RV_SEAL=$_rsf $(date +%s) rwatch\\" && nvram commit' in seal_src, "rwatch.c: the watchdog's own re-seal is committed and names rwatch")
+runsrc = rw[rw.index('"_rv_run() {\\n"'):rw.index('"[ \\"$1\\" = review ] && { _rv_run; exit 0; }\\n"')]
+ok(runsrc.count("_rv_seal_put") == 1 and inorder(runsrc, "_rv_seal_get", "_rv_diff", "_rv_seal_put", "_rv_json")
+   and '[ \\"$_rw\\" = 1 ] && _rv_seal_put' in runsrc and runsrc.count("_rw=1") == 3,
+   "rwatch.c: the state is read before the diff; adopt, retire and the list-file adoption (2026-11-23) mark the rewrite and ONE re-seal follows them, before the report")
+ok("http_passwd" not in rw[rw.index("\"RV_NV_S='"):rw.index("\"RV_RULES=")] and "RV_NV_P" not in rw and "_rv_pfp" not in rw
+   and "reaper_pwfp" not in rw,
+   "rwatch.c: the admin password is not watched - in no setting list, no fingerprint helper, no applet (owner, 2026-11-23)")
+ok('_rb=$_rsb; _ra=0; [ \\"$_rss\\" = ok ] && _ra=1' in runsrc and "sleep ${RV_SEAL_WAIT:-1}; _rv_seal_get" in runsrc,
+   "rwatch.c: only state ok arms the review; any other state is looked at a second time before it is believed")
+ok('\\\\\\"truncated\\\\\\":%d,\\\\\\"seal\\\\\\":\\\\\\"%s\\\\\\",\\\\\\"items\\\\\\":[' in rw and '\\\\\\"armed\\\\\\":%d,\\\\\\"ts\\\\\\":%d,' in rw,
+   "rwatch.c: the report carries seal after truncated - armed stays directly before ts (reaper_diag reads that pair)")
+ok("rm -f $RV_TMP/review.json $RV_TMP/review.last $RV_TMP/review.seal $RV_TMP/review.inv" in rw, "rwatch.c: the switch-off path removes the state marker")
+ok(seal_src.count('\t  "# ') >= 3 and "'" not in "".join(l for l in seal_src.splitlines() if l.strip().startswith('"#')), "rwatch.c: no apostrophe in the seal block's shell comments")
+ok('#define RVIEW_SEAL_NV\t\t"rwatch_review_seal"' in web and '#define RVIEW_SEAL_HEAD\t\t"reaper-review-seal-1\\n"' in web
+   and '"baseline %lu\\n"' in web and '"\\nrules %lu\\n"' in web and "EVP_sha256()" in seg(web, "static int rview_seal_hash(", "\n}\n"),
+   "web.c: httpd hashes the same head, sizes and digest")
+ok(cgi.count("rview_seal_store(hex);") == 4 and cgi.count("rview_seal_clear();") == 1
+   and all(seg(cgi, 'if (!strcmp(action, "%s")) {' % a, "\n\t}\n").count("rview_seal_store(hex);") == 1 for a in ("ack", "ack_one", "ack_many", "rules_set"))
+   and "rview_seal_clear();" in seg(cgi, 'if (!strcmp(action, "reset")) {', "\n\t}\n"),
+   "web.c: Accept (all / one / selected) and a rules save store the seal, reset clears it - nothing else does")
+ok("if (!rview_seal_holds(base)) {" in seg(cgi, 'if (!strcmp(action, "ack_one")) {', "\n\t}\n")
+   and "if (!rview_seal_holds(base)) {" in seg(cgi, 'if (!strcmp(action, "ack_many")) {', "\n\t}\n")
+   and "sealed = rview_seal_state() == RVS_OK && rview_seal_calc(NULL, r, hex) == 0;" in cgi,
+   "web.c: a partial Accept and a rules save never seal a baseline whose seal did not hold just before")
+ok('\\"enabled\\":%d,\\"seal\\":\\"%s\\",\\"rwatch\\":%d,\\"armed\\":%d,\\"error\\":\\"no report yet\\"' in cgi and "rview_seal_word[en ? rview_seal_state() : RVS_NONE]" in cgi,
+   "web.c: the no-report answer carries the seal state, so the pages can paint it before the first run after a boot")
+ok('"rwatch_review_seal"' not in seg(web, "rcfg_flags[] = {", "\n};") and web.count("RVIEW_SEAL_NV") >= 6
+   and "nvram_unset(RVIEW_SEAL_NV);\n\t\tsystem(\"rm -rf /jffs/*\");" in web,
+   "web.c: the seal is not in the settings file; a full restore drops this router's seal with the /jffs it described")
+ok('{ "rwatch_review_seal"' not in defaults and '{ "rwatch_review", "0", CKN_STR1' in defaults and "nvram_set(RVIEW_SEAL_NV, v);" in web,
+   "defaults.c: no row for the seal (state httpd writes, not a setting - nvram restore takes it by its rwatch_review prefix, which IS a row)")
+ok('<div class="rvseal hidden" id="rv_seal" role="alert"></div>' in page and inorder(page, 'id="rv_seal"', 'id="rv_tg"')
+   and "var RV_SEAL={changed:`<#RFW_422#>`,removed:`<#RFW_423#>`,unsealed:`<#RFW_424#>`};" in page
+   and "sr.textContent=sl?RV_SEAL[sl]:'';sr.className='rvseal'+(sl==='unsealed'?' amber':'')+(sl?'':' hidden');" in page,
+   "page: a red (amber for unsealed) row at the top of the review card, one text per state, set with textContent")
+ok("&&(j.armed||RV_SEAL[j.seal])));" in page and "<p class=\"note\"><#RFW_425#></p>" in page,
+   "page: Reset is offered while the seal does not hold; the card says what the seal and the password do and do not stop")
+ok("var sl=(j&&(j.enabled===1||j.enabled==='1'))?(j.seal||''):'';" in dash and "bar.className='rvb on'+((sl==='changed'||sl==='removed')?' red':'');" in dash
+   and ".rvb.red{" in dash and "if(sl==='changed')t.push(`<#RDSH_127#>`); else if(sl==='removed')t.push(`<#RDSH_128#>`); else if(sl==='unsealed')t.push(`<#RDSH_129#>`);" in dash,
+   "dashboard: the bar names the seal state first - red for changed / removed, amber for unsealed")
+ok("if(sl==='unsealed'&&!n2&&!w2) set(`<#RDSH_108#>`,'warn',q.join(' - ')); else set(`<#RDSH_105#>`,'danger',q.join(' - '));" in pr
+   and inorder(pr, "var sl=(j&&j.seal)||'';", "if(!j||!j.ok){"),
+   "posture: the seal is painted before anything else - Review (danger) for changed / removed, amber for unsealed, also before the first report")
+en_dict = read("www/EN.dict")
+ok(all(("\n%s=" % t) in en_dict for t in ["RFW_422", "RFW_423", "RFW_424", "RFW_425", "RFW_430", "RDSH_127", "RDSH_128", "RDSH_129"])
+   and not any(("\n%s=" % t) in en_dict for t in ("RFW_426", "RFW_427", "RFW_428", "RFW_429")),
+   "strings: RFW_422..425, RFW_430 and RDSH_127..129 are in EN.dict; the password texts RFW_426..429 are gone (2026-11-23)")
+
+if failed:
+    print("FAILED: %d check(s), %d passed" % (len(failed), passed)); sys.exit(1)
 print("PASS: %d checks" % passed)

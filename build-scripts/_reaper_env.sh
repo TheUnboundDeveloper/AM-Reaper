@@ -8,7 +8,7 @@
 #                  (/mnt/c/Users/<WINUSER>/AppData/Roaming/VSC/ASUS)
 #
 # Override by exporting WINUSER before invoking a build script, e.g.
-#   WINUSER=alice build_gtbe98.sh
+#   WINUSER=alice build_be96u.sh
 #
 # NB: we resolve the PROFILE FOLDER, not the login name. On Windows the two can
 # differ (e.g. account "Builder" but folder C:\Users\builder), so %USERNAME% is

@@ -1,8 +1,8 @@
 # Reaper — the owner's guide
 
-> **Doc status:** current as of **v3.8.3** · 2026-11-19 <!--@stamp-->
+> **Doc status:** current as of **v3.8.4** · 2026-11-24 <!--@stamp-->
 
-**Applies to:** Reaper firmware for the ASUS RT-BE96U (primary model) and the sibling RT-BE86U, RT-BE88U, GT-BE98, GT-BE98 Pro, GT-BE19000, ZenWiFi BQ16 and ZenWiFi BQ16 Pro, in two lines with the same Reaper version: `3006.102.10_Reaper_v<X>` (RT-BE96U, RT-BE86U, RT-BE88U, GT-BE98 Pro) and `3006.102.8_Reaper_v<X>` (GT-BE98, GT-BE19000, BQ16, BQ16 Pro; see 2.1). This guide describes the feature set as of the v3.8.3 <!--@treever--> source tree. The newest *published* release may be behind that; where a feature is newer than the image you are running, the page simply will not be there yet. See [`CHANGELOG.md`](CHANGELOG.md) for what each version added and [`BACKLOG.md`](BACKLOG.md) for what is still pending confirmation.
+**Applies to:** Reaper firmware for the ASUS RT-BE96U (primary model) and the sibling RT-BE86U, RT-BE88U, GT-BE98, GT-BE98 Pro, GT-BE19000, ZenWiFi BQ16 and ZenWiFi BQ16 Pro, in two lines with the same Reaper version: `3006.102.10_Reaper_v<X>` (RT-BE96U, RT-BE86U, RT-BE88U, GT-BE98 Pro) and `3006.102.8_Reaper_v<X>` (GT-BE98, GT-BE19000, BQ16, BQ16 Pro; see 2.1). This guide describes the feature set as of the v3.8.4 <!--@treever--> source tree. The newest *published* release may be behind that; where a feature is newer than the image you are running, the page simply will not be there yet. See [`CHANGELOG.md`](CHANGELOG.md) for what each version added and [`BACKLOG.md`](BACKLOG.md) for what is still pending confirmation.
 
 Reaper is based on **Asuswrt-Merlin by Eric "Merlin" Sauvageau**. Every line of Reaper is a patch on top of that work; the base firmware, most of its features, and most of what is good about the result are his. Reaper is an independent fork. Neither ASUS nor the Asuswrt-Merlin project has reviewed, approved or endorsed it, and neither should be contacted about it (see [Where to report issues](#214-where-to-report-issues)).
 
@@ -38,6 +38,7 @@ This guide is written for someone who will install and run the firmware: technic
    - 4.1 [Firewall](#41-firewall)
      - 4.1.1 [Status](#411-status)
      - 4.1.1a [Rule Status](#411a-rule-status)
+     - 4.1.1b [Security Review](#411b-security-review)
      - 4.1.2 [General](#412-general)
      - 4.1.3 [Rules](#413-rules)
      - 4.1.4 [Objects](#414-objects)
@@ -69,6 +70,7 @@ This guide is written for someone who will install and run the firmware: technic
      - 4.4.2 [The page](#442-the-page)
      - 4.4.3 [What a rule matches](#443-what-a-rule-matches)
      - 4.4.4 [Domain lists](#444-domain-lists)
+     - 4.4.4a [ASN lists and country lists](#444a-asn-lists-and-country-lists)
      - 4.4.5 [Where a rule sends traffic](#445-where-a-rule-sends-traffic)
      - 4.4.6 [Order and precedence](#446-order-and-precedence)
      - 4.4.7 [Fail-closed or fail-open: the Killswitch decides](#447-fail-closed-or-fail-open-the-killswitch-decides)
@@ -143,6 +145,7 @@ This guide is written for someone who will install and run the firmware: technic
      - 4.21.9 [How the other features treat guest networks](#4219-how-the-other-features-treat-guest-networks)
      - 4.21.10 [Examples](#42110-examples)
      - 4.21.11 [Limits and gotchas](#42111-limits-and-gotchas)
+     - 4.21.12 [Several changes, one Wi-Fi restart](#42112-several-changes-one-wi-fi-restart)
    - 4.22 [LAN](#422-lan)
      - 4.22.1 [LAN IP and DHCP server](#4221-lan-ip-and-dhcp-server)
      - 4.22.2 [DNS](#4222-dns)
@@ -233,17 +236,32 @@ Reaper is distributed as a patch series applied to the public Asuswrt-Merlin sou
 
 - **The first-boot QIS setup wizard**, with its EULA and privacy-consent screens, and the Advanced privacy page. From v3.4.2 every route into the wizard is closed (the default setup address, the first-use redirect while the WAN is down, the landing after a LAN subnet change, a dead menu entry); the one part kept is the **AiMesh add-node** window, which carries the Reaper look (9.3).
 - **Quagga** (the `zebra` and `ripd` routing daemons, v3.3.4): it shipped inert with a default management password.
-- **ASUS DDNS (`asuscomm.com`, v3.4.9).** A saved ASUS DDNS setting is switched off once at boot, with a log line; the DDNS page offers the other providers.
+- **ASUS DDNS (`asuscomm.com`, v3.4.9; its client code deleted in v3.7.7).** A saved ASUS DDNS setting is switched off once at boot, with a log line, and does nothing; the DDNS page says so and offers the other providers and Let's Encrypt via DNS (4.23.3).
 - **The USB application network installer** (v3.3.7): it installed plain-HTTP packages as root. The USB Application page, the mount chain and the disk check stay.
 - **Phone-home.** The ASUS AWS-IoT cloud connector and account binding, the AAE/AiHome cloud tunnel, AiCloud/WebDAV, the AiDisk cloud-share wizard, the stock privacy-policy check, the stock "Security Update" (Trend Micro signature) panel, and every browser-side callback to ASUS servers — device and app icons, the FAQ index, DNS-provider and ISP lists, the Open NAT game database, timezone tables and so on. The build now fails if an ASUS CDN reference reaches the shipped web root, so this cannot silently creep back. Nothing in the web interface contacts ASUS any more; the only outbound checks the firmware makes on its own are the opt-in firmware check, which goes to the Reaper GitHub release channel, and — with the LAN name resolution check switched on (4.14a, off at factory) — one DNS query a minute for a random name under the domain you set there, or the stock network-monitoring name, which that domain's DNS servers see.
 - **Adaptive QoS / Trend Micro DPI.** AiProtection, DPI-based Adaptive QoS and the web-history feature are gone with the engine that powered them. Reaper's own hardware QoS and Traffic Analyzer take their place.
 - **Alexa / Google Assistant** integration, the Download Master advert, the stock Network Map page (its device list and per-device detail now live on the dashboard and the Devices page), the Open NAT menu entry (it was port forwarding, which is still there), and the legacy SNMPv1/v2c protocols (SNMPv3 only; SHA with AES is the default and the choice to keep, MD5, DES and no privacy remain selectable for old managers, 4.27.8).
 - **Instant Guard and the VPN Fusion app.** Both needed the ASUS account and phone app that the phone-home removal took out, so they could never pair. Their old addresses open the VPN Server and VPN Client pages, where every server and client type they offered is configured instead.
+- **Unused stock request addresses and page hooks (v3.8.4).** 51 request addresses and 36 page hooks that no
+  shipped page and no part of the firmware calls are gone. Among them: the stock /jffs archive download and restore
+  (`backup_jffs*.tar`, `jffsupload.cgi`; the restore erased `/jffs` and unpacked the upload - the full backup, 2.5,
+  carries `/jffs` instead), `set_fw_path.cgi`, the AiProtection and DNS-filter addresses of the Trend Micro engine
+  Reaper does not ship, the IPsec profile and certificate upload addresses, the stock captive-portal page upload
+  (the Guest Portal has its own), the stock "deregister DDNS" address, and the addresses only the ASUS Router phone
+  app used: family groups, per-device blocking, remote control, the notification centre, creating or resetting
+  networks and Wi-Fi settings outside the Network page, and the iperf3 speed test between AiMesh nodes. The app is
+  not a supported way to manage a Reaper router. A request for a removed address gets "not found"; until the next
+  stable version the router also writes one system-log line per address per boot naming it and the client that
+  asked, so an add-on that still uses one can be found (System Log: `a request for the removed address ...`). The
+  release notes list every name. strongSwan no longer loads its `vici` control plugin, which nothing in the
+  firmware uses (the IPsec server works as before).
 - **No packet-capture page is bundled.** If you want `tcpdump`, install it through Entware on a USB stick.
 
 ### 1.3 What it adds
 
 In short: two hardware QoS engines that keep the flow accelerator on, a native Traffic Analyzer, a native firewall rules engine, Gatekeeper device access control, the Bastion menu (Warden threat and country blocking, Dreadwatch DNS threat blocking, the Wallguard ad and tracker blocker, Encrypted DNS for devices), an advisory Security Review, Policy Routing, a Device Identity Manager, a live Connections explorer with destination names, wireless channel diagnostics, Wi-Fi 7 preamble puncturing (static or dynamic) with a minimum channel width on Auto and an optional receiver interference-mitigation setting, a one-click sanitized diagnostics report, a native firmware page with a verified one-click update, long-term storage with analytics export, Reaper-native settings pages across most of the menu (3), and (in one of the two builds) a read-only LAN-only AI Advisor. Each gets its own section in part 4.
+
+Around them, the stock features are tightened where they were open: guest networks are isolated from the main network and the router on every path, with narrow paths you open on purpose (chosen devices, device discovery, zone policies; 4.21), a Guest Portal whose guests get only the internet and a filtered resolver (4.21.7), mDNS across the main network and the networks you link to it (4.21.8), AP Isolation that keeps wired devices reachable (4.21.3), a firewall log that no longer floods the system log (4.1.12), a system log that caps a flood (2.12), Let's Encrypt without DDNS (4.23.3), DHCP leases kept across a restart and one rule for device names (4.26.3, 4.8.1), and custom scripts whose failures are logged (2.9).
 
 Secure factory defaults: WPS is off, UPnP is off, the scheduled firmware check is off, and remote web admin, SSH, WAN ping, FTP, DLNA, DDNS, guest networks, SNMP, custom-script execution, remote logging and IPv6 all default off; no Telnet server ships at all. From v3.2.5 the SMB file server and the Traffic Analyzer collector also default off. From v3.4.2 the internet port is the port labelled WAN with automatic port detection off, so the provider's port is never bridged into the LAN, and every switch on the DNS Failover page starts off. Section 8 lists every factory default. The admin session logs out after 30 idle minutes (Administration → System → *Auto Logout*; 0 turns it off), on Reaper's own pages as on the stock ones.
 
@@ -433,11 +451,19 @@ The Firewall page's other tabs (General, Network Services, URL Filter, Keyword F
 
 Enabling or disabling Wi-Fi 7 Multi-Link Operation (the MLO switch) needs a **full power cycle** — unplug the router, wait, plug it back in — not a software reboot, for the change to settle. If MLO appears to have half-applied (clients seeing one band only, the dashboard's MLO row reading *Partial*), power-cycle before investigating anything else. *(This rule comes from the project's working notes rather than the changelog; it is recorded here because it is a common cause of confusion.)*
 
+From v3.8.4 the router notices the common case itself: when MLO is on and a restart without a
+power-off left the link the radios use for MLO down, the system log says so (`mlo: MLO is on, but this start was a
+restart without a power-off ...`) and the dashboard shows a crimson **Wi-Fi needs a power cycle** banner until the
+router is unplugged and plugged back in. The MLO switch's confirmation says the same before it reboots. The router does
+not reboot itself for this. The check first learns what a good start looks like on this router's radios: it warns only
+after the router has once started with the MLO link up (normally the first start with MLO on), so a router whose radios
+report the link differently is never warned by mistake.
+
 ### 2.9 Custom scripts and Reaper's firewall chains
 
 Merlin's user scripts (`firewall-start`, `nat-start`, `services-start` and the rest) and Entware add-ons all keep working. But be aware of how Reaper's own layers are built, so that a script does not fight them:
 
-- Since v2.6.2, every Reaper firewall layer registers into **one shared front chain per base chain** (`REAPER_HOOK_*`, at position 1 of INPUT/FORWARD/OUTPUT), in a **fixed order: Warden → Gatekeeper → rules engine** — every deny-only layer before the one that can accept. A single script rebuilds that order after any layer applies, so it converges whichever service restarted.
+- Since v2.6.2, every Reaper firewall layer registers into **one shared front chain per base chain** (`REAPER_HOOK_*`, at position 1 of INPUT/FORWARD/OUTPUT), in a **fixed order: Warden → guest isolation → Gatekeeper → rules engine** — every deny-only layer before the one that can accept. Guest isolation's one accept, the main-network devices you let a guest network reach (4.21.3), is hooked last, after the rules engine. A single script rebuilds that order after any layer applies, so it converges whichever service restarted.
 - Gatekeeper and Warden **self-heal**: Gatekeeper repairs a lost hook within about 30 seconds and re-applies when a bridge appears without one; Warden re-arms after any firewall restart; the `rwatch` watchdog re-applies Policy Routing mark rules if the live chain is short of what it meant to load.
 - Since v3.1.2 `rwatch` also checks **chain integrity** every tick, which is what catches another script quietly disarming a layer. Two things: each of Warden's block chains must still *end* in the block itself with nothing inserted ahead of it that would let traffic through, and nothing that can let traffic past unchecked may sit in front of Reaper's chains in INPUT/FORWARD/OUTPUT. A chain found disarmed is reported as critical. **Since v3.1.3 the second check looks at *what* is in front rather than insisting on position 1**, because a narrow carve-out ahead of Reaper is sometimes deliberate and occasionally required — a DNS rule that has to beat Gatekeeper so restricted devices keep resolving, for instance. A rule that can only affect a narrowed class of traffic is tolerated and logged once — in INPUT and OUTPUT that means a port or a destination; in FORWARD, since v3.2.8, a destination only, because a port-only or interface-only accept there would pass every device to every host on that port past all three layers (a negated match narrows nothing). A chain you jump to is judged by its own accepts; its returns do not count, since a return simply resumes the base chain where Reaper's jump comes next. So is any **user chain** you list, one name per line, in **`/jffs/reaper/front_exempt`** — chain names only: built-in targets such as `ACCEPT`, `RETURN` or `DROP` are ignored there (and logged once), because listing `ACCEPT` would exempt every blanket accept. A rule that could wave anything through is still re-pinned and the displacement logged — but if the repair is undone twice, `rwatch` says so and stops re-pinning rather than trading places with whatever keeps inserting itself. Note the Gatekeeper and rules-engine chains are deliberately **not** checked the first way — they interleave allow and deny by design, so "ends in a block" is not a property they have.
 
@@ -464,13 +490,7 @@ Flushing INPUT or FORWARD in a script changes the layer order too; Reaper's laye
 
 **Chain signatures (v3.3.4).** Each firewall apply records a checksum of every Reaper filter and nat chain. `rwatch` recomputes it on each tick; two ticks in a row that disagree re-apply the confirmed rules under the firewall lock, at most twice and 600 s apart, and never while a change is waiting for Keep. A script that edits a Reaper chain in place is therefore undone within about ten minutes.
 
-**Security review (2026-10-19).** Off by default; the switch is on the Firewall page's Status tab. Once on, every self-monitor tick inventories `/jffs/scripts`, `/jffs/configs` and `/jffs/.ssh/authorized_keys` (content hashes and modes), the other files in `/jffs/.ssh` (size, date and mode — a private key is never hashed), `/jffs/addons` (name, size and date), every cron entry that is not one of Reaper's own, and the settings that expose the router to the internet (NAT, port forwards, DMZ, UPnP, remote web access, SSH, Telnet, custom scripts, the WAN DNS servers, remote syslog, the firewall master switch, cloud sync), together with Reaper's own protection switches (Warden and its feeds, country list and self-filter, Dreadwatch and its feeds, Gatekeeper and its default, Wallguard, the rules engine, policy routing, the Encrypted DNS server) — a protection turned off is listed like any other change. When a firmware update widens that list, the newly watched settings are adopted into your accepted baseline as they stand, with one log line naming them, rather than reported as changes. Nothing is reported until you press **Accept current state as baseline**; after that, anything added, changed or removed is listed on the card, announced once in the system log (`rwatch: security review: N change(s) …`) and shown as an amber bar on the dashboard until you accept the new state. It is advisory end to end: nothing is undone, no failure is declared and no incident dump is written, because the changes it sees are most often your own — a new script, a port forward, an add-on update. What it is for: persistence and exposure are how router malware survives a reboot, and a change you did not make is the signal. A baseline you accept is written to `/jffs/reaper/review/baseline`; the full backup carries it. The check waits for the 5-minute boot grace and skips a tick while a Firewall rules change is waiting for Keep. The report itself is not kept across a reboot, so after a boot the card says *no report yet* and the posture row shows **Baseline** in amber until the first check, which runs 5 minutes after boot (the grace) whatever the tick's alignment.
-
-**Watch rules (v3.4.8).** `/jffs` has expected churn — an add-on rewriting its stats file every hour — so the card takes rules, one per line, in the **Watch rules** box under the list: a mode and a pattern. `hash` reports any change of content, `meta` a change of size, date or mode, `exist` only a file appearing or disappearing, `ignore` stops watching. A pattern is a full path with `*` and `?` wildcards (`/jffs/addons/diversion/*`), `cron:` and a cron-line pattern, or `nvram:` and a setting name. The first matching rule wins, and anything no rule matches keeps its default: `hash` for `/jffs/scripts`, `/jffs/configs` and `authorized_keys`, `meta` for the rest of `/jffs/.ssh` and for `/jffs/addons`. A private SSH key is never hashed, whatever a rule says. At most 100 rules; quotes, backslashes and backticks are refused. The rules live in `/jffs/reaper/review/rules`, so they survive firmware updates, and they travel with the settings export. An ignored path disappears from the report without being reported as removed. When a rule changes how an item is watched, its row turns grey with the status *rule changed*: that is not a change to the file, it is not counted as unreviewed, and **Accept** records the new mode.
-
-**Accepting.** Each row has its own buttons: **Accept** takes just that item into the baseline, **Existence only** and **Ignore** write a rule for that exact path, and **Ignore folder** writes one for its directory (`dir/*`). **Accept current state as baseline** still takes everything at once. Every acceptance and every rules save is written three ways: a `reaper-audit: review …` line in the system log naming what was taken in (counts by status and up to 20 items), the router's audit trail, and the **Acceptance log** on the card — time, the address that did it, the action and what it covered. The card shows the newest 10; `/jffs/reaper/review/accept.log` keeps 200.
-
-The same card lists **failed-login bursts**: ten or more failed SSH or web-interface logins from one source inside one check (5 minutes) become a notice — source, count, time — plus one log line per source per hour (`rwatch: security review: N failed ssh logins from …`); **Accept** clears them. The self-monitor reads the system log from where it left off, so a rotated log loses nothing. It only reports: the IPv4 brute-force lock-out is the stock one, and the web interface's own lock (five failures, five minutes) is per LAN or WAN side, not per source.
+**Security review.** The review that watches `/jffs`, cron and the exposure settings for changes you did not make has its own section now: **4.1.1b**. Its baseline and the baseline's seal travel together in the **full backup** (`.rbk`: `/jffs` and the router settings); the settings export (JSON) carries the switch and the watch rules, not the baseline and not the seal. Restoring a full backup made before v3.8.4 leaves the baseline without a seal (amber row, accept once); restoring only router settings that are older than your last Accept shows the red row (accept once).
 
 **SSH over IPv6 from the internet (2026-10-19).** The stock brute-force guard covers IPv4 only; the IPv6 rule for a WAN-open SSH port was a plain accept. Now, when SSH is open to the WAN (`sshd_enable` **1**) and the IPv6 firewall is on, the sixth new connection from one /64 network within 60 seconds is dropped and a continuing flood keeps the block fresh. LAN SSH is untouched, and there is no switch: it hardens an exposure you chose, and five new SSH sessions a minute from one network is not a use anyone has.
 
@@ -484,7 +504,11 @@ The same card lists **failed-login bursts**: ten or more failed SSH or web-inter
 
 **IPsec profile checks (2026-11-10).** A saved IPsec profile is not applied when it holds a control character anywhere, has fewer fields than the format needs, holds the word `include` followed by a space outside a key or password, or breaks a field rule. The local and remote ID and the remote gateway take letters, digits and `@ . _ : + % -` only (or a hex key ID, `@#` and hex digits); a certificate DN is not accepted. Subnets, certificate and key file names, authentication methods and the EAP identity take no space or `=`. The pre-shared key, the XAUTH password and the key file name take no double quote. The DNS/WINS list takes addresses only. The system log names the profile and the reason (`... profile N skipped: unsafe character in <field>`, `include directive in <field>` or `malformed saved value`); the saved value is left as it is. An Instant Guard client whose name is not 1 to 32 letters or digits gets no login (`Instant Guard client N skipped: unsafe name`). A VPN user of the IPsec server whose name holds a space, `:`, `#`, a quote, a backslash, `<` or `>`, is `include` or is longer than 64 characters, or whose password holds a double quote or a control character, gets no login (`VPN user N of ipsec_client_list_M skipped: unsafe character in the user name` / `password`); the page now refuses `#` in a name too. When a profile is refused while the IPsec server runs, strongSwan is restarted once so a tunnel that profile had up goes down (a reload alone kept it). A local subnet may be IPv6. The IPsec server certificate is only made for a well-formed WAN IPv4 address, or for a valid DDNS host name; without one the log says `No usable WAN address yet, CA files are not created.`
 
-**Mount options (2026-11-10).** `/tmp`, `/var` and `/jffs` are mounted `nosuid,nodev`: a file placed there cannot run as another user through a setuid bit and cannot act as a device node. Scripts and programs in `/jffs/scripts`, `/jffs/addons` and `/tmp` run as before; USB volumes are unchanged. A failure to set the flags is one log line (`cannot set nosuid,nodev on ...`) and nothing else changes.
+**Mount options (2026-11-10).** `/tmp`, `/var` and `/jffs` are mounted `nosuid,nodev`: a file placed there cannot run as another user through a setuid bit and cannot act as a device node. Scripts and programs in `/jffs/scripts`, `/jffs/addons` and `/tmp` run as before; USB volumes are unchanged. A failure to set the flags is one log line (`cannot set nosuid,nodev on ...`) and nothing else changes. Section 3c of the diagnostics report shows the flags.
+
+**Settings that hold a line break (v3.8.2, from ASUS GPL 102_39448).** A setting whose value contains a line break is read as empty, and the read is logged, except the multi-line settings ASUS allows (VPN custom configurations, SSH keys). A line break stored in a setting by a script can therefore no longer add lines to a configuration file the router generates from it. A script that stores multi-line text in another setting should keep it in a file under `/jffs` instead.
+
+**Conntrack helpers by rule only (v3.7.2).** The FTP and PPTP connection helpers attach only where they are needed: to the router's own FTP and PPTP servers and to a port forward to an FTP server, always; to LAN devices' outgoing FTP only with **FTP Passthrough** on (WAN → NAT, off by default; 4.23.2). A script that loads a helper module expecting it to attach to every connection on its port must add its own raw-table `CT --helper` rule. Section 3c of the diagnostics report counts the rules.
 
 The diagnostics report lists "an old direct firewall hook left over or the shared front chain missing" as a FINDING, which will catch most script conflicts.
 
@@ -505,6 +529,29 @@ blocked lookups in total and per feed, how many were not recorded, how many devi
 next collection and each feed's last result - counts only, never a name or a device address. Report v1.3.45 counts the
 files and folders under `/jffs` that any user can write (section 3), with a finding when there are any.
 
+Later reports add: Dreadwatch's compiled table and how many DNS instances map it (v1.3.46, section 14); each custom
+script, whether it can run and how its last run ended (v1.3.51, section 13); the firewall log collector's counts and its
+remote forward (v1.3.57, section 14); the radio-call stall section with the three Wireless stability switches (v1.3.59,
+12d); each radio's driver and firmware version, AP Isolation per network and Wallguard's switch (v1.3.60). **Report
+v1.3.62** covers the features of v3.4.9 - v3.8.3:
+
+| Section | What it shows (counts, states and bridge names only) |
+|---|---|
+| 3c Hardening | `/tmp`, `/var` and `/jffs` mount flags; conntrack helpers (automatic or by rule, the raw rules, FTP / PPTP passthrough); how many times the system log held back a repeating message; any USB 3 write lever that is set |
+| 4d Guest networks | per enabled network: its type word, bridge, isolated or not (the live rules), Access Intranet with the main network, Guest Portal, VPN binding and Kill Switch, AP Isolation and *Wi-Fi and LAN ports*, the number of chosen main-network devices against the live rules, the discovery service types; the guest isolation chains and their hooks, the guest DNS redirect, bridge-port isolation (Wi-Fi and wired ports), the Guest Portal processes and watchdog restarts, the mDNS reflector's interfaces |
+| 6 IPv6 | the delegated prefix length and how many networks fell back to a private prefix |
+| 11 DHCP leases | the lease copies saved to `/jffs` and when, leases per guest network, how many device Names, reservations and announced hostnames exist |
+| 12c Services | SNMP (switch, WAN access, running) and AiMesh backhaul parking |
+| 14c Layer order | guest isolation in the front-chain order; the AiMesh exemption set against the registered nodes |
+| 14d Policy Routing | the fetched lists (ASN / country): how many are in use, each saved list's source, size and last check, the daily update job; no list name and no address |
+| 14h Bastion | the four Bastion switches; Wallguard's table, which DNS instances map it, each subscribed list's state and last good download, the last build, your rules counted, pauses and counters; Encrypted DNS listeners by protocol, queries, refusals, devices by protocol, the option 162 offer, how many devices DNS Director leaves out of it, and the block chain; how many devices skip Dreadwatch and how many listed lookups were let through (counts only); Let's Encrypt via DNS state and the web certificate's issuer and expiry |
+
+Each new section adds FINDINGS for the states that need action: a Guest Portal without its isolation rules or without
+chilli, chosen devices with no live rule, a guest DNS redirect that is written but not hooked, a Wallguard list that
+failed or a skipped table build, Encrypted DNS switched on but not running or a listener that could not bind, the
+Encrypted DNS block without its chain, the AiMesh exemption set empty while nodes are registered, a failed Let's Encrypt
+via DNS run, an expired web certificate, a mount without `nosuid,nodev` and automatic conntrack helpers.
+
 **What the report masks.** The whole document passes through a redaction engine before a byte is written:
 
 - Passwords, Wi-Fi keys and tokens are **never collected** — the report only notes SET or EMPTY.
@@ -514,11 +561,12 @@ files and folders under `/jffs` that any user can write (section 3), with a find
 - From report **v1.3.35** (v3.4.2) three IPv6 shapes that earlier reports printed are masked too: a **routed prefix that ends in `::`** (a tunnel broker's `2001:db8:abcd::/48` in a Warden or IPv6 firewall line), a **reverse zone** (`…ip6.arpa`, the same prefix written backwards in dnsmasq's log, now `[IP6-ARPA-n]`), and a **DHCPv6 DUID**, which embeds the router's MAC (its lease-file line is no longer printed). The bare well-known prefixes `fe80::`, `fc00::`, `fd00::`, `ff02::1`-style multicast and `2001:db8::` stay readable, because they identify nothing. **A report from an older image that shows a `2001:` or `2a0x:` prefix, an `ip6.arpa` name or a `MAC-n:xx:xx…` tail has leaked; do not post it.**
 - From report **v1.3.36** the redaction runs as a **pipeline of targeted stages**, one per kind of data, each with its own ledger lines: values the router knows to be private (passwords, usernames, network and host names), then **names and domains your devices wrote into the log themselves**, then e-mail, MAC, IPv6 and IPv4 addresses. The client-names stage reads the DHCP and Gatekeeper log lines where a device supplies its own name (`Ignoring domain … for DHCP host name …`, the name on a DHCP acknowledgement, `not giving name …`, a Gatekeeper `host (…)`), masks each name as `[CLIENT-NAME-n]` and each domain as `[CLIENT-DOMAIN-n]` everywhere in the report, and keeps generic domains such as `lan` and `local` readable. Before v1.3.36 a device's own domain, which can name its owner's employer, was printed as it was, and a short device name in older log lines could slip through. A stage that fails stops the report: no partly redacted file is ever written.
 - From report **v1.3.56** the **names on the router's own certificates** are masked as host names: the DNS-over-TLS / Let's Encrypt name and the names on the web interface's certificate, including any extra names you added to it. dnsmasq writes the first into the system log every time it starts and the web server writes the second at boot, so both sat in section 19. **A report from an older image, taken on a router that uses such a name, shows it in the system-log section; do not post that report as it is.** The firmware's own names (`router.asus.com`, `www.asusrouter.com`) stay readable.
-- From report **v1.3.61** (v3.8.1) a stage masks **secrets written into free text**, which no setting holds: a `name=value` whose name ends in *token*, *password*, *secret*, *apikey* and the like, the `user:password` part of a URL, and a `Bearer` value. They turn up in a cron job you added yourself (section 13 lists the cron table), in a process's command line (the process lists) or in an add-on's log line. The **domain your internet provider hands out** (dnsmasq names it in the system log), a **time server** you typed (the shipped `pool.ntp.org` servers stay readable), the **remote log server** and your **VPN clients' servers** are masked as host names. **A report from an older image, taken on a router with such a cron job or add-on, may carry the secret; read it before posting.**
+- From report **v1.3.61** (v3.8.2) a stage masks **secrets written into free text**, which no setting holds: a `name=value` whose name ends in *token*, *password*, *secret*, *apikey* and the like, the `user:password` part of a URL, and a `Bearer` value. They turn up in a cron job you added yourself (section 13 lists the cron table), in a process's command line (the process lists) or in an add-on's log line. The **domain your internet provider hands out** (dnsmasq names it in the system log), a **time server** you typed (the shipped `pool.ntp.org` servers stay readable), the **remote log server** and your **VPN clients' servers** are masked as host names. **A report from an older image, taken on a router with such a cron job or add-on, may carry the secret; read it before posting.**
 - **Local-only addresses** (192.168.x.x) are kept — they identify nothing outside your own network.
 - Pseudonyms stay consistent inside one report, so a device can be followed across sections without revealing which device it is; a new report gets a new set.
 - The report opens with a **ledger** counting exactly what was withheld, and the finished file is **re-scanned** for anything that still looks like a public IPv4 address, an IPv6 address or reverse zone (from v1.3.35), a hardware address, an e-mail, or an unmasked device-supplied name in those log lines (from v1.3.36), and marked either clean or "review before sharing" (counts only — printing what it found would put the leak into the file).
 - WireGuard appears as **peer counts only**.
+- From report **v1.3.62** nothing new needs masking: a guest network is shown by its bridge and the firmware's type word (*Guest*, *IoT*, *Portal* ...; any other name reads *custom*), never its name or Wi-Fi name; chosen devices, Wallguard rules and API keys are counted, never listed; a Wallguard list by its id, never its address; Encrypted DNS devices by protocol, never their addresses; the Let's Encrypt via DNS name and token as SET or EMPTY. The certificate names that 14h prints are the ones v1.3.56 already masks.
 
 It is plain text. **Open it and read it before you share it.** The router never transmits it anywhere; the file downloads to your browser. It is the right thing to attach to a bug report. The Devices page's **Export list** is the opposite — deliberately unsanitised, with real names, MACs and IPs — and is not safe to post anywhere.
 
@@ -535,6 +583,10 @@ It is plain text. **Open it and read it before you share it.** The router never 
 Read it on the **System Log** page, or over SSH as the file `/tmp/syslog.log`. **`logread` returns nothing on this platform** (the log is written to a file, not the in-memory buffer). If you have a USB or JFFS store with the syslog mirror enabled, the mirror holds days of history; the diagnostics report reads both.
 
 **Narrowing the view.** **Find** and **Exclude** each take a comma-separated list: a line shows when it contains any Find word and no Exclude word (`dnsmasq, wlceventd` in Exclude hides both). Upper and lower case match alike. **Saved exclusions**, below the log, is your own version of the stock `logFilter.json` (which is part of the read-only image): one entry per line, and an entry may contain commas. The System log view hides any line containing one of them while **Apply saved exclusions** is ticked. **Add the Exclude words** moves what is in the Exclude box into the saved list. The list is kept in `/jffs/reaper/logfilter` (up to 64 entries of 128 characters; you can edit it over SSH too) and travels with the Reaper settings file. Only the view changes: the log file, **Save** and a remote syslog server still get every line. Long lines are not wrapped: each log line keeps one row, and the box scrolls sideways.
+
+**The Firewall view (v3.7.5).** Firewall lines are not in the system log any more: the firewall log collector (`rflogd`, 4.1.12) keeps them in its own RAM ring (`/tmp/reaper/fwlog`). The **Firewall** view of the System Log page shows that ring, with the same Find and Exclude boxes. With the collector stopped, the firewall falls back to plain log lines in the system log, at most 10 a second.
+
+**The flood cap (v3.7.7).** One kind of message repeating fast (a device looping on DHCP, a driver printing per packet) is written at most 300 times at once and 10 times a second after that; when it slows down, one line says how many like it were held back (`… lines like … were suppressed`). The log on flash therefore keeps its history through a flood. Critical messages and the remote log server are not limited. Section 3c of the diagnostics report counts the held-back notices.
 
 **Log settings**, at the bottom of the page, change what is kept: *Level of the router's own messages* is the priority the firmware gives its own lines, and *Log only messages more urgent than* drops everything at that priority and below from the file (and from a remote syslog server). The Wi-Fi driver writes two lines of its own at warning priority: `SBF: dhdN: INIT [device]` once each time a device joins or rejoins a radio, and `dhd_pktfwd_lut_lkup: pool 0 and unit N mismatched` while a wireless bridge (WDS) link - a repeater, a media bridge or a mesh node over Wi-Fi - goes down. A burst of them counts reconnections; it is not a fault of its own, and the disconnect behind it is what to look at. Both come from closed driver objects, so their wording and rate cannot be changed in this firmware. To hide them from the view without losing other warnings, add `SBF:` and `pktfwd_lut_lkup` to Saved exclusions; raising the cut to warning would drop the router's notices as well.
 
@@ -555,15 +607,17 @@ Do not enable remote (WAN) web administration or WAN SSH. The real-world attacks
 
 ## 3. The dashboard and navigation
 
-**After login you land on the dashboard** (`Main_ReaperDash.asp`). It replaced the stock Network Map, which is retired. Everything else in the interface opens inside the **app shell**: a header, a left navigation rail, and a framed content area that loads either a Reaper-native page or a stock Asuswrt page with the Reaper theme applied at serve time. Since v3.4.9 the settings pages for System (with SNMP and Tweaks), LAN, WAN, VPN and Parental Controls, and the System Log group (log, wireless log, leases, routes, port forwards, IPv6, analysis, netstat, wake on LAN), are Reaper-native. Since v3.6.5 so are Wireless › WPS, WDS, Wireless MAC Filter, RADIUS Setting, Roaming Block List and MLO, and LAN › VLAN (Switch and Profiles tabs, on models with guest/VLAN networks): they keep the stock settings and apply them the way stock does, the stock pages they replace no longer ship, and the old addresses open the new pages. The Roaming Block List is read from all three radios; MLO's *Add a Network* opens the Network page's MLO wizard; RADIUS Setting shows which bands use the server. **AiMesh** and **Network** keep the stock layout and link a Reaper stylesheet of their own.
+**After login you land on the dashboard** (`Main_ReaperDash.asp`). It replaced the stock Network Map, which is retired. Everything else in the interface opens inside the **app shell**: a header, a left navigation rail, and a framed content area that loads either a Reaper-native page or a stock Asuswrt page with the Reaper theme applied at serve time. Since v3.4.9 the settings pages for System (with SNMP and Tweaks), LAN, WAN, VPN and Parental Controls, and the System Log group (log, wireless log, leases, routes, port forwards, IPv6, analysis, netstat, wake on LAN), are Reaper-native. Since v3.6.5 so are Wireless › WPS, WDS, Wireless MAC Filter, RADIUS Setting, Roaming Block List and MLO, and LAN › VLAN (Switch and Profiles tabs, on models with guest/VLAN networks), and since v3.7.1 USB Application, Media Server, Network Place (Samba) Share and FTP Share (4.28): they keep the stock settings and apply them the way stock does, the stock pages they replace no longer ship, and the old addresses open the new pages. The Roaming Block List is read from all three radios; MLO's *Add a Network* opens the Network page's MLO wizard; RADIUS Setting shows the main network's server and whether it is in use. **AiMesh** and **Network** keep the stock layout and link a Reaper stylesheet of their own.
 
 **Dashboard cards**
 
-- **Internet** — WAN state (it updates itself during boot without a refresh), your real WAN IPv6 address (never a `fe80::` link-local; the IPv6 half is re-read on every poll since v3.3.7), gateway and DNS, and an **internet on/off switch**. The switch is persistent across a reboot and asks before turning the internet off; the router's web interface stays reachable over the LAN. With the **LAN name resolution check** on (4.14a, v3.4.0), the Internet dot and word turn **amber** while LAN devices cannot resolve names even though the WAN is up, and the tooltip on the card and on the header's WAN pill names the state, how long it has lasted and the servers that did not answer. Since v3.4.0 that tooltip is on the header of every page, not only the dashboard; the pill reads Connected when IPv4 or IPv6 is up and shows the mode name in Access Point, repeater and bridge modes.
+- **Internet** — WAN state (it updates itself during boot without a refresh), your real WAN IPv6 address (never a `fe80::` link-local; the IPv6 half is re-read on every poll since v3.3.7), gateway and DNS, and an **internet on/off switch**. The switch is persistent across a reboot and asks before turning the internet off; the router's web interface stays reachable over the LAN. With the **LAN name resolution check** on (4.14a, v3.4.0), the Internet dot and word turn **amber** while LAN devices cannot resolve names even though the WAN is up, and the tooltip on the card and on the header's WAN pill names the state, how long it has lasted and the servers that did not answer. Since v3.4.0 that tooltip is on the header of every page, not only the dashboard; the pill shows the mode name in Access Point, repeater and bridge modes. **What Connected means (v3.7.7).** The header and the card say **Connected** only while the router has a WAN address *and* its own internet check (Network Monitoring, 4.19) passes on that line; with an address but a failing check they say **No internet** in red, matching the WAN LED. IPv6 counts as up only while the router has a working IPv6 default route, not merely an address. After an ISP outage the router asks for Native IPv6 again once, so IPv6 returns without a reboot.
 - **Clients** — the connected-device list grouped by band; **View List** opens the full Devices page.
-- **Security Posture** — sixteen rows: firewall (SPI), DDoS protection, remote/cloud access, admin login (HTTPS only / HTTP + HTTPS, LAN-only / WAN reachable), SSH access, JFFS partition and custom scripts, DNS rebind + DNSSEC, Wi-Fi encryption, MLO, WPS, UPnP, QoS engine, **Gatekeeper**, **Warden**, **Rule Status** (the cached result of 4.1.1a; it never starts a walk) and **Security Review** (2.9): amber *Disabled* or *No baseline*, green *Baseline* with the last check time, red *Review* with the number of changes and login notices waiting — the same report the amber bar reads. After a boot the row shows *Baseline* in amber until the first check, which can take up to 10 minutes. Every row is clickable and takes you to the page (and tab) that owns the setting.
+- **Security Posture** — sixteen rows: firewall (SPI), DDoS protection, remote/cloud access, admin login (HTTPS only / HTTP + HTTPS, LAN-only / WAN reachable), SSH access, JFFS partition and custom scripts, DNS rebind + DNSSEC, Wi-Fi encryption, MLO, WPS, UPnP, QoS engine, **Gatekeeper**, **Warden**, **Rule Status** (the cached result of 4.1.1a; it never starts a walk) and **Security Review** (2.9): amber *Disabled* or *No baseline*, green *Baseline* with the last check time, red *Review* with the number of changes and login notices waiting — the same report the amber bar reads. After a boot the row shows *Baseline* in amber until the first check, which can take up to 10 minutes. Every row is clickable and takes you to the page (and tab) that owns the setting. The Security Review row also reads *Review* (red) when the accepted baseline or the watch rules were changed, or the baseline deleted, outside the Firewall page, and an amber *Baseline* while the baseline has no seal yet (once after updating to v3.8.4); the bar above the dashboard is red in the first two cases (4.1.1b).
 - **Radio tiles** for each band, showing the SSID in its real case, and **USB tiles** per physical port (a hub shows as connected with a device count). A disk selector appears on the Storage card once two or more disks are attached.
-- **System** — CPU load, memory, temperature, uptime, and the **firmware-update banner** at the top of the page when the check has found a release.
+- **System** — CPU load, memory, temperature, uptime, and the **firmware-update banner** at the top of the page when the check has found a release. A second crimson
+  banner, **Wi-Fi needs a power cycle**, appears only while MLO is on and the last start was a restart without a
+  power-off that left the radios' MLO link down (2.8).
 - **Mesh Nodes** and **AiMesh** cards where applicable.
 
 **Navigation**
@@ -637,6 +691,37 @@ Finally there is one row that is always **Not applicable** on purpose, named *Ou
 **How to use it.** Look at it after every Apply and after a reboot, the same way as Status; the difference is that this tab tells you *which* promise broke and *where*. Two rows are worth knowing by name: a Gatekeeper-blocked device that reaches the WAN, and a port forward that is translated but then dropped — both have been real field incidents, and both are exactly what a red row here would have shown on day one. Nothing on the tab changes the firewall; the walker only reads the tables and writes a report, and nothing acts on that report. The same report appears in the diagnostics bundle (section 14g, as information), is logged by the watchdog as one advisory line when the set of red rows changes, and is shown in the Rules tab's confirm window before you press Keep.
 
 **Example.** You add a guest network. Its three rows appear at once: isolated from the LAN (drop), reaches the WAN (accept), DNS at its gateway (accept). If "reaches the WAN" is red and the rule column says `filter/FORWARD policy DROP`, no rule accepts that bridge toward the WAN — the network exists, its clients get addresses, and nothing they send leaves the router.
+
+#### 4.1.1b Security Review
+
+**What it is.** A change detector for the places router malware and mistakes persist: `/jffs` scripts, configs, SSH keys and add-ons, the cron table, the settings that expose the router to the internet and Reaper's own protection switches. It is a card on **Firewall → Status**, an amber bar on the dashboard and a row of the dashboard's Security Posture card. It only reports; it never undoes anything.
+
+**How to use it.**
+
+1. **Firewall → Status**, Security Review card: switch it on.
+2. Look at what the router holds now (your scripts, keys and add-ons), then press **Accept current state as baseline**. Nothing is reported before a baseline exists.
+3. From then on, check the card when the dashboard shows the amber bar or the posture row reads *Review*. For each listed item decide: your own change → tick it and **Accept**; a file that legitimately changes all the time → tick it and choose **Existence only**, **Ignore** or **Ignore folder** (each writes a watch rule); something you did not do → investigate before accepting (start with the file's contents and the system log around its date).
+4. Add watch rules for add-ons you run (below) so their normal churn stops showing up.
+
+**Security review (2026-10-19).** Off by default; the switch is on the Firewall page's Status tab. Once on, every self-monitor tick inventories `/jffs/scripts`, `/jffs/configs` and `/jffs/.ssh/authorized_keys` (content hashes and modes), the other files in `/jffs/.ssh` (size, date and mode — a private key is never hashed), `/jffs/addons` (name, size and date), every cron entry that is not one of Reaper's own (a Reaper job counts as its own only with the exact command the firmware installs for it, in each of its forms), and the settings that expose the router to the internet (NAT, port forwards, DMZ, UPnP, remote web access, SSH, Telnet, custom scripts, the WAN DNS servers, remote syslog, the firewall master switch, cloud sync; since v3.8.4 also the admin user name, Access restriction and its list, the router's web ports, SSH password logins, WAN ping replies, the second WAN's NAT, UPnP and DNS switches, FTP, Samba and its share mode, SNMP, the PPTP, IPsec, WireGuard and OpenVPN servers, the LAN and IPv6 DNS servers, DNS-over-TLS and its servers, DNS Director and its rules, static routes, DDNS, the DoS, network-service, URL and keyword filters, the firmware update check, the beta channel and the signature override, WPS and the Encrypted DNS block), together with Reaper's own protection switches (Warden and its feeds, country list and self-filter, Dreadwatch and its feeds, Gatekeeper and its default, Wallguard, the rules engine, policy routing, the Encrypted DNS server) — a protection turned off is listed like any other change. Since v3.8.4 the lists that let traffic through are watched as files too: Warden's Whitelist and custom feeds, and Dreadwatch's never-block names, its sources and the devices that skip it (`/jffs/rwarden`); a list that only blocks (Warden's Ban list) is not. When a firmware update widens what is watched, the newly watched settings — and, once, those list files — are adopted into your accepted baseline as they stand, with one log line naming them, rather than reported as changes; after that, an edited or a new list file is a change like any other. Nothing is reported until you press **Accept current state as baseline**; after that, anything added, changed or removed is listed on the card, announced once in the system log (`rwatch: security review: N change(s) …`) and shown as an amber bar on the dashboard until you accept the new state. It is advisory end to end: nothing is undone, no failure is declared and no incident dump is written, because the changes it sees are most often your own — a new script, a port forward, an add-on update. What it is for: persistence and exposure are how router malware survives a reboot, and a change you did not make is the signal. A baseline you accept is written to `/jffs/reaper/review/baseline`; the full backup carries it. The check waits for the 5-minute boot grace and skips a tick while a Firewall rules change is waiting for Keep. The report itself is not kept across a reboot, so after a boot the card says *no report yet* and the posture row shows **Baseline** in amber until the first check, which runs 5 minutes after boot (the grace) whatever the tick's alignment.
+
+**Watch rules (v3.4.8; a list since v3.5.0).** `/jffs` has expected churn — an add-on rewriting its stats file every hour — so the card keeps **Watch rules**, shown as a list under the report: each rule is a mode and a pattern. The **Add** form under the list takes a mode and a pattern; a new rule goes first, and the first matching rule wins. Each row has **Delete**; **Delete selected** and **Delete all rules** act on several at once, and **Edit as text** shows the raw rules, one per line, for pasting or bulk edits. With no rules, every item is watched in full. `hash` reports any change of content, `meta` a change of size, date or mode, `exist` only a file appearing or disappearing, `ignore` stops watching. A pattern is a full path with `*` and `?` wildcards (`/jffs/addons/diversion/*`), `cron:` and a cron-line pattern, or `nvram:` and a setting name. The first matching rule wins, and anything no rule matches keeps its default: `hash` for `/jffs/scripts`, `/jffs/configs` and `authorized_keys`, `meta` for the rest of `/jffs/.ssh` and for `/jffs/addons`. A private SSH key is never hashed, whatever a rule says. At most 100 rules; quotes, backslashes and backticks are refused. The rules live in `/jffs/reaper/review/rules`, so they survive firmware updates, and they travel with the settings export. They are part of the seal (below): edit them on this card. A rules file edited over SSH, or replaced by importing a settings file with different rules, shows the red row until you accept the current state again. An ignored path disappears from the report without being reported as removed. When a rule changes how an item is watched, its row turns grey with the status *rule changed*: that is not a change to the file, it is not counted as unreviewed, and **Accept** records the new mode.
+
+**Accepting (one bar for the ticked rows, v3.4.9).** Every row has a tick box, and the header has a select-all; at most 100 rows at a time. The bar above the list shows *N selected* and the actions that fit every ticked row (a greyed action says why on hover): **Accept** takes the ticked items into the baseline, **Existence only** (files only) and **Ignore** write a rule for each exact path, and **Ignore folder** writes one for each directory (`dir/*`). The rules are saved once, ahead of the existing ones, without duplicates; a save that would pass 100 rules or 8 KB is refused before it is sent. Accepting a selection is one request and one log line naming the items; an item that is no longer listed refuses the whole selection and nothing is written. **Accept current state as baseline** still takes everything at once. Every acceptance and every rules save is written three ways: a `reaper-audit: review …` line in the system log naming what was taken in (counts by status and up to 20 items), the router's audit trail, and the **Acceptance log** on the card — time, the address that did it, the action and what it covered. The card shows the newest 10; `/jffs/reaper/review/accept.log` keeps 200.
+
+**The seal (v3.8.4).** When you accept a baseline, the router stores a fingerprint (SHA-256) of the baseline file and the watch rules file together, outside `/jffs`. Every check recomputes it. If it no longer matches, the baseline or the rules were changed by something other than this card, and the card says so in a row at its top:
+
+| Row | Colour | What happened | What to do |
+|---|---|---|---|
+| *The accepted baseline or the watch rules were changed outside this page.* | red | The baseline file or the rules file was edited, replaced or restored without an Accept on this card: over SSH, by a script, or by importing a settings file that carries different watch rules. | Read the whole list (every item is shown as unreviewed, what differs from the file on disk first). If it is all yours, **Accept current state as baseline**. If not, investigate first. |
+| *The accepted baseline was deleted outside this page.* | red | The baseline file is gone but its seal is still stored. | As above; or **Reset baseline** to start over. |
+| *This baseline has no seal.* | amber | The baseline was accepted by a firmware older than v3.8.4, or the seal was cleared (a factory reset of the settings that kept `/jffs`, a full backup made before v3.8.4). **Every router with an accepted baseline shows this once after updating to v3.8.4.** | Check the list and **Accept current state as baseline** once. |
+
+While one of these rows is shown, nothing on the router is trusted to compare against: every watched item is listed as unreviewed, single rows cannot be accepted (only **Accept current state as baseline** records a new state), and the dashboard shows the bar - red for the two red rows, amber for the third - and *Review* (or an amber *Baseline*) in the Security Posture row. One line per change of that state goes to the system log (`rwatch: security review: the accepted baseline or the watch rules were changed outside the Firewall page (fingerprint sealed at the last Accept: ..., found now: ...)`). Nothing is repaired or undone. The check that follows a correct Accept removes the row. When a firmware update widens the list of watched settings, the router adds them to your baseline itself and renews the seal; that does not show a row.
+
+**What this does not stop.** Someone who already has root on the router (an SSH session, a custom script) can change the stored fingerprint as well as the files; the seal does not protect against that. Nor does it stop a signed-in admin session (yours, or one left open or taken over): that session can accept changes, as it can restore a full backup, flash firmware or import a settings file. What the seal does is make an edit of the baseline or of the rules by anything that only writes `/jffs` show up instead of passing unnoticed. A settings file, or a page that posts settings, cannot switch the review (or the self-monitor that runs it) off: that is refused and logged, and only this card's switch does it. Watch rules replaced by an import show the red row until you accept.
+
+The same card lists **failed-login bursts**: ten or more failed SSH or web-interface logins from one source inside one check (5 minutes) become a notice — source, count, time — plus one log line per source per hour (`rwatch: security review: N failed ssh logins from …`); **Accept** clears them. The self-monitor reads the system log from where it left off, so a rotated log loses nothing. It only reports: the IPv4 SSH brute-force lock-out is the stock one, and the web interface has its own lock (4.27.2): five wrong passwords refuse that address, and 20 failures on one side within 5 minutes lock that side.
 
 #### 4.1.2 General
 
@@ -821,7 +906,7 @@ Be realistic about the limits. This matches the request as it goes past, so it w
 
 **What it is.** Chooses which firewall decisions are logged — nothing, dropped packets, accepted packets, or both — and shows the recent entries. Since v3.7.5 the lines go to the firewall log collector (`rflogd`), not to the system log: it keeps them in RAM (`/tmp/reaper/fwlog`), on the long-term store when that lists the firewall log (4.11), and sends each one to the remote log server set on the System Log page.
 
-**How to use it.** Leave it off for normal running. A busy connection can log thousands of lines a minute, which fills the log and pushes out everything else you might have wanted to read. Each logging rule may write up to 10,000 lines a second, with bursts of 10,000; past that the lines are held back, never the packets, and counted. If the collector is not running, the rules fall back to the system log at 10 lines a second with bursts of 50, so under **Accept** or **Both** a busy network then shows a sample of its connections, not every one. The line under the setting shows the collector's counts: lines recorded, lost, and held back by the limit.
+**How to use it.** Leave it off for normal running. A busy connection can log thousands of lines a minute: they cost CPU, fill the collector's RAM ring so the lines you wanted roll out of it, and with a long-term store use flash or disk space. Read the lines on this tab or in the System Log page's **Firewall** view (2.12). Each logging rule may write up to 10,000 lines a second, with bursts of 10,000; past that the lines are held back, never the packets, and counted. If the collector is not running, the rules fall back to the system log at 10 lines a second with bursts of 50, so under **Accept** or **Both** a busy network then shows a sample of its connections, not every one. The line under the setting shows the collector's counts: lines recorded, lost, and held back by the limit.
 
 **Remote log server (from the image after v3.7.5).** Each firewall line goes to the server as one UDP syslog message (RFC 3164, facility kern, severity notice, tagged `rflogd`), to the same address and port as the system log (`log_ipaddr`, `log_port`). The server must be an IP address: a name is not looked up, and the page then says that nothing is forwarded. A second line under the setting shows how many lines were sent and how many could not be (amber when any could not); a line that could not be sent is still in the router's own firewall log, and the first one in each minute is noted in the system log. The router keeps a send queue of about 2 MB for these messages, so a burst at the limit does not overflow it. At the full rate this is roughly 3 MB a second of log traffic, so give the receiving server a large enough receive buffer as well. UDP has no delivery guarantee: a message lost on the way or dropped by the server is not seen by the router. The diag reports the same counts in section 14.
 
@@ -840,7 +925,7 @@ The Action badge distinguishes the source of each entry, and for Warden it disti
 | `WARDEN-OUT` | Warden blocked something on your network **reaching out** to a flagged address |
 | `WARDEN-SELF` | Warden blocked **the router itself** reaching out (see 4.3.1.8) |
 
-Those three carry distinct prefixes in the system log as well (`REAPER-WARDEN`, `REAPER-WARDEN-OUT`, `REAPER-WARDEN-SELF`), so they can be told apart there too. If you are looking for outbound blocks and seeing none, that is usually not a fault — see 4.3.1.11.1.11.
+Those three carry distinct prefixes in the firewall log as well (`REAPER-WARDEN`, `REAPER-WARDEN-OUT`, `REAPER-WARDEN-SELF`), so they can be told apart there too. If you are looking for outbound blocks and seeing none, that is usually not a fault — see 4.3.1.11.
 
 #### 4.1.13 Limits, and things deliberately not built
 
@@ -979,7 +1064,7 @@ They work at three different layers, and that decides what each one can and cann
 | Stop the internet's background scanning and known-bad addresses reaching the router and your forwarded services | Warden, threat feeds, Direction *Inbound only* | Works for every protocol, not just web traffic |
 | Refuse traffic from or to whole countries | Warden, Country blocking | Review the list first (4.3.1.6) |
 | Stop an infected device reaching a known command-and-control address | Warden, Direction *Both directions* | Address-based; complements Dreadwatch |
-| Stop devices resolving malware, phishing and command-and-control names | Dreadwatch | Same answer for every device; Wallguard profiles cannot lift it |
+| Stop devices resolving malware, phishing and command-and-control names | Dreadwatch | Same answer for every device, except the devices on its own list (4.3.2.5a); Wallguard profiles cannot lift it |
 | Block ads, trackers and telemetry | Wallguard | Per-device profiles, Unbreak, Why? |
 | Different filtering per device or per guest network; block TikTok at bedtime; force safe search | Wallguard profiles (4.3.3.5, 4.3.3.6) | |
 | Let devices encrypt their DNS and still be filtered | Encrypted DNS, server half | Add DNS-over-TLS upstream on LAN › DNS for the hop to the internet |
@@ -1003,7 +1088,7 @@ A lookup that never reaches the router's resolver passes through none of this. T
 
 **Living with the rest of the router.**
 
-- **DNS Director** (LAN › DNS) decides *which* resolver a device uses. A device it sends to another server (a per-device rule, a guest-network profile or the global mode) is answered by that server, so Dreadwatch and Wallguard do not see its lookups; Encrypted DNS refuses it, so it stays on plain DNS where DNS Director applies. Global mode **Router** sends every device's port-53 lookups to the router and rejects DNS-over-TLS and DNS-over-QUIC (TCP and UDP 853) to anything else; that is the setting that makes the DNS tools cover everything.
+- **DNS Director** (LAN › DNS) decides *which* resolver a device uses. A device it sends to another server (a per-device rule, a guest-network profile or the global mode) is answered by that server, so Dreadwatch and Wallguard do not see its lookups; Encrypted DNS refuses it and, from v3.8.4, is not offered to it by DHCP (4.3.4.5), so it stays on plain DNS where DNS Director applies. Global mode **Router** sends every device's port-53 lookups to the router and rejects DNS-over-TLS and DNS-over-QUIC (TCP and UDP 853) to anything else; that is the setting that makes the DNS tools cover everything.
 - **A LAN AdGuard Home or Pi-hole.** If devices ask the Pi-hole and the Pi-hole forwards to the router, both filter, but the router sees one device (the Pi-hole) for all of them: Wallguard profiles cannot tell devices apart and Dreadwatch counts everything under the Pi-hole's address. If the Pi-hole forwards straight to the internet, the router sees none of those lookups and Dreadwatch and Wallguard do nothing for them. If a DNS Director rule or a Service Intercept rule (4.1.8) redirects port 53 to the Pi-hole, Wallguard's page shows a banner naming the address the lookups go to; it names the server a router VPN client in *Exclusive* DNS mode sends lookups to as well. Pick one place to filter; if you keep the Pi-hole, set its upstream to the router so Dreadwatch still applies.
 - **VPN.** A device running its own VPN app resolves through the VPN: no DNS tool sees it, and Warden sees only the VPN server's address. A router VPN client that is set to send its clients' DNS to the VPN provider takes those lookups past the resolver as well. Warden's whitelist must cover any VPN server you reach from a blocked country with the router-traffic filter on (4.3.1.8). Warden exempts the listen ports of enabled **WireGuard** servers; OpenVPN and IPsec servers are not exempted, so a client connecting from a blocked country or a listed address is dropped.
 - **Policy Routing** (4.4) and Firewall FQDN objects learn addresses from the resolver's answers. A name Wallguard or Dreadwatch blocks is answered by the router itself and never resolves, so it adds nothing to those lists either.
@@ -1154,6 +1239,9 @@ Both boxes take one IPv4 or IPv6 address or CIDR per line. Both are checked on t
 | `51.15.12.186` | `www.ipdeny.com`, the country lists (France) |
 | `151.101.2.49`, `151.101.66.49`, `151.101.130.49`, `151.101.194.49` | the abuse.ch feed hosts (Feodo Tracker), served by Fastly from the United States list. These are shared CDN addresses: the entries exempt whatever else Fastly serves from them |
 | `172.65.32.248`, `2606:4700:60:0:f53d:5624:85c7:3a2c` | Let's Encrypt, added only once the Let's Encrypt certificate is switched on (the next time DDNS starts) |
+| `185.199.108.133` to `185.199.111.133`, `2606:50c0:8000::154` to `2606:50c0:8003::154` | `raw.githubusercontent.com` (ipverse, the first source of Policy Routing's ASN and country lists), added only once such a list is used by a rule (4.4.4a). These are shared GitHub addresses: the entries exempt whatever else GitHub serves from them, Warden's own two GitHub-hosted feeds included |
+| `193.0.6.150`, `2001:67c:2e8:22::c100:696` | `stat.ripe.net` (RIPEstat, the Netherlands), the second source of ASN lists; added at the same moment |
+| `45.33.65.164` | `api.hackertarget.com` (HackerTarget), the third source of ASN lists; added at the same moment |
 
 Each address is added only if it is missing; nothing you entered is changed or reordered. **Delete any of them and it is never put back**: the one-time markers live in `/jffs/rwarden`, so they survive reboots and upgrades. Only erasing `/jffs` starts over. If you delete the Let's Encrypt entries while **Also filter the router itself** is on, the log warns once per boot that renewals can fail. GitHub (FireHOL, DShield) and Spamhaus are not added; whitelist them if you block the country they are served from with the router-traffic filter on. Let's Encrypt via DNS (4.3.4.3) adds nothing here: it lets its DNS provider's API and Let's Encrypt through only for the length of each request.
 
@@ -1320,9 +1408,21 @@ Never blocked, with their subdomains:
 - names from your own settings: the LAN domain, your DDNS name, your NTP servers, your DNS-over-TLS upstream servers, and the hosts of your own sources;
 - the local zones `local`, `arpa` and `lan`.
 
-**Entries the router adds once.** The names the router needs are entries in the box, not built into the firmware: `abuse.ch`, `ipdeny.com`, `pool.ntp.org`, `asuscomm.com`, `asus.com`, `github.com`, `githubusercontent.com`, `spamhaus.org`, `malware-filter.gitlab.io`, `v.firebog.net`, `blocklistproject.github.io`, `hole.cert.pl` and `threatview.io`. They are added the first time Warden or Dreadwatch starts on a release that carries this, and the log names them. Remove any you do not trust; it is never put back. A built-in exemption would outlive a list host that is later compromised, or a lapsed domain someone else buys. If you remove a list host, Dreadwatch can block it when a list names it, and that list's next update can fail.
+**Entries the router adds once.** The names the router needs are entries in the box, not built into the firmware: `abuse.ch`, `ipdeny.com`, `pool.ntp.org`, `asuscomm.com`, `asus.com`, `github.com`, `githubusercontent.com`, `spamhaus.org`, `malware-filter.gitlab.io`, `v.firebog.net`, `blocklistproject.github.io`, `hole.cert.pl` and `threatview.io`. They are added the first time Warden or Dreadwatch starts on a release that carries this, and the log names them. Remove any you do not trust; it is never put back. A built-in exemption would outlive a list host that is later compromised, or a lapsed domain someone else buys. If you remove a list host, Dreadwatch can block it when a list names it, and that list's next update can fail. Two more names are added the first time a Policy Routing ASN or country list is used by a rule: `ripe.net` and `hackertarget.com`, two of the sources those lists are downloaded from (4.4.4a). They take effect at the next list update.
 
 **What an exemption can do.** It removes list entries equal to it or under it. It cannot carve a subdomain out of a listed parent: if `example.com` is listed, exempting `www.example.com` does nothing; exempt `example.com`. Blocking applies to the name a device asks for, not to the names an answer points on to, so a CDN name such as `p2.shared.global.fastly.net` never needs an entry.
+
+##### 4.3.2.5a Devices that skip Dreadwatch
+
+*From v3.8.4.* A card on the Dreadwatch tab lists up to 16 devices whose lookups are not checked against the threat lists. Use it for a device that must be unfiltered without sending it to another DNS server: the device keeps the router's resolver, its local names and Encrypted DNS.
+
+- **Add a device**: pick it in the list (Name, else Hostname) or type its MAC address, press **Add device**, then **Save**. **Remove** and **Save** puts it back under Dreadwatch. Nothing changes before Save, and DNS is not restarted: the resolver reads the list again within two seconds.
+- **What it lifts**: Dreadwatch only. Wallguard (the device's profile; **Bypass** lifts that), Warden and the Encrypted DNS block still apply. A name on both Dreadwatch's and Wallguard's lists stays blocked by Wallguard unless the device's profile is Bypass.
+- **Other devices are not affected**: an exempt device's lookup of a listed name is never answered from the resolver's cache and never stored there, so the next device asking for the same name is still blocked.
+- **What is recorded**: the column **Listed lookups let through** counts them per device. The names are not recorded anywhere. **Reset counters** (the **Test now** card) restarts the counts.
+- **How a device is recognised**: by its MAC address, over plain DNS, Encrypted DNS and IPv6 alike. A phone on a *Rotating* private Wi-Fi address changes its MAC address and drops off the list: set Private Wi-Fi Address to *Fixed* or *Off* for this network on the phone. A device behind another router or a LAN resolver cannot be recognised.
+- **Wallguard's Bypass does not put a device here**, and no existing Bypass device is exempted by an update.
+- **Storage**: `/jffs/rwarden/dnsexempt` (MAC addresses), carried by the settings file and the full backup. The resolver reads `/tmp/reaper_nx/dns.exempt`.
 
 ##### 4.3.2.6 How a list becomes the table
 
@@ -1350,6 +1450,7 @@ A listed name and its subdomains are answered NXDOMAIN. If the router's own conf
 | **Names on the list** | Names in the table now. |
 | **Devices that tried** | The number of devices that looked up a listed name. The counters keep the 100 busiest, so the tile reads *100+* beyond that; the device table below lists the top 20. |
 | **List updated** | The last successful list build; it survives a reboot (the boot rebuild from the saved copy restores it). |
+| **Devices that skip Dreadwatch** | The devices not checked against the lists, with the listed lookups let through for each (4.3.2.5a). |
 | **Not recorded** | Shown only when non-zero: blocked lookups the resolver blocked but did not record (see below). |
 | **Feeds** table | Per row: tick; **Names** (its names on the list after the exemptions; a name on two lists counts for both, so the rows can add up to more than the total); **Blocked** (lookups it blocked); **Last good download**; **State**: *ok*, *failed, previous download kept*, *off*, or, for a source of yours, *This source sends an API key - type the key.* |
 | Status line | *N names blocked at the resolver, updated ...*, or *Not loaded yet ...*, or *List built (N names) but dnsmasq is not using it yet ...*. Below it, where the blocked-lookup history is kept (Long-Term Storage). |
@@ -1404,6 +1505,7 @@ The *automatic* settings are fine as they are: Chrome and Edge upgrade to encryp
 - The lists are time-boxed upstream (entries expire), so the list shrinks as well as grows. The bundled ThreatFox snapshot does not update.
 - After a reboot, a list that fails its first download of the session has no previous copy in RAM and leaves the table at that update; the next good download brings it back.
 - A firmware downgrade to v3.4.7 does not inherit the list; that release builds its own at its first update.
+- A device that skips Dreadwatch (4.3.2.5a) is recognised by its MAC address only; an address that changes is judged like any other device.
 
 <a id="4311-wallguard"></a>
 #### 4.3.3 Wallguard
@@ -1414,8 +1516,8 @@ Wallguard is the router's own **ad and tracker blocker**: what Pi-hole or AdGuar
 
 **Use it** to remove ads and tracking for the whole house; to give a child's devices stricter filtering, bedtime service blocks and enforced safe search; to exempt a work laptop. **Do not expect it** to remove ads served from the same host name as the content (YouTube video ads, some streaming apps) or page elements; it blocks by name only. It sees only lookups that reach the router (4.3, *Living with the rest of the router*); the page shows a banner when a firewall rule sends devices' DNS elsewhere.
 
-**The page (v3.8.0).** The master switch **Block ads and trackers** and the status pill sit in the header, with a **?**
-button that opens *How to use* and *How it works* (the **Reset counters** button is there). Five tabs sit below; **Save &
+**The page (v3.8.4).** The master switch **Block ads and trackers** and the status pill sit in the header, with a **?**
+button that opens *How to use* and *How it works* (the **Reset counters** button is there). Six tabs sit below; **Save &
 Apply** is at the right end of the tab row, and a tab that holds an unsaved change shows an amber dot. The page reopens on
 the tab you used last (kept in your browser).
 
@@ -1424,6 +1526,7 @@ the tab you used last (kept in your browser).
 | **Overview** | The warning banners, the five counter tiles, **Fix a device** (Unbreak), **Pause** and **Why?** (4.3.3.7) |
 | **Lists** | The block lists and your own sources (4.3.3.3), **Update lists now**, where the lists are kept, the build warning, **Blocked answer** (4.3.3.8). The tab label shows *N problems* when the table in use lacks lists |
 | **Rules** | **My rules** and **Advanced rules** (4.3.3.4), **DNS rewrites** (4.3.3.14), **Services and safe search** (4.3.3.6) |
+| **Allowed** | **Allowed for 24 hours**, **Never block** and **Always block** as tables: remove, extend or keep a 24-hour allow, remove a name or move it to the other list, each at once (4.3.3.4) |
 | **Devices** | **Devices and networks**: every device and guest network, its profile, its blocked lookups in the last 15 minutes, **Fix** and **Pause**; the **Profiles** grid (4.3.3.5) |
 | **Activity** | **Live view**, **Most-blocked names**, **Devices with the most blocked lookups** (4.3.3.11) |
 
@@ -1459,7 +1562,25 @@ Each built-in row shows the address its list is downloaded from, as a link under
 
 ##### 4.3.3.4 My rules, and the names never blocked
 
-**Always block** and **Never block**: one name per line; a name covers its subdomains. **Never block beats everything**, every list and Always block included, at any level: never-blocking `example.com` allows `ads.example.com` even if a list names it. A name allowed from Unbreak for 24 hours is listed under the boxes as *Allowed for 24 hours* with its expiry and drops out by itself. A rule change takes effect within seconds of **Save & Apply** (the table is rebuilt from the lists on disk, no download).
+**Always block** and **Never block**: one name per line; a name covers its subdomains. **Never block beats everything**, every list and Always block included, at any level: never-blocking `example.com` allows `ads.example.com` even if a list names it. A name allowed from Unbreak for 24 hours is listed under the boxes as *Allowed for 24 hours* with its expiry; within 15 minutes of that time it leaves the block table by itself (the router checks every 15 minutes and rebuilds the table when an allow has run out). A rule change takes effect within seconds of **Save & Apply** (the table is rebuilt from the lists on disk, no download).
+
+**The Allowed tab.** The same three lists as tables, for changing one name at a time without editing the boxes:
+
+| Table | Buttons |
+|---|---|
+| **Allowed for 24 hours** (name, time left) | **Remove**; **+24 h** (24 hours more, at most 7 days from now - for longer, keep it); **Make permanent** (moves the name to Never block). Tick names, or the box in the header for every row shown, then **Remove selected** or **+24 h**; **Remove all** asks first |
+| **Never block** | **Remove**; **Move to Always block** |
+| **Always block** | **Remove**; **Move to Never block** |
+
+A **Filter names** box narrows all three tables. Every button acts at once: the table is rebuilt from the lists already
+on the router within seconds, no download and no **Save & Apply** (one log line per name in the System Log,
+`reaper-audit: wallguard allow 24h removed <name>` and so on). The boxes on the Rules tab still edit Never block and
+Always block in bulk; while one of them holds changes you have not saved, the Allowed tab refuses to change that list
+(save or discard first), so a later Save cannot undo the change.
+
+The test loop this is for: a site breaks -> **Fix a device**, **Allow 24 h** on a few names -> still broken -> allow
+more -> once it works, **Remove** the names one at a time on the Allowed tab until it breaks again; **Make permanent**
+the one that matters and remove the rest.
 
 **Entries the router adds once.** The names the router depends on are entries in your **Never block** box, added the first time Wallguard starts on a release that carries this, so you can remove any of them: `asus.com`, `asusrouter.com`, `asuscomm.com`, `abuse.ch`, `spamhaus.org`, `www.ipdeny.com`, `iplists.firehol.org`, the safe-search hosts `forcesafesearch.google.com`, `strict.bing.com`, `safe.duckduckgo.com`, `restrict.youtube.com` and `restrictmoderate.youtube.com` (blocking one breaks safe search for profiles that use it), `github.com`, `raw.githubusercontent.com`, `objects.githubusercontent.com`, `pool.ntp.org`, `time.google.com`, `time.cloudflare.com`, and the hosts of the built-in lists (`small.oisd.nl`, `big.oisd.nl`, `adguardteam.github.io`). A removed entry is never put back.
 
@@ -1503,7 +1624,7 @@ Example: block a game for one tablet only, and let a work laptop past a list ent
 A **profile** is a set of lists. The **Profiles** grid (Devices tab) has one row per profile and one column per subscribed list plus **My rules**; a tick means that profile blocks with that list.
 
 - **Default** applies to every device without a profile of its own. Until you change its row it uses every subscribed list and My rules.
-- **Bypass** blocks nothing (no lists, no services, no safe search). Use it for equipment that must not be filtered.
+- **Bypass** blocks nothing (no lists, no services, no safe search). Use it for equipment that must not be filtered. Dreadwatch still applies to a Bypass device; to lift that too, add the device under **Devices that skip Dreadwatch** (4.3.2.5a). The Devices tab says so under the profiles.
 - **Add profile** (name box under the grid) creates one with **My rules** only ticked: tick the lists it should use.
 - **Edit** on a row opens that profile in **Services and safe search** on the Rules tab (4.3.3.6). **Remove** deletes a profile and its assignments.
 
@@ -1542,7 +1663,7 @@ A **pause** never lifts a profile's blocked services or safe search. **Unbreak**
 All three are on the **Overview** tab.
 
 - **Pause**: pick *Everyone* or a device, then *5 minutes*, *10 minutes* (the default), *1 hour* or *Until 06:00* (by your browser's clock), and **Pause**; **Resume** ends it early. **Pause 10 min** on a device's row of the Devices tab does the same for that device. A pause lifts the lists and My rules, not blocked services, safe search or Dreadwatch. Pauses are held in RAM: a reboot ends them, and they end by themselves. The list under the buttons names each pause and its end time; while everyone is paused the pill reads *Paused* and a banner gives the end time.
-- **Fix a device (Unbreak)**: pick the device that has a problem. The menu lists first the devices that had lookups blocked in the last 15 minutes, with the count. The table lists the names Wallguard refused that device in the last 15 minutes, with how often and when last, and **Allow 24 h** and **Always allow**. *Always allow* adds the entry to **Never block**; *Allow 24 h* adds it to the 24-hour list. Several names in a row usually belong to one service; allow them one at a time, newest first, and retry the app after each.
+- **Fix a device (Unbreak)**: pick the device that has a problem. The menu lists first the devices that had lookups blocked in the last 15 minutes, with the count. The table lists the names Wallguard refused that device in the last 15 minutes, with how often and when last, and **Allow 24 h** and **Always allow**. *Always allow* adds the entry to **Never block**; *Allow 24 h* adds it to the 24-hour list. Several names in a row usually belong to one service; allow them one at a time, newest first, and retry the app after each. The **Allowed** tab lists every 24-hour allow with its time left, to remove, extend or keep it (4.3.3.4).
   - **What a row names.** For an ordinary block, the **list entry** that matched (`doubleclick.net`, not the full name asked), so an allow covers its subdomains. For a block caught in a CNAME chain (4.3.3.8) the row reads *asked name (blocked via listed name)*, for example `saa.example.com (blocked via metrics.tracker.example)`: the device asked for the first name, and the list holds the second. **Allow** on such a row allows the **asked** name, which lifts the block for it (the note under the button says so) without allowing the tracker for every other site.
   - **How the device is found.** Every blocked record carries the MAC of the device that asked, so a device is found by its MAC even after its address changed; an older record without a MAC is matched by the addresses the device holds now. The router keeps the blocked records of the last hour (at most 20,000, in RAM), so a busy network no longer pushes one device's 15 minutes out of view.
   - **After Allow** the row reads *Allowed - takes effect for new lookups*, and a name you have allowed (Never block, or a 24-hour allow still running) is left out of the table from then on. A device keeps its cached answer until it asks again: restart the app, or wait a minute.
@@ -1615,7 +1736,7 @@ Records are collected every 15 minutes and on each page refresh; the counters ar
 
 **A child's tablet.** Devices tab: **Add profile** "Kids"; tick HaGeZi Pro and My rules in its row; **Edit**: tick TikTok, Roblox and YouTube, schedule *Blocked only at these times*, school nights 21:00 to 07:00; Safe search On, YouTube Strict. Back on the Devices tab, set the tablet's **Profile** to Kids. **Save & Apply**.
 
-**A work laptop that must not be filtered.** Assign it to **Bypass**. Dreadwatch still applies to it.
+**A work laptop that must not be filtered.** Assign it to **Bypass**. Dreadwatch still applies to it unless you also add it to **Devices that skip Dreadwatch** (4.3.2.5a).
 
 **A guest network with lighter filtering.** Add a profile with HaGeZi Light only and assign the guest network to it.
 
@@ -1693,7 +1814,8 @@ The tab has two halves, each switched on its own: a server for your devices, and
 
 **Use the server half** when devices should keep encrypted DNS and still be filtered. **Use the block half** when devices or browsers set to their own provider are going around Dreadwatch and Wallguard, typically together with DNS Director global mode *Router*.
 
-##### 4.3.4.2 Setting up the router as a DoT server
+<a id="4342-setting-up-the-router-as-a-dot-server"></a>
+##### 4.3.4.2 Setting up the router as an encrypted DNS server
 
 1. Switch on **DNS-over-TLS**, **DNS-over-HTTPS** or both (the two switches at the top of the tab) and press **Save & Apply**. The pill reads *Running*. If DNS-over-TLS to your upstream servers is off, the Save offers to switch that on as well (4.3.4.5).
 2. Check the **Certificate** card. *Trusted* works for every kind of device. *Self-signed* works only for Android phones on the *Automatic* setting.
@@ -1754,13 +1876,23 @@ DNS-over-HTTPS is **not started while TCP 443 on the router is already in use**:
 | Line | Red when |
 |---|---|
 | **Device to router** | A switch is on but the server is not running or not listening; DNS-over-HTTPS cannot use port 443; the certificate is not publicly trusted (only Android's *Automatic* setting then uses it) |
-| **Router to upstream** | DNS-over-TLS to the upstream servers is off, or no upstream DNS-over-TLS server is set (*NOT ENCRYPTED*: every lookup leaves the router in the clear); the forwarder is not running; the clock is not set yet; the upstream servers do not answer a test lookup |
+| **Router to upstream** | DNS-over-TLS to the upstream servers is off, or no upstream DNS-over-TLS server is set (*NOT ENCRYPTED*: every lookup leaves the router in the clear); the forwarder is not running; the clock is not set yet; the upstream servers do not answer a test lookup; the automatic fallback below is in force (it names the reason and the time it started) |
 
 The upstream line is shown whether or not the server for devices is on: it covers every lookup the router's own DNS answers, plain ones too. The test is one lookup of the root's name servers through the forwarder, at most every 30 seconds while the tab is open. With the *Strict* profile nothing is resolved while the upstream servers do not answer; with *Opportunistic* lookups may leave in the clear, and the line says so. When you save the tab with a server switch on while upstream DNS-over-TLS is off and a server for it is already set, the Save asks whether to switch it on as well; *Cancel* saves without it and the red line stays. The router never switches it on by itself and never picks a provider. A device that DNS Director sends to another server, a network with its own outside DNS server and a network bound to a VPN client do not use the router's upstream.
 
+**When the upstream leg stops working (from v3.8.4).** The router checks the upstream leg by itself every 30 seconds, whether or not the tab is open and whether or not the DNS health check is switched on: one lookup through the DNS-over-TLS forwarder that only an upstream server can answer and, with the *Opportunistic* profile, a direct DNS-over-TLS lookup to your servers at least every two minutes (every check while something is wrong). Nothing is judged before the clock is set or while the WAN is down. What happens after three failed checks in a row (about 90 seconds) depends on the profile:
+
+| Profile | What failed | What the router does | Line on the tab |
+|---|---|---|---|
+| *Opportunistic* | The forwarder is not running, or none of your servers answers it | The router's DNS uses the plain WAN DNS servers (IPv4 and IPv6) instead of the forwarder, until the forwarder answers again | *NOT ENCRYPTED: ... the router has used the plain WAN DNS servers since ...* |
+| *Opportunistic* | The forwarder answers, but no server completes an encrypted lookup (port 853 blocked on the way, for example) | Nothing is moved: the forwarder already asks your servers in the clear by itself in this profile, so your chosen servers keep answering | *NOT ENCRYPTED: ... the forwarder has asked the same servers in the clear since ...* |
+| *Strict* | Any of the above | Nothing: Strict never sends a lookup in the clear, so lookups fail until the servers answer | *NOT WORKING: ... With the Strict profile nothing is sent in the clear, so lookups have failed since ...* |
+
+Two good checks in a row end it by themselves: the router's DNS uses the forwarder again, and after the *in the clear* state the forwarder is restarted, because after failed connections it keeps asking in the clear for up to 15 minutes. Switching DNS-over-TLS off, or to *Strict*, ends a fallback at once. A WAN reconnect or a VPN client that rewrites the router's DNS list while the fallback lasts is undone within seconds. The log has one line when a fallback starts, changes or ends, for example `rdnshc: Encrypted DNS: the upstream DNS-over-TLS forwarder does not answer (3 checks) - Opportunistic profile: dnsmasq now asks the plain WAN DNS servers (2), ...` and `rdnshc: Encrypted DNS: the upstream DNS-over-TLS forwarder answers again (2 checks) after 210 s - dnsmasq asks it again`. The check covers the main network; a guest/VLAN network with DNS-over-TLS of its own is not watched.
+
 **Which devices use it.** *Using encrypted DNS* lists the devices that reached the server since it started, with the protocol, the number of lookups and the time of the last one (64 devices at most). *Plain DNS only* lists devices on the router's own networks that asked port 53 in the last few minutes and are not in the first list. Names come from the DHCP leases. A device that has looked nothing up is in neither list.
 
-**Automatic setup (DHCP option 162).** With a server switch on and a publicly trusted certificate, the router's DHCP names itself as an encrypted DNS server (RFC 9463): the certificate's name, the router's address on that network, and the protocols that are on. A device that supports the option switches to encrypted DNS by itself; every other device ignores it and is set up as in 4.3.4.4. It is offered on the main network unless you gave DHCP clients other DNS servers (LAN › DNS › *Handed to clients*), and on each guest/VLAN network that has no DNS server of its own, **except an isolated guest network and a Guest Portal network** (v3.8.0): their devices may reach the router for DHCP and plain DNS only, so an offer would name a resolver they cannot use. iPhones and iPads take the offer by themselves and lost DNS on such networks before v3.8.0; Android ignores it. The card's **Automatic setup** line shows the name while it is offered; the log has `rednsd: automatic setup for devices (DHCP option 162) is offered` / `is withdrawn` when that changes, and the DHCP server is restarted once at that moment. Nothing is offered with a self-signed or private certificate, because the device checks the name against a public authority and would only fail. The router does not publish the other discovery record, `_dns.resolver.arpa` (RFC 9462): a device verifies that one by finding the router's LAN address inside the certificate, which no public authority issues.
+**Automatic setup (DHCP option 162).** With a server switch on and a publicly trusted certificate, the router's DHCP names itself as an encrypted DNS server (RFC 9463): the certificate's name, the router's address on that network, and the protocols that are on. A device that supports the option switches to encrypted DNS by itself; every other device ignores it and is set up as in 4.3.4.4. It is offered on the main network unless you gave DHCP clients other DNS servers (LAN › DNS › *Handed to clients*), and on each guest/VLAN network that has no DNS server of its own, **except an isolated guest network and a Guest Portal network** (v3.8.0): their devices may reach the router for DHCP and plain DNS only, so an offer would name a resolver they cannot use. A guest network counts as not isolated only with **Main Network** ticked in its Access Intranet list (4.21.3); **Reach these main-network devices** and **Device discovery with the main network** open chosen devices and service announcements, not the router, so they do not bring the offer back. A device DNS Director sends to another DNS server is refused by the router's encrypted DNS server, so from v3.8.4 it is not offered either: a per-device rule leaves that device out, and a global mode or a guest network's row that redirects leaves the whole network out, except the devices a rule keeps on *Router* or *No filtering*. Before that, an iPhone with such a rule took the offer, was refused and showed *No Internet Connection*. A device that already holds the offer keeps it until its lease renews: switch its Wi-Fi off and on once. The log has `rednsd: refused <address> - DNS Director sends this device to another DNS server`, one line per address an hour. iPhones and iPads take the offer by themselves and lost DNS on such networks before v3.8.0; Android ignores it. The card's **Automatic setup** line shows the name while it is offered; the log has `rednsd: automatic setup for devices (DHCP option 162) is offered` / `is withdrawn` when that changes, and the DHCP server is restarted once at that moment. Nothing is offered with a self-signed or private certificate, because the device checks the name against a public authority and would only fail. The router does not publish the other discovery record, `_dns.resolver.arpa` (RFC 9462): a device verifies that one by finding the router's LAN address inside the certificate, which no public authority issues.
 
 ##### 4.3.4.6 Block encrypted DNS that goes around the router
 
@@ -1824,14 +1956,16 @@ Changing the port 853 switch rebuilds the firewall. Changing the DNS-over-HTTPS 
 | A phone or browser has no DNS after the block was switched on | It is set to one named outside provider | Set it to automatic or to the router's Encrypted DNS, or DNS Director *No redirection* |
 | The block's list shows only the built-in addresses; log `encrypted-DNS address list: download failed, the previous list stays in use` | The list host cannot be reached | **Update list now**; check that `raw.githubusercontent.com` is reachable from the router |
 | A browser still bypasses with the block on | Its DoH server's address is not on the list | Report the provider; DNS Director per-device rules or a Firewall rule can block it meanwhile |
+| The upstream line says the router uses the plain WAN DNS servers | The DNS-over-TLS forwarder is not running, or none of your DNS-over-TLS servers answers it (blocked by the ISP or a firewall upstream, a server down) | Nothing to do for DNS to work; to get encryption back check that the servers in WAN › DNS are reachable on their port (853 by default). With *Strict* there is no fallback by design |
 
 ##### 4.3.4.11 Limits
 
 - The WAN-address route needs the public address on this router. Behind another router, Android *Automatic* and the Apple profile still work; the hostname settings do not.
-- DNS-over-HTTPS is not offered by the router (Windows 11 and browsers use plain DNS to it).
+- DNS-over-HTTPS (since v3.7.6) speaks HTTP/2 only, on port 443 of the LAN networks. A browser or Windows 11 uses it only when set up with the router's DoH address (4.3.4.4); Apple devices may also find it from the DHCP option 162 offer. Guest networks without Access Intranet are never offered it (4.21).
 - Guest/VLAN networks are served over IPv4.
 - Flow Explorer's destination names are learned from plain DNS replies; lookups made over Encrypted DNS add no names there.
 - The block covers known resolvers only (4.3.4.7).
+- The automatic fallback of the upstream leg watches the main network's DNS-over-TLS forwarder only; a guest/VLAN network with its own DNS-over-TLS servers has no fallback.
 
 ### 4.4 Policy Routing
 
@@ -1867,11 +2001,13 @@ lost its path.
 
 **The Domain lists card** is where you build and maintain the lists the rules point at (4.4.4). You no longer have to go to the Firewall page for this.
 
+**The ASN lists and Country lists cards** (from v3.8.4, marked *Advanced*) build lists the router fills by itself from published address ranges: everything a network operator announces, or everything in one country (4.4.4a).
+
 #### 4.4.3 What a rule matches
 
 Each rule matches traffic one of three ways:
 
-- **Domain list / object (destination)** — a named list of domains built on this page, or any Firewall address object or group, chosen from the dropdown. The rule matches traffic whose **destination** is in that list. This is the powerful one: name a set of streaming sites, or a country, and route everything headed *to* it in one rule.
+- **Domain list / object (destination)** — a named list of domains built on this page, or any Firewall address object or group, chosen from the dropdown. The rule matches traffic whose **destination** is in that list. This is the powerful one: name a set of streaming sites, a network operator or a country, and route everything headed *to* it in one rule. An ASN list or a country list (4.4.4a) is chosen from the same dropdown.
 - **Device by IP / CIDR (source)** — a single address or a range on your LAN, or a list of them (IPv4 or IPv6, one per line or comma-separated, up to 64). The rule matches traffic **from** it.
 - **Device by MAC (source)** — a device's hardware address. The rule matches traffic **from** that device, wherever it picked up its IP.
 
@@ -1896,6 +2032,53 @@ A domain list is a Firewall object of type *Domain name*: a name plus the domain
 - **Whose lookups fill a list.** Only answers from the **router's own resolver** add addresses at once. A device that asks another resolver adds nothing by its lookups: a browser with its own encrypted DNS, a device with a hand-set DNS server, and a device that **VPN Director** sends to a VPN client with a DNS server of its own (its lookups go to that server, inside the tunnel). For such a device the 10-minute timer still resolves the names you typed, but not the sub-names a site uses. This is the main difference in what a device sees between a VPN Director rule and a Policy Routing source rule for the same tunnel.
 - **CDNs change.** When a service starts reaching out to a domain you did not list, the traffic is not matched. That is the one piece no timer can fix for you — come back and **Modify** the list.
 - **The Firewall engine does not need to be on.** The lists are built whenever Policy Routing is enabled, engine or no engine. If the Firewall engine *is* on and you edit a list here, the routing side uses the new list on Apply; the Firewall's own rules pick it up on the Firewall page's Apply, as its commit-and-confirm flow requires.
+
+#### 4.4.4a ASN lists and country lists
+
+*From v3.8.4. Advanced.* Two more kinds of list for the **Domain list / object** selector. The router fills them itself from published address ranges instead of from names you type:
+
+- An **ASN list** holds everything one or more network operators announce. Every operator on the internet has an AS number (ASN); Netflix's own network is AS2906. Enter `AS2906` or `2906`, up to 16 numbers in one list. Use it for a destination that is defined by who runs it - a VoIP trunk provider, a service that checks where you connect from - where a hand-kept address list goes stale and a domain list misses addresses an app has built in.
+- A **Country list** holds the address ranges of one country, chosen from the same country table Warden uses.
+
+Select either in a rule exactly like a domain list. Nothing else changes: the target, the Killswitch, the order of rules and the Keep / Revert timer work as for any other rule, and the router only decides which of its own interfaces the traffic leaves by.
+
+**When a list is loaded.** Only while Policy Routing is on and an enabled rule uses the list (directly or through a group), after **Apply**. A list no rule uses is not downloaded and takes no memory; its row says *not used by a rule*. The **Loaded** column shows how many IPv4 and IPv6 ranges are in the list right now.
+
+**Where the ranges come from.** The **Source** column names the source in use and the time of the last check.
+
+| List | Sources, in this order |
+|---|---|
+| ASN list | **ipverse** (`raw.githubusercontent.com/ipverse/as-ip-blocks`), then **RIPEstat** (`stat.ripe.net`), then **HackerTarget** (`api.hackertarget.com`) |
+| Country list | **Warden's own list** when Warden already blocks that country and holds both its IPv4 and IPv6 ranges (copied on the router, nothing is downloaded), then **ipdeny** (`www.ipdeny.com`), then **ipverse** (`raw.githubusercontent.com/ipverse/country-ip-blocks`) |
+
+The next source is asked only when the one before it gave no usable range. The request carries the AS number or the country code and nothing about your network. HackerTarget's free service answers a small number of requests a day, which is why it is last.
+
+**When the lists are refreshed.** Once a day (05:17), and when you press **Update now**. A list that has never been fetched is fetched right after Apply; if that download fails (at boot, for example, before the internet connection is up), the list is asked for again as soon as the WAN connects and then every 15 minutes until it arrives. A list every source answers with no ranges at all (an AS number that announces nothing) is not asked for every 15 minutes: it is tried again at the daily refresh, when the WAN connects and at boot. Each list is saved on the router's flash (`/jffs/reaper_fw/lists`, rewritten only when it changed) and put back from there at boot before anything is downloaded. When the last rule that uses a list is removed, the list's address sets, its saved copy and the daily job go when you press **Keep** (or **Revert**, for a list only the reverted change used).
+
+**The sources are in your "do not block" lists.** Warden and Dreadwatch can stop the router's own downloads: with **Also filter the router itself** on, a blocked country or a feed that covers a source's address, or a threat list that names the source. So the first time an ASN or country list is used by a rule, the router adds the sources once - their addresses to Warden's **Whitelist** (the table in 4.3.1.7: `raw.githubusercontent.com`, `stat.ripe.net`, `api.hackertarget.com`; `www.ipdeny.com` has its entry already) and the names `ripe.net` and `hackertarget.com` to Dreadwatch's **Never block these names** (`githubusercontent.com` and `ipdeny.com` were there already). The log names what was added. Nothing you entered is changed, a router that never uses such a list gets nothing added, and **an entry you delete is never put back**.
+
+**What happens when a download fails.** The list already loaded stays in use, and the row says *no source answered* with what each source said (*name not resolved*, *no connection*, *not found*, *no prefixes in the reply*, *covers too much of the internet, not used*). If **Also filter the router itself** is on and a blocked country covers a source whose Whitelist entry you removed, or whose address has changed since the entry was added, the router blocks its own download: RIPEstat is hosted in the Netherlands, ipdeny in France. The page says so when a source could not be reached with that switch on; put the address back in the Whitelist, or use the other sources. When one half of a reply fails while the other arrives (the IPv6 file times out, say), the saved ranges of the failed half stay in use; only a source that answers it has none of them removes them.
+
+**What is kept out of a list.** A downloaded list decides where your traffic goes, so the router does not take it on trust:
+
+- Only entries of the form address/length are read; everything else in a reply is ignored.
+- Private, loopback, link-local, carrier-NAT, multicast and reserved ranges are dropped, and so is any wider range that contains one of them (`192.0.0.0/8` holds `192.168.0.0/16`) and anything wider than /8 (IPv4) or /16 (IPv6).
+- A reply that adds up to more than half of the internet (over 2,147,483,648 IPv4 addresses, or half of the IPv6 unicast space) is not used at all, since no network operator or country holds that much: the next source is asked, and the row says *covers too much of the internet, not used*. With the rule above, a wrong list cannot capture your LAN or the whole internet.
+- A list is replaced whole or not at all. One with more ranges than its set can hold (65,536 per family for an ASN list, 262,144 for a country), or more than a quarter of the free memory, is refused: the row says *too large, not loaded* or *not enough free memory, not loaded* and the previous list stays.
+- The new list is built beside the old one and swapped in, so a rule never matches an empty or half-loaded list during a refresh.
+
+**Limits to know before you rely on one.**
+
+- **Content served from inside your ISP is not in the operator's AS number.** Netflix places servers inside many ISPs; those use the ISP's own addresses, so AS2906 alone does not catch all Netflix traffic. Add a domain list where that matters.
+- **Only the AS numbers you list.** A customer network that announces its own addresses has its own number and must be added on its own.
+- **A large shared network carries thousands of unrelated sites.** Routing Amazon's or Google's AS number moves far more than one service.
+- **A daily snapshot from third parties.** A range announced since the last refresh is missed until the next one, and a wrong list sends traffic by the wrong path until it is corrected upstream.
+- **Flows already running keep their path** when a list changes, until they end - the same as for a domain list.
+- **Traffic to a country Warden blocks is dropped whatever its route.** The row says so. A country list is for a country you reach, not one you block.
+- **In use at once:** 32 different AS numbers and 8 different countries. A list that would pass that is not loaded and the log says so.
+- **ASN lists exist only on this page.** They are not offered to Firewall rules and do not appear in the Firewall page's object table. A country list is an ordinary country object: on this page it gets its own address set; in a Firewall rule the same object still means Warden's set for that country (4.1).
+
+**To check what a list holds:** `ipset list -t rwfw_<list>` (IPv6: `rwfw6_<list>`) and `ipset test rwfw_<list> <address>`. The log tag is `reaper_fw: lists:`.
 
 #### 4.4.5 Where a rule sends traffic
 
@@ -1961,7 +2144,7 @@ Selector **Source IP** (or **Object**), target **Block**. A hard stop that does 
 - **Replies come home (v3.2.4).** Before v3.2.4 a source rule to a WireGuard client sent the request into the tunnel correctly, but the reply was routed straight back into the tunnel, because the WireGuard client's table has no route to the LAN; the device saw no answer at all. The marking chain now leaves reply traffic to the main table. OpenVPN targets and VPN Director were never affected.
 - **Protocol and port matching is not offered.**
 - **A list that has not resolved yet, or an emptied group, produces no rule** rather than a rule that matches everything — the same fail-to-nothing behaviour the firewall uses.
-- **Objects are shared with the Firewall.** Domain lists are edited here or on Firewall → Objects; they are the same objects. Address, MAC and country objects are still created on the Firewall page and simply appear in the dropdown.
+- **Objects are shared with the Firewall.** Domain lists are edited here or on Firewall → Objects; they are the same objects. Address and MAC objects are still created on the Firewall page; address objects appear in the dropdown, a MAC object cannot be selected here. A country object made on either page is the same object. An ASN list exists only on this page (4.4.4a).
 - **A confirmed set survives a reboot on its own** (v2.7.6/v2.7.7). The marking chain and the routing rules come back complete at boot with no visit to this page, and if the routing half is ever lost the router re-applies it the way it already did for a lost firewall chain.
 - **Rules live on the router's internal flash** (`/jffs`), not in the stock settings backup — use **Download full backup** or **Export settings** on **Administration → Backup & Restore** (2.5). Twenty rules and more save without trouble.
 - **Add rules from a device that is not itself being routed** by the rule you are testing.
@@ -2087,6 +2270,13 @@ Saturate your upload with a large backup or file send, and watch the live column
 
 **What to expect.** Fast polling (250–500 ms) runs only while the page is open. The view adapts to your mode: a single shaped queue under Hardware QoS, the full scheduler under HW Classful; "No egress traffic-manager data" means QoS or the accelerator is not active. Occupancy reads 0 on an idle link and fills under load. Counters are 32-bit and wrap about every 15 seconds at ~2 Gb/s; a wrap is discarded rather than drawn as a spike. Trends fill from the left and flow smoothly.
 
+**How to use it.**
+
+1. Open **Traffic Manager → QoS Diagnostics** with QoS on (Hardware QoS or HW QoS Classful, 4.5). Pick the scheduler with the port selector: the WAN port for uploads, a LAN port for downloads.
+2. Start a load that fills the line (a large upload for the WAN scheduler) and watch **occupancy** and **drops/s**. Under load, a shaped queue should fill and its drops rise; that is the shaper working. A queue that stays at 0 while the line is full means traffic is not reaching it (the class rules in 4.5.5 do not match, or the accelerator is off).
+3. Read the **estimated delay**: it is the queue's backlog divided by the shaper rate. A delay that climbs and stays high at a modest load means the shaper is set above what the line really carries; lower the rate on the QoS page and check again.
+4. After a firmware update, open the page once with QoS on and check that the expected queues exist (one under Hardware QoS, five under HW Classful).
+
 ### 4.7 Traffic Analyzer
 
 **What it is.** A native bandwidth and usage page driven by the `rtrafd` collector: live WAN throughput, an optional latency and loss chart, per-QoS-class upload, per-network totals, top devices, live top talkers by destination-port bucket, and a monthly data cap. **Off by default:** switch it on with the page's toggle; nothing is recorded before that.
@@ -2135,6 +2325,10 @@ Other details worth knowing:
 - **Inbound connections** — port forwards, UPnP — are attributed to the device that received them.
 - **Offline devices keep the names you gave them.**
 - If polling stops, the status pill turns amber **No response** rather than drawing zeros. A flat line at zero means zero; amber means "not known".
+- **Guest Portal panel (v3.7.7).** On the **Live** window, a router with a Guest Portal network shows a panel listing each signed-in guest with their current speed and session time. A guest network you remove leaves the live view.
+- **A chosen timeframe lists only devices that moved traffic in it** (v3.7.7), and each row's bar is that row's share of the window's total, so the bars of a table add up to the whole.
+- A guest network's accelerated uploads are counted for its devices, not also as the router's own traffic (v3.7.7).
+- The collector rewrites its live file ten times a second only while a page shows the live view, and the page stops polling while its browser tab is hidden (v3.8.2), so leaving the page open in a background tab costs nothing.
 
 #### 4.7.4 Examples
 
@@ -2440,19 +2634,36 @@ the value you already have. Raise it on the Wi-Fi Settings page if you prefer lo
 
 These share the **Storage** page under System Log.
 
-**Long-Term Storage** — choose the durable **Location** (RAM only / Internal (JFFS) / USB storage) and toggle each **dataset** (device history and action audit, traffic history, rwatch incident dumps, channel-quality history, syslog mirror; Warden is locked to JFFS). Four more rows: **Wallguard block lists** (USB only; the lists move off RAM and come back from the volume after a restart; the block table stays in RAM, see 4.3.3.10), **Wallguard blocked lookups** and **Dreadwatch blocked lookups** (every blocked lookup, time, device and name, appended each time the feature collects its records; `<store>/wallguard/blocked.log` and `<store>/dreadwatch/blocked.log`, rolled to `.1` past 16 MB on USB or 2 MB on JFFS), and **Encrypted DNS activity** (one line per watchdog tick while Encrypted DNS or its block is on: devices connected, lookups answered and refused by the router's DoT server, outside DoT and DoH refused, addresses on the block list; `<store>/ednshist.log`, rolled to `.1` past 4 MB; the router's DoT server still never records a lookup). The **Encrypted DNS blocked-address list** row is locked to JFFS like Warden's: the firewall loads it at boot, before any USB volume is mounted. Blocked-lookup history shows which device asked for which blocked name and when; on USB anyone with access to the volume's file share can read it (the page says so). Every write into the store (and Wallguard's read of its stored lists) goes through `/usr/sbin/rstore`, which never follows a link: a USB store is a volume other people can write - in guest share mode the firmware maps share guests to the admin account - so a file or folder they plant there cannot redirect the router's writes onto its own files. Wallguard checks a stored list's SHA-256 on a copy in RAM and builds from that copy. The table shows written size, size cap and **Collecting since** per dataset; the health line reports free space and falls back to RAM if no writable USB volume is attached. Once a durable location is collecting, each device gains a timeline (first seen, renames, reservations, offline spans, cumulative traffic). See 2.6 for the filesystem and USB guidance. Policy (rules and lists) is not a dataset here: the Reaper lists live on `/jffs` (2.4).
+**Long-Term Storage** — choose the durable **Location** (RAM only / Internal (JFFS) / USB storage) and toggle each **dataset** (device history and action audit, traffic history, rwatch incident dumps, channel-quality history, syslog mirror; Warden is locked to JFFS). Four more rows: **Wallguard block lists** (USB only; the lists move off RAM and come back from the volume after a restart; the block table stays in RAM, see 4.3.3.10), **Wallguard blocked lookups** and **Dreadwatch blocked lookups** (every blocked lookup, time, device and name, appended each time the feature collects its records; `<store>/wallguard/blocked.log` and `<store>/dreadwatch/blocked.log`, rolled to `.1` past 16 MB on USB or 2 MB on JFFS), and **Encrypted DNS activity** (one line per watchdog tick while Encrypted DNS or its block is on: devices connected, lookups answered and refused by the router's DoT server, outside DoT and DoH refused, addresses on the block list; `<store>/ednshist.log`, rolled to `.1` past 4 MB; the router's DoT server still never records a lookup). **Firewall log** (v3.7.5; USB store only): the firewall log collector (4.1.12) also writes each line to `<store>/fwlog/YYYY-MM-DD.log`, one file a day, keeping up to 30 days or 256 MB (the oldest day goes first). It is ticked by default on a new or reset router; on an upgraded router tick it here. The RAM ring the Firewall view reads (2.12) is kept either way. The **Encrypted DNS blocked-address list** row is locked to JFFS like Warden's: the firewall loads it at boot, before any USB volume is mounted. Blocked-lookup history shows which device asked for which blocked name and when; on USB anyone with access to the volume's file share can read it (the page says so). Every write into the store (and Wallguard's read of its stored lists) goes through `/usr/sbin/rstore`, which never follows a link: a USB store is a volume other people can write - in guest share mode the firmware maps share guests to the admin account - so a file or folder they plant there cannot redirect the router's writes onto its own files. Wallguard checks a stored list's SHA-256 on a copy in RAM and builds from that copy. The table shows written size, size cap and **Collecting since** per dataset; the health line reports free space and falls back to RAM if no writable USB volume is attached. Once a durable location is collecting, each device gains a timeline (first seen, renames, reservations, offline spans, cumulative traffic). See 2.6 for the filesystem and USB guidance. Policy (rules and lists) is not a dataset here: the Reaper lists live on `/jffs` (2.4).
 
 **Data export** (mode control here; destination on **Administration → Data Export**) — per-device connection-health metrics (round-trip latency, jitter, loss, TCP connection count and state, throughput, online state). Modes: **Off** (nothing retained or sent), **Store only** (history on the router, nothing leaves), **Store + Export**, **Export only**. Any mode other than Off turns on the **Health probe**, which can also be enabled on its own for the live view and **Preview payload**. Targets: Splunk HEC, Datadog, Dynatrace, Elastic, generic HTTP/JSON, OpenTelemetry, TLS syslog (push), or a **Prometheus** OpenMetrics scrape endpoint (pull, bearer token required). TLS verification is on by default; the API token is stored masked and kept out of process lists and logs; an option hashes device MACs before they leave. **Test connection** and **Preview payload** show exactly what will go out. The probe is light enough to leave on (spread across ticks, at most 16 pings per tick, skipped while the link is saturated; default interval 60 s); the exporter refuses to push a snapshot older than three minutes, so a crashed collector never masquerades as live data. Not included by choice: wireless RSSI/PHY metrics and TCP retransmit counts.
+
+How to set up an export:
+
+1. **Administration → Data Export**: choose the target (Splunk HEC, Datadog, Dynatrace, Elastic, generic HTTP/JSON, OpenTelemetry, TLS syslog or Prometheus), enter its address and its API token, and leave TLS verification on unless the collector uses a private certificate you trust. Tick *hash device MACs* if the collector is not yours alone.
+2. Press **Test connection**: it sends one request and shows the collector's answer. Fix the address or token until it succeeds.
+3. Press **Preview payload** to see exactly what one push contains.
+4. On **System Log → Storage**, set the Data export mode to **Store + Export** (or **Export only**) and apply. For Prometheus, point your scraper at the endpoint the page shows, with the bearer token; nothing is pushed.
 
 **Reaper settings backup** — moved. Export and import now live on **Administration → Backup & Restore**, alongside the full `.rbk` backup, so every backup is in one place (2.5).
 
 ### 4.12 USB Disks
 
-The last tab of **USB Application** (v3.4.9; it was the first): each attached disk with its partitions, usage and a badge on the one that **holds the long-term store**; a **health scan** (a real `e2fsck` on ext4, with a pass/fail verdict and the check log; the result stays on screen); **Format** with a volume label and a filesystem selector (ext4 / ext3 / ext2 / FAT32 / NTFS / HFS+, with a one-line hint per choice — see 2.6); and **Safely remove** (eject), which now requires the anti-forgery token. Formatting permanently erases the disk and asks first. Formatting logs to `/tmp/disk_format/<dev>.log`. The format confirmation dialog is still stock-styled (backlog, cosmetic). Samba shares are named for their folder (`reaper`), with "(at DISK)" added only when two disks hold a folder of the same name.
+The last tab of **USB Application** (v3.4.9; it was the first): each attached disk with its partitions, usage and a badge on the one that **holds the long-term store**; a **health scan** (a real `e2fsck` on ext4, with a pass/fail verdict and the check log; the result stays on screen); **Format** with a volume label and a filesystem selector (ext4 / ext3 / ext2 / FAT32 / NTFS / HFS+, with a one-line hint per choice — see 2.6); and **Safely remove** (eject), which now requires the anti-forgery token. Formatting permanently erases the disk and asks first. Formatting logs to `/tmp/disk_format/<dev>.log`. The format confirmation dialog is still stock-styled (backlog, cosmetic). Samba shares are named for their folder (`reaper`), with "(at DISK)" added only when two disks hold a folder of the same name. Disks larger than 2 TB show their real size (v3.7.4; they read 0 B before). A FAT or HFS+ partition whose check crashes or hangs is logged once and not checked again, and a damaged or crafted FAT or HFS+ volume that would crash the check is refused (v3.8.2).
+
+**USB 3 write-speed levers (v3.7.0, advanced).** On BCM4912 / BCM4916 models five USB controller parameters can be set from the `reaper_usb3_*` settings (`credits`, `dcm`, `parkoff`, `rdattr`, `txthr_burst` / `txthr_cnt`) for A/B tests of the write speed. They have no page and are unset at factory; nothing changes unless one is set over SSH (`nvram set reaper_usb3_dcm=1; nvram commit`, then reboot). Section 3c of the diagnostics report lists any that are set. If a disk misbehaves after setting one, unset it (`nvram unset`) and reboot.
 
 ### 4.13 Diagnostics
 
 **Administration → Diagnostics**: the sanitized report described in 2.10. The page lists what is collected and what is removed or masked, shows what the top of the report (the ledger) looks like, and has one **Download Report** button. The report takes 20–30 seconds and downloads by itself; since v3.3.3 the rest of the interface stays usable meanwhile. The FINDINGS block at the top is the first thing to read when something is wrong (5, item 9).
+
+**How to use it when you need help.**
+
+1. Reproduce the problem first, or take the report soon after it happened: the report reads the live state and the recent log, so a report from the next morning may no longer show it.
+2. **Administration → Diagnostics → Download Report** (or `reaper_diag` over SSH; the file lands in `/tmp`).
+3. Read the **FINDINGS** block: each line names a state that needs action and the section to look in. Many problems end here.
+4. Check the **ledger** at the top says the report is clean. If it says *review before sharing*, search the file for what it counts before posting it.
+5. Attach the file to your GitHub issue with the model, the variant (MCP / noMCP) and what you did just before the problem (2.14). The sections a helper usually needs: 4b - 4d for guest networks, 5 for the internet connection, 7 for Wi-Fi, 14 - 14h for the firewall layers, Bastion and Encrypted DNS, 19 for the log.
 
 ### 4.14 Firmware
 
@@ -2527,7 +2738,7 @@ DoT servers so they share the traffic. This switch uses them in the listed order
 rest in reserve, so a filtering DoT server you put first sees every query while it answers. It does
 nothing while DNS Privacy is off, and the page says so.
 
-**The router's own lookups under DNS-over-TLS (2026-11-10).** With DNS-over-TLS on, the router's own lookups (time sync, DDNS, list downloads, the update check) go through the router's resolver and leave encrypted, as a device's do. Under the Strict profile nothing falls back to plain DNS; under Opportunistic the WAN DNS servers stay behind it as the fallback. Until the clock is set after a boot the lookups are plain, because a certificate cannot be checked without the time. With DNS-over-TLS on, the health check sends no plain lookup either (below).
+**The router's own lookups under DNS-over-TLS (2026-11-10).** With DNS-over-TLS on, the router's own lookups (time sync, DDNS, list downloads, the update check) go through the router's resolver and leave encrypted, as a device's do. Under the Strict profile nothing falls back to plain DNS; under Opportunistic the WAN DNS servers stay behind it as the fallback. Until the clock is set after a boot the lookups are plain, because a certificate cannot be checked without the time. With DNS-over-TLS on, the health check sends no plain lookup either (below). The health check's daemon also runs the automatic fallback of the upstream DNS-over-TLS leg, whether or not the check is switched on (4.3.4.5); if the daemon is not running in router mode, the `rwatch` watchdog starts it again on its next tick (after the 5-minute boot grace).
 
 **The health check under DNS-over-TLS (from the image after v3.7.5).** While DNS-over-TLS is on (the same test the router's own lookups use: the switch on the DNS page, router mode, and a server with an address), the check never asks on port 53. If the watched server is one of your DNS-over-TLS servers (by either of its addresses), it is asked over DNS-over-TLS on that server's port, and its certificate is checked against the server's name when the DNS page gives one (as the router's DNS-over-TLS forwarder checks it); it gets three times the timeout for the encrypted connection. If the watched server is not one of them, the check asks the router's DNS-over-TLS forwarder instead, over the router's loopback, so it still sees whether encrypted lookups work. In both cases it **moves nothing**: under DNS-over-TLS the router's DNS list holds the forwarder alone, and the forwarder uses its other servers by itself. The status line says *Answering over DNS-over-TLS* or *NOT answering over DNS-over-TLS*, a note under it says which of the two ways is in use, and the log says so when DNS-over-TLS is switched on or off (`DNS Health Check: DNS-over-TLS is on - ...`). Until the clock is set after a boot no certificate can be judged, so misses are not counted (`HOLD`). A failover made on port 53 before DNS-over-TLS came on is undone at once. The diagnostics report names the probe in section 5 (`health probe`).
 
@@ -2932,7 +3143,7 @@ own included.
 **destination domain list or Firewall object**, a **source IP / CIDR** (IPv4 or IPv6) or a **source MAC** to an OpenVPN
 client, a WireGuard client, the WAN, or a block. Its rules take precedence over VPN Director's, follow each client's
 Killswitch, and use the Keep / Revert timer. Section 4.4 describes the page in full: matching (4.4.3), domain lists
-(4.4.4), targets (4.4.5), order (4.4.6), the Killswitch (4.4.7), examples (4.4.8) and limits (4.4.9). It is off by
+(4.4.4), ASN lists and country lists (4.4.4a), targets (4.4.5), order (4.4.6), the Killswitch (4.4.7), examples (4.4.8) and limits (4.4.9). It is off by
 default (`reaper_pbr_enable` `0`, 8.2).
 
 Details of the page that 4.4 does not state:
@@ -3357,13 +3568,16 @@ What is stock and what is Reaper's:
 | Guest Portal DNS (Cloudflare for Families by default), the portal secret, the passcode checks | Reaper |
 | mDNS across networks (the reflector), the Default IoT Network port fix, the VPN client switched on with its network | Reaper |
 | The Wi-Fi key masked in the reconnect card after Apply; the quick connect sheet that stays open to print | Reaper |
+| **Hold Wi-Fi restarts until Apply**, **Delete selected**, an Access Intranet / VPN / DNS / DHCP edit without a Wi-Fi restart | Reaper |
 | The LAN-port (VLAN) assignment per AiMesh node | Stock logic, Reaper page (LAN > VLAN, 4.22.4) |
 
 All supported models have this editor. The separate stock pages **Guest Network**, **Free WiFi** and **Captive
 Portal** appear in the menu only on a model without it, so on Reaper's models the Guest Portal is a network type
 on this page (4.21.7). The Network page and the LAN pages apply at once; they do not use the Apply-and-Keep
 countdown of 2.7. Saving a network restarts Wi-Fi (`restart_wireless;restart_sdn N`), so wireless devices on every
-network drop for a moment.
+network drop for a moment. Three exceptions: an edit that changes only Access Intranet, the VPN binding / Kill Switch or
+the network's DNS / DHCP settings restarts no radio (4.21.2); with **Hold Wi-Fi restarts until Apply** on, several
+changes share one restart (4.21.12); and **Delete selected** removes several networks with one restart (4.21.12).
 
 #### 4.21.1 The page and the network types
 
@@ -3430,6 +3644,13 @@ three sections: **General**, **Advanced Settings** and **AiMesh**.
 | **Enable MAC Filter** | **Disable**, **Accept** (only listed devices may join) or **Reject** (listed devices may not), with a MAC list | Disable |
 
 The setup wizards do not offer **Reach these main-network devices** or **Device discovery**; set them after the network is created. A save that changes only these two applies them without restarting Wi-Fi.
+
+A save that changes only **Access Intranet**, the **VPN** tab (client, server, Kill Switch, and a client switched on
+with it), or the network's **DHCP** pool, lease time, reservations or **DNS Server** (IPv4 and IPv6 servers,
+encrypted DNS) also restarts no radio: only that network's own services (DHCP / DNS server, routing, VPN and the
+Access Intranet rules of every network) are restarted, and Wi-Fi devices stay connected. Anything else in the same
+save - SSID, password, bands, schedule, AP Isolation, the Bandwidth Limiter, LAN IP or mask, VLAN ID, IPv6 on / off,
+the portal - restarts Wi-Fi as before.
 
 The stock **AdGuard** switch is not shipped (Reaper removed the ASUS cloud DNS service); use Wallguard (4.3.3)
 instead.
@@ -3603,8 +3824,8 @@ Wallguard and the encrypted-DNS block in it, as on the main LAN.
 
 | Situation | What devices use for DNS |
 |---|---|
-| **DNS Server** = Default | The network's gateway (its resolver). Encrypted DNS is offered by DHCP option 162 only where the network may reach the router for it: not on an isolated network and not on a portal (4.3.4.5) |
-| **DNS Server** = assigned addresses | Those addresses are handed out by DHCP. On an isolated network an address on the main LAN is unreachable (4.21.3) |
+| **DNS Server** = Default | The network's gateway (its resolver). Encrypted DNS is offered by DHCP option 162 only where the network may reach the router for it: not on an isolated network and not on a portal (4.3.4.5). To have it offered on a guest network, tick **Main Network** in Access Intranet (the network then counts as part of your own network, 4.21.3); **Reach these main-network devices** and **Device discovery** do not change this |
+| **DNS Server** = assigned addresses | Those addresses are handed out by DHCP, and no encrypted DNS is offered: option 162 would name the router, which is not this network's DNS server. On an isolated network an address on the main LAN is unreachable (4.21.3) |
 | Network bound to a VPN client | The tunnel's DNS |
 | **Guest Portal** network | Always the network's own resolver: a hand-set DNS server on the device is redirected to it and DNS-over-TLS (port 853) is dropped. The **DNS Server** setting picks the resolver's upstream (below) |
 | DNS Director row for the network (LAN > DNS) | Forced to the chosen resolver (4.22.2) |
@@ -3680,6 +3901,11 @@ isolation.
 **Limits and gotchas**
 
 - One Free WiFi network per router.
+- **The portal restarts itself (v3.8.2).** When a Guest Portal network is on and its portal process has died, the
+  watchdog starts it again after two missed checks a minute apart, at most three times per boot, with one log line
+  each time (`watchdog: a Guest Portal network is on and its portal is not running - starting it (N of 3 this
+  boot)`). Past three, it stays down until the next reboot or a save of the network; section 4d of the diagnostics
+  report counts the restarts.
 - The portal is IPv4 only; guests' devices get no IPv6 on a portal network.
 - A portal guest cannot use its own DNS-over-TLS; a browser with DNS-over-HTTPS to an outside provider still works
   through the internet (the encrypted-DNS block of 4.3.4.6 covers that).
@@ -3697,6 +3923,16 @@ leaving out any network with **AP Isolation** on (the main network too, if a rad
 isolated network and every Guest Portal. On isolated networks and portals the router no longer answers mDNS at all.
 A relayed announcement never goes back to the network it came from. The system log lists the left-out bridges with
 the reason (for example `br54 AP isolated, br55 no intranet access`).
+
+**Only chosen kinds of devices** (v3.8.4; Administration > Tweaks, under mDNS across networks; off at
+factory, `reaper_mdns_types` empty; 8.2). Off: every kind of device is relayed between the networks above, as before.
+On: only the kinds you tick (Printing, AirPlay, Google Cast, HomeKit / Matter, Spotify / Sonos) and the service types
+you enter (such as `_ipp._tcp`, at most 16 in total) are relayed between the main network and the Access Intranet
+networks - the same filter as Device discovery below: a service's announcements, its name records, and a device's
+address only when a relayed service of a chosen type names it; nothing else crosses. Each network still sees all of
+its own devices. The router's own name and services are announced as before, and a guest network's Device discovery
+keeps its own choice on the Network page. The system log says which types are relayed (`mdns: across the main side
+only these service types are relayed: ...`).
 
 **Device discovery with the main network** (from the image after v3.8.2; per network, off by default) relays only
 chosen service types between the main network and one isolated guest network, without Access Intranet. Phones and
@@ -3758,7 +3994,9 @@ on LAN > VLAN in Access mode (4.22.4). The IPv6 switch stays available on a wire
   Server back to Default.
 - **Kid's Network with a Message Board** is a portal network for isolation: no IPv6, no Access Intranet beyond the
   main LAN (4.21.7).
-- **Wi-Fi restarts on every save** on this page; wireless devices on all networks reconnect.
+- **Wi-Fi restarts on most saves** on this page; wireless devices on all networks reconnect. Access Intranet / VPN /
+  DNS / DHCP-only edits do not (4.21.2), and **Hold Wi-Fi restarts until Apply** lets several changes share one
+  restart (4.21.12).
 - **A network on the main subnet** has no Advanced address settings, no VPN tab and no Access Intranet: it is the
   main LAN on another SSID.
 - **MLO**: one active MLO network at most (the model's limit), at least two bands; power-cycle after switching MLO
@@ -3766,6 +4004,40 @@ on LAN > VLAN in Access mode (4.22.4). The IPv6 switch stays available on a wire
 - **6 GHz** requires WPA3-Personal; a network on 6 GHz with an older device must also offer 2.4 or 5 GHz.
 - **IPv4 only** for VPN Director exits and for the portal.
 - The LAN page refuses a main LAN address that overlaps a guest network's subnet (4.22.1).
+
+#### 4.21.12 Several changes, one Wi-Fi restart
+
+**Hold Wi-Fi restarts until Apply.** A switch at the top of the Network page (and of the MLO page), off at factory
+(`reaper_sdn_defer` `0`; kept in the settings backup). On:
+
+- A network you **create**, **edit** or **switch on** is saved at once, but the Wi-Fi restart waits. The card shows
+  **Waiting**, and a bar at the top lists the waiting networks (*new*, *edited*, *switched on*) with **Apply now**.
+  **Apply now** restarts Wi-Fi once for all of them; the AiMesh nodes receive all the waiting settings in that one
+  apply. Password and MAC-filter edits wait like the rest.
+- Anything that has to run at once still runs at once and takes the waiting changes with it: **switching a network
+  off**, **deleting** one, a change that needs the LAN ports restarted (a bound LAN port or VLAN trunk), a Guest
+  Portal change, or a save with a restart on any other page. A network switched off or deleted is never left
+  broadcasting without its guest isolation.
+- While changes wait, the dashboard shows **Network changes are waiting for Apply** with a link to the Network page.
+- If something else restarts Wi-Fi meanwhile (the Wireless page, an AiMesh node, a script), the router finishes the
+  waiting networks' DHCP / DNS / firewall setup by itself afterwards. With AiMesh nodes the networks stay listed as
+  waiting until **Apply now** (or the next change that runs at once): the nodes receive the waiting settings only then.
+- Nothing waiting is lost by a reboot: a reboot applies everything saved. There is no Discard: the settings are
+  already stored; to undo one, edit it back before **Apply now**.
+- Switching the option off while changes wait applies them.
+
+**Delete selected.** **Delete several** at the top of the page puts a tick box on every network that can be removed
+this way; tick the networks and press **Delete selected**. The confirm names them; they are removed in one request
+and Wi-Fi restarts once. The main network, the backhaul and a network with a bound LAN port or a VLAN while VLAN
+trunks exist are not offered: delete those one at a time with the card's **Delete**. Delete selected always runs at
+once and takes any waiting changes with it.
+
+**Delete on a main network (v3.8.4).** The card's **Delete** keeps one main network that broadcasts: it refuses the
+last main network with a name and bands, and the only main-network card. An empty main-network card (no name, no
+bands — a Smart Connect change can leave one behind) can always be deleted. Saving a guest or other network
+never removes a main network; only saving a main network on bands another main network uses replaces that one
+(the stock Smart Connect rule). The confirm, and the notice that a main network must stay, are brought into view
+when **Delete** is pressed on a card further down the page.
 
 ### 4.22 LAN
 
@@ -3949,7 +4221,9 @@ on (4.21.3).
 - DNS Director redirects plain DNS only. DNS-over-TLS / QUIC / HTTPS to an outside provider goes around it; the
   Encrypted DNS block covers that (4.3.4.6).
 - A device sent elsewhere by DNS Director is not filtered by Dreadwatch or Wallguard and is refused by the router's
-  encrypted DNS server (4.3.4.5).
+  encrypted DNS server; from v3.8.4 the router does not offer it encrypted DNS by DHCP either (4.3.4.5).
+  To leave a device unfiltered without sending it elsewhere, use Wallguard's **Bypass** profile and
+  **Devices that skip Dreadwatch** (4.3.2.5a).
 - New guest networks start with their row on *No redirection*: set it when the global mode should cover them.
 
 #### 4.22.3 IPTV
@@ -4409,6 +4683,11 @@ same row rules. IPv6 is **Disabled** at factory (8.3). Apply reconnects the WAN 
 the FTP server is on); IPv6 comes back in about 30 seconds. Two differences from stock: switching the type no longer
 blanks the values saved for another type, and the header pill shows the type in use with the live LAN prefix.
 
+**When IPv6 counts as up (v3.7.7).** The header and the dashboard count IPv6 as up only while the router has a working
+IPv6 default route, not merely an address. When Native IPv6 does not come back after the provider's outage (the
+router's DHCPv6 client stays in its back-off), the router asks for it again once per outage as soon as the WAN is back,
+so IPv6 returns without a reboot.
+
 The IPv6 firewall is on the Firewall page (4.1; on at factory, `ipv6_fw_enable` `1`). The live IPv6 state is on
 **System Log > IPv6**. On a v6plus, OCN Virtual Connect, DS-Lite or IPv6 Option WAN (4.23.1) the type selector is
 locked: the WAN type owns the IPv6 setup.
@@ -4704,12 +4983,14 @@ Reaper page; changing between Accept and Reject keeps the list (stock emptied it
 
 #### 4.25.5 RADIUS Setting
 
-**What it is.** The RADIUS server each radio uses when its network is set to an Enterprise mode (WPA2-Enterprise,
-WPA3-Enterprise and their mixes; 802.1X). **Enterprise Wi-Fi is available in Reaper**: the main network's security,
-including the Enterprise modes and their RADIUS server, is chosen on the **Network** menu (4.21); Employee networks there
-take their own server. This tab edits the per-radio server settings (`wlN_radius_*`) and shows, per band, whether they are
-in use: *In use: Authentication Method on this band is WPA2-Enterprise*, or *Not in use right now: ... A RADIUS server is
-used only with WPA2-Enterprise or WPA3-Enterprise*. Stock feature, Reaper page.
+**What it is.** The RADIUS server used when a network is set to an Enterprise mode (WPA2-Enterprise, WPA3-Enterprise
+and their mixes; 802.1X). **Enterprise Wi-Fi is available in Reaper**: the main network's security, including the
+Enterprise modes and their RADIUS server, is chosen on the **Network** menu (4.21); Employee networks there take their
+own server. Once the main network is a Network-page network (every configured router), this tab shows the main
+network's server **read-only**: its mode (*In use: the main network uses WPA2/WPA3-Enterprise*, or *Not in use: ...*),
+the server address and port, and whether its secret is set - never the secret itself. **Open the Network page** takes
+you there to change it. A router whose main network is not a Network-page network yet (factory state, before the first
+apply) still gets the per-radio editor described below. Stock feature, Reaper page.
 
 **How to use it (enterprise Wi-Fi with a RADIUS server):**
 
@@ -4717,11 +4998,11 @@ used only with WPA2-Enterprise or WPA3-Enterprise*. Stock feature, Reaper page.
    and a shared secret.
 2. **Network** menu (4.21): open the main network, set its security to **WPA2-Enterprise** (or WPA3-Enterprise where
    offered) and enter the server address, port and secret in its RADIUS settings. Apply.
-3. **Wireless > RADIUS Setting**: each band's line should read *In use*. If the server details here differ, set them to
-   the same values and Apply.
+3. **Wireless > RADIUS Setting** shows that server and *In use*. To change the server or rotate the secret, use the
+   Network page again; this tab does not edit it.
 4. Join a device with its user name and password (or certificate) as the RADIUS server requires.
 
-**The settings.** Per band:
+**The settings.** (Per-radio editor, shown only while the main network is not a Network-page network.) Per band:
 
 | Setting | What it does | Default |
 |---|---|---|
@@ -4729,8 +5010,11 @@ used only with WPA2-Enterprise or WPA3-Enterprise*. Stock feature, Reaper page.
 | Server Port | 1 to 65535. | 1812 |
 | Connection Secret | The shared secret, up to 64 printable characters, no double quote at either end. The field stays empty; a saved secret shows as dots, and typing replaces it. **Show password** shows what you typed. | Empty |
 
-**Limits and gotchas.** With Smart Connect grouping bands, the lead band's server is copied to the others at the
-wireless restart. Guest and portal networks do not offer RADIUS.
+**Limits and gotchas.** The read-only view shows one panel per distinct main-network setting (with Smart Connect off
+the Network page keeps one entry per band; alike entries are shown once). If the saved server list cannot be read
+safely (a secret containing `<` or `>`), no server is shown and the page says so - check it on the Network page. With
+Smart Connect grouping bands, the per-radio editor's lead-band server is copied to the others at the wireless restart.
+Guest and portal networks do not offer RADIUS.
 
 #### 4.25.6 Roaming Block List
 
@@ -4770,9 +5054,11 @@ remaining. Stock feature, Reaper page.
 1. **Wireless > MLO.** Turn the **MLO** switch on.
 2. The confirmation lists what changes on every band: radios that are off are switched on, wireless schedules are
    switched off; Wi-Fi 7 is turned on with AES + GCMP-256 encryption. Then *Your router and node(s) in the AiMesh system
-   are going to reboot*. Confirm.
+   are going to reboot* and *If Wi-Fi accepts no devices after the restart, unplug the router for about 10 seconds and
+   plug it back in*. Confirm.
 3. The router (and its AiMesh nodes) reboot; the page returns when the router answers again.
-4. If afterwards no wireless device can join, or the dashboard's MLO row reads *Partial*, power-cycle the router (2.8).
+4. If afterwards no wireless device can join, the dashboard shows **Wi-Fi needs a power cycle**, or its MLO row reads
+   *Partial*, unplug the router for about 10 seconds (2.8). Turning MLO off shows the same note.
 5. To add a network for MLO clients, press **Add a Network**: it opens the MLO wizard on the Network page (4.21). An MLO
    fronthaul network is edited or removed there; **Modify** on its row opens that page.
 
@@ -5002,6 +5288,22 @@ router and the others). The mode decides which menus exist: in a mode that does 
 media bridge), Parental Controls, the Firewall, Traffic Manager, DNS Failover and the other routing features are
 hidden, as on stock.
 
+**How to switch mode.** Pick the mode on **Operation Mode** and press **Save**. For **Access Point**, **Media Bridge**
+and a return to **Router** the router opens Reaper's step page (`Reaper_ModeSetup.asp`, v3.4.5), which shows the mode
+you are in and the one you are going to at the top:
+
+| Switching to | Steps | What happens |
+|---|---|---|
+| Access Point | **Address** (automatic from the main router, or a fixed address, mask, gateway and DNS), **Review** | Cable this router's WAN port to a LAN port of the main router. The main router keeps routing; this one adds Wi-Fi and wired ports. |
+| Media Bridge | **Main network** (a scan of nearby networks, strongest first, or a hidden network typed with its band and security), **Password** (skipped for an open or OWE network), **Address**, **Review** | Joins the main router over Wi-Fi and gives its LAN ports to wired devices; it broadcasts no Wi-Fi of its own. WEP, Enterprise-only and unknown security are not offered. |
+| Router | **Review** | Becomes the main router again: the modem goes into its WAN port. |
+
+**Apply** on Review saves the stock wizard's keys for that mode and reboots; the page waits through the reboot. After
+a switch to Access Point or Media Bridge the router takes the address the main router gives it (or the fixed one):
+find it in the main router's client list, or open `<hostname>.local`. On models with guest networks, a switch between
+Router and Access Point asks first, because the guest networks are rebuilt for the new mode. **Repeater** and **AiMesh Node** still open the stock
+setup wizard for their steps (9.3).
+
 #### 4.27.1 System: how the page works
 
 **What it is.** Reaper's replacement for the stock System page (`Advanced_System_Content.asp`, which no longer
@@ -5090,6 +5392,20 @@ be renewed here. With the protocol at HTTP only, the renew buttons are hidden. T
   **IPv6** altogether (the IPv6 rule ends in a drop with no entry that could match).
 - A device whose address changes falls out of the list. Pin it first (4.8.2).
 - The certificate buttons and a protocol or port change all restart the web server; open sessions end.
+- **Wrong passwords lock one address, not the LAN (v3.7.5).** Five wrong passwords from one address refuse that
+  address for 5 minutes; the login page then says that other addresses can still sign in. Twenty failures on one side
+  (LAN or WAN) within 5 minutes still lock that whole side. A connection on the remote-access listener counts as the
+  WAN side, and an IPv6 address is judged by its own address (before v3.7.5 five failures locked every browser on that
+  side, signed-in admins included, and any IPv6 address counted as the LAN). Locked out of your own PC: wait 5 minutes or
+  sign in from another device. The Security Review (4.1.1b) reports bursts of 10 or more failures from one source.
+- **A sign-in must finish within 15 seconds (v3.7.6)**, so a slow or stalled client cannot hold the interface for
+  everybody. Every save from a page carries a per-boot page token; a save without it is refused and logged as
+  `apply without the page token refused` (v3.7.0). Scripts that post settings are not affected.
+- **The ASUS Router phone app is not supported (v3.8.4).** Manage the router from a browser. The app's ASUS
+  account and remote connection went with the phone-home code (1.2), and from v3.8.4 the request addresses only
+  the app used - family groups, per-device internet blocking, the remote-control switch, the notification centre,
+  its own way of creating guest and IoT networks, the speed test between AiMesh nodes - are gone. Whatever the app
+  still shows or changes on the LAN is not tested and can stop working in any release.
 
 #### 4.27.3 System > SSH
 
@@ -5320,10 +5636,12 @@ almost every network; Apply restarts connection tracking.
 
 | Setting | What it does | Default |
 |---|---|---|
-| Redirect the login page to the router domain name | Opening the router by its IP address switches the browser to `www.asusrouter.com` (`http_dut_redir`). | Off |
+| Redirect the login page to the router domain name | Opening the router by its IP address switches the browser to `www.asusrouter.com`, or to the address in **Redirect to** below (`http_dut_redir`). | Off |
+| Redirect to | Shown while the switch above is on: your own address for the router - protocol (`https` / `http`), name and port (`reaper_dut_redir_proto`, `reaper_dut_redir_host`, `reaper_dut_redir_port`). An empty name keeps `www.asusrouter.com`; an empty port uses the router's own port for that protocol (8443 for https, 80 for http, unless changed). The name: letters, digits and `-` in parts joined by dots, no `-` at either end of a part, up to 57 characters, not an IP address; the port 1 to 65535. The name must lead to this router for the devices on your network (your DNS, or a DNS rewrite in Wallguard, 4.3.3.14) and, with https, needs a certificate for that name (Let's Encrypt or an uploaded certificate under WAN › DDNS, the one the web interface uses - 4.3.4.3, or your own). The login page moves only when the address answers, so a wrong one changes nothing. The address is sent to the login page only while the redirect is switched on. Saved only, nothing restarts. | https / empty / empty |
 | Drop IPv6 neighbour solicitation floods on the WAN | Drops multicast neighbour solicitations arriving on the WAN, for providers that flood them (`ipv6_ns_drop`). Restarts the firewall. | Off |
 | Answer WPAD requests with an empty entry | The DHCP server answers the WPAD option with an empty value, so Windows stops searching for a proxy file (`dhcpd_send_wpad`). Restarts DNS and DHCP. | On |
 | mDNS across networks | Devices on the main network and on every network with **Main Network** ticked in Access Intranet find each other (casting, printers, AirPlay); avahi relays mDNS between those networks (`reaper_mdns_reflect`). Networks with **AP Isolation**, networks without intranet access and Guest Portals are left out, and the router does not answer mDNS on the last two. Routing modes. | On |
+| Only chosen kinds of devices | Under mDNS across networks: relay only the ticked kinds of device and the service types you enter (such as `_ipp._tcp`, at most 16 in total) between the main network and the Access Intranet networks (`reaper_mdns_types`, 4.21.8). The router's own services and the guest networks' Device discovery are not affected. Restarts mDNS. Routing modes, shown while mDNS across networks is on. | Off (every kind) |
 
 **Wireless stability** (see also 8.2). For a router that freezes or drops every device at once. Switch on one at a
 time and give each a few days.
@@ -5747,7 +6065,7 @@ offers the DHX2 login only (v3.7.2). The backup folder is root's own on the volu
 
 ## 5. Efficiency and good practice
 
-1. **Know the layer order.** Traffic meets **Warden → Gatekeeper → the rules engine**, in that order, on every base chain. Use Warden for "never talk to these ranges or countries", Gatekeeper for "which devices are allowed at all", the Firewall rules for the specific policy between them, and Egress defaults for the short "this device gets no internet". Do not re-express a Warden block as a firewall rule, or a Gatekeeper block as a Policy Routing Block; one layer, one job.
+1. **Know the layer order.** Traffic meets **Warden → guest isolation → Gatekeeper → the rules engine**, in that order, on every base chain (the guest networks' chosen-device accept comes last, 2.9). Use Warden for "never talk to these ranges or countries", Gatekeeper for "which devices are allowed at all", the Firewall rules for the specific policy between them, and Egress defaults for the short "this device gets no internet". Do not re-express a Warden block as a firewall rule, or a Gatekeeper block as a Policy Routing Block; one layer, one job.
 2. **Keep lists small and named for what they are.** A country object points at Warden's set rather than copying it; a domain list should hold one service, split if it is long; an address object is `printer`, not `192-168-50-20`. Warden's feeds merge and de-duplicate, so FireHOL Level 1 alone covers three of the four built-ins.
 3. **Mind the WireGuard bypass cost.** A Policy Routing rule that sends a *device (by MAC)* or a *destination list* to a WireGuard client bypasses hardware acceleration for the **whole LAN** for as long as the rule exists. If you can express the rule as a **source IP/CIDR**, only that address loses acceleration. If you can use an OpenVPN client as the target, nothing loses acceleration.
 4. **VPN Director or Policy Routing?** Use VPN Director for the broad posture — "everything (or this subnet) through the tunnel". Use Policy Routing for what needs an object or a device, or one of its three properties: a Block target, MAC keying, and precedence over VPN Director. Whether traffic blocks or falls back to the WAN when a tunnel drops is that VPN client's Killswitch, for both features. If you need none of those, VPN Director alone is fine and simpler.
@@ -5756,7 +6074,7 @@ offers the DHX2 login only (v3.7.2). The backup folder is root's own on the volu
 7. **Apply, test, then Keep.** On the Firewall and Policy Routing pages, make the change from a device the rule does not touch, confirm what you meant to allow still works, then press Keep. If you are not sure, let the timer run; reverting is free.
 8. **After every upgrade**, look at: the System Log for migration lines (`gatekeeper: device list migrated …`, `rule list migrated …`, `N list(s) migrated …`) and any `hwqos … REJECTED` or `FATAL` line; the Firewall **Status** tab (engine active? exposure as expected?); the Warden tile (countries amber?); the Gatekeeper state (Enabled, not Arming/Not enforcing); the About page's patch count; and — if you run QoS Classful — that you still have IPv4. Then take a fresh Reaper settings export.
 9. **Read the diag FINDINGS first.** The report's top block is a list of one-line verdicts the script derives itself: an nvram value near the 1 KB cap, an un-migrated Gatekeeper list, a stuck `nvram`/`iptables` reader, a D-state process, a daemon enabled but not running, a missing cron line, an old direct firewall hook or a missing front chain, rules that failed to load, a conntrack table over 80 %, a WAN link stuck at 10/100 Mb/s, a Wi-Fi station with hundreds of disassociations, or a `/jffs` that is unmounted, read-only, nearly full or unwritable. Most field problems to date would have been named there; check it before reading the sections. The syslog-history part of the report (station churn, deauth errors, DHCP discover sources, boot and panic counts) is what separates "the router did it" from "one client is flapping".
-10. **Leave logging off** on the Firewall Logging tab and Warden's drop log except while you are diagnosing something; a busy line can write thousands of lines a minute and push out the entries you need.
+10. **Leave logging off** on the Firewall Logging tab and Warden's drop log except while you are diagnosing something; a busy line can write thousands of lines a minute, which costs CPU and rolls the entries you need out of the firewall log's RAM ring (4.1.12).
 11. **Leave the extras off** unless you use them: the Advisor's network-diagnostics tick-box, the router-self filter in Warden, the Traffic latency probe, and the accelerator health probe in `rwatch` (`rwatch_gdx=1`) are all opt-in for a reason.
 
 ---
@@ -5793,8 +6111,12 @@ offers the DHX2 login only (v3.7.2). The backup folder is root's own on the volu
 | Wallguard shows a banner that devices' DNS lookups are sent straight to another address | Bastion › Wallguard; Firewall › Service Intercept; LAN › DNS › DNS Director; a VPN client in *Exclusive* DNS mode with VPN Director rules | A port-53 redirect sends lookups past the router's resolver, so Wallguard and Dreadwatch never see them. Remove the redirect, or point that server's upstream at the router (4.3). |
 | A remote OpenVPN or IPsec user cannot connect while Warden blocks countries or uses feeds | Warden with **Log dropped packets** on; log `REAPER-WARDEN` | Only enabled WireGuard servers' listen ports are exempt. Whitelist the user's address, or connect through WireGuard (4.3.1.13). |
 | Dreadwatch or Wallguard: a source of your own says it sends an API key but no key is saved | The source's **Modify** | Enter the key there; it is stored write-only and never shown again (4.3.2.4). |
-| Dashboard shows an amber bar: *N unreviewed change(s) to scripts, cron entries or exposure settings* | Firewall › Status, the Security review card; log `rwatch: security review:` | The self-monitor found a difference from the baseline you accepted (2.9). Read the list: your own change → **Accept**; a script, cron entry or forward you did not make → treat it as a compromise and check the diagnostics report. Nothing has been undone. |
+| Dashboard shows an amber bar: *N unreviewed change(s) to scripts, cron entries or exposure settings* | Firewall › Status, the Security review card; log `rwatch: security review:` | The self-monitor found a difference from the baseline you accepted (4.1.1b). Read the list: your own change → **Accept**; a script, cron entry or forward you did not make → treat it as a compromise and check the diagnostics report. Nothing has been undone. |
 | Security Review row is amber *Baseline* after a reboot; the review card says *no report yet* | Dashboard; Firewall › Status, the Security review card | Not a fault: the report lives in RAM, and the first check after a boot waits out the 5-minute boot grace and the next five-minute tick — up to 10 minutes. The row turns green (or red) on its own. |
+| Log line `httpd: reaper: a request for the removed address <name> came from <address> (written once per boot)` | System Log | Something on your network asked for a request address that v3.8.4 removed (1.2): an add-on page, a script, the ASUS app. Harmless; it tells you what to update. The notice is temporary and goes away after the next stable version. |
+| Security Review card shows an amber row *This baseline has no seal* after updating | Firewall › Status, the Security review card; log `rwatch: security review: the baseline on this router has no seal` | Expected once after updating to v3.8.4: older firmware did not seal the baseline. Check the list and press **Accept current state as baseline**. |
+| Red row *The accepted baseline or the watch rules were changed outside this page*; dashboard bar is red | The same card; log `rwatch: security review: the accepted baseline or the watch rules were changed outside the Firewall page (fingerprint sealed ..., found now: ...)` | `/jffs/reaper/review/baseline` or `/jffs/reaper/review/rules` was changed without an Accept on the card (SSH, a script, a settings import with other rules, a restore of older router settings). Review the whole list; accept it if it is yours. |
+| The Security Review is still on after a settings import or a script that posts settings; log `review: switching the security review off through a settings file REFUSED` (or `through the settings handler`) | System Log; Firewall › Status, the Security review card | Intended (v3.8.4): only the card's own switch turns the review off. The import reports that value as rejected; everything else in the file is applied. |
 | `rwatch: security review: N failed ssh logins from <address>` and a notice on the review card | Firewall › Status, the Security review card; `/jffs/security_recored.log`; the dropbear lines in the system log | A password-guessing run. Over IPv4 the stock guard locks the source after its own threshold; over IPv6 from the internet the router now allows 5 new SSH connections a minute per /64 (2.9). If you do not need SSH from the internet, set SSH to LAN only on the Administration page — the notice is information, nothing has been undone. |
 | `rwatch: FAILURE detected: front-chain-drift` about 8 minutes after every boot, with an incident dump each time | Log `rwatch` line `rule(s) ahead of the Reaper hook ...` (names the rule); `iptables -S FORWARD` | A `firewall-start` / `nat-start` script or an add-on inserts a broad `ACCEPT` at position 1 — typically a VPN helper's interface rule. Make it insert after `REAPER_HOOK` / `REAPER_HOOK_F` (2.9). Listing `ACCEPT` in `front_exempt` does nothing. |
 | A phone on mobile data cannot reach the router's WireGuard server while Warden blocks countries or uses feeds | Firmware version; Warden page | Fixed in v3.6.5: Warden lets UDP through to the listen port of each enabled WireGuard server (packets to the router only) and re-applies when a server is switched on or off or its port changes. OpenVPN and IPsec servers are not exempted (4.3.1.13). |
@@ -5805,6 +6127,8 @@ offers the DHX2 login only (v3.7.2). The backup folder is root's own on the volu
 | LAN throughput dropped after adding a routing rule | Policy Routing page: the WireGuard note under the rules table; log on apply | A destination-list or MAC rule to WireGuard bypasses acceleration for the LAN (4.4). Use a source rule, or an OpenVPN target. |
 | A source rule to a WireGuard client still goes out the WAN, while the same rule to OpenVPN works | Diag §14d (bypass *new/pre/pending*, `table wgcN` route count, last handshake, per-rule packets); log `reaper_pbr: … skip-bypass …` / `blog skip table full`; from the device, `traceroute` to a public address | The accelerator, not the rule, is carrying the flow (4.4.9). A *pending* bypass or a full table means the flow was never diverted; upgrade to v3.1.7 (the bypass is installed when the client starts and a changed target no longer keeps stale verdicts), free a slot if the table is full, and check the client's Allowed IPs cover the destination. |
 | A device behind a source rule to a WireGuard client gets no replies at all | Policy Routing page; firmware version | Fixed in v3.2.4: replies were routed back into the tunnel (4.4.9). Upgrade. |
+| An ASN list or a country list reads *not used by a rule*, *loads after Apply* or *no source answered* | Policy Routing: the list's **Loaded** and **Source** columns; System Log `reaper_fw: lists:` | A list is loaded only while an enabled rule uses it, after **Apply**. *no source answered* names what each source said; with Warden's **Also filter the router itself** on, a blocked country that covers a source stops the router's own download (4.4.4a). The list already loaded stays in use. Press **Update now** after fixing the cause. |
+| An AS number is routed but some of that service's traffic still leaves by the other path | `ipset test rwfw_<list> <address>` for the address in question | The address is not announced under that AS number: content served from inside your ISP, or a customer network with its own number (4.4.4a). Add a domain list, or the other AS number. |
 | An AiMesh node drops off after adding a broad firewall, Service Intercept or Policy Routing rule | Firmware version; Firewall → Rule Status | Fixed in v3.6.5: the rules engine, Service Intercept and Policy Routing skip a paired node's own traffic, as Gatekeeper does (4.1.3). A node that joins after the rules were applied is exempt within one watchdog tick (5 minutes). |
 | A firewall rule blocks a network's own DNS or DHCP at the router | Firewall → Rule Status: the red row's rule column; Rules tab: the rule's direction; Objects: the subnet values | Usually an Inbound rule meant to separate two networks, or two subnet objects that overlap (4.1.3). Change the rule to Forwarded and narrow the object. |
 | IPv4 stopped working entirely, IPv6 fine, QoS Classful on | Log `hwqos: setqcfg qid N … REJECTED` / `class queues restored …`; QoS Diagnostics queues 1–5 | v2.6.0 makes the rebuild transactional. A `FATAL` line means even the bare recreate failed — report it with a diag. |
@@ -5823,6 +6147,17 @@ offers the DHX2 login only (v3.7.2). The backup folder is root's own on the volu
 | Reaper settings import reports rejections | Log `reaper_cfg: settings imported: N flag(s), M list(s), K rejected` | The rejected entries failed the same validation as typing them; fix them on the page. Firewall/routing lists still need Apply + Keep. |
 | Diag report tripwire says "review before sharing" | The report's ledger | Something still looked like a public address, MAC or e-mail. Read the file and redact by hand before attaching it. |
 | Login loop or credential page rejects everything after a factory reset | — | Fixed v2.1.5 / v2.2.0 / v2.3.5; the forced first-boot page and its gates were removed altogether in v2.9.1 (2.3). Power-cycle and log in with the new credentials. |
+| A guest device cannot cast, print or AirPlay to a main-network device | Network page, the guest network's General settings; diag section 4d | Guest networks are isolated by design (4.21). Either tick **Device discovery with the main network** with the service types it needs and **Reach these main-network devices** for the target (it needs a DHCP reservation), or link the network with Access Intranet. A Guest Portal network never gets either. |
+| An iPhone, iPad or Mac on a guest network does not switch to encrypted DNS by itself (DHCP option 162) | Bastion › Encrypted DNS, the **Automatic setup** line; the network's **DNS Server** and **Access Intranet** rows | Expected on an isolated guest network, a Guest Portal network and a network with its own DNS Server addresses (4.3.4.5, 4.21.6). To offer it, set the network's DNS Server back to Default and tick **Main Network** in Access Intranet, only for a network you trust: it then reaches your own devices. **Reach these main-network devices** and **Device discovery** do not bring it back. Android ignores the option on every network. |
+| An iPhone with a DNS Director rule to another DNS server shows *No Internet Connection*, or leaves Wi-Fi for mobile data | System Log: `rednsd: refused ...`; Bastion › Encrypted DNS, the **Plain DNS only** list | Fixed in v3.8.4: the router no longer offers its encrypted DNS to a device it refuses (4.3.4.5). Switch the phone's Wi-Fi off and on once so it drops the old offer. On an older image: set the rule to *No filtering*, or switch Encrypted DNS for devices off. |
+| A device on Wallguard's **Bypass** profile is still refused some names | Bastion › Dreadwatch, the blocked lookups of that device | Bypass lifts Wallguard only. The name is on a threat list: add the name to **Never block these names** (for every device), or the device to **Devices that skip Dreadwatch** (4.3.2.5a). |
+| A TV or phone on Wi-Fi cannot find a NAS or printer on a LAN port after AP Isolation was switched on | Network page: the network's **AP Isolation** choice; diag section 4d bridge-port line | Choose **Wi-Fi only** (the default since v3.8.3): Wi-Fi devices stay apart, wired devices stay reachable. **Wi-Fi and LAN ports** keeps the LAN ports apart too. |
+| Guest Portal: the phone never shows the sign-in page, or signed-in guests have no internet | Diag section 4d (portal networks, chilli, the portal listener, watchdog restarts, REAPER_GUN); log `watchdog` / `chilli` | chilli not running: save the network on the Network page (the watchdog restarts it at most three times a boot). REAPER_GUN written but not hooked: a firewall restart puts it back. |
+| Header says **No internet** in red, or IPv6 is missing after an ISP outage | Header WAN pill tooltip; **WAN → WAN Ports**, Network Monitoring; diag section 5 | *No internet* means the router's own internet check fails on the line (v3.7.7) - check the targets on WAN Ports. IPv6 is asked for again once after an outage; if it stays missing, apply the IPv6 page once. |
+| The login page says this address is refused | Wait 5 minutes, or sign in from another device | Five wrong passwords lock that address for 5 minutes (4.27.2). |
+| `custom_script: /jffs/scripts/<name> exited with status N: …` | `/tmp/reaper/script-<name>.log`; diag section 13 | The script ran and a command in it failed (2.9). The log line quotes the last thing it printed. |
+| Firewall page: the collector line shows *lost* or *held back* lines | Firewall → Logging; diag section 14 | *Held back*: a rule passed 10,000 lines a second; the packets were handled, only lines were skipped. *Lost*: the kernel dropped a batch under load. Log less (Drop instead of Both). |
+| Wallguard or Encrypted DNS behaves differently than the page says | Diag section 14h (table, list states, last build, rednsd listeners, the block chain) | The FINDINGS name what is missing: a list that failed, a skipped build, a listener that could not bind, the block chain absent. |
 | `logread` shows nothing | — | Expected on this platform. Use the System Log page or `/tmp/syslog.log`. |
 | A DNS filter on a VLAN (AdGuard, Pi-hole) shows main-LAN devices as bare addresses | Administration → DNS Failover: **Device names across networks**; the filter's private reverse setting | Turn the switch on and point the filter's private reverse server at the VLAN's gateway, not the main router address (4.14b). Guest and Portal networks are never shared. |
 | A reverse lookup between networks returns NXDOMAIN with the switch on | `grep rev-server /etc/dnsmasq*.conf`; WAN → Internet Connection | Check the network is not a Guest or Portal profile and has no captive portal; check **Forward local domain queries** is off; a device with a fixed address has no DHCP name to return (4.14b). |
@@ -5849,7 +6184,7 @@ offers the DHX2 login only (v3.7.2). The backup folder is root's own on the volu
 - **Bastion** — the menu holding Warden, Dreadwatch, Wallguard and Encrypted DNS (4.3); since v3.6.0 none of the four needs another switched on.
 - **Egress default** — a per-device rule for traffic leaving toward the internet only (Firewall → Egress).
 - **Fail-closed** — an enabled VPN client whose **Killswitch** is on: traffic routed to it, by VPN Director or a Policy Routing rule, is *blocked* while the tunnel is down rather than let out the WAN. With the Killswitch off, or the client switched off, it falls back to the WAN (v3.1.5 matches VPN Director on the switched-off case).
-- **Encrypted DNS** — the router's DNS-over-TLS server for the LAN's devices (`rednsd`, port 853), with an optional block on encrypted DNS that goes around the router (4.3.4).
+- **Encrypted DNS** — the router's encrypted DNS server for the LAN's devices (`rednsd`: DNS-over-TLS on port 853, DNS-over-HTTPS on port 443), with an optional block on encrypted DNS that goes around the router (4.3.4).
 - **FINDINGS** — the verdict block at the top of the diagnostics report.
 - **Front chain (`REAPER_HOOK_*`)** — the single shared chain at the head of INPUT/FORWARD/OUTPUT into which Warden, Gatekeeper and the rules engine register, in that fixed order.
 - **Gatekeeper** — device access control; states are Pending, Full access, Internet only, Guest (timed), Blocked.
@@ -5936,7 +6271,7 @@ Earlier editions of this guide also listed `psc6g` (6 GHz preferred scanning cha
 `0` to `1`. On every model in the fleet the stock factory value was already `1`; the stock table's
 second, conflicting entry applies only to two unrelated ASUS models.
 
-Reaper also **adds 126** entries of its own (8.2) and **removes 18** that belong to features it strips
+Reaper also **adds 132** entries of its own (8.2) and **removes 18** that belong to features it strips
 out: AiCloud and WebDAV (`enable_webdav`, `st_webdav_mode`, `webdav_proxy`, `webdav_aidisk`,
 `webdav_http_port`, `webdav_https_port`, `acc_webdavproxy`, `enable_webdav_captcha`,
 `enable_webdav_lock`, `webdav_acc_lock`, `webdav_lock_interval`, `webdav_lock_times`,
@@ -6025,11 +6360,20 @@ when the switch goes off).
 **mDNS across networks** (Administration › Tweaks) — `reaper_mdns_reflect` `1`: devices on the main network and
 on every network with Main Network ticked in Access Intranet can find each other (casting, printers, AirPlay); avahi relays mDNS between
 those networks only. A network with **AP Isolation** on, a network without intranet access and a Guest
-Portal are left out, and on the last two the router no longer answers mDNS at all. Off (`0`): each network sees only its own devices. Per guest network (stored with the network's own Wi-Fi settings; their three template rows are in this count): `apgN_rg_devs` (the devices ticked in Reach these main-network devices) and `apgN_rg_mdns` (the Device discovery service types), both empty at factory and cleared when the network is deleted (4.21.2), and `apgN_ap_isolate_lan` `0` (the network's **AP Isolation** choice: `0` Wi-Fi only, `1` Wi-Fi and LAN ports; set to `0` for a new network and cleared when the network is deleted).
+Portal are left out, and on the last two the router no longer answers mDNS at all. Off (`0`): each network sees only its own devices. `reaper_mdns_types` empty (v3.8.4): every kind of device is relayed. Set from **Only chosen kinds of devices** to presets (`print`, `airplay`, `cast`, `homekit`, `audio`) and service types, comma-separated, at most 16 types expanded: only those are relayed between the main network and the Access Intranet networks (4.21.8). Carried by the settings file. Per guest network (stored with the network's own Wi-Fi settings; their three template rows are in this count): `apgN_rg_devs` (the devices ticked in Reach these main-network devices) and `apgN_rg_mdns` (the Device discovery service types), both empty at factory and cleared when the network is deleted (4.21.2), and `apgN_ap_isolate_lan` `0` (the network's **AP Isolation** choice: `0` Wi-Fi only, `1` Wi-Fi and LAN ports; set to `0` for a new network and cleared when the network is deleted).
+
+**Login page redirect address** (Administration › Tweaks, 4.27.9) — `reaper_dut_redir_proto` `https`,
+`reaper_dut_redir_host` empty, `reaper_dut_redir_port` empty: with the redirect switch (`http_dut_redir`) on, the
+login page moves to the stock router domain name, as before. A name typed here replaces it (with that protocol, and
+that port or the router's own one). Kept in the settings file (Backup).
 
 **AP Isolation choice of the main network** (Network menu, the main network's card, 4.21.2) — `reaper_ap_isolate_lan` `0`: while the main network's **AP Isolation** is on, it keeps Wi-Fi clients apart and the
 wired devices stay reachable (Wi-Fi only). `1` (Wi-Fi and LAN ports): the router's LAN ports are kept apart too, from each other and from Wi-Fi; devices behind one external switch still reach each other and AiMesh backhaul
 ports are never isolated. It covers every network on the main subnet.
+
+**Hold Wi-Fi restarts until Apply** (Network menu, top of the page, 4.21.12) — `reaper_sdn_defer` `0`: each network
+save restarts Wi-Fi at once, as stock. `1`: a create / edit / switch-on is saved at once and its Wi-Fi restart waits
+for **Apply now** (or for the next change that runs at once); kept in the settings backup.
 
 **Guest Portal secret** — the portal's sign-in secret is a random one the router makes for itself the first time a
 portal starts and keeps (the stock value was the same on every router). The secret is never shown. The Tweaks control
@@ -6061,6 +6405,8 @@ the built-in defaults apply),
 `reaper_wanbounce_enable` **`1`**. The WAN bounce fires only on a PPPoE link that has failed all
 three reachability probes after the boot grace period.
 
+`rwatch_review_seal` is not a setting and has no default: the router writes it when you accept a Security Review baseline (the fingerprint, the time and the address that accepted). A factory reset of the settings clears it; a baseline that survived in `/jffs` then shows the amber row once (4.1.1b).
+
 **UPnP guard** — `upnp_protect_svc` `1`: when UPnP is on, it may not map a port the router itself
 listens on for VPN or SSH, so a LAN device cannot steal the WireGuard or OpenVPN port.
 
@@ -6070,6 +6416,10 @@ listens on for VPN or SSH, so a LAN device cannot steal the WireGuard or OpenVPN
 inert on current images, so the key has no effect, see `SECURITY.md`). `reaper_upg_fail` starts empty:
 it records a refused firmware upload as `<time> <1|2>` (1 = not written, 2 = failed validation) for the
 Firmware page, and the next successful upload clears it.
+
+**MLO restart check** — `reaper_mlo_coldboot_owed` `0`: state, not a setting. Each boot the router sets it to `1` when
+MLO is on and a restart without a power-off left the radios' MLO link down (the dashboard banner, 2.8), else `0`. Full
+backup only.
 
 **AI Advisor, MCP build only** (4.16) — `rmcp_port` `5199`, `rmcp_timeout` `60` minutes,
 `rmcp_client` empty (no client pin). There is deliberately **no enable key**: the Advisor is armed by
@@ -6273,9 +6623,9 @@ validation and a pinned host, and verifies each image's SHA-256 and size before 
 
 ### 9.2 The AiProtection pages
 
-Eight `AiProtection_*.asp` pages remain in the image — Home Security, Malicious Sites Blocking,
-Intrusion Prevention, Infected Device Prevention and Web Protector, three of them with a mobile
-variant. **None is in the menu.**
+Five `AiProtection_*.asp` pages remain in the image — Home Security, Malicious Sites Blocking,
+Intrusion Prevention, Infected Device Prevention and Web Protector (their three mobile variants and the old device
+list left the image in v3.7.3, their addresses opening the matching Reaper page). **None is in the menu.**
 
 The engine behind them is gone. AiProtection is a TrendMicro product: the router ships traffic
 metadata to TrendMicro's cloud for classification, which is precisely the arrangement Reaper exists
@@ -6298,10 +6648,12 @@ What replaces them, and what does not:
 ### 9.3 The setup wizard pages
 
 The stock Quick Internet Setup page (`QIS_wizard.htm`) remains in the image. From v3.4.2
-nothing leads into them: the default setup address sends you to the dashboard, the first-use redirect
+the setup routes into it are closed: the default setup address sends you to the dashboard, the first-use redirect
 while the WAN is down is gone, the landing after a LAN subnet change goes to the dashboard, and the menu
-entry is removed. The one part still used is the **AiMesh add-node** window (AiMesh → Add node), which
-shares those files; it carries the Reaper look and its own wording in all 25 languages.
+entry is removed. Three parts are still used: the **AiMesh add-node** window (AiMesh → Add node), and the
+**Repeater** and **AiMesh Node** choices of Operation Mode (4.27), which run the stock wizard's steps for those
+modes; Access Point, Media Bridge and the return to Router use Reaper's own step page instead. The add-node window
+carries the Reaper look and its own wording in all 25 languages.
 
 ### 9.4 Why they were not simply deleted
 

@@ -138,9 +138,13 @@ if os.path.isfile(WL):
 if br == "be96u-102.8":
     web = read(os.path.join(R, "httpd/web.c")); svc = read(os.path.join(R, "rc/services.c"))
     check("102.8 web.c: no websWrite(stream, json..., ret) format-string call left", "websWrite(stream, json_object_to_json_string(retObj), ret);" not in web)
-    check("102.8 web.c: the CA upload file name is checked at all three places", web.count("is_valid_cert_filename(token)") == 3)
-    check("102.8 web.c: iperf3 server and client accept only their start / stop services",
-          'strcmp(rc_service, "start_iperf3_server") != 0' in web and 'strcmp(rc_service, "start_iperf3_client") != 0' in web)
+    # v3.8.4: both handlers these two checks read are gone on every line - caupload.cgi with batch B
+    # (REAPER-UNUSED-V384B; the check "is_valid_cert_filename(token) x3" failed on this line from then on) and the
+    # iperf3 addresses with batch C (REAPER-UNUSED-V384C). The 40585 hardening of code that no longer exists is moot.
+    # (the marker comments left in web.c name the functions, so the checks look for the definitions)
+    check("102.8 web.c: the CA upload handler (and its file-name check) is gone", "do_caupload_post(char *url" not in web and "is_valid_cert_filename(token)" not in web)
+    check("102.8 web.c: the iperf3 server / client handlers are gone",
+          "do_set_iperf3_svr_cgi(char *url" not in web and "do_set_iperf3_cli_cgi(char *url" not in web and '"start_iperf3_server") != 0' not in web)
     check("102.8 web.c: the four diag handlers bound duration / point and compute the start time in 64 bits",
           web.count("long long query_start_time_64") == 4 and "query_start_time = query_end_time - query_point*query_duration;" not in web)
     check("102.8 services.c: start_dnsmasq copies the DHCP range with strlcpy", 'strlcpy(dhcp_start, nvram_safe_get("dhcp_start"), sizeof(dhcp_start));' in svc

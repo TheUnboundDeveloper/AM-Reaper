@@ -131,8 +131,11 @@ pin("httpd/httpd.c", "Range: one parser (reaper_byte_range) for send_headers and
          "if (reaper_byte_range(request_content_range, request_file_size, &content_start, &content_end))"),
     hasnt=("content_end = strtoll(err+1, &err, 10);",))
 web = rd(os.path.join(SRC, "httpd/web.c"))
-pin("httpd/web.c", "A-3: the IPsec upload sets ipsec_profile_item, not the header's key",
-    has=('nvram_set("ipsec_profile_item", value);\n\t\t\t\t\t\t\t\tsnprintf(upload_fifo, sizeof(upload_fifo), "/jffs/ipsec/%s.crt", value);',))
+# v3.8.4 (REAPER-UNUSED-V384B): ipsecupload.cgi and do_ipsecupload_post() are gone - no page called them. Before, this
+# pinned the A-3 fix inside the handler (the upload sets ipsec_profile_item, not a key named by the request header).
+pin("httpd/web.c", "A-3: the IPsec upload that took its nvram key from the request is gone (handler removed in v3.8.4)",
+    hasnt=("do_ipsecupload_post(char *url, FILE *stream, int len, char *boundary)", '"/jffs/ipsec/%s.crt"',
+           '{ "ipsecupload.cgi*"'))
 md = func(web, "get_file_md5(") or web[web.find("md5sum %s | cut -b-32") - 600: web.find("md5sum %s | cut -b-32")]
 check("get_file_md5: the name is charset-gated before the md5sum command line",
       "strspn(file, \"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789._/-\")" in md)

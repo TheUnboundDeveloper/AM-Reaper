@@ -506,6 +506,7 @@ int main(int c, char **v)
     check("settings file: the import / export code sits together in httpd/web.c",
           0 < a < z and all(x in web[a:z] for x in ("static int rcfg_import_json(", "static void rcfg_export_json(", "static void rcfg_restart(", "static int rcfg_put(")))
     STUB4 = r'''#include <stdio.h>
+#include "reaper_dut_redir.h"	/* 2026-11-20: rcfg_put checks the login redirect's address */
 #include <stdlib.h>
 #include <string.h>
 #include <strings.h>
@@ -588,6 +589,9 @@ static char *rview_slurp(const char *f, size_t n) { (void)f; (void)n; return NUL
 static int rview_rules_ok(const char *v) { (void)v; return 0; }
 static void rview_alog(const char *a, const char *b) { (void)a; (void)b; }
 static int rlogf_ok(const char *v) { (void)v; return 0; }
+static int reaper_review_off_refused(const char *n, const char *v, const char *via) { (void)n; (void)v; (void)via; return 0; }	/* 2026-11-21: REAPER-REVIEW-OFF, tested in test_review_off_guard.py */
+#define RDW_EXEMPT_MAX 16	/* v3.8.4 (REAPER-DREAD-EXEMPT): the real check runs in test_dreadwatch_exempt.py */
+static int rdw_exempt_clean(const char *in, char *out, size_t osz) { snprintf(out, osz, "%s", in ? in : ""); return 0; }
 static int src_keys_ok(const char *v) { (void)v; return 1; }
 static int src_keys_save(const char *a, const char *b, const char *c, const char *v) { (void)a; (void)b; (void)c; (void)v; return 0; }
 static int sh_keys_save(const char *v) { (void)v; return 0; }
@@ -647,7 +651,7 @@ int main(int c, char **v)
     work = tempfile.mkdtemp(prefix="edns_imp_")
     try:
         open(os.path.join(work, "i.c"), "w", encoding="utf-8", errors="surrogateescape").write(STUB4 + web[a:z] + MAIN4)
-        r = subprocess.run([CC, "-std=gnu99", "-O1", "-Wall", "-Wno-unused-function", "-Wno-unused-variable", "-Werror=implicit-function-declaration",
+        r = subprocess.run([CC, "-std=gnu99", "-O1", "-Wall", "-Wno-unused-function", "-Wno-unused-variable", "-Werror=implicit-function-declaration", "-I", os.path.join(SRC, "shared"),
                             "-o", os.path.join(work, "i"), os.path.join(work, "i.c")], capture_output=True, text=True)
         check("settings-file harness builds from httpd/web.c", r.returncode == 0, "\n".join(l for l in r.stderr.splitlines() if "error" in l)[-800:])
         if r.returncode == 0:
@@ -680,7 +684,8 @@ int main(int c, char **v)
             # export, then the same file back in
             for dot in ("", "1", "0"):
                 try:
-                    ex = json.loads(rc_run({"reaper_doh_block": "1", "reaper_dot_block": dot, "reaper_dot_srv": "0"}, "export"))
+                    ex = json.loads(rc_run({"reaper_doh_block": "1", "reaper_dot_block": dot, "reaper_dot_srv": "0",
+                                             "reaper_dut_redir_proto": "https"}, "export"))  # 2026-11-20: its factory default; an empty protocol is refused on import by design
                 except Exception as e:
                     ex = {"error": str(e)}
                 body = ["%s/%s=%s" % (s, k, v) for s, d in ex.items() if isinstance(d, dict) for k, v in d.items() if isinstance(v, str) and "\n" not in v]

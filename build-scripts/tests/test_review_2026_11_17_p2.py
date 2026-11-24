@@ -71,7 +71,9 @@ g = re.search(r"#ifdef RTCONFIG_MULTILAN_CFG\n(?:(?!#endif).)*?REAPER-GONE-CP.*?
 check("httpd: the old addresses bounce to the Network page, under the same build conditions",
       g is not None and '{ "captive_portal.asp", "SDN.asp", 0 },' in g.group(0)
       and '{ "guest_network.asp", "SDN.asp", 0 },' in g.group(0)
-      and re.search(r'#ifndef RTCONFIG_CP_ADVANCED\n\t\{ "captive_portal_advanced\.asp", "SDN\.asp", 0 \},\n#endif', g.group(0)) is not None)
+      # v3.8.4 (REAPER-GONE-V384): the Advanced preview and the two portal data pages follow the editor's row
+      and re.search(r'#ifndef RTCONFIG_CP_ADVANCED\n\t\{ "captive_portal_advanced\.asp", "SDN\.asp", 0 \},\n'
+                    r'(?:\t\{ "[a-z_]+\.asp", "SDN\.asp", 0 \},[^\n]*\n)*#endif', g.group(0)) is not None)
 
 # ---------------------------------------------------------------- three pages that only bounced
 k = mk.find("\n", mk.find("jquery-ui.css stay", j)) if j > 0 else -1

@@ -279,6 +279,26 @@ check("rc: applet registered under MULTILAN_CFG, extern declared, and /sbin syml
 check("rc: the settle applies with notify_rc_and_wait_2min and logs one line",
       'logmessage("sdn", "a network change was saved but not applied - applying it now (%s)", list);\n\tnotify_rc_and_wait_2min(list);' in sdn)
 
+# ---------------------------------------------------------------- 6. held Network-page saves (2026-11-20, REAPER-SDN-DEFER)
+# With the Network page's "hold Wi-Fi restarts" switch on, httpd stores a save and holds its list (httpd/web.c
+# rdefer_apply). A held save must never be applied by this settle: it is never recorded in RSDN_PENDING (the hold
+# returns before the hand-off, which is the only caller of reaper_sdn_pending), and the settle applet's own "defer"
+# mode - the backstop after another radio restart - is a separate entry that never reads RSDN_PENDING.
+_ra = web[web.find("static int rdefer_apply(json_object *root,"):]
+_ra = _ra[:_ra.find("\n}\n")]
+check("held save: rdefer_apply never records a pending request, signals cfg_server or notifies rc",
+      _ra != "" and "reaper_sdn_pending" not in _ra and "SIGUSR2" not in _ra and "notify_rc" not in _ra)
+check("held save: apply_cgi drops the list before the hand-off (so reaper_sdn_pending never sees it)",
+      0 < web.find("if (rdefer_apply(root, &rdefer_s, &action_para, res))\n\t\t\taction_para = NULL;")
+      < web.find("reaper_sdn_pending(action_para);") and web.count("reaper_sdn_pending(action_para);") == 1)
+_sm = sdn[sdn.find("int reaper_sdn_settle_main(int argc, char *argv[])"):]
+check("settle: the 'defer' backstop is its own mode, dispatched before the pending-request time is parsed",
+      0 < _sm.find('strcmp(argv[1], "defer") == 0') < _sm.find("(t0 = strtol(argv[1], NULL, 10)) <= 0"))
+_bm = sdn[sdn.find("static int rdefer_backstop_main(long t0)"):]
+_bm = _bm[:_bm.find("\n}\n")]
+check("settle 'defer' reads only the held marker, never RSDN_PENDING",
+      "RDEFER_MARK" in _bm and "RSDN_PENDING" not in _bm)
+
 shutil.rmtree(TMP, ignore_errors=True)
 if fails:
     print("\n%d check(s) failed:" % len(fails))

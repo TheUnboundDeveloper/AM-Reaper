@@ -14,7 +14,7 @@ httpd/reaper_inject.c and the 25 dicts; `node --check` on both page scripts.
 """
 import json, os, re, shutil, subprocess, sys, tempfile
 
-SRC = os.environ.get("REAPER_SRC", "/home/reaper/asuswrt-be96u/release/src/router")
+SRC = sys.argv[1] if len(sys.argv) > 1 else os.environ.get("REAPER_SRC", "/home/reaper/asuswrt-be96u/release/src/router")	# 2026-11-20: argv[1] like the other tests
 www = os.path.join(SRC, "www")
 HERE = os.path.dirname(os.path.abspath(__file__))
 PS, PT = os.path.join(www, "Reaper_SNMP.asp"), os.path.join(www, "Reaper_Tweaks.asp")
@@ -83,6 +83,17 @@ check("Tweaks: ranges as stock (limit 256-300000, established 1-432000, others 1
       "rp.v.int(c.ct_max, 256, 300000)" in T and "2400, 432000]" in T and T.count(", 86400]") == 9 and "/^[0-9 *\\/,-]{1,64}$/" in T)
 check("Tweaks: Warden schedule shown only where Warden runs (routing modes), value kept elsewhere",
       "if (!ROUTING){ q('p_warden').classList.add('off'); return; }" in T and "c.rwarden_sched = ROUTING ? q('i_rwarden_sched').value.trim() : NV.rwarden_sched;" in T)
+
+# 2026-11-20 (item 9, REAPER-DUT-REDIR): the address the login redirect goes to
+check("Tweaks: the redirect's address row (protocol, name, port) under the switch, shown while it is on",
+      '<div class="frow off" id="r_dut_redir_to">' in T and 'id="s_dut_proto"' in T and 'id="i_dut_host" maxlength="57"' in T and 'id="i_dut_port" maxlength="5"' in T
+      and "q('r_dut_redir_to').classList.toggle('off', chk('t_http_dut_redir') !== '1');" in T)
+check("Tweaks: the three parts read with nvram_get_js, posted as reaper_dut_redir_proto / _host / _port, kept as they are while the row is hidden",
+      all(('nvram_get_js("reaper_dut_redir_%s")' % k) in T for k in ("proto", "host", "port"))
+      and "c.reaper_dut_redir_host = shown ? q('i_dut_host').value.trim().toLowerCase() : NV.reaper_dut_redir_host;" in T)
+check("Tweaks: httpd's rules checked before Apply (name labels, 57 characters, no IP; port 1-65535 or empty), saved only (no restart)",
+      "function redirHostOk(h){" in T and "function redirPortOk(p){" in T and "`<#RTWK_51#>`" in T and "`<#RTWK_52#>`" in T
+      and "has('reaper_dut_redir" not in T)
 
 # dicts
 PACKS = "EN DE FR ES BR IT NL DA NO SV FI PL CZ SL HU RO RU UK TR MS TH JP KR CN TW".split()

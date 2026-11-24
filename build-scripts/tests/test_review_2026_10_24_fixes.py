@@ -62,26 +62,42 @@ check("S-A-7 encdns.sh: v4 and v6 validators (groups, one ::, prefix floors, no 
 # ---- S-A-8: the cron command table equals what rc installs
 defs = {}
 for rel in ("rc/rwatch.c", "rc/rwarden.c", "rc/rexport.c", "rc/reaper_fw.c", "rc/reaper_pbr.c", "rc/wallguard.c", "rc/encdns.c"):
-    for m in re.finditer(r'#define\s+(RWATCH_SH|RW_UPDATE|RW_FOLD|REXPORT_SH|RFW_DIR|RFW_CC|RFW_RESOLVE|PPBR_DIR|PPBR_CC|SH_SCRIPT|EDNS_SCRIPT)\s+(.+)', read(rel)):
+    for m in re.finditer(r'#define\s+(RWATCH_SH|RW_UPDATE|RW_FOLD|RW_DNSSH|REXPORT_SH|RFW_DIR|RFW_CC|RFW_RESOLVE|RFW_LISTS|PPBR_DIR|PPBR_CC|SH_SCRIPT|EDNS_SCRIPT)\s+(.+)', read(rel)):
         defs[m.group(1)] = m.group(2).split("/*")[0].strip()
 def val(d):
     s = defs.get(d, "")
     s = s.replace("RFW_DIR", defs.get("RFW_DIR", "")).replace("PPBR_DIR", defs.get("PPBR_DIR", ""))
     return "".join(re.findall(r'"([^"]*)"', s))
+# 2026-11-23 (REAPER-REVIEW-CRONFORMS): an id may name several commands - `echo 'cmd'` or `printf '%s\n' 'cmd1' 'cmd2'`
 table = {}
 tm = re.search(r'_rv_cron_cmd\(\) \{ case(.*?)esac; \}', rw, re.S)
-for m in re.finditer(r"([A-Za-z0-9_|\[\]-]+)\) echo '([^']*)';;", tm.group(1) if tm else ""):
-    table[m.group(1)] = m.group(2)
-want = {"rwatch": "sh " + val("RWATCH_SH"), "rwarden": "sh " + val("RW_UPDATE"), "rwarden_ck": "sh " + val("RW_FOLD"), "rexport": "sh " + val("REXPORT_SH"),
-        "reaper_fw_dns": "sh " + val("RFW_RESOLVE"), "reaper_fw_cc": "sh " + val("RFW_CC"), "reaper_pbr_cc": "sh " + val("PPBR_CC"),
-        "wallguard": "sh " + val("SH_SCRIPT") + " update", "wallguard_ck": "sh " + val("SH_SCRIPT") + " fold",
-        "wallguard_sp|wallguard_e[0-9][0-9][0-9][0-9]": "service start_wallguard_policy >/dev/null 2>&1", "edns_doh": "sh " + val("EDNS_SCRIPT") + " update"}
+for m in re.finditer(r"([A-Za-z0-9_|\[\]-]+)\) (?:echo|printf '%s\\\\n')((?: '[^']*')+);;", tm.group(1) if tm else ""):
+    table[m.group(1)] = tuple(re.findall(r"'([^']*)'", m.group(2)))
+want = {"rwatch": ("sh " + val("RWATCH_SH"),), "rwarden": ("sh " + val("RW_UPDATE"),), "rexport": ("sh " + val("REXPORT_SH"),),
+        "rwarden_ck": ("sh " + val("RW_FOLD"), "sh " + val("RW_DNSSH") + " fold"),   # Warden on / Dreadwatch alone (rc/rwarden.c)
+        "reaper_fw_dns": ("sh " + val("RFW_RESOLVE"),), "reaper_fw_cc": ("sh " + val("RFW_CC"),), "reaper_pbr_cc": ("sh " + val("PPBR_CC"),),
+        "wallguard": ("sh " + val("SH_SCRIPT") + " update",), "wallguard_ck": ("sh " + val("SH_SCRIPT") + " fold expire",),
+        "wallguard_sp|wallguard_e[0-9][0-9][0-9][0-9]": ("service start_wallguard_policy >/dev/null 2>&1",), "edns_doh": ("sh " + val("EDNS_SCRIPT") + " update",)}
+if "RFW_LISTS" in defs:   # 2026-11-22: the daily update of Policy Routing's fetched lists (ASN / country), rc/reaper_fw.c rfw_gen_lists
+    want["reaper_fw_lists"] = ("sh " + val("RFW_LISTS") + " update",)
+    check("the fetched-lists job is installed with the command the table names",
+          '"17 5 * * * sh " RFW_LISTS " update"' in read("rc/reaper_fw.c"))
+    if "REAPER-FW-LISTS-RETRY" in read("rc/reaper_fw.c"):   # 2026-11-23: the retry of a list that has never arrived
+        want["reaper_fw_lists_retry"] = ("sh " + val("RFW_LISTS") + " missing",)
+        check("the fetched-lists retry job is installed with the command the table names",
+              r'cru a reaper_fw_lists_retry \"*/15 * * * * sh " RFW_LISTS " missing\"' in read("rc/reaper_fw.c"))
+if os.path.isfile(os.path.join(SRC, "rc", "reaper_ledns.c")):   # 2026-11-23: Let's Encrypt by DNS (was missing from the table)
+    want["reaper_ledns"] = ("/sbin/reaper_ledns run",)
+    check("the Let's Encrypt-by-DNS job is installed with the command the table names",
+          '"%u %u * * * /sbin/reaper_ledns run"' in read("rc/reaper_ledns.c") and 'eval("cru", "a", "reaper_ledns", line);' in read("rc/reaper_ledns.c"))
 check("S-A-8 the review's cron table names exactly the commands rc installs (%d ids)" % len(want), table == want, (table, want))
-check("S-A-8 the skip compares the line's command with the table, never the id alone",
-      "_ex=$(_rv_cron_cmd \\\"$id\\\"); if [ -n \\\"$_ex\\\" ]; then _cm=${l#* * * * * }; _cm=${_cm% #*}; [ \\\"$_cm\\\" = \\\"$_ex\\\" ] && continue; fi" in rw
+check("S-A-8 the skip compares the line's command with the table (an exact whole-line match with one of them), never the id alone",
+      "_ex=$(_rv_cron_cmd \\\"$id\\\"); if [ -n \\\"$_ex\\\" ]; then _cm=${l#* * * * * }; _cm=${_cm% #*}; printf '%s\\\\n' \\\"$_ex\\\" | grep -qxF -e \\\"$_cm\\\" && continue; fi" in rw
       and "RV_IDS" not in rw)
+check("S-A-8 rc still installs both rwarden_ck forms (Warden on: fold.sh; Dreadwatch alone: dns.sh fold)",
+      'eval("cru", "a", "rwarden_ck", warden ? "*/15 * * * * sh " RW_FOLD : "*/15 * * * * sh " RW_DNSSH " fold");' in rwd)
 check("S-A-8 rc still installs those commands (rwarden fold / update, wallguard update / fold / policy, edns update, pbr / fw checkers)",
-      '"*/15 * * * * sh " RW_FOLD' in rwd and '"15 5 * * * sh " SH_SCRIPT " update"' in read("rc/wallguard.c") and '"*/15 * * * * sh " SH_SCRIPT " fold"' in read("rc/wallguard.c")
+      '"*/15 * * * * sh " RW_FOLD' in rwd and '"15 5 * * * sh " SH_SCRIPT " update"' in read("rc/wallguard.c") and '"*/15 * * * * sh " SH_SCRIPT " fold expire"' in read("rc/wallguard.c")
       and "service start_wallguard_policy >/dev/null 2>&1" in read("rc/wallguard.c") and '"25 5 * * * sh " EDNS_SCRIPT " update"' in read("rc/encdns.c")
       and '"* * * * * sh " PPBR_CC' in read("rc/reaper_pbr.c") and '"* * * * * sh " RFW_CC' in read("rc/reaper_fw.c") and '"*/10 * * * * sh " RFW_RESOLVE' in read("rc/reaper_fw.c"))
 
@@ -106,7 +122,7 @@ check("S-B-5 the Network Tools argv store takes a 253-byte host name whole", "ch
 
 # ---- the correctness items
 check("Q-B-1 reaper_diag reads the /jffs copy's time with date -r (no stat applet), v1.3.47",
-      "_tdu=$(date -r /jffs/rwarden/dns.k.gz +%s 2>/dev/null)" in diag and "stat -c" not in diag and 'VER="REAPER-DIAG v1.3.61"' in diag)
+      "_tdu=$(date -r /jffs/rwarden/dns.k.gz +%s 2>/dev/null)" in diag and "stat -c" not in diag and 'VER="REAPER-DIAG v1.3.62"' in diag)
 shp = read("www/Reaper_Wallguard.asp")
 # 2026-11-15 (Wallguard tabs, concept B): the Assign target menu is gone - each Devices row has its own profile menu,
 # drawn from cfg.asg (the saved model, not a pick that a rebuild could drop), and the poll never rebuilds it while open

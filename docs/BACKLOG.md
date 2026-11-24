@@ -1,10 +1,10 @@
 # RT-BE Series "Reaper" — Backlog
 
-> **Doc status:** current as of **v3.8.3** · 2026-11-19 <!--@stamp-->
+> **Doc status:** current as of **v3.8.4** · 2026-11-24 <!--@stamp-->
 
 What is left to do, one line per item, grouped by area. Status where known: **[owed]** (must be done), **[blocked]** (external cause), **[shelved]** / **[deferred]** (deliberately set aside),
-**[watch]** (not a defect today; a guard to keep), **[needs data]** (waiting on a capture or report),
-**[Pending Cut]** (fixed in the source; ships with the next version).
+**[watch]** (not a defect today; a guard to keep), **[needs data]** (waiting on a capture or report).
+Fixed items move to **Pending Cut** until they ship; **[partial: ...]** there names what stays open.
 
 **Priority** by impact on user-facing function: **[P1]** core function broken or at risk ·
 **[P2]** degraded function, meaningful annoyance, or privacy exposure · **[P3]** cosmetic, polish,
@@ -22,6 +22,7 @@ internal quality, or deferred by decision.
 
 ## Contents
 
+- [Pending Cut](#pending-cut)
 - [Open bugs / under investigation](#open-bugs--under-investigation)
 - [Audit Findings](#audit-findings)
 - [UI / UX polish](#ui--ux-polish)
@@ -32,21 +33,29 @@ internal quality, or deferred by decision.
 
 ---
 
+## Pending Cut
+
+*Fixed in the source; ships with the next version. At the cut every line here leaves the backlog
+(recorded in the changelog), except a **[partial: ...]** line: it goes back to its section with only the open part.*
+
+
+---
+
 ## Open bugs / under investigation
 
 *Not fixed yet — work still to start or finish.*
 
+- **[P2] MLO on: a soft restart can leave Wi-Fi accepting no devices until a power cycle** **[cause open]** ↳ notes: `mlo-restart-radio-link.md`
+- **[P3] Security review: the firmware's own one-time list entries show as changes to review** **[not started]** ↳ notes: `review-2026-11-24-cut-readiness.md`
 - **[P2] GT-BE98: a 5 GHz Wi-Fi bridge (WDS) station drops for ~30 s** **[data asked of the reporter]** ↳ notes: `gt-be98-wds-drop-log-noise.md`
 - **[P2] USB 3 writes run at half of reads on BCM4912 / BCM4916 models** **[A/B run owed]** ↳ notes: `usb3-write-ceiling.md`
 - **[P2] AI Advisor: arming code and lockout move to reset-proof `/data/reaper/advisor/`** **[not scheduled]** ↳ notes: `advisor-arming-code-admin-reset.md`
-- **[P2] MLO on: a soft restart can leave Wi-Fi accepting no devices until a power cycle** **[owner call]** ↳ notes: `mlo-restart-radio-link.md`
 - **[P2] Guest Portal on AiMesh nodes: sign-in and network separation for guests joining through a node** **[not verified]** ↳ notes: `guest-portal-aimesh-nodes.md`
 - **[P3] Update-manifest signature stays inert (R09)** **[accepted]** ↳ notes: `manifest-signature-inert-r09.md`
 - **[P3] DDNS: intermittent updates (v3.7.9)** **[reporter still checking]** ↳ notes: `ddns-flaky-v379.md`
 - **[P2] BQ16: the Devices page reportedly does not show MLO devices properly** **[details needed]** ↳ notes: `bq16-devices-mlo-display.md`
-- **[P3] RADIUS: the Network page and the RADIUS tab keep the main network's server in two places** **[fix designed; not built]** ↳ notes: `radius-two-stores.md`, `bug-review-2026-11-16.md`
-- **[P3] Boot log: "failed to set WLC_E_CAC_STATE_CHANGE bit" from the Wi-Fi driver** **[closed driver; router check owed]** ↳ notes: `cfg80211-cac-event-bit-boot-noise.md`
 - **[P2] Aqara G410 doorbell: control works but no video in the Aqara app or Apple Home (Bastion off)** **[reported; data asked]** ↳ notes: `aqara-g410-doorbell-no-video.md`
+- **[P3] RT-BE86U bootloader: cma=48M (stock now 64M) and an RTL8372 blob stock does not link** **[needs data]** ↳ notes: `rt-be86u-uboot-cma-rtl8372.md`
 
 ---
 
@@ -55,14 +64,14 @@ internal quality, or deferred by decision.
 *Open items from the security and code reviews, one line each. `↳ report:` names the maintainer's
 private review report and the finding ID in it; review reports are never published.*
 
-- **[P3] Review 2026-10-28: AiMesh add-node on 3006.102.10 and a header-key list source on a router** **[owed]** ↳ report: `review-2026-10-28`
-- **[P3] Boot chain: the image-signature key** **[owner call]** ↳ report: `review-2026-11-03` E-12
-- **[P3] Unused closed programs to remove after a consumer check** **[group B: router checks owed]** ↳ report: `review-2026-11-03` F-11 · notes: `unused-programs-2026-11-09.md`
-- **[P3] About 30 stock pages no menu reaches are still served** **[8 removed in v3.7.3; the rest with the native-UI cutover]** ↳ report: `review-2026-11-03` B-6
+- **[P1] Every supported model and hardware revision ships the drivers and radio firmware it needs: full per-model review** **[tester readings owed]** ↳ notes: `model-driver-completeness-review.md`
+- **[P3] Login redirect: the typed address counts as the router's own name while the redirect is off** **[not started]** ↳ notes: `review-2026-11-24-cut-readiness.md`
+- **[P3] Unused closed programs to remove after a consumer check** **[group B: router checks owed; ceventd stays]** ↳ report: `review-2026-11-03` F-11 · notes: `unused-programs-2026-11-09.md`
+- **[P3] About 30 stock pages no menu reaches are still served** **[~20 candidates found; full proof owed]** ↳ report: `review-2026-11-03` B-6 · notes: `stock-pages-unreached.md`
 - **[P3] AiMesh: the mesh daemon listens while no node is paired** **[owner call]** ↳ notes: `audit-findings-2026-11-05.md`
-- **[P3] AI Advisor: one connection at a time; pin the client by default** **[owner call]** ↳ report: `review-2026-11-03` D-6
+- **[P3] AI Advisor: one connection at a time** **[owner call]** ↳ report: `review-2026-11-03` D-6
 - **[P3] jQuery Mobile 1.4.5 (end of life) ships for the AiMesh add-node wizard** **[with the wizard rewrite]** ↳ report: `review-2026-11-03` B-4
-- **[P3] Review coverage not reached: closed listener parsers, closed ioctl handlers, some stock pages** **[watch]** ↳ report: `review-2026-11-03` (Not reached)
+- **[P3] Review coverage not reached: closed listener parsers, closed ioctl handlers, closed packet-path objects, some stock pages** **[watch]** ↳ report: `review-2026-11-17` (section 10)
 - **[P3] dnsmasq keeps its network administration capability** **[owner call]** ↳ report: `review-2026-11-11` A-6 · notes: `review-2026-11-11-remediation.md`
 - **[P3] Web login lock for IPv6 LAN devices: backstop into open code** **[owner call]** ↳ report: `review-2026-11-11` B-1 · notes: `review-2026-11-11-remediation.md`
 - **[P3] USB share and WAN action handlers: session token inside each handler** **[owner call]** ↳ report: `review-2026-11-11` B-2 (part 2) · notes: `review-2026-11-11-remediation.md`
@@ -72,43 +81,32 @@ private review report and the finding ID in it; review reports are never publish
 - **[P3] Encrypted DNS and AiMesh leftovers from the 2026-11-11 review** **[owner call]** ↳ report: `review-2026-11-11` C-8 · notes: `review-2026-11-11-remediation.md`
 - **[P3] DNS queries with two OPT records** **[owner call]** ↳ report: `review-2026-11-11` Appendix A · notes: `review-2026-11-11-remediation.md`
 - **[P3] Channel picker control port: a local firewall rule by process owner** **[owner call]** ↳ report: `review-2026-11-11` D-C1 · notes: `review-2026-11-11-remediation.md`
-- **[P3] Two kernel checks from the 2026-11-11 fixes: a test program on a router** **[owner call]** ↳ report: `review-2026-11-11` A-1, A-C2 · notes: `review-2026-11-11-remediation.md`
-- **[P3] Maintainer tooling proposals (2026-11-11)** **[approved 2026-11-11; in progress]** ↳ notes: `tooling-proposals-2026-11-11.md`
-- **[P3] Review 2026-11-17, phase 4: one copy of each helper (lease and neighbour readers, JSON writer, page helpers)** **[the rest left open in the notes]** ↳ report: `review-2026-11-17` · notes: `review-2026-11-17-remediation.md`
-- **[P3] Rules engine, guest isolation and Policy Routing: one batched rule load and one shared apply-and-confirm (review C-E2, C-6, C-D2)** **[batched loads in v3.8.2; confirm fold open]** ↳ report: `review-2026-11-17` · notes: `review-2026-11-17-remediation.md`
-- **[P2] Unused request handlers, page hooks and a VPN control socket that still ship: security review, then removal** **[cross-site fix in v3.8.2; removal queued]** ↳ report: `review-2026-11-17` · notes: `unused-request-surfaces.md`
-- **[P1] Every supported model and hardware revision ships the drivers and radio firmware it needs: full per-model review** **[Wi-Fi part in v3.8.2; rest open]** ↳ notes: `model-driver-completeness-review.md`
-- **[P2] ASUS releases of 2026-11-17 (firmware 394xx, GPL 39441-39448): what Reaper should take** **[in v3.8.2; BQ16 waits for its GPL]** ↳ report: `drop-intake-2026-11-18` · notes: `asus-drop-intake-2026-11-18.md`
+- **[P3] Maintainer tooling proposals (2026-11-11)** **[approved 2026-11-11; 7 of 19 done]** ↳ notes: `tooling-proposals-2026-11-11.md`
+- **[P2] ASUS releases of 2026-11-17 (firmware 394xx, GPL 39441-39448): what Reaper should take** **[B1-B4, B6 shipped; BQ16 waits for its GPL]** ↳ report: `drop-intake-2026-11-18` · notes: `asus-drop-intake-2026-11-18.md`
+- **[P2] Web server: retire the handling of requests that identify as the phone app, now that the app is not supported** **[not started]** ↳ notes: `httpd-fromapp-exemptions.md`
 
 ---
 
 ## UI / UX polish
 
 - **[P3] Reaper pages: the polishing redesign and formatting pass** **[not started]** ↳ notes: `loading-overlay-redesign.md`
+- **[P3] Option 162 log line says the offer changed when only a DNS Director rule did** **[not started]** ↳ notes: `review-2026-11-24-cut-readiness.md`
 
 ---
 
 ## Potential Features to add
 
-- **[P1] Reaper-native UI: convert every stock page, then remove the stock pages** **[left: the cutover]** ↳ notes: `reaper-native-ui.md`, `native-page-migration.md`
-- **[P1] Image size: the RT-BE96U root filesystem is within ~2.2 MB of its flash slot** **[v3.8.2: 9,330,688 B spare]** ↳ notes: `image-size-hunt.md`
+- **[P1] Reaper-native UI: convert every stock page, then remove the stock pages** **[4 pages + AiMesh/Network left; then cutover]** ↳ notes: `reaper-native-ui.md`, `native-page-migration.md`
 - **[P2] Code signing: manifest + images, with a pre-upload verdict** **[scheduled]** ↳ notes: `manifest-signing-shelved.md`
-- **[P2] Security review: harden the baseline against tampering** **[owner call]** ↳ notes: `security-review.md`
 - **[P2] Two-tier admin credential for root-equivalent actions** **[designed 2026-10-19; owner call]** ↳ notes: `two-tier-admin-credential.md`
-- **[P2] Policy Routing by ASN (e.g. AS2906)** **[assessed; on hold (owner 2026-11-15)]** ↳ notes: `pbr-asn-objects.md`
-- **[P2] Encrypted DNS stage 2: fall back to plain upstream when DNS-over-TLS stops answering** **[planned]** ↳ notes: `encrypted-dns.md`
-- **[P3] Security review: watch more settings** **[part done 2026-10-24; the rest not started]** ↳ notes: `security-review-coverage.md`
+- **[P3] Security review: watch more settings** **[left: Wi-Fi security mode]** ↳ notes: `security-review-coverage.md`
+- **[P3] Encrypted DNS on isolated guest networks: DoT / DoH to the network's own gateway, with the option 162 offer** **[field request 2026-11-22; owner call]** ↳ notes: `guest-isolated-encrypted-dns.md`
 - **[P3] Dreadwatch lists on USB: a higher name limit while a USB store is attached** **[proposed; the limit to revisit]** ↳ notes: `dreadwatch-limit.md`
 - **[P3] Language packs on demand: English-only image, the admin installs their language** **[idea, measured]** ↳ notes: `language-packs-on-demand.md`
-- **[P2] Network page: several changes with one Wi-Fi restart (a "changes waiting" bar, Delete selected, no restart where none is needed)** **[planned; design approved 2026-11-16]** ↳ notes: `network-page-deferred-restart.md`
 - **[P3] Staged ("batch") changes: one save, minimal restarts** **[project]** ↳ notes: `staged-batch-changes.md`
-- **[P3] Policy Routing on Warden's country sets** **[owner call]** ↳ notes: `pbr-warden-country-sets.md`
-- **[P3] Tweaks: the login-page redirect goes to an address the admin types (name, port), not only www.asusrouter.com** **[not started]** ↳ notes: `login-redirect-custom-domain.md`
-- **[P3] mDNS across networks: reflect only chosen service types (avahi `reflect-filters`)** **[idea; not started]** ↳ notes: `mdns-reflect-filters.md`
 - **[P3] Wallguard: "pause and record" - list what would have been blocked while a device was paused** **[idea; not started]** ↳ notes: `wallguard-pause-and-record.md`
 - **[P3] Wallguard: show per device when its DNS bypasses the router** **[idea; not started]** ↳ notes: `wallguard-device-bypass-hint.md`
-- **[P3] System Log: named presets for the Find / Exclude boxes** **[contributed proposal; not reviewed]** ↳ notes: `syslog-find-exclude-presets.md`
-- **[P2] Wallguard: a tab to view and edit the allow / block lists, incl. Allowed for 24 hours (remove, extend, make permanent)** **[not started]** ↳ notes: `wallguard-allow-lists-tab.md`
+- **[P3] System Log: review the level each Reaper log line is written at (error, warning, info) and correct it** **[not started]** ↳ notes: `log-levels-review.md`
 - **[P4] Advanced tier: TLS interception for URL-level inspection** **[threat model first]** ↳ notes: `encrypted-dns.md`, `security-leftovers-plan-2026-11-10.md`
 
 ---
@@ -121,28 +119,23 @@ private review report and the finding ID in it; review reports are never publish
 
 ## Code quality / deferred (with reason)
 
-- **[P2] Network page: Delete does nothing on a main-network card** **[not found in code; router repro needed]** ↳ notes: `sdn-mainfh-delete-dead.md`
-- **[P2] Research no PIN point: a new pin point, or diverging from a PIN build** **[deferred]** ↳ notes: `pin-strategy.md`
 - **[P2] Add packet loss to the connections tab** **[deferred]** ↳ notes: `conn-packet-loss.md`
 - **[P2] AiMesh: the preferred uplink node is ignored (BQ16, v3.5.0)** **[deferred]** ↳ notes: `aimesh-preferred-uplink.md`
-- **[P3] Kit and httpd duplicates to fold into one copy** **[not started]** ↳ notes: `kit-dedupe.md`
-- **[P3] Bandwidth tab: Cloudflare's speed test in the firmware** **[dropped 2026-10-13]** ↳ notes: `bandwidth-tab.md`
-- **[P3] Code review 2026-10-07: plain-HTTP login default (G2), factory posture (G5)** **[accepted]** ↳ notes: `audit-2026-10-07-remediation.md`
-- **[P3] Sibling port misses adds, renames and deletes** **[owed]** ↳ notes: `sibling-port-add-rename-delete.md`
+- **[P3] Kit and httpd duplicates to fold into one copy (incl. the helpers left by review 2026-11-17 phase 4)** **[not started]** ↳ notes: `kit-dedupe.md`, `review-2026-11-17-remediation.md`
+- **[P3] Rules engine and Policy Routing: one shared arm / confirm / revert (review C-D2)** **[loads and deadline watcher shared in v3.8.2]** ↳ report: `review-2026-11-17` · notes: `review-2026-11-17-remediation.md`
+- **[P3] Test suites that need the firmware source: keep them with the maintainer's tooling, the self-contained ones here** **[not started]** ↳ notes: `public-tests-split.md`
 - **[P3] Policy Routing: recapture of flows that leaked while the rules were absent** **[deferred]** ↳ notes: `pbr-conntrack-recapture.md`
 - **[P3] GitHub release retention: betas 5+ versions behind are pruned** **[recurring, owner call]** ↳ notes: `release-retention-prune.md`
-- **[P3] Sibling worktrees carry build detritus** **[hygiene]** ↳ notes: `sibling-worktree-detritus.md`
-- **[P3] Local sibling images: four siblings are source-only locally** **[hygiene]** ↳ notes: `local-sibling-images.md`
 - **[P3] `poll_fcache` O(n²) pairing · `do_reaper_dev_cgi` snapshot arrays** **[shelved]** ↳ notes: `shelved-perf-items.md`
 - **[P3] Theme-token vocabulary consolidation (remainder of D4)** **[owed — to the page migration]** ↳ notes: `theme-token-consolidation.md`
-- **[P3] avahi CVE-2024-52615 / -52616 (wide-area)** **[not reachable — benign]** ↳ notes: `avahi-residual-cves.md`
-- **[P3] avahi CVE-2021-3468 / CVE-2025-59529 (local socket)** **[not reachable — benign]** ↳ notes: `avahi-residual-cves.md`
-- **[P3] OSPF + BGP dynamic routing** **[Not Needed]** ↳ notes: `ospf-bgp-dynamic-routing.md`
+- **[P3] avahi CVE-2025-59529 (local socket)** **[not reachable — benign]** ↳ notes: `avahi-residual-cves.md`
 - **[P3] Encrypted DNS answers guest/VLAN networks over IPv4 only** **[deferred]** ↳ notes: `encrypted-dns.md`
 - **[P3] Wallguard: network profiles IPv4-only; merged identical lookups share one CNAME verdict** **[deferred / accepted]** ↳ notes: `wallguard.md`
 - **[P3] VLAN page: Add is refused 2 to 5 networks early (the main-network rows are counted)** **[deferred (owner 2026-11-16)]** ↳ notes: `bug-review-2026-11-16.md`
 - **[P3] WPS page: the router's PIN is shown without pressing Show (as the stock page)** **[deferred (owner 2026-11-16)]** ↳ notes: `bug-review-2026-11-16.md`
 - **[P3] GT-BE98: its bootloader objects stay at GPL 102_39274 (the 102.40585 set needs a bootloader build port)** **[deferred (owner 2026-11-16)]** ↳ notes: `gt-be98-gpl-40585.md`
+- **[P3] wifi_dsps.sh not installed: EDPD power-down and the fast radio recovery stay off (all models)** **[deferred (owner 2026-11-20)]** ↳ notes: `wifi-dsps-not-installed.md`
+- **[P3] RT-BE88U: the AiMesh revert-firmware button does nothing (scripts not installed)** **[deferred (owner 2026-11-20)]** ↳ notes: `rt-be88u-revert-scripts.md`
 - **[P4] Firewall log day files: split today's file so the store cap can remove parts** **[deferred]** ↳ notes: `fwlog-storage-row-layout.md` (item 2)
 
 ---
@@ -151,6 +144,17 @@ private review report and the finding ID in it; review reports are never publish
 
 *Not defects. Recorded so the same report is not re-investigated.*
 
+- **Boot chain: images are signed with the vendor SDK's key; an own key needs fused secure boot, which cannot be undone** **[accepted 2026-11-23]** ↳ report: `review-2026-11-03` E-12
+- **Guest networks: no encrypted DNS offer (DHCP option 162) on an isolated guest network, a portal, or a network with its own DNS servers** **[closed 2026-11-22]** ↳ notes: `guest-dnr-option-162.md`
+- **Image size: the RT-BE96U image fits its flash slot, 10,223,616 B spare in v3.8.3** **[closed 2026-11-20]** ↳ notes: `image-size-hunt.md`
+- **Boot log: "failed to set WLC_E_CAC_STATE_CHANGE bit" from the Wi-Fi driver (closed driver, cosmetic)** **[closed 2026-11-20]** ↳ notes: `cfg80211-cac-event-bit-boot-noise.md`
+- **PIN point: the 3006.102.10 base since v3.6.0 (RT-BE96U, RT-BE86U, RT-BE88U, GT-BE98 Pro)** **[closed 2026-11-20]** ↳ notes: `pin-strategy.md`
+- **Sibling port misses adds, renames and deletes: not fixing (local builds are RT-BE96U only)** **[closed 2026-11-20]** ↳ notes: `sibling-port-add-rename-delete.md`
+- **Sibling worktrees carry build detritus: not fixing (local builds are RT-BE96U only)** **[closed 2026-11-20]** ↳ notes: `sibling-worktree-detritus.md`
+- **Local sibling images: the siblings are source-only locally (RT-BE96U only; CI builds the rest)** **[closed 2026-11-20]** ↳ notes: `local-sibling-images.md`
+- **Bandwidth tab (Cloudflare's speed test in the firmware): not building** **[dropped 2026-10-13]** ↳ notes: `bandwidth-tab.md`
+- **Code review 2026-10-07: plain-HTTP login default (G2), factory posture (G5): accepted** **[closed 2026-11-20]** ↳ notes: `audit-2026-10-07-remediation.md`
+- **OSPF + BGP dynamic routing: not building (not needed)** **[closed 2026-11-20]** ↳ notes: `ospf-bgp-dynamic-routing.md`
 - **A Wi-Fi 7 device shows two addresses: its own (Devices, leases, Gatekeeper) and its 6 GHz link address (Wireless log)** **[closed 2026-11-16]** ↳ notes: `wifi7-link-address-two-macs.md`
 - **WireGuard server starts before NTP sync: working as intended** **[closed 2026-11-15]** ↳ notes: `wgs-start-before-ntp.md`
 - **Devices page after a reboot: an offline device is listed only if it has a DHCP reservation or a Gatekeeper entry (BQ16 report)** **[closed 2026-11-13]** ↳ notes: `devices-offline-after-reboot-bq16-2026-11-12.md`

@@ -221,7 +221,8 @@ wallguardc() {
 }
 '''
     wtmp = os.path.join(work, "tmp"); wjffs = os.path.join(work, "jffs")
-    CONF2 = ["reaper-hitlog=/tmp/dreadwatch/dns.hits", "reaper-nx-db=%s/nx/threat.db" % wtmp]
+    # v3.8.4 (REAPER-DREAD-EXEMPT): a third constant line, the devices that skip Dreadwatch, beside the table
+    CONF2 = ["reaper-hitlog=/tmp/dreadwatch/dns.hits", "reaper-nx-db=%s/nx/threat.db" % wtmp, "reaper-nx-exempt=%s/nx/dns.exempt" % wtmp]
     TBL = os.path.join(wtmp, "nx", "threat.db")
     names = lambda kl: [l.split()[1] for l in kl]
     def envfor(extra):
@@ -469,7 +470,7 @@ ok("static void rw_nx_rebuild_bg(void)" in helper and 'char *argv[] = { "sh", "-
    and "if (!f_exists(RW_NX_DB)) {" in helper and "rw_nx_rebuild_bg();" in helper
    and "if (!f_exists(RW_DNS_KGZ) && !f_exists(RW_DNS_CACHE_GZ) && !f_exists(RW_DNS_CACHE) && !f_exists(RW_DNS_LEGACY))\n\t\t\treturn NULL;" in helper
    and 'eval("sh", "-c", (char *)rw_nx_rebuild_sh)' not in helper and 'logmessage("rwarden", "threat domains: the /jffs copy would not build' not in helper
-   and 'fprintf(f, "reaper-hitlog=%s\\nreaper-nx-db=%s\\n", RW_HITS, RW_NX_DB);' in helper
+   and 'fprintf(f, "reaper-hitlog=%s\\nreaper-nx-db=%s\\nreaper-nx-exempt=%s\\n", RW_HITS, RW_NX_DB, RW_DNS_EXEMPT);' in helper	# v3.8.4: three lines
    and "if (!f_exists(RW_DNS_CONF))\n\t\treturn NULL;" in helper and "rw_hits_dir();" in helper
    and helper.index("reaper_secure_dir(RW_DIR, 0700);") < helper.index("rw_nx_rebuild_bg();")
    and "else exit 2; fi" in helper and '[ -s $T.k ] || { rm -f $T.*; logger -t rwarden \\"threat domains: the /jffs copy would not build into a table' in helper
@@ -504,7 +505,7 @@ for rel, needle, what in (
     ("shared/defaults.c", '{ "rwarden_dns_feeds", "urlhaus phish c2 threatfox", CKN_STR64', "defaults.c: Reaper's Basics (URLhaus mirror, phishing, C2, the ThreatFox snapshot) selected once the switch goes on"),
     ("shared/reaper_tmpsafe.h", '{ "/tmp/reaper_nx",\t\t0755 }', "reaper_tmpsafe.h: the table's directory is root's, 0755 (dnsmasq, as nobody, only reads it)"),
     ("httpd/web.c", 'fopen("/tmp/rwarden/dns.first", "r")', "web.c: the self-test takes its sample name from rc's dns.first (no text list to parse)"),
-    ("httpd/web.c", 'strcmp(name, "cfeeds") && strcmp(name, "dnsallow") && strcmp(name, "dnssrc")) return 0;', "web.c: the page can read the dnsallow list (and, 2026-10-27, its sources)"),
+    ("httpd/web.c", 'strcmp(name, "cfeeds") && strcmp(name, "dnsallow") && strcmp(name, "dnssrc") && strcmp(name, "dnsexempt")) return 0;', "web.c: the page can read the dnsallow list (and, 2026-10-27, its sources; v3.8.4, the devices that skip Dreadwatch)"),
     ("httpd/web.c", '{ "ban", "allow", "cfeeds", "dnsallow", NULL };', "web.c: save_lists stores dnsallow"),
     ("httpd/web.c", '!strcmp(nv + 8, "cfeeds") || !strcmp(nv + 8, "dnsallow") ||', "web.c: the settings export carries the dnsallow list (2026-10-27: and the sources)"),
     ("httpd/web.c", '{ "warden", "rwarden_dns",      2   }, { "warden", "rwarden_dns_feeds", 64 },', "web.c: the switch and the list ids travel with a settings export"),

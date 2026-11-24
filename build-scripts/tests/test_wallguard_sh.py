@@ -10,7 +10,7 @@ run under busybox awk.
 WHAT IT DOES. Builds wallguardc for the host, puts a fake curl first on PATH (it serves local files and
 fails on demand) and runs every action under /bin/sh and busybox ash: update (ok, failed-with-previous,
 missing), an unsubscribed list leaving the RAM disk, build after a rule change (no download), expired
-temporary allows dropped, fold (junk records dropped, '# dropped' banked, per-list tallies from the
+temporary allows dropped, "fold expire" rebuilding once a 24 h allow has run out (2026-11-20), fold (junk records dropped, '# dropped' banked, per-list tallies from the
 hex bit field, devices keyed by MAC), the stats JSON (valid, top names sorted, feeds with their state),
 unbreak for one device, the live view JSON, reset, the counters banked on /jffs.
 Exit 0 pass, 1 fail, 77 skipped.
@@ -121,6 +121,35 @@ try:
         r = run("build")
         check("[%s] build after a rule change: no download, the new rule is in" % tag,
               r.returncode == 0 and json.load(open(os.path.join(D, "build.json")))["names"] == 4)
+
+        # ---- 2026-11-20 (item 7, REAPER-WG-ALLOWED): a 24 h allow that has run out left the table only at the next
+        # build (05:15, or a rule change) - up to ~35 h. The 15-minute cron fold ("fold expire") now rebuilds once the
+        # earliest allow has run out; plain fold, stats and unbreak (httpd waits on those) never build
+        a24f, bjf = os.path.join(J, "allow24"), os.path.join(D, "build.json")
+        now = int(time.time())
+        open(a24f, "w").write("%d gone.example\n%d live.example\nbad line here\n%d live.example\n" % (now - 5, now + 3600, now + 7200))
+        a24_before = open(a24f).read()
+        m0 = os.path.getmtime(bjf); time.sleep(1.1)
+        r1 = run("fold"); r2 = run("stats"); r3 = run("unbreak", "192.168.50.20", "15")
+        check("[%s] item 7: fold, stats and unbreak never rebuild for a run-out allow (the file untouched)" % tag,
+              r1.returncode == 0 and os.path.getmtime(bjf) == m0 and open(a24f).read() == a24_before, (r1.stderr, r2.stderr[-200:]))
+        r = run("fold", "expire")
+        check("[%s] item 7: fold expire - the run-out allow and the bad line leave the file, the table is rebuilt, logged" % tag,
+              r.returncode == 0 and os.path.getmtime(bjf) > m0
+              and open(a24f).read() == "%d live.example\n%d live.example\n" % (now + 3600, now + 7200)
+              and open(os.path.join(D, "allow24")).read().split() == ["live.example", "live.example"]
+              and "a temporary allow ran out - the block table is rebuilt without it" in logtxt(), (r.stderr, open(a24f).read(), logtxt()[-300:]))
+        m1 = os.path.getmtime(bjf); time.sleep(1.1)
+        run("fold", "expire")
+        check("[%s] item 7: fold expire with nothing run out - no build" % tag, os.path.getmtime(bjf) == m1)
+        os.rename(os.path.join(D, "db"), os.path.join(D, "db.keep"))
+        open(a24f, "a").write("%d late.example\n" % (now - 1))
+        run("fold", "expire")
+        check("[%s] item 7: fold expire without a table in use - nothing built, the file left for the next build" % tag,
+              not os.path.exists(os.path.join(D, "db")) and "late.example" in open(a24f).read())
+        os.rename(os.path.join(D, "db.keep"), os.path.join(D, "db"))
+        open(a24f, "w").write("%d still.example\n" % (now + 3600))
+        run("build")
 
         # ---- release review 2026-10-25 (W-1): every download fails (a boot before the WAN is up). The table still
         # carries My rules, so the "no table yet" retries would never fire again; the pending mark keeps the lists owed

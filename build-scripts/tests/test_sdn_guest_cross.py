@@ -96,12 +96,14 @@ check("preset labels: Printing translated, the brand names as they are",
                             '{"k":"homekit", "t":`HomeKit / Matter`}', '{"k":"audio", "t":`Spotify / Sonos`}')))
 
 # ---------------------------------------------------------------- fill + gating
-fl = sj.find("""	else{
-		$(_obj).find("#access_intranet, [data-container='access_intranet_cntr']").remove();
-	}
+fl = sj.find("""	reaper_apiso_lan_fill(_obj, _profile_data);//REAPER-APISO-LAN-FILL (2026-11-19): after the switch, whose state it follows
 	reaper_guest_cross_fill(_obj, _profile_data);//REAPER-GUEST-CROSS-FILL""")
-check("filled once, right after Access Intranet (whose Main Network tick it reads)",
-      fl > 0 and sj.count("reaper_guest_cross_fill(_obj, _profile_data);") == 1
+_ai = sj.find("""		$(_obj).find("#access_intranet, [data-container='access_intranet_cntr']").remove();""")
+_iso = sj.find("""	$(_obj).find("#ap_isolate").removeClass("off on").addClass((function(){""")
+# 2026-11-22 field report: filled before the AP Isolation switch was set, the gate read the switch's built-in "on"
+# and held discovery (with its AP Isolation note) on every network
+check("filled once, after Access Intranet (whose Main Network tick it reads) and after the AP Isolation switch is set",
+      fl > 0 and 0 < _ai < fl and 0 < _iso < fl and sj.count("reaper_guest_cross_fill(_obj, _profile_data);") == 1
       and sj.rfind("\nfunction ", 0, fl) + 1 == sj.rfind("function Update_Setting_Profile(_obj, _profile_data){", 0, fl))
 fill = between(sj, "function reaper_guest_cross_fill(_obj, _profile_data){", "\nfunction reaper_guest_cross_gate(")
 check("shown only in router mode, for a network with its own subnet, not LEGACY / MAINFH / MAINBH, not a portal",

@@ -107,7 +107,7 @@ i_adv, i_tbl = eng.find("av = wga_eval(&sh.adv"), eng.find("r = wallguard_lookup
 check("engine: Advanced rules are judged before the block table", 0 < i_adv < i_tbl, (i_adv, i_tbl))
 check("engine: a plain block yields to the table's allows, an important one does not; Bypass/pause (bit 0) respected",
       "(mask & 1u) && (imp || !sh.t.ok || wallguard_lookup(&sh.t.v, name, &abits) != WALLGUARD_ALLOWED)" in eng)
-check("engine: dnsmasq's own answers still win", "av == WGA_BLOCK && !wallguard_config_answer(name, qtype)" in eng)
+check("engine: dnsmasq's own answers still win", "av == WGA_BLOCK && !wallguard_config_answer(name, qtype, client, now)" in eng)
 check("engine: the file is reloaded on change and the MAC is looked up only when a rule needs it",
       "wallguard_adv_load();" in eng and "sh.adv.has_mac && client && find_mac(client, amac, 1, now) == 6" in eng)
 check("engine: REFUSED / NXDOMAIN / NODATA / null answers", all(x in eng for x in (

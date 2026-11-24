@@ -98,6 +98,7 @@ struct crec *cache_find_by_name(struct crec *c, char *name, time_t now, unsigned
 { (void)c; (void)name; (void)now; (void)prot; return NULL; }
 int lookup_domain(char *q, int fl, int *lo, int *hi) { (void)q; (void)fl; (void)lo; (void)hi; return 0; }
 int reaper_nx_listed(const char *n) { (void)n; return 0; }
+int reaper_nx_exempt(union mysockaddr *c, time_t now) { (void)c; (void)now; return 0; }	/* v3.8.4: test_dreadwatch_exempt.py */
 int find_mac(union mysockaddr *a, unsigned char *mac, int lazy, time_t now)
 {
   (void)lazy; (void)now;

@@ -340,7 +340,7 @@ check("httpd: the save checks the sources and the keys before it writes either, 
 ej = web[web.find("ej_rwarden_list(int eid"):]
 ej = ej[:ej.find("\n}\n")]
 check("httpd: the page reads the sources; of the keys only the slot numbers",
-      'strcmp(name, "dnssrc")) return 0;' in ej and 'if (!strcmp(name, "dnskeys") || !strcmp(name, "cfkeys")) {' in ej and 'websWrite(wp, "%d", slot);' in ej
+      'strcmp(name, "dnssrc") && strcmp(name, "dnsexempt")) return 0;' in ej and 'if (!strcmp(name, "dnskeys") || !strcmp(name, "cfkeys")) {' in ej and 'websWrite(wp, "%d", slot);' in ej
       and ej.count("websWrite(") == 3)
 check("httpd: Wallguard's key save is the shared one", "return src_keys_save(SH_JFFS \"/keys\", SH_JFFS \"/lists\", \"wallguard\", upd);" in web)
 

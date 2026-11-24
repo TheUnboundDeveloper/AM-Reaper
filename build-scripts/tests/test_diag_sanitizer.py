@@ -250,6 +250,7 @@ NVDUMP = "\n".join([
     "reaper_ledns_domain=router.example-home.net",
     "https_crt_cn=nas.example-home.net,cam.example-home.net",
     "reaper_landns_domain=probe.example.org",
+    "reaper_dut_redir_host=router.example-own.net",
     "local_domain=www.asusrouter.com",
     "wan0_dns=198.51.100.53",
     "ddns_hostname_x=myhouse.example.net",
@@ -264,6 +265,7 @@ for a in awks if mnv else []:
         check(tag + "reaper_ledns_domain joins the hostname list", "HOST\trouter.example-home.net" in got, r.stdout + r.stderr)
         check(tag + "every name of a https_crt_cn list joins it", "HOST\tnas.example-home.net" in got and "HOST\tcam.example-home.net" in got, r.stdout)
         check(tag + "reaper_landns_domain and the DDNS name join it", "HOST\tprobe.example.org" in got and "HOST\tmyhouse.example.net" in got, r.stdout)
+        check(tag + "the login redirect name joins it", "HOST\trouter.example-own.net" in got, r.stdout)
         check(tag + "the firmware's own name and a resolver address do not", not any("asusrouter" in g or "198.51.100.53" in g for g in got), r.stdout)
 
 mfn = re.search(r"^(san_hostseed\(\) \{\n.*?)^san_rednsd_names /tmp/rednsd/run/status\.json >> \"\$SLIST\" 2>/dev/null\n"
@@ -318,12 +320,12 @@ check("the ledger prints the residual lines and the verdict names client names",
 check("the boot-skeleton finding no longer claims a refused line in every case",
       "(one line was refused;" not in src and "no refused line was recorded" in src
       and "_nerr=$(ls /tmp/err_rules/*.err" in src)
-check("VER is v1.3.48", 'VER="REAPER-DIAG v1.3.61"' in src)
+check("VER is v1.3.48", 'VER="REAPER-DIAG v1.3.62"' in src)
 check("10b prints the engine's version as 'X.Y.Z build N' (v1.3.53)",
       '_ov="v${_ov%.*} build ${_ov##*.}"' in src and 'engine            : v$(grep' not in src)
 mkr = open(os.path.join(HERE, "..", "verify_markers.txt"), encoding="utf-8").read()
 check("build markers pin the version and the new tokens",
-      "usr/sbin/reaper_diag|REAPER-DIAG v1.3.61|1" in mkr and "usr/sbin/reaper_diag|4c. DNS DIRECTOR|1" in mkr
+      "usr/sbin/reaper_diag|REAPER-DIAG v1.3.62|1" in mkr and "usr/sbin/reaper_diag|4c. DNS DIRECTOR|1" in mkr
       and "usr/sbin/reaper_diag|[IP6-ARPA-|1" in mkr
       and "usr/sbin/reaper_diag|residual IPv6 shapes|1" in mkr and "usr/sbin/reaper_diag|[CLIENT-DOMAIN-|1" in mkr
       and "usr/sbin/reaper_diag|residual client names|1" in mkr

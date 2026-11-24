@@ -307,12 +307,14 @@ check("avahi config: reflect_interfaces initialised, freed and deep-copied",
       "c->reflect_interfaces = NULL;" in asrc and "avahi_string_list_free(c->reflect_interfaces);" in asrc
       and "rifs = avahi_string_list_copy(c->reflect_interfaces)" in asrc and "ret->reflect_interfaces = rifs;" in asrc)
 core = read("avahi/avahi-core/core.h")
-check("avahi core.h: the field is the LAST member (nothing after it moves)",
-      re.search(r"AvahiStringList \*reflect_interfaces;[^\n]*\n    AvahiStringList \*reflect_guest;[^\n]*\n\} AvahiServerConfig;", core) is not None)
+check("avahi core.h: the fields are the LAST members (nothing before them moves; 2026-11-20 reflect_core_types last)",
+      re.search(r"AvahiStringList \*reflect_interfaces;[^\n]*\n    AvahiStringList \*reflect_guest;[^\n]*\n"
+                r"    char \*reflect_core_types;[^\n]*\n\} AvahiServerConfig;", core) is not None)
 check("avahi-daemon: [reflector] reflect-interfaces is parsed", 'strcasecmp(p->key, "reflect-interfaces") == 0' in read("avahi/avahi-daemon/main.c"))
 
 # ---------------------------------------------------------------- rc wiring
 svc = read("rc/services.c")
+rch_early = read("rc/rc.h")
 gen = cfunc(svc, "int generate_mdns_config(void)") or ""
 check("generate_mdns_config: [reflector] only when the plan says so, with reflect-ipv off and the chosen bridges",
       "if (rm_on) {" in gen and 'enable-reflector=yes' in gen and 'reflect-ipv=no' in gen and 'reflect-interfaces=%s' in gen)
@@ -325,14 +327,16 @@ check("reaper_mdns_plan: on unless reaper_mdns_reflect is \"0\", and only with t
 # ---- reaper 2026-11-19: device discovery on guest networks (avahi reflect-guest) ----
 check("reaper_mdns_plan: with the reflector off the discovery guest bridges go back onto deny-interfaces; the signature covers the guest list",
       "if (!on && *guest) {" in plan and "reaper_mdns_guest_deny(deny, dn, guest);" in plan
-      and 'snprintf(sig, sn, "%d|%s|%s|%s", on, deny, on ? refl : "", guest);' in plan)
+      and 'snprintf(sig, sn, "%d|%s|%s|%s|%s", on, deny, on ? refl : "", guest, on ? ct : "");' in plan)
 # review follow-up (LOW): the discovery log line must not cut the else-chain off "if (rm_on)" (unbraced-else insert trap)
 check("generate_mdns_config: the plan log is ONE chain - on (with the discovery line inside), off by the switch, fewer than two",
       '\t\tif (rm_on) {\n\t\t\tlogmessage("mdns", "devices can find each other across %s%s%s", rm_refl, *rm_why ? "; left out: " : "", rm_why);\n'
       '\t\t\tif (*rm_guest)\t/* reaper 2026-11-19 */\n'
       '\t\t\t\tlogmessage("mdns", "device discovery with the main network (picked service types only): %s", rm_guest);\n'
+      '\t\t\tif (*rm_ct)\t/* reaper 2026-11-20 */\n'
+      '\t\t\t\tlogmessage("mdns", "across the main side only these service types are relayed: %s", rm_ct);\n'
       '\t\t} else if (nvram_match("reaper_mdns_reflect", "0"))\n\t\t\tlogmessage("mdns", "mDNS across networks is off");\n'
-      '\t\telse if (*rm_why)\n' in gen and gen.count('logmessage("mdns"') == 4 and "if (rm_on && *rm_guest)" not in gen)
+      '\t\telse if (*rm_why)\n' in gen and gen.count('logmessage("mdns"') == 5 and "if (rm_on && *rm_guest)" not in gen)
 _gi = gen.find("if (rm_on) {")
 check("generate_mdns_config: reflect-guest= inside [reflector], with enable-reflector=yes, after reflect-interfaces; never on deny-interfaces",
       0 <= _gi < gen.find("enable-reflector=yes") < gen.find("reflect-interfaces=%s") < gen.find('fprintf(fp, "reflect-guest=%s\\n", rm_guest);')
@@ -347,6 +351,27 @@ check("the reflect-guest line fits avahi's line reader whole (a longer line woul
       and "guest, gn < REAPER_MDNS_GLINE ? gn : REAPER_MDNS_GLINE);" in plan,
       (_ln and _ln.group(1), _gl and _gl.group(1), _gb and _gb.group(1)))
 check("avahi-daemon parses reflect-guest (agent A's patch)", "reflect-guest" in read("avahi/avahi-daemon/main.c"))
+# ---- reaper 2026-11-20 (REAPER-MDNS-CORETYPES, owner): chosen service types on the main reflector ----
+_cb = re.search(r"#define REAPER_MDNS_CBUF\t(\d+)", svc)
+_sb = re.search(r"#define REAPER_MDNS_SIGBUF\t(\d+)", svc)
+_db = re.search(r"#define REAPER_MDNS_DBUF\t(\d+)", svc)
+check("main reflector types: reaper_mdns_types expanded by the guest table's own function (reaper_mdns_types -> rg_mdns_types), "
+      "prototype in rc.h", "int reaper_mdns_types(const char *in, char *out, size_t on)\n{\n\treturn rg_mdns_types(in, out, on);\n}" in gsrc
+      and "extern int reaper_mdns_types(const char *in, char *out, size_t on);" in rch_early)
+check("main reflector types: the buffer holds 16 expanded types (RG_MDNS_MAX * 40), the line fits avahi's reader, the "
+      "signature buffer holds every part",
+      _cb and _sb and _db and _ln and int(_cb.group(1)) >= 16 * 40 and len("reflect-core-types=") + int(_cb.group(1)) + 1 <= int(_ln.group(1)) - 1
+      and int(_sb.group(1)) >= int(_db.group(1)) + 256 + int(_gb.group(1)) + int(_cb.group(1)) + 16,
+      (_cb and _cb.group(1), _sb and _sb.group(1)))
+check("reaper_mdns_plan: the main types join the signature (a change restarts avahi through reaper_mdns_follow too)",
+      'reaper_mdns_types(nvram_safe_get("reaper_mdns_types"), ct, sizeof(ct));' in plan and "char ct[REAPER_MDNS_CBUF];" in plan)
+_ri = gen.find('fprintf(fp, "reflect-guest=%s\\n", rm_guest);')
+_ci = gen.find('fprintf(fp, "reflect-core-types=%s\\n", rm_ct);')
+check("generate_mdns_config: reflect-core-types= inside [reflector] after reflect-guest, only when a list is set; never stock "
+      "reflect-filters", 0 <= _gi < _ri < _ci and "if (*rm_ct)\n\t\t\tfprintf(fp, \"reflect-core-types=%s\\n\", rm_ct);" in gen
+      and 'reaper_mdns_types(nvram_safe_get("reaper_mdns_types"), rm_ct, sizeof(rm_ct));' in gen
+      and "reflect-filters=" not in svc, (_gi, _ri, _ci))
+check("avahi-daemon parses reflect-core-types", 'strcasecmp(p->key, "reflect-core-types") == 0' in read("avahi/avahi-daemon/main.c"))
 fol = cfunc(svc, "void reaper_mdns_follow(void)") or ""
 check("reaper_mdns_follow: only a running avahi, only a changed plan, stop+start directly (no notify_rc from inside rc)",
       'if (!pids("avahi-daemon"))' in fol and "if (!strcmp(old, sig))" in fol and "stop_mdns();" in fol
@@ -370,19 +395,65 @@ check("Tweaks: the switch, shown on unless \"0\", hidden outside routing modes, 
       'id="t_mdns_reflect"' in tw and "setChk('t_mdns_reflect', NV.reaper_mdns_reflect !== '0');" in tw
       and "if (!ROUTING) q('r_mdns_reflect').classList.add('off');" in tw
       and "c.reaper_mdns_reflect = ROUTING ? chk('t_mdns_reflect') : NV.reaper_mdns_reflect;" in tw)
-check("Tweaks: a change restarts avahi; an empty value reads as the default on",
-      "if (has('reaper_mdns_reflect')) S.push('restart_mdns');" in tw and "reaper_mdns_reflect: '1'}" in tw)
+check("Tweaks: a change restarts avahi (2026-11-20: the service types too); an empty value reads as the default on",
+      "if (has('reaper_mdns_reflect', 'reaper_mdns_types')) S.push('restart_mdns');" in tw and "reaper_mdns_reflect: '1'}" in tw)
+# ---- reaper 2026-11-20: the service-type picker ----
+check("defaults.c: reaper_mdns_types defaults to \"\" (every type, as before)",
+      '{ "reaper_mdns_types", "", CKN_STR256, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },' in read("shared/defaults.c"))
+check("web.c: the settings file carries reaper_mdns_types (misc, up to 255 characters)", '{ "misc",   "reaper_mdns_types", 256 },' in read("httpd/web.c"))
+check("Tweaks: the picker row under the mDNS switch, the shared kit helpers loaded, value read with nvram_get_js",
+      'id="r_mdns_types"' in tw and 'id="t_mdns_types"' in tw and 'id="i_mdns_types_extra"' in tw
+      and '<script src="/reaper/reaper_mdns_svc.js"></script>' in tw
+      and 'NV.reaper_mdns_types = <% nvram_get_js("reaper_mdns_types"); %>;' in tw
+      and tw.find('id="r_mdns_reflect"') < tw.find('id="r_mdns_types"') < tw.find('id="p_wlstab"'))
+check("Tweaks: off = \"\"; reflector off or not routing = value kept; a bad list stops Apply before the page's handler",
+      "if (!mdnsTypesLive()){ c.reaper_mdns_types = NV.reaper_mdns_types; return; }" in tw
+      and "if (chk('t_mdns_types') !== '1'){ c.reaper_mdns_types = ''; return; }" in tw
+      and "e.stopImmediatePropagation();" in tw and tw.find("section('r_mdns_types'") < tw.find("function boot()")
+      and tw.find("s.init();") < tw.find("on('applybtn', 'click', applyAll);"))
+kit = read("www/reaper/reaper_mdns_svc.js")
+check("kit reaper_mdns_svc.js: ASCII, no page globals but window.ReaperMdnsSvc", all(ord(ch) < 128 for ch in kit)
+      and kit.count("window.") == 1 and "window.ReaperMdnsSvc = {types: types, parse: parse, serialise: serialise};" in kit)
+node = shutil.which("node")
+sjp = os.path.join(SRC, "www", "sysdep", "FUNCTION", "SDN", "SDN", "sdn.js")
+if node and os.path.isfile(sjp):
+    sj = open(sjp, encoding="utf-8", errors="replace").read()
+    fns = []
+    for n in ("reaper_gc_svc_types", "reaper_gc_mdns_parse", "reaper_gc_mdns_serialise"):
+        mm = re.search(r"^function " + n + r"\(.*?^\}\n", sj, re.S | re.M)
+        fns.append(mm.group(0) if mm else "")
+    js = ("var window = {};\n" + kit + "\n" + "\n".join(fns) + r"""
+var K = window.ReaperMdnsSvc, bad = [];
+var P = [[], ['print'], ['cast', 'print'], ['print', 'airplay', 'cast', 'homekit', 'audio'], ['PRINT', 'nope']];
+var E = ['', '_ipp._tcp _x._tcp,_x._tcp', '_Foo-1._TCP, _bar._udp', 'ipp._tcp', '_a._sctp', ' , ', '_a._tcp,_b._tcp,_c._tcp,_d._tcp,_e._tcp'];
+P.forEach(function(p){ E.forEach(function(e){
+  var a = JSON.stringify(K.serialise(p, e)), b = JSON.stringify(reaper_gc_mdns_serialise(p, e));
+  if (a !== b) bad.push('ser ' + JSON.stringify([p, e]) + ' ' + a + ' / ' + b); }); });
+['', 'print,_ipp._tcp,junk,_x._udp,print', 'CAST, _A._tcp', null].forEach(function(v){
+  var a = JSON.stringify(K.parse(v)), b = JSON.stringify(reaper_gc_mdns_parse(v));
+  if (a !== b) bad.push('parse ' + v + ' ' + a + ' / ' + b); });
+if (JSON.stringify(K.types()) !== JSON.stringify(reaper_gc_svc_types())) bad.push('types');
+console.log(JSON.stringify(bad));
+""")
+    import tempfile as _tf
+    with _tf.TemporaryDirectory() as td:
+        jf = os.path.join(td, "k.js"); open(jf, "w").write(js)
+        rr = subprocess.run([node, jf], capture_output=True, text=True)
+        check("kit helpers give the Network page helpers' answers (types, parse, serialise; node)",
+              all(fns) and rr.returncode == 0 and rr.stdout.strip() == "[]", (rr.stdout[-600:], rr.stderr[-400:]))
+else:
+    print("note: no node or no sdn.js - the kit / sdn.js parity run is skipped")
 www = os.path.join(SRC, "www")
 packs = sorted(f for f in os.listdir(www) if re.match(r"^[A-Z]{2}\.dict$", f))
 miss, lens = [], set()
 for f in packs:
     t = open(os.path.join(www, f), encoding="utf-8").read()
     lens.add(t.count("\n"))
-    for k in ("RTWK_47", "RTWK_48"):
+    for k in ("RTWK_47", "RTWK_48", "RTWK_55", "RTWK_56", "RTWK_57", "RSDN_26", "RSDN_27"):	# 2026-11-20: + the picker
         mm = re.search(r"^%s=(.+)$" % k, t, re.M)
         if not mm or any(x in mm.group(1) for x in ('"', "`", "\\", "${", "</")):
             miss.append(f + ":" + k)
-check("RTWK_47/48 in all %d packs, quote-safe, packs in lockstep" % len(packs), len(packs) == 25 and not miss and len(lens) == 1, (miss, lens))
+check("RTWK_47/48, 55-57 and RSDN_26/27 in all %d packs, quote-safe, packs in lockstep" % len(packs), len(packs) == 25 and not miss and len(lens) == 1, (miss, lens))
 
 if fails:
     print("\n%d check(s) failed:" % len(fails))

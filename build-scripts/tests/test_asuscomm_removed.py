@@ -11,7 +11,7 @@ WHAT IT CHECKS (static, against the router source tree):
     empty) and logs it;
   - rc/services.c start_ddns() refuses any WWW.ASUS.COM* server before the update is built - this
     also covers the AiDisk register path, which hard-codes the server;
-  - httpd/web.c enable_remote_control.cgi never writes WWW.ASUS.COM or an asuscomm hostname;
+  - httpd/web.c enable_remote_control.cgi is gone (v3.8.4: row and handler removed with the unused app addresses);
   - unreg_ASUSDDNS.cgi (row and handler) is gone.
 2026-11-13 (owner): the dead code behind these paths is deleted - asusddns_unregister() and its service
 handlers, the token client rc/asus_ddns.c and its call / declaration / link, the watchdog's ASUS branches,
@@ -67,12 +67,13 @@ check("start_ddns refuses WWW.ASUS.COM* right after the server is chosen (AiDisk
       and g < body.find("inadyn"))
 
 web = rd("httpd/web.c")
-a = web.find("do_enable_remote_control_cgi(char *url, FILE *stream)")
-rcb = web[a:web.find("\n}\n", a)]
-check("enable_remote_control.cgi never writes WWW.ASUS.COM or an asuscomm hostname",
-      a >= 0 and 'nvram_set("ddns_server_x", "WWW.ASUS.COM")' not in rcb and "asuscomm.com" not in rcb.replace("<name>.asuscomm.com", ""))
-check("enable_remote_control.cgi enables DDNS only for another provider with a hostname",
-      'strncmp(nvram_safe_get("ddns_server_x"), "WWW.ASUS.COM", 12) != 0' in rcb)
+# v3.8.4 (REAPER-UNUSED-V384B): the address and its handler are gone - no page called it and the phone app is not a
+# supported client - so nothing is left that could write an ASUS DDNS setup from a request. Before v3.8.4 this
+# test read the handler's body (never WWW.ASUS.COM, DDNS on only for another provider with a hostname).
+check("enable_remote_control.cgi (row and handler) is gone: no request can switch remote access and DDNS on",
+      '"enable_remote_control.cgi"' not in web.replace('REAPER-UNUSED-V384B: "enable_remote_control.cgi"', "")
+      and "do_enable_remote_control_cgi(char *url, FILE *stream)" not in web
+      and 'nvram_set("ddns_server_x", "WWW.ASUS.COM")' not in web)
 check("unreg_ASUSDDNS.cgi row and handler are deleted (were compiled out until 2026-11-13)",
       "unreg_ASUSDDNS" not in web)
 

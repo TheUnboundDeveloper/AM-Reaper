@@ -857,6 +857,7 @@ static void rw_gen_stats(void) { }
 static void rw_gen_fold(void) { }
 static void rw_gen_update(int w) { (void)w; }
 static void rw_gen_dns(void) { }
+static void rw_dns_exempt_sync(void) { }	/* v3.8.4 (REAPER-DREAD-EXEMPT): test_dreadwatch_exempt.py runs the real one */
 '''
 TOOLS = ["iptables", "ip6tables", "iptables-restore", "ip6tables-restore", "ebtables", "ipset", "logger", "nvram",
          "ip", "conntrack", "fc", "usleep", "reaper_aimesh_sync", "dnsmasq", "cru"]

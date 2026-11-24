@@ -1,0 +1,1700 @@
+From d9a69c77f15c82e9b3570c2b0aaa8a8ef54021dd Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Tue, 24 Nov 2026 11:43:51 -0500
+Subject: [PATCH] DNS: Encrypted DNS fallback, option 162 by policy, Dreadwatch
+ exempt devices, Wallguard lists tab
+
+- Encrypted DNS stage 2: when DNS-over-TLS upstreams stop answering, the router falls back to plain upstream DNS so
+  name resolution keeps working, and returns to DNS-over-TLS once it answers again (Strict profile excepted).
+- DHCP option 162 (automatic encrypted DNS for devices) is offered only to devices the router's DNS-over-TLS server
+  would serve, following DNS Director: a device with an unfiltered or outside-resolver rule is left out, so it no
+  longer adopts a resolver that refuses it (iPhones dropping off Wi-Fi).
+- Dreadwatch: a list of devices that skip the threat lists, counted per device; the resolver reads it from one file.
+- Wallguard: a tab to view and edit the allow and block lists, including names allowed for 24 hours (remove, extend,
+  make permanent); entries allowed for 24 hours expire on the regular fold.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ release/src/router/dnsmasq/src/dnsmasq.h      |   5 +
+ release/src/router/dnsmasq/src/forward.c      |  15 +-
+ release/src/router/dnsmasq/src/option.c       |   7 +
+ release/src/router/dnsmasq/src/reaper_nx.c    | 159 ++++++
+ release/src/router/dnsmasq/src/wallguard.c    |  12 +-
+ release/src/router/rc/encdns.c                | 167 ++++--
+ release/src/router/rc/multi_wan.c             |   2 +-
+ release/src/router/rc/rdnshc.c                | 482 ++++++++++++++++--
+ release/src/router/rc/wallguard.c             |   3 +-
+ release/src/router/rednsd/rednsd.c            |  31 ++
+ release/src/router/wallguard/wallguard.sh     |  44 +-
+ release/src/router/www/Reaper_Dreadwatch.asp  |  56 +-
+ .../src/router/www/Reaper_EncryptedDNS.asp    |  11 +-
+ release/src/router/www/Reaper_Wallguard.asp   | 172 ++++++-
+ 14 files changed, 1080 insertions(+), 86 deletions(-)
+
+diff --git a/release/src/router/dnsmasq/src/dnsmasq.h b/release/src/router/dnsmasq/src/dnsmasq.h
+index 61450f26f9..f557f42cb4 100644
+--- a/release/src/router/dnsmasq/src/dnsmasq.h
++++ b/release/src/router/dnsmasq/src/dnsmasq.h
+@@ -1186,6 +1186,7 @@ extern struct daemon {
+   char *servers_file;
+   char *reaper_hitlog;	/* reaper 2026-10-20: --reaper-hitlog, see reaper_hit() */
+   char *reaper_nx_db;	/* reaper 2026-10-24: --reaper-nx-db, the Dreadwatch table (reaper_nx.c) */
++  char *reaper_nx_exempt;	/* reaper 2026-11-22: --reaper-nx-exempt, the devices that skip Dreadwatch (reaper_nx.c) */
+   char *wallguard_dir;	/* reaper 2026-10-21: --wallguard-dir, see wallguard.c */
+   struct mx_srv_record *mxnames;
+   struct naptr *naptr;
+@@ -1996,6 +1997,10 @@ void reaper_hit_rec(const char *listed, const char *feeds, union mysockaddr *cli
+ /* reaper 2026-10-24: Dreadwatch's threat table (reaper_nx.c) */
+ int reaper_nx_judge(time_t now, int matched, int first, char *name, unsigned int *flags, union mysockaddr *client);
+ int reaper_nx_listed(const char *name);
++/* reaper 2026-11-22 (REAPER-DREAD-EXEMPT): the devices that skip Dreadwatch */
++int reaper_nx_exempt(union mysockaddr *client, time_t now);
++int reaper_nx_merge_ok(union mysockaddr *a, union mysockaddr *b, time_t now);
++int reaper_nx_pass(const char *name, union mysockaddr *client, time_t now);
+ union mysockaddr *reaper_client(union mysockaddr *addr);	/* reaper 2026-10-21, edns0.c */
+ /* reaper 2026-10-21: Wallguard (wallguard.c) */
+ size_t wallguard_answer(struct dns_header *header, char *limit, size_t qlen,	/* + int *ede (phase 2) */
+diff --git a/release/src/router/dnsmasq/src/forward.c b/release/src/router/dnsmasq/src/forward.c
+index 7d143ae3c4..2bba7d449a 100644
+--- a/release/src/router/dnsmasq/src/forward.c
++++ b/release/src/router/dnsmasq/src/forward.c
+@@ -232,7 +232,9 @@ static void forward_query(int udpfd, union mysockaddr *udpaddr,
+ 					     FREC_CHECKING_DISABLED | FREC_AD_QUESTION | FREC_DO_QUESTION |
+ 					     FREC_HAS_PHEADER | FREC_DNSKEY_QUERY | FREC_DS_QUERY | FREC_NO_CACHE)) &&
+ 	   /* reaper 2026-10-21 Wallguard: join only an asker Wallguard judges alike, else forward on its own */
+-	   (wallguard_merge_ok(&forward->frec_src.wallguard_client, reaper_client(udpaddr), now) || (forward = NULL, 0)))
++	   /* reaper 2026-11-22 (REAPER-DREAD-EXEMPT): nor a device Dreadwatch judges differently */
++	   ((wallguard_merge_ok(&forward->frec_src.wallguard_client, reaper_client(udpaddr), now) &&
++	     reaper_nx_merge_ok(&forward->frec_src.wallguard_client, reaper_client(udpaddr), now)) || (forward = NULL, 0)))
+     {
+       struct frec_src *src;
+       unsigned int casediff = 0;
+@@ -2016,6 +2018,12 @@ void receive_query(struct listener *listen, time_t now)
+ 
+       n = add_edns0_config(header, n, daemon->edns_pktsz, &source_addr, now, &cacheable);
+ 
++      /* reaper 2026-11-22 (REAPER-DREAD-EXEMPT): a device the admin lets past Dreadwatch asks for a listed name.
++	 Dreadwatch judges after the cache, so this lookup must not read the cache, leave its answer there or
++	 join another device's query in flight - not cacheable does all three (reaper_nx.c) */
++      if (wallguard_q && reaper_nx_pass(daemon->namebuff, reaper_client(&source_addr), now))
++	cacheable = 0;
++
+       /* reaper 2026-10-21: Wallguard judges before the cache does (a cached answer is covered
+ 	 too), for the real device behind Encrypted DNS (reaper_client) */
+       if (daemon->wallguard_dir && wallguard_q &&
+@@ -2601,6 +2609,11 @@ void tcp_request(int confd, time_t now, struct iovec *bigbuff,
+ 
+ 	      log_query_mysockaddr((auth_dns ? F_NOERR | F_AUTH : 0) | F_QUERY | F_FORWARD, daemon->namebuff,
+ 				   &peer_addr, NULL, qtype);
++
++	      /* reaper 2026-11-22 (REAPER-DREAD-EXEMPT): as on UDP - an exempt device's lookup of a listed name
++		 never reads the cache and never leaves its answer there */
++	      if (reaper_nx_pass(daemon->namebuff, reaper_client(&peer_addr), now))
++		cacheable = 0;
+ 	      
+ #ifdef HAVE_AUTH
+ 	      /* Find queries for zones we're authoritative for, and answer them directly.
+diff --git a/release/src/router/dnsmasq/src/option.c b/release/src/router/dnsmasq/src/option.c
+index 9aab0323be..13c77cfc4e 100644
+--- a/release/src/router/dnsmasq/src/option.c
++++ b/release/src/router/dnsmasq/src/option.c
+@@ -206,6 +206,7 @@ struct myoption {
+ #define LOPT_REAPER_HITLOG 394
+ #define LOPT_WALLGUARD_DIR    395	/* reaper 2026-10-21 (Wallguard) */
+ #define LOPT_REAPER_NXDB   396	/* reaper 2026-10-24 (Dreadwatch table, reaper_nx.c) */
++#define LOPT_REAPER_NXEX   397	/* reaper 2026-11-22 (the devices that skip Dreadwatch, reaper_nx.c) */
+ 
+ #ifdef HAVE_GETOPT_LONG
+ static const struct option opts[] =  
+@@ -411,6 +412,7 @@ static const struct myoption opts[] =
+ 	{ "reaper-hitlog", 1, 0, LOPT_REAPER_HITLOG },
+ 	{ "wallguard-dir", 1, 0, LOPT_WALLGUARD_DIR },
+ 	{ "reaper-nx-db", 1, 0, LOPT_REAPER_NXDB },
++	{ "reaper-nx-exempt", 1, 0, LOPT_REAPER_NXEX },
+     { "leasequery", 2, 0, LOPT_LEASEQUERY },
+     { "log-malloc", 0, 0, LOPT_LOG_MALLOC },
+     { NULL, 0, 0, 0 }
+@@ -627,6 +629,7 @@ static struct {
+   { LOPT_REAPER_HITLOG, ARG_ONE, "<path>", gettext_noop("Append one line per threat-list answer to this file."), NULL },
+   { LOPT_WALLGUARD_DIR, ARG_ONE, "<dir>", gettext_noop("Wallguard: block names on the compiled list in this directory."), NULL },
+   { LOPT_REAPER_NXDB, ARG_ONE, "<path>", gettext_noop("Dreadwatch: NXDOMAIN for the names in this compiled table (one copy mapped by every instance)."), NULL },
++  { LOPT_REAPER_NXEX, ARG_ONE, "<path>", gettext_noop("Dreadwatch: the MAC addresses in this file skip the threat table."), NULL },
+   { 0, 0, NULL, NULL, NULL }
+ }; 
+ 
+@@ -2354,6 +2357,10 @@ static int one_opt(int option, char *arg, char *errstr, char *gen_err, int comma
+       daemon->reaper_hitlog = opt_string_alloc(arg);
+       break;
+ 
++    case LOPT_REAPER_NXEX: /* reaper 2026-11-22: the devices that skip Dreadwatch (reaper_nx.c) */
++      daemon->reaper_nx_exempt = opt_string_alloc(arg);
++      break;
++
+     case LOPT_REAPER_NXDB: /* reaper 2026-10-24: Dreadwatch's table (reaper_nx.c) */
+       daemon->reaper_nx_db = opt_string_alloc(arg);
+       break;
+diff --git a/release/src/router/dnsmasq/src/reaper_nx.c b/release/src/router/dnsmasq/src/reaper_nx.c
+index f790c10936..31e3983108 100644
+--- a/release/src/router/dnsmasq/src/reaper_nx.c
++++ b/release/src/router/dnsmasq/src/reaper_nx.c
+@@ -80,6 +80,163 @@ static void nx_feeds(uint32_t bits, char *out, size_t n)
+     strcpy(out, "-");
+ }
+ 
++/* REAPER-DREAD-EXEMPT (2026-11-22, owner): devices that skip Dreadwatch. rc writes their MAC addresses, one a
++   line, into --reaper-nx-exempt (at most NX_EXEMPT_MAX: the admin's list on the Dreadwatch page). The file is
++   looked at again every NX_RECHECK seconds, so an edit needs no restart. An exempt device's lookup of a listed
++   name is forwarded like any other name - and because the judge below runs AFTER the cache, such a lookup must
++   never read the cache, leave its answer there or share another device's query in flight: forward.c makes it
++   not cacheable where the query comes in (reaper_nx_pass). Without that, one exempt lookup would unblock the
++   name for every device. What is kept of it is a count per device ("<hitlog>.pass": "<epoch> <mac>"), never
++   the name. */
++#define NX_EXEMPT_MAX 16
++#define NX_PASS_RATE 20			/* records a second */
++#define NX_PASS_MAX (64 * 1024)		/* bytes, until the collector takes the file away */
++
++static struct {
++  unsigned char mac[NX_EXEMPT_MAX][6];
++  int n, have;
++  time_t checked, mtime;
++  off_t size;
++  ino_t ino;
++} nxe;
++
++/* exactly "xx:xx:xx:xx:xx:xx" and the end of the line */
++static int nxe_parse(const char *s, unsigned char *m)
++{
++  unsigned int v;
++  int i;
++
++  for (i = 0; i < 17; i++)
++    if (i % 3 == 2 ? s[i] != ':' : !isxdigit((unsigned char)s[i]))
++      return 0;
++  if (s[17] && s[17] != '\n' && s[17] != '\r')
++    return 0;
++  for (i = 0; i < 6; i++)
++    {
++      if (sscanf(s + 3 * i, "%2x", &v) != 1)
++	return 0;
++      m[i] = (unsigned char)v;
++    }
++  return 1;
++}
++
++static void nxe_load(time_t now)
++{
++  struct stat st;
++  char line[64];
++  FILE *f;
++
++  if (nxe.checked && now - nxe.checked < NX_RECHECK)
++    return;
++  nxe.checked = now ? now : 1;
++  if (stat(daemon->reaper_nx_exempt, &st) != 0 || !S_ISREG(st.st_mode))
++    {
++      nxe.n = nxe.have = 0;
++      return;
++    }
++  if (nxe.have && st.st_mtime == nxe.mtime && st.st_size == nxe.size && st.st_ino == nxe.ino)
++    return;
++  nxe.n = nxe.have = 0;
++  if (!(f = fopen(daemon->reaper_nx_exempt, "r")))
++    return;
++  while (nxe.n < NX_EXEMPT_MAX && fgets(line, sizeof(line), f))
++    if (nxe_parse(line, nxe.mac[nxe.n]))
++      nxe.n++;
++  fclose(f);
++  nxe.have = 1;
++  nxe.mtime = st.st_mtime;
++  nxe.size = st.st_size;
++  nxe.ino = st.st_ino;
++}
++
++/* the device's MAC when it is on the list; the neighbour table is asked only while somebody is exempt */
++static int nxe_match(union mysockaddr *client, time_t now, unsigned char *mac)
++{
++  int i;
++
++  if (!daemon->reaper_nx_exempt || !client)
++    return 0;
++  nxe_load(now);
++  if (!nxe.n || find_mac(client, mac, 1, now) != 6)
++    return 0;
++  for (i = 0; i < nxe.n; i++)
++    if (!memcmp(nxe.mac[i], mac, 6))
++      return 1;
++  return 0;
++}
++
++/* 1 = the admin lets this device past Dreadwatch (wallguard.c asks too: its own lists still apply to it) */
++int reaper_nx_exempt(union mysockaddr *client, time_t now)
++{
++  unsigned char mac[6];
++
++  return nxe_match(client, now, mac);
++}
++
++/* forward.c, before a query joins another device's query in flight: only when Dreadwatch judges both alike
++   (with an option that makes every query not cacheable, FREC_NO_CACHE alone would not keep them apart) */
++int reaper_nx_merge_ok(union mysockaddr *a, union mysockaddr *b, time_t now)
++{
++  if (!daemon->reaper_nx_exempt)
++    return 1;
++  nxe_load(now);
++  if (!nxe.n)
++    return 1;
++  return reaper_nx_exempt(a, now) == reaper_nx_exempt(b, now);
++}
++
++/* one count record: the date and the device, nothing about what it asked */
++static void nx_pass_rec(const unsigned char *mac)
++{
++  static time_t win;
++  static int used;
++  char path[256], line[48];
++  struct stat st;
++  time_t t = time(NULL);
++  int fd, n;
++
++  if (!daemon->reaper_hitlog)
++    return;
++  if (t != win)
++    {
++      win = t;
++      used = 0;
++    }
++  if (used >= NX_PASS_RATE)
++    return;
++  used++;
++  if (snprintf(path, sizeof(path), "%s.pass", daemon->reaper_hitlog) >= (int)sizeof(path))
++    return;
++  if ((fd = open(path, O_WRONLY | O_APPEND | O_CREAT | O_NOFOLLOW, 0600)) == -1)
++    return;
++  n = snprintf(line, sizeof(line), "%ld %02x:%02x:%02x:%02x:%02x:%02x\n", (long)t, mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
++  if (fstat(fd, &st) == 0 && S_ISREG(st.st_mode) && st.st_size < NX_PASS_MAX && n > 0 && (size_t)n < sizeof(line) &&
++      write(fd, line, n) != n)
++    used = NX_PASS_RATE;		/* a full or failing file: no more tries this second */
++  close(fd);
++}
++
++/* forward.c, where a query comes in (UDP and TCP), after add_edns0_config() so that a device behind Encrypted
++   DNS is the device rednsd named: 1 = an exempt device asks for a listed name; the caller then makes the
++   query not cacheable. Costs one comparison while nobody is exempt. */
++int reaper_nx_pass(const char *name, union mysockaddr *client, time_t now)
++{
++  unsigned char mac[6];
++  uint32_t bits = 0;
++  const char *at = NULL;
++
++  if (!daemon->reaper_nx_db || !daemon->reaper_nx_exempt || !client || !name)
++    return 0;
++  nxe_load(now);
++  if (!nxe.n)
++    return 0;
++  nx_map(now);
++  if (!nx_longest(name, &bits, &at) || !nxe_match(client, now, mac))
++    return 0;
++  nx_pass_rec(mac);
++  return 1;
++}
++
+ /* forward.c, right after the server-array search: matched = lookup_domain found an entry (first
+    is then its index; *flags = what is_local_answer made of it). A listed suffix longer than that
+    entry's domain turns the query into the --reaper-nx answer - the longest entry wins, as it did
+@@ -100,6 +257,8 @@ int reaper_nx_judge(time_t now, int matched, int first, char *name, unsigned int
+     return 0;
+   if (!(ml = nx_longest(name, &bits, &at)))
+     return 0;
++  if (reaper_nx_exempt(client, now))	/* REAPER-DREAD-EXEMPT: counted where the query came in (reaper_nx_pass) */
++    return 0;
+   if (matched && first >= 0 && first < daemon->serverarraysz &&
+       (size_t)daemon->serverarray[first]->domain_len >= ml)
+     return 0;			/* a config entry of equal or longer domain owns this name */
+diff --git a/release/src/router/dnsmasq/src/wallguard.c b/release/src/router/dnsmasq/src/wallguard.c
+index 5e7f965649..d6b8dceabe 100644
+--- a/release/src/router/dnsmasq/src/wallguard.c
++++ b/release/src/router/dnsmasq/src/wallguard.c
+@@ -620,7 +620,9 @@ static void wallguard_live(union mysockaddr *client, unsigned short qtype, const
+    DoH canaries rc answers NXDOMAIN) or Dreadwatch's threat list (reaper-nx, which records
+    its own hit) - wins over the lists. Asked only for listed names, so it costs nothing on
+    the common path. */
+-static int wallguard_config_answer(char *name, unsigned short qtype)
++/* reaper 2026-11-22 (REAPER-DREAD-EXEMPT): for a device the admin lets past Dreadwatch the threat list is not
++   dnsmasq's answer, so Wallguard's own lists still decide for it. */
++static int wallguard_config_answer(char *name, unsigned short qtype, union mysockaddr *client, time_t now)
+ {
+   int first, last, fl = qtype == T_A ? F_IPV4 : (qtype == T_AAAA ? F_IPV6 : 0);
+ 
+@@ -628,7 +630,7 @@ static int wallguard_config_answer(char *name, unsigned short qtype)
+ 
+   if ((lookup_domain(name, fl, &first, &last) &&
+        (daemon->serverarray[first]->flags & SERV_LITERAL_ADDRESS)) ||
+-      reaper_nx_listed(name))	/* reaper 2026-10-24: the mapped threat table (reaper_nx.c) */
++      (reaper_nx_listed(name) && !reaper_nx_exempt(client, now)))	/* reaper 2026-10-24: the mapped threat table (reaper_nx.c) */
+     return 1;
+   /* reaper 2026-11-05: the router's own records for the name - a DNS rewrite (host-record=, cname=),
+      /etc/hosts, a device's DHCP name - are the operator's answer as well; a cached upstream answer
+@@ -670,7 +672,7 @@ static size_t wallguard_safe_answer(struct dns_header *header, char *limit, size
+   for (i = 0; i < ss.naddr; i++)
+     if (ss.addr[i].g == want)
+       any = 1;
+-  if (!any || wallguard_config_answer((char *)name, qtype))
++  if (!any || wallguard_config_answer((char *)name, qtype, client, now))
+     return 0;
+   setup_reply(header, F_NOERR, EDE_UNSET);
+   if (!(p = skip_questions(header, qlen)))
+@@ -736,7 +738,7 @@ size_t wallguard_answer(struct dns_header *header, char *limit, size_t qlen,
+ 	  wallguard_live(client, qtype, name, 'a', NULL);
+ 	  return 0;
+ 	}
+-      if (av == WGA_BLOCK && !wallguard_config_answer(name, qtype))
++      if (av == WGA_BLOCK && !wallguard_config_answer(name, qtype, client, now))
+ 	{
+ 	  mask = wallguard_mask(client, now, mac, &have_mac, NULL);
+ 	  if ((mask & 1u) && (imp || !sh.t.ok || wallguard_lookup(&sh.t.v, name, &abits) != WALLGUARD_ALLOWED))
+@@ -754,7 +756,7 @@ size_t wallguard_answer(struct dns_header *header, char *limit, size_t qlen,
+       return 0;
+     }
+   r = wallguard_lookup_at(&sh.t.v, name, &bits, &listed);
+-  if (r == WALLGUARD_LISTED && wallguard_config_answer(name, qtype))
++  if (r == WALLGUARD_LISTED && wallguard_config_answer(name, qtype, client, now))
+     r = WALLGUARD_ALLOWED;
+   if (r != WALLGUARD_LISTED)
+     {
+diff --git a/release/src/router/rc/encdns.c b/release/src/router/rc/encdns.c
+index 42d81614a0..13dc42869a 100644
+--- a/release/src/router/rc/encdns.c
++++ b/release/src/router/rc/encdns.c
+@@ -214,6 +214,68 @@ static int dnsf_router_ok(int mode)
+ }
+ #endif
+ 
++/* REAPER-DNR-STEP (2026-11-22): DNS Director's per-device rules and network modes, read in ONE place for both
++   users - rednsd's policy (red_policy: allow-mac / deny-mac / deny-net) and the DHCP option 162 offer
++   (rednsd_dnr_option) - so a device is told about the router's encrypted DNS exactly when rednsd serves it.
++   An iPhone takes the offer by itself; offered and then refused, it has no DNS at all. */
++static int red_mac_shape(const char *s)
++{
++	int i;
++
++	for (i = 0; i < 17; i++)
++		if (i % 3 == 2 ? s[i] != ':' : !isxdigit((unsigned char)s[i]))
++			return 0;
++	return 1;
++}
++
++/* cb(normalised MAC, 1 = rednsd serves it, arg) for every per-device rule; returns the number of rules */
++static int red_dd_each(void (*cb)(const char *mac, int ok, void *arg), void *arg)
++{
++	int n = 0;
++#ifdef RTCONFIG_DNSFILTER
++	char *nv, *nvp, *rule, *name, *mac, *mode, macbuf[18];
++	unsigned char ea[ETHER_ADDR_LEN];
++
++	if (!nvram_get_int("dnsfilter_enable_x"))
++		return 0;
++#ifdef HND_ROUTER
++	nv = nvp = malloc(255 * 6 + 1);
++	if (nv) nvram_split_get("dnsfilter_rulelist", nv, 255 * 6 + 1, 5);
++#else
++	nv = nvp = strdup(nvram_safe_get("dnsfilter_rulelist"));
++#endif
++	while (nv && (rule = strsep(&nvp, "<")) != NULL) {
++		/* the 17-character shape first: ether_atoe() takes "zz:zz" as all zeros; then the normalised address,
++		   because DNS Director's text may hold anything after the sixth group */
++		if (vstrsep(rule, ">", &name, &mac, &mode) != 3 || !*mode || !red_mac_shape(mac) || !ether_atoe(mac, ea))
++			continue;
++		cb(ether_etoa(ea, macbuf), dnsf_router_ok(safe_atoi(mode)), arg);
++		n++;
++	}
++	free(nv);
++#else
++	(void)cb; (void)arg;
++#endif
++	return n;
++}
++
++/* DNS Director sends a whole network to another server: mode = the global mode for the main network, a
++   guest/VLAN network's own row otherwise */
++static int red_dd_refused(int mode)
++{
++#ifdef RTCONFIG_DNSFILTER
++	return nvram_get_int("dnsfilter_enable_x") && !dnsf_router_ok(mode);
++#else
++	(void)mode;
++	return 0;
++#endif
++}
++
++static void red_policy_cb(const char *mac, int ok, void *arg)
++{
++	rb_add((struct rb *)arg, "%s %s\n", ok ? "allow-mac" : "deny-mac", mac);
++}
++
+ /* peers + DNS Director policy: a change here is a SIGHUP */
+ static void red_policy(struct rb *r)
+ {
+@@ -259,31 +321,14 @@ static void red_policy(struct rb *r)
+ 	/* DNS Director: a device it sends to another server must not get the router's
+ 	   unfiltered answers over DoT. rednsd closes it before TLS, so Android's automatic
+ 	   mode falls back to port 53, where DNS Director applies. */
+-	if (nvram_get_int("dnsfilter_enable_x")) {
+-		char *nv, *nvp, *rule, *name, *mac, *mode, macbuf[18];
+-		unsigned char ea[ETHER_ADDR_LEN];
+-
+-#ifdef HND_ROUTER
+-		nv = nvp = malloc(255 * 6 + 1);
+-		if (nv) nvram_split_get("dnsfilter_rulelist", nv, 255 * 6 + 1, 5);
+-#else
+-		nv = nvp = strdup(nvram_safe_get("dnsfilter_rulelist"));
+-#endif
+-		while (nv && (rule = strsep(&nvp, "<")) != NULL) {
+-			if (vstrsep(rule, ">", &name, &mac, &mode) != 3 || !*mac || !*mode || !ether_atoe(mac, ea))
+-				continue;
+-			/* the normalised address: DNS Director's text may hold anything after the sixth group */
+-			rb_add(r, "%s %s\n", dnsf_router_ok(safe_atoi(mode)) ? "allow-mac" : "deny-mac", ether_etoa(ea, macbuf));
+-		}
+-		free(nv);
+-		if (!dnsf_router_ok(nvram_get_int("dnsfilter_mode"))) {
+-			if (lan_subnet(net, sizeof(net)))
+-				rb_add(r, "deny-net %s\n", net);
++	red_dd_each(red_policy_cb, r);		/* REAPER-DNR-STEP: the reader the option 162 offer uses too */
++	if (red_dd_refused(nvram_get_int("dnsfilter_mode"))) {
++		if (lan_subnet(net, sizeof(net)))
++			rb_add(r, "deny-net %s\n", net);
+ #ifdef RTCONFIG_IPV6
+-			if (*lan6p)
+-				rb_add(r, "deny-net %s\n", lan6p);
++		if (*lan6p)
++			rb_add(r, "deny-net %s\n", lan6p);
+ #endif
+-		}
+ 	}
+ #endif
+ }
+@@ -492,7 +537,29 @@ static size_t red_dnr_instance(unsigned char *o, size_t osz, unsigned prio, cons
+ 	return n;
+ }
+ 
+-/* what a dnsmasq config written now publishes: "<name> <dot> <doh>", or "" */
++/* REAPER-DNR-STEP: a digest of DNS Director's part in the offer (0 = it has none), so a rule change that reached
++   rednsd but not dnsmasq restarts dnsmasq once (red_dnr_sync, rednsd_dnr_watch) */
++static void red_dd_digest_cb(const char *mac, int ok, void *arg)
++{
++	unsigned int *h = arg;
++
++	for (; *mac; mac++)
++		*h = (*h ^ (unsigned char)*mac) * 16777619u;
++	*h = (*h ^ (unsigned int)(ok ? '+' : '-')) * 16777619u;
++}
++
++static unsigned int red_dd_digest(void)
++{
++	unsigned int h = 2166136261u;
++	int n = red_dd_each(red_dd_digest_cb, &h), lr = red_dd_refused(nvram_get_int("dnsfilter_mode"));
++
++	if (!n && !lr)
++		return 0;
++	h = (h ^ (unsigned int)lr) * 16777619u;
++	return h ? h : 1;
++}
++
++/* what a dnsmasq config written now publishes: "<name> <dot> <doh>[ <DNS Director digest>]", or "" */
+ static void red_dnr_state(char *buf, size_t sz)
+ {
+ 	char name[256];
+@@ -503,14 +570,40 @@ static void red_dnr_state(char *buf, size_t sz)
+ 		return;
+ 	dot = red_dot_on();
+ 	doh = red_doh_on() && !red_doh_busy();
+-	if (dot || doh)
+-		snprintf(buf, sz, "%s %d %d", name, dot, doh);
++	if (dot || doh) {
++		/* REAPER-DNR-STEP: who the offer leaves out is part of what the config publishes */
++		unsigned int dg = red_dd_digest();
++
++		if (dg)
++			snprintf(buf, sz, "%s %d %d %08x", name, dot, doh, dg);
++		else
++			snprintf(buf, sz, "%s %d %d", name, dot, doh);
++	}
++}
++
++/* REAPER-DNR-STEP: the devices the offer must skip (network served) or the only ones it is for (network refused) */
++struct red_dnr_tag { FILE *fp; int want; const char *set; int n; };
++
++static void red_dnr_tag_cb(const char *mac, int ok, void *arg)
++{
++	struct red_dnr_tag *t = arg;
++
++	if (ok != t->want)
++		return;
++	fprintf(t->fp, "dhcp-mac=set:%s,%s\n", t->set, mac);
++	t->n++;
+ }
+ 
+ /* One network's option line, into its dnsmasq config. tag = the network's DHCP tag, addr = the router's address
+-   on it (where rednsd listens). DNS-over-HTTPS first: a device that can do both takes the lower priority number. */
+-void rednsd_dnr_option(FILE *fp, const char *tag, const char *addr)
++   on it (where rednsd listens). DNS-over-HTTPS first: a device that can do both takes the lower priority number.
++   REAPER-DNR-STEP (2026-11-22): dd_mode = DNS Director's mode for this network (the global mode for the main
++   network, the network's own row otherwise). The offer goes exactly to the devices rednsd serves
++   (rednsd.c policy_allows): a network it serves - every device but the ones a rule sends elsewhere
++   (tag rednodnr); a network DNS Director sends elsewhere - only the devices a rule keeps on the router
++   (tag reddnr), nobody when there is none. */
++void rednsd_dnr_option(FILE *fp, const char *tag, const char *addr, int dd_mode)
+ {
++	struct red_dnr_tag dt;
+ 	char st[300], name[256], hex[3 * 255 + 1];
+ 	unsigned char opt[255], adn[256], ip[4];
+ 	size_t al, n = 0, k, i;
+@@ -535,7 +628,23 @@ void rednsd_dnr_option(FILE *fp, const char *tag, const char *addr)
+ 		return;
+ 	for (i = 0; i < n; i++)
+ 		snprintf(hex + 3 * i, 4, "%02x%s", opt[i], i + 1 < n ? ":" : "");
+-	fprintf(fp, "dhcp-option=%s,162,%s\n", tag, hex);
++	dt.fp = fp;
++	dt.n = 0;
++	if (!red_dd_refused(dd_mode)) {
++		dt.want = 0;
++		dt.set = "rednodnr";
++		red_dd_each(red_dnr_tag_cb, &dt);
++		if (dt.n)
++			fprintf(fp, "dhcp-option=tag:%s,tag:!rednodnr,162,%s\n", tag, hex);
++		else
++			fprintf(fp, "dhcp-option=%s,162,%s\n", tag, hex);
++	} else {
++		dt.want = 1;
++		dt.set = "reddnr";
++		red_dd_each(red_dnr_tag_cb, &dt);
++		if (dt.n)
++			fprintf(fp, "dhcp-option=tag:%s,tag:reddnr,162,%s\n", tag, hex);
++	}
+ }
+ 
+ /* end of start_dnsmasq(): record what this config publishes */
+diff --git a/release/src/router/rc/multi_wan.c b/release/src/router/rc/multi_wan.c
+index 2670a60893..3e7f726534 100644
+--- a/release/src/router/rc/multi_wan.c
++++ b/release/src/router/rc/multi_wan.c
+@@ -916,7 +916,7 @@ void mtwan_append_group_main_resolvconf(int wan_unit)
+ 			continue;
+ #endif
+ #ifdef RTCONFIG_DNSPRIVACY
+-		if (dnspriv_enable)
++		if (dnspriv_enable && !reaper_uptls_plain)	/* REAPER-UPTLS: the fallback writes the plain servers (rc/wan.c) */
+ 			continue;
+ #endif
+ 
+diff --git a/release/src/router/rc/rdnshc.c b/release/src/router/rc/rdnshc.c
+index 62ecc79ffa..532d7f0e39 100644
+--- a/release/src/router/rc/rdnshc.c
++++ b/release/src/router/rc/rdnshc.c
+@@ -53,6 +53,9 @@
+  * 2026-10-10: it also carries the dashboard's LAN name resolution check
+  * (landns_*, below rdnshc's own state) - a status-only probe of the path LAN
+  * devices resolve through, independent of this check's switch.
++ *
++ * 2026-11-20: and the automatic fallback of the upstream DNS-over-TLS leg
++ * (uptls_*, REAPER-UPTLS), also independent of this check's switch.
+  */
+ #include "rc.h"
+ #include <signal.h>
+@@ -316,44 +319,59 @@ struct hc_dot {
+ 	char host[256];
+ };
+ 
+-static int hc_dot_mode(const char *target, const char *alt, struct hc_dot *d)
++/* One row of dnspriv_rulelist ("<server>port>hostname>spkipin", cut out of the list by the caller) -> d: the
++ * address in its canonical spelling, its family, the port (853 when empty) and the name when it is a host name.
++ * 1 = a row stubby uses (the same tests as rc/wan.c dot_has_upstream), 0 = skipped. 2026-11-20 (REAPER-UPTLS):
++ * lifted out of hc_dot_mode() so the upstream fallback asks the same rows. */
++static int hc_dot_row(char *b, struct hc_dot *d)
+ {
+-	char *nv, *nvp, *b, *server, *tlsport, *hostname, *spkipin;
++	char *server, *tlsport, *hostname, *spkipin;
+ 	unsigned char bin[sizeof(struct in6_addr)];
+-	char canon[INET6_ADDRSTRLEN];
+-	int on = 0, mode = 0, af, port;
++	int af, port;
+ 	size_t i;
+ 
++	memset(d, 0, sizeof(*d));
++	server = tlsport = hostname = spkipin = NULL;
++	if (vstrsep(b, ">", &server, &tlsport, &hostname, &spkipin) < 4 || !*server)
++		return 0;
++	port = *tlsport ? safe_atoi(tlsport) : 853;
++	if (port <= 0 || port > 65535)
++		return 0;
++	if (inet_pton(AF_INET, server, bin) == 1)
++		af = AF_INET;
++	else if (inet_pton(AF_INET6, server, bin) == 1 && ipv6_enabled())
++		af = AF_INET6;
++	else
++		return 0;
++	inet_ntop(af, bin, d->addr, sizeof(d->addr));
++	d->af = af;
++	d->port = port;
++	for (i = 0; hostname[i]; i++)
++		if (!(isalnum((unsigned char)hostname[i]) || hostname[i] == '.' || hostname[i] == '-'))
++			break;
++	if (!hostname[i] && i > 0 && i < sizeof(d->host))
++		strlcpy(d->host, hostname, sizeof(d->host));
++	return 1;
++}
++
++static int hc_dot_mode(const char *target, const char *alt, struct hc_dot *d)
++{
++	char *nv, *nvp, *b;
++	struct hc_dot r;
++	int on = 0, mode = 0;
++
+ 	memset(d, 0, sizeof(*d));
+ 	if (nvram_get_int("dnspriv_enable") != 1 || !is_routing_enabled())
+ 		return 'p';
+ 	nv = nvp = strdup(nvram_safe_get("dnspriv_rulelist"));
+ 	while (nvp && (b = strsep(&nvp, "<")) != NULL) {
+-		server = tlsport = hostname = spkipin = NULL;
+-		if (vstrsep(b, ">", &server, &tlsport, &hostname, &spkipin) < 4 || !*server)
+-			continue;
+-		port = *tlsport ? safe_atoi(tlsport) : 853;
+-		if (port <= 0 || port > 65535)
+-			continue;
+-		if (inet_pton(AF_INET, server, bin) == 1)
+-			af = AF_INET;
+-		else if (inet_pton(AF_INET6, server, bin) == 1 && ipv6_enabled())
+-			af = AF_INET6;
+-		else
++		if (!hc_dot_row(b, &r))
+ 			continue;
+ 		on = 1;
+-		if (mode == 't' || (af == AF_INET6 && !hc_v6_usable()))
++		if (mode == 't' || (r.af == AF_INET6 && !hc_v6_usable()))
+ 			continue;	/* the first match wins; an IPv6 row the router cannot reach now is not asked directly */
+-		inet_ntop(af, bin, canon, sizeof(canon));
+-		if ((target && *target && !strcmp(canon, target)) || (alt && *alt && !strcmp(canon, alt))) {
+-			strlcpy(d->addr, canon, sizeof(d->addr));
+-			d->af = af;
+-			d->port = port;
+-			for (i = 0; hostname[i]; i++)
+-				if (!(isalnum((unsigned char)hostname[i]) || hostname[i] == '.' || hostname[i] == '-'))
+-					break;
+-			if (!hostname[i] && i > 0 && i < sizeof(d->host))
+-				strlcpy(d->host, hostname, sizeof(d->host));
++		if ((target && *target && !strcmp(r.addr, target)) || (alt && *alt && !strcmp(r.addr, alt))) {
++			*d = r;
+ 			mode = 't';
+ 		}
+ 	}
+@@ -985,6 +1003,408 @@ static void landns_silent_upstreams(const char *qname, char *out, size_t len)
+ 	}
+ }
+ 
++/* ======================================================================
++ * reaper 2026-11-20 REAPER-UPTLS: automatic fallback of the upstream
++ * DNS-over-TLS leg (owner 2026-11-10, Encrypted DNS stage 2; BACKLOG
++ * "fall back to plain upstream by itself (Opportunistic only), restore it,
++ * and show that state in red").
++ *
++ * With DNS-over-TLS on for the router (the same test rc/wan.c uses for its
++ * own lookups: the switch, router mode, a usable server row) dnsmasq's only
++ * upstream is the forwarder, stubby on 127.0.1.1. Nothing else falls back
++ * when it is dead or reaches none of its servers: every LAN lookup fails.
++ * Every UT_EVERY seconds this asks the forwarder a question only an upstream
++ * can answer (the root zone) and, with the Opportunistic profile, asks the
++ * servers themselves over DNS-over-TLS (no certificate check, as stubby in
++ * that profile), at least every UT_TLS_EVERY seconds and on every check
++ * while something is wrong. What a check finds:
++ *   the forwarder is not running, or gives no resolving answer
++ *     Opportunistic, after UT_FAIL_AFTER checks in a row: dnsmasq is given the
++ *       plain WAN DNS servers in place of 127.0.1.1 (rc/wan.c
++ *       update_resolvconf_plain, under the resolv lock, dnsmasq reloaded) -
++ *       state "fb"; re-asserted while it lasts, because wan_up(), the VPN
++ *       clients and a DNS apply rewrite the file;
++ *     Strict: never - state "down", a red line on the page, nothing changed;
++ *   the forwarder answers but no server completes an encrypted lookup
++ *     (Opportunistic): the forwarder already asks the same servers in the
++ *     clear by itself (its transport list has UDP and TCP after TLS); nothing
++ *     is moved, so the servers the admin chose keep answering - state
++ *     "plain", a red line on the page;
++ *   every part answers: after UT_RECOVER_AFTER checks in a row the servers-
++ *     file is rebuilt by update_resolvconf() (127.0.1.1 again, reloaded); from
++ *     "plain" the forwarder is restarted, because it backs off DNS-over-TLS
++ *     for tls_backoff_time (900 s) after failed connections.
++ * Not judged (state "held", counters stand): before the clock is set (stubby
++ * runs without TLS until then) and while the uplink is known down. A dead
++ * forwarder counts only after UT_FAIL_AFTER checks, so the watchdog's own
++ * restart of stubby normally lands first. Published as nvram
++ * reaper_uptls_state "<state> <uptime at entry> <reason>" (never committed;
++ * httpd renc_upstream() turns it into the age the Encrypted DNS page shows).
++ * Syslog: one line per change into, between or out of the failed states.
++ * Main LAN only: the per-network stubby instances of guest networks with
++ * DNS-over-TLS (rc/sdn.c) are not watched.
++ * ====================================================================== */
++#define UT_EVERY	30	/* s between checks */
++#define UT_FIRST	20	/* s after start before the first */
++#define UT_TLS_EVERY	120	/* s, the servers asked over DNS-over-TLS directly at least this often */
++#define UT_FWD_MS	4000	/* the forwarder: its own per-query timeout is 3 s (start_stubby) */
++#define UT_TLS_MS	3000	/* each server, asked directly */
++#define UT_TLS_MAX	4	/* servers asked directly per check; the first that answers ends it */
++#define UT_REASSERT	5	/* s, at most one rewrite of the servers-file this often */
++#define UT_STATE	"/tmp/reaper/uptls.state"	/* "fb <reason>" while dnsmasq has the plain servers, so a restart adopts it */
++
++/* UPTLS-PURE-BEGIN (host-tested by test_dnshc_dot.py; no firmware calls in here) */
++#define UT_OFF		0	/* DNS-over-TLS is not in use for the router */
++#define UT_UNK		1	/* not judged yet */
++#define UT_HELD		2	/* clock not set, or the uplink is down: not judged */
++#define UT_OK		3
++#define UT_FB		4	/* Opportunistic: the forwarder does not answer - dnsmasq asks the plain WAN servers */
++#define UT_PLAIN	5	/* Opportunistic: the forwarder answers, but asks its servers in the clear */
++#define UT_DOWN		6	/* Strict: not answering - nothing changed, nothing sent in the clear */
++#define UT_R_OK		0	/* one check: every part answered */
++#define UT_R_HOLD	1	/* not judged */
++#define UT_R_DEAD	2	/* the forwarder is not running */
++#define UT_R_FWD	3	/* it runs, but gives no resolving answer */
++#define UT_R_TLS	4	/* it answers, but no server completes an encrypted lookup (Opportunistic only) */
++#define UT_FAIL_AFTER	3
++#define UT_RECOVER_AFTER 2
++
++struct ut_sm {
++	int st, why;		/* the state and the observation that put it there (UT_R_*) */
++	int bad, good;		/* consecutive bad / good checks */
++	int kst, kbad;		/* the failed state the last bad check calls for, and how many in a row called for it */
++};
++
++static int ut_failed(int st)
++{
++	return st == UT_FB || st == UT_PLAIN || st == UT_DOWN;
++}
++
++static void ut_reset(struct ut_sm *m, int st)
++{
++	m->st = st; m->why = UT_R_OK;
++	m->bad = m->good = m->kst = m->kbad = 0;
++}
++
++/* One check's observation r -> the state. Strict never asks for UT_FB: every bad check means UT_DOWN. A bad
++ * check needs fail_after in a row before a working state turns failed; a good one needs recover_after in a row
++ * before a failed state clears. Between the two Opportunistic failed states the move towards UT_FB (the forwarder
++ * stopped answering) needs fail_after checks calling for it, the move towards UT_PLAIN (it answers again, in the
++ * clear) recover_after. A hold moves no counter. */
++static int ut_step(struct ut_sm *m, int r, int strict, int fail_after, int recover_after)
++{
++	int want;
++
++	if (r == UT_R_HOLD) {
++		if (!ut_failed(m->st))
++			m->st = UT_HELD;
++		return m->st;
++	}
++	if (r == UT_R_OK) {
++		m->bad = m->kbad = 0;
++		m->kst = 0;
++		if (m->good < 100) m->good++;
++		if (!ut_failed(m->st) || m->good >= recover_after) {
++			m->st = UT_OK;
++			m->why = UT_R_OK;
++		}
++		return m->st;
++	}
++	m->good = 0;
++	if (m->bad < 100) m->bad++;
++	want = strict ? UT_DOWN : (r == UT_R_TLS ? UT_PLAIN : UT_FB);
++	if (m->kst == want) {
++		if (m->kbad < 100) m->kbad++;
++	} else {
++		m->kst = want;
++		m->kbad = 1;
++	}
++	if (!ut_failed(m->st)) {
++		if (m->bad >= fail_after) {
++			m->st = want;
++			m->why = r;
++		} else if (m->st == UT_HELD || m->st == UT_OFF)
++			m->st = UT_UNK;
++	} else if (m->st == want)
++		m->why = r;	/* the same state; the reason may change (not running / not answering) */
++	else if (m->kbad >= (want == UT_FB ? fail_after : recover_after)) {
++		m->st = want;
++		m->why = r;
++	}
++	return m->st;
++}
++
++static const char *ut_name(int st)
++{
++	static const char *n[] = { "off", "unk", "held", "ok", "fb", "plain", "down" };
++	return (st >= 0 && st <= UT_DOWN) ? n[st] : "unk";
++}
++
++static const char *ut_why(int r)
++{
++	static const char *n[] = { "-", "hold", "dead", "fwd", "tls" };
++	return (r >= 0 && r <= UT_R_TLS) ? n[r] : "-";
++}
++
++/* A servers-file line that hands dnsmasq the forwarder: "server=127.0.1.1" (the whole line). */
++static int ut_line_fwd(const char *line)
++{
++	return strncmp(line, "server=127.0.1.1", 16) == 0 && (line[16] == 0 || line[16] == '\n' || line[16] == '\r');
++}
++/* UPTLS-PURE-END */
++
++struct uptls {
++	struct ut_sm m;
++	long since, next, tls_next, fixed;
++	int strict, swapped, hold;	/* hold: 'c' the clock is not set, 'w' the uplink is down */
++	char pub[64];			/* what was published last */
++};
++
++/* DNS-over-TLS in use for the router (hc_dot_mode() != 'p'); *strict = the Strict profile (start_stubby writes
++ * GETDNS_AUTHENTICATION_REQUIRED for any non-zero dnspriv_profile) */
++static int ut_gate(int *strict)
++{
++	struct hc_dot d;
++
++	*strict = nvram_get_int("dnspriv_profile") != 0;
++	return hc_dot_mode(NULL, NULL, &d) != 'p';
++}
++
++static void ut_publish(struct uptls *u)
++{
++	char v[64];
++
++	snprintf(v, sizeof(v), "%s %ld %s", ut_name(u->m.st), u->since,
++		 u->m.st == UT_HELD ? (u->hold == 'c' ? "clock" : "wan") : (ut_failed(u->m.st) ? ut_why(u->m.why) : "-"));
++	if (strcmp(v, u->pub)) {
++		nvram_set("reaper_uptls_state", v);
++		strlcpy(u->pub, v, sizeof(u->pub));
++	}
++}
++
++/* The servers-file holds the forwarder (a writer put it back): 1 */
++static int ut_file_has_fwd(void)
++{
++	char line[HC_LINE];
++	FILE *fp;
++	int has = 0;
++
++	if (!(fp = fopen(HC_DNSMASQ, "r")))
++		return 0;
++	while (!has && fgets(line, sizeof(line), fp))
++		has = ut_line_fwd(line);
++	fclose(fp);
++	return has;
++}
++
++/* plain upstreams dnsmasq has now (for the log) */
++static int ut_file_upstreams(void)
++{
++	char line[HC_LINE];
++	FILE *fp;
++	int n = 0;
++
++	if (!(fp = fopen(HC_DNSMASQ, "r")))
++		return 0;
++	while (fgets(line, sizeof(line), fp))
++		if (line_is_upstream(line, "server=") && !ut_line_fwd(line))
++			n++;
++	fclose(fp);
++	return n;
++}
++
++/* The plain WAN servers in place of the forwarder: rc/wan.c takes the resolv lock and reloads dnsmasq */
++static void ut_swap(struct uptls *u, long t)
++{
++	char v[32];
++
++	update_resolvconf_plain();
++	snprintf(v, sizeof(v), "fb %s", ut_why(u->m.why));
++	f_write_string(UT_STATE, v, 0, 0);
++	u->swapped = 1;
++	u->fixed = t;
++}
++
++/* The forwarder back: update_resolvconf() writes 127.0.1.1 again under the resolv lock and reloads dnsmasq */
++static void ut_unswap(struct uptls *u)
++{
++	update_resolvconf();
++	unlink(UT_STATE);
++	u->swapped = 0;
++}
++
++static void ut_restart_fwd(void)
++{
++#ifdef RTCONFIG_MULTILAN_CFG
++	notify_rc("restart_stubby 0");	/* the main LAN's instance only */
++#else
++	notify_rc("restart_stubby");
++#endif
++}
++
++/* Opportunistic: does any server complete a lookup over DNS-over-TLS? 1 yes, 0 no, -1 no row can be asked now
++ * (an IPv6 row while the router has no usable IPv6) - not judged. No certificate check and no name: stubby asks
++ * without one in this profile (GETDNS_AUTHENTICATION_NONE). */
++static int ut_tls_any(void)
++{
++	char *nv, *nvp, *b;
++	struct hc_dot r;
++	int n = 0, ok = 0;
++
++	nv = nvp = strdup(nvram_safe_get("dnspriv_rulelist"));
++	while (!ok && !g_stop && n < UT_TLS_MAX && nvp && (b = strsep(&nvp, "<")) != NULL) {
++		if (!hc_dot_row(b, &r) || (r.af == AF_INET6 && !hc_v6_usable()))
++			continue;
++		n++;
++		*r.host = 0;
++		ok = dot_ask(&r, "", UT_TLS_MS, NULL) >= 0;
++	}
++	free(nv);
++	return n ? ok : -1;
++}
++
++/* One check: UT_R_* */
++static int ut_observe(struct uptls *u, int strict, long t)
++{
++	int rc, tls;
++
++	if (nvram_get_int("ntp_ready") != 1) { u->hold = 'c'; return UT_R_HOLD; }
++	if (landns_uplink_down()) { u->hold = 'w'; return UT_R_HOLD; }
++	if (!pids("stubby"))
++		return UT_R_DEAD;
++	rc = dns_ask(HC_FWD, AF_INET, HC_FWD_PORT, "", UT_FWD_MS, NULL);	/* the root zone: only an upstream answers it */
++	if (!landns_rcode_ok(rc))
++		return UT_R_FWD;
++	if (strict)
++		return UT_R_OK;	/* Strict: the forwarder asks over DNS-over-TLS only, so its answer proves the leg */
++	if (u->m.bad == 0 && !ut_failed(u->m.st) && t < u->tls_next)
++		return UT_R_OK;
++	u->tls_next = t + UT_TLS_EVERY;
++	tls = ut_tls_any();
++	return tls == 0 ? UT_R_TLS : UT_R_OK;
++}
++
++/* one line per change into, between or out of the failed states (st = the new state, prev the old one) */
++static void ut_log_change(int prev, const struct ut_sm *m, long dur)
++{
++	const char *fwd = (m->why == UT_R_DEAD) ? "is not running" : "does not answer";
++	int st = m->st, bad = m->bad, good = m->good;
++
++	if (st == UT_FB)
++		logmessage(HC_TAG, "Encrypted DNS: the upstream DNS-over-TLS forwarder %s (%d checks) - Opportunistic profile: dnsmasq now asks the plain WAN DNS servers (%d), and DNS-over-TLS comes back by itself when the forwarder answers again", fwd, prev == UT_PLAIN ? m->kbad : bad, ut_file_upstreams());
++	else if (st == UT_PLAIN)
++		logmessage(HC_TAG, "Encrypted DNS: no upstream DNS-over-TLS server completes an encrypted lookup (%d checks) - Opportunistic profile: the forwarder asks them in the clear until one does%s", prev == UT_FB ? m->kbad : bad, prev == UT_FB ? "; dnsmasq asks the forwarder again" : "");
++	else if (st == UT_DOWN)
++		logmessage(HC_TAG, "Encrypted DNS: the upstream DNS-over-TLS forwarder %s (%d checks) - Strict profile: nothing is sent in the clear, so lookups fail until it answers", fwd, bad);
++	else if (prev == UT_FB)
++		logmessage(HC_TAG, "Encrypted DNS: the upstream DNS-over-TLS forwarder answers again (%d checks) after %ld s - dnsmasq asks it again", good, dur);
++	else if (prev == UT_PLAIN)
++		logmessage(HC_TAG, "Encrypted DNS: the upstream servers answer over DNS-over-TLS again (%d checks) after %ld s - the forwarder is restarted so it stops asking in the clear", good, dur);
++	else if (prev == UT_DOWN)
++		logmessage(HC_TAG, "Encrypted DNS: the upstream DNS-over-TLS forwarder answers again (%d checks) after %ld s", good, dur);
++}
++
++/* The fallback ends without a recovery: DNS-over-TLS switched off, or the profile changed */
++static void ut_end(struct uptls *u, int on, long t)
++{
++	if (ut_failed(u->m.st))
++		logmessage(HC_TAG, "Encrypted DNS: %s - the upstream fallback (%s) ends after %ld s", !on ? "DNS-over-TLS is no longer in use for the router" : "the DNS-over-TLS profile changed", ut_name(u->m.st), t - u->since);
++	if (u->swapped)
++		ut_unswap(u);
++	ut_reset(&u->m, on ? UT_UNK : UT_OFF);
++	u->since = t;
++	u->next = t + (on ? UT_FIRST : UT_EVERY);
++	u->tls_next = 0;
++}
++
++/* Called about once a second (hc_nap). The per-second part only keeps an active fallback in place; a check runs
++ * every UT_EVERY seconds. */
++static void uptls_tick(struct uptls *u)
++{
++	long t = now_s();
++	int on, strict, prev, r;
++
++	if (u->swapped) {
++		on = ut_gate(&strict);
++		if (!on || strict) {	/* Strict never keeps plain servers, not even for a second after the change */
++			ut_end(u, on, t);
++			u->strict = strict;
++			ut_publish(u);
++			return;
++		}
++		if (t - u->fixed >= UT_REASSERT && ut_file_has_fwd()) {
++			update_resolvconf_plain();	/* wan_up(), a VPN client or a DNS apply put the forwarder back: quietly again */
++			u->fixed = t;
++		}
++	}
++	if (t < u->next)
++		return;
++	u->next = t + UT_EVERY;
++
++	on = ut_gate(&strict);
++	if (!on || u->m.st == UT_OFF || strict != u->strict) {
++		if (on || u->m.st != UT_OFF)
++			ut_end(u, on, t);	/* switched on, off, or the profile changed: the first check waits UT_FIRST */
++		u->strict = strict;
++		ut_publish(u);
++		return;
++	}
++
++	prev = u->m.st;
++	r = ut_observe(u, strict, t);
++	ut_step(&u->m, r, strict, UT_FAIL_AFTER, UT_RECOVER_AFTER);
++	if (u->m.st != prev) {
++		long dur = t - u->since;
++		if (u->m.st == UT_FB && !u->swapped)
++			ut_swap(u, t);
++		else if (u->m.st != UT_FB && u->swapped)
++			ut_unswap(u);
++		if (ut_failed(u->m.st) || ut_failed(prev))
++			ut_log_change(prev, &u->m, dur);	/* after the swap: the line counts the servers dnsmasq now has */
++		if (prev == UT_PLAIN && u->m.st == UT_OK)
++			ut_restart_fwd();
++		u->since = t;
++	} else if (u->m.st == UT_FB && u->swapped) {
++		char v[32];
++		snprintf(v, sizeof(v), "fb %s", ut_why(u->m.why));
++		f_write_string(UT_STATE, v, 0, 0);	/* the reason may have changed */
++	}
++	ut_publish(u);
++}
++
++/* A fallback a previous instance left in place (restart_rdnshc, or it died) is ours to undo */
++static void uptls_adopt(struct uptls *u)
++{
++	char prev[32] = "";
++	long t = now_s();
++
++	memset(u, 0, sizeof(*u));
++	ut_reset(&u->m, UT_OFF);
++	u->since = t;
++	u->next = t + UT_FIRST;
++	u->strict = -1;
++	if (f_read_string(UT_STATE, prev, sizeof(prev)) > 0 && !strncmp(prev, "fb", 2)) {
++		u->m.st = UT_FB;
++		u->m.why = strstr(prev, "dead") ? UT_R_DEAD : UT_R_FWD;
++		u->m.bad = u->m.kbad = UT_FAIL_AFTER;
++		u->m.kst = UT_FB;
++		u->swapped = 1;
++		u->strict = 0;
++		u->fixed = t - UT_REASSERT;	/* re-asserted on the first second */
++	}
++}
++
++/* sleep(1) secs times, with the fallback's per-second part between */
++static void hc_nap(int secs, struct uptls *u)
++{
++	int i;
++
++	for (i = 0; i < secs && !g_stop; i++) {
++		sleep(1);
++		uptls_tick(u);
++	}
++}
++
+ /* Called once per loop pass; does nothing until a check is due. */
+ static void landns_tick(struct landns *ld)
+ {
+@@ -1071,6 +1491,7 @@ int rdnshc_main(int argc, char *argv[])
+ 	int fmiss[2] = { 0, 0 }, fhit[2] = { 0, 0 }, fdown[2] = { 0, 0 }, fseen[2] = { 0, 0 };
+ 	long since = 0;
+ 	struct landns ld = { LDNS_OFF, 0, 0, 0, "" };	/* 2026-10-10: the LAN name resolution check */
++	struct uptls ut;	/* 2026-11-20 REAPER-UPTLS: the upstream DNS-over-TLS fallback */
+ 	(void)argc; (void)argv;
+ 
+ 	signal(SIGTERM, on_sig);
+@@ -1096,6 +1517,7 @@ int rdnshc_main(int argc, char *argv[])
+ 		fdown[1] = down || f_exists(HC_DOWN6);
+ 	}
+ 	cfg_read(&c);
++	uptls_adopt(&ut);	/* REAPER-UPTLS: before the first tick, so an adopted fallback is re-asserted at once */
+ 
+ 	/* 2026-11-10: publish the LAN name resolution state once at start. ld
+ 	 * begins LDNS_OFF and landns_tick() publishes only on a change, so with
+@@ -1144,10 +1566,11 @@ int rdnshc_main(int argc, char *argv[])
+ 		/* 2026-10-10: runs whether or not the health check is switched on; it
+ 		 * paces itself (LDNS_EVERY) and only reads, never moves anything */
+ 		landns_tick(&ld);
++		uptls_tick(&ut);	/* REAPER-UPTLS: paces itself; also called every second of the waits below */
+ 
+ 		if (!enabled) {
+ 			state_set("off", 0, -1);
+-			for (i = 0; i < HC_POLL_OFF && !g_stop; i++) sleep(1);
++			hc_nap(HC_POLL_OFF, &ut);
+ 			continue;
+ 		}
+ 		strlcpy(watched, c.target, sizeof(watched));
+@@ -1201,7 +1624,7 @@ int rdnshc_main(int argc, char *argv[])
+ 			g_f4 = g_f6 = '-';
+ 			state_set(down ? "down" : "up", since ? since : (since = now_s()), alive);
+ 			poll = c.interval;
+-			for (i = 0; i < poll && !g_stop; i++) sleep(1);
++			hc_nap(poll, &ut);
+ 			continue;
+ 		}
+ 
+@@ -1328,7 +1751,7 @@ int rdnshc_main(int argc, char *argv[])
+ 		state_set(down ? "down" : "up", since ? since : (since = now_s()), alive);
+ 
+ 		poll = c.interval;
+-		for (i = 0; i < poll && !g_stop; i++) sleep(1);
++		hc_nap(poll, &ut);
+ 	}
+ 
+ 	/* stopping (service stop, reboot, restart_rdnshc): if we adopted or made
+@@ -1338,6 +1761,7 @@ int rdnshc_main(int argc, char *argv[])
+ 	 * next instance logs "Enabled" and says it kept the failover. */
+ 	state_set("", 0, -1);
+ 	nvram_set("reaper_landns_state", "");	/* nobody is checking: the dashboard shows no verdict */
++	nvram_set("reaper_uptls_state", "");	/* REAPER-UPTLS: an active fallback stays in place (UT_STATE) for the next instance */
+ 	return 0;
+ }
+ 
+diff --git a/release/src/router/rc/wallguard.c b/release/src/router/rc/wallguard.c
+index c32fb58c2a..42a1515c0a 100644
+--- a/release/src/router/rc/wallguard.c
++++ b/release/src/router/rc/wallguard.c
+@@ -963,7 +963,8 @@ void start_wallguard(void)
+ 	sh_write_safe();
+ 	wallguard_write_policy();
+ 	eval("cru", "a", "wallguard", "15 5 * * * sh " SH_SCRIPT " update");
+-	eval("cru", "a", "wallguard_ck", "*/15 * * * * sh " SH_SCRIPT " fold");
++	/* reaper 2026-11-20 (REAPER-WG-ALLOWED): "expire" - the fold also rebuilds once a 24 h allow has run out */
++	eval("cru", "a", "wallguard_ck", "*/15 * * * * sh " SH_SCRIPT " fold expire");
+ 	sh_dns_sync();
+ 	if (!f_exists(SH_DIR "/db"))
+ 		sh_run_bg("update");		/* first run or after a reboot: lists come down in the background */
+diff --git a/release/src/router/rednsd/rednsd.c b/release/src/router/rednsd/rednsd.c
+index 31956163fc..6326956c5b 100644
+--- a/release/src/router/rednsd/rednsd.c
++++ b/release/src/router/rednsd/rednsd.c
+@@ -599,6 +599,36 @@ int policy_allows(const struct cfg *c, const sockaddr_u *a)
+ 	return 1;
+ }
+ 
++/* REAPER-DNR-STEP (2026-11-22): a refusal used to leave no trace, so "the phone has no DNS" could not be read
++   from the log. One line per address an hour (16 addresses remembered; logmsg's own cap still applies). */
++static void refused_note(const sockaddr_u *a)
++{
++	static struct { unsigned char k[16]; int fam; long long at; } seen[16];
++	static int next;
++	char txt[INET6_ADDRSTRLEN] = "?";
++	int fam, n, i;
++	const unsigned char *b = sa_bytes(a, &fam);
++	long long t = now_ms();
++
++	n = fam == AF_INET ? 4 : 16;
++	for (i = 0; i < 16; i++)
++		if (seen[i].at && seen[i].fam == fam && !memcmp(seen[i].k, b, n)) {
++			if (t - seen[i].at < 3600000LL)
++				return;
++			break;
++		}
++	if (i == 16) {
++		i = next;
++		next = (next + 1) % 16;
++	}
++	memset(seen[i].k, 0, sizeof(seen[i].k));
++	memcpy(seen[i].k, b, n);
++	seen[i].fam = fam;
++	seen[i].at = t ? t : 1;
++	inet_ntop(fam, b, txt, sizeof(txt));
++	logmsg(LOG_NOTICE, "rednsd: refused %s - DNS Director sends this device to another DNS server", txt);
++}
++
+ /* ---- DNS message surgery: just enough to find and edit the OPT RR */
+ 
+ static int skip_name(const unsigned char *m, size_t len, size_t *off)
+@@ -2064,6 +2094,7 @@ static void accept_on(struct listener *l)
+ 		}
+ 		if (!policy_allows(&cfg, &a)) {		/* DNS Director sends this device elsewhere */
+ 			n_ref_policy++;
++			refused_note(&a);
+ 			close(fd);
+ 			continue;
+ 		}
+diff --git a/release/src/router/wallguard/wallguard.sh b/release/src/router/wallguard/wallguard.sh
+index cb1235c5fd..a46f25e4ab 100644
+--- a/release/src/router/wallguard/wallguard.sh
++++ b/release/src/router/wallguard/wallguard.sh
+@@ -24,6 +24,7 @@
+ #   retry    update restricted to the subscribed lists with no usable copy (rc at WAN up, rwatch each tick)
+ #   build    compile the table from what is on disk (after a rule change - no downloads)
+ #   fold     move dnsmasq's blocked-lookup records into the counters
++#   fold expire   the same, then a rebuild when a 24 h allow has run out (the 15-minute cron, 2026-11-20)
+ #   stats    fold, then print the status JSON for the page
+ #   unbreak <ip-or-mac> <minutes>   recent blocked names for one device, as JSON
+ #   devcounts <minutes>   blocked lookups per device in the last 1-60 minutes, as JSON (the page's Devices tab)
+@@ -316,6 +317,37 @@ list_gate() {
+   return 0
+ }
+ 
++# reaper 2026-11-20 (REAPER-WG-ALLOWED): the temporary allows still running, "<expiry> <name>" with expiry a whole
++# number later than $1; every other line (expired, or not of that shape) leaves $J/allow24, and $D/allow24 gets
++# the names alone (what the build allows). a24_due below asks the same question, so the two always agree.
++a24_prune() {
++  if [ -f "$J/allow24" ] && [ ! -L "$J/allow24" ]; then
++    awk -v n="$1" 'NF == 2 && $1 ~ /^[0-9]+$/ && $1 + 0 > n + 0' "$J/allow24" > "$D/allow24.keep"
++    awk '{print $2}' "$D/allow24.keep" > "$D/allow24"
++    cmp -s "$D/allow24.keep" "$J/allow24" || { cp "$D/allow24.keep" "$J/allow24.tmp" && mv "$J/allow24.tmp" "$J/allow24"; }
++  else
++    : > "$D/allow24"
++  fi
++}
++# exit 0 when $J/allow24 holds a line a24_prune would drop (an allow that has run out)
++a24_due() {
++  [ -f "$J/allow24" ] && [ ! -L "$J/allow24" ] || return 1
++  awk -v n="$1" 'NF && !(NF == 2 && $1 ~ /^[0-9]+$/ && $1 + 0 > n + 0) {f = 1} END {exit !f}' "$J/allow24" 2>/dev/null
++}
++# reaper 2026-11-20 (REAPER-WG-ALLOWED): a 24 h allow ran out but stayed in the table until the next build (the
++# daily update at 05:15, or a rule change) - up to ~35 h. The 15-minute cron fold ("fold expire", rc/wallguard.c)
++# rebuilds once the earliest allow has run out. Only with a table in use; the file is pruned first, so a build that
++# is skipped (a list's USB copy missing) is not asked for again every 15 minutes. Never from stats or unbreak
++# (httpd waits on those), nor from the fold rc runs when Wallguard stops.
++a24_expire() {
++  [ -s "$D/db" ] && [ -s "$D/feeds" ] || return 0
++  _an=$(date +%s)
++  a24_due "$_an" || return 0
++  log "a temporary allow ran out - the block table is rebuilt without it"
++  a24_prune "$_an"
++  build
++}
++
+ build() {
+   # one build at a time (rc's background rebuilds, Unbreak's Allow, the update): two at once wrote the
+   # same table file (review 2026-10-21); waits, so the later rule change still lands
+@@ -359,13 +391,7 @@ build() {
+   fi
+   now=$(date +%s)
+   # temporary allows still running; the expired ones drop out of the file too
+-  if [ -f "$J/allow24" ]; then
+-    awk -v n="$now" '$1 > n' "$J/allow24" > "$D/allow24.keep"
+-    awk '{print $2}' "$D/allow24.keep" > "$D/allow24"
+-    cmp -s "$D/allow24.keep" "$J/allow24" || { cp "$D/allow24.keep" "$J/allow24.tmp" && mv "$J/allow24.tmp" "$J/allow24"; }
+-  else
+-    : > "$D/allow24"
+-  fi
++  a24_prune "$now"
+   # shellcheck disable=SC2086
+   if "$SC" build --out "$D/db" --stats "$D/build.json" --rules "$J/block" --allow "$J/allow" \
+        --allow "$D/allow24" --allow "$D/safe" $args; then
+@@ -947,7 +973,7 @@ case "$1" in
+   update) update ;;
+   build) build ;;
+   sync) sync ;;
+-  fold) fold ;;
++  fold) fold; if [ "$2" = expire ]; then a24_expire; fi ;;	# reaper 2026-11-20: the cron fold also ends run-out 24 h allows
+   stats) stats ;;
+   unbreak) unbreak "$2" "$3" ;;
+   devcounts) devcounts "$2" ;;
+@@ -958,5 +984,5 @@ case "$1" in
+   retry) retry ;;
+   # 2026-10-27: Dreadwatch's own sources fetch through here (rc/rwarden.c rw_dsrc) - one code path for both tools
+   fetch) case "$6" in custom[1-8]) ;; *) exit 2 ;; esac; [ $# -eq 6 ] || exit 2; FKEYS=$5; fetch "$2" "$3" "$CURLC" "$4" "$6"; exit $? ;;
+-  *) echo "usage: $0 update|build|sync|fold|stats|unbreak <dev> <min>|devcounts <min>|live|reset|safe|restore|retry|fetch <out> <url> <options> <keyfile> custom<n>" >&2; exit 2 ;;
++  *) echo "usage: $0 update|build|sync|fold [expire]|stats|unbreak <dev> <min>|devcounts <min>|live|reset|safe|restore|retry|fetch <out> <url> <options> <keyfile> custom<n>" >&2; exit 2 ;;
+ esac
+diff --git a/release/src/router/www/Reaper_Dreadwatch.asp b/release/src/router/www/Reaper_Dreadwatch.asp
+index ee3291ef5c..d8a83c167a 100644
+--- a/release/src/router/www/Reaper_Dreadwatch.asp
++++ b/release/src/router/www/Reaper_Dreadwatch.asp
+@@ -86,6 +86,10 @@ textarea{width:100%;height:120px;resize:vertical;font-family:ui-monospace,Consol
+ .dwtbl td.mono{font-family:ui-monospace,Consolas,monospace;font-size:11.5px;word-break:break-all}
+ .dwtbl td.dim{color:var(--steel)}
+ .dwtbl td.empty{text-align:center;color:var(--steel);padding:18px}
++/* 2026-11-22 (REAPER-DREAD-EXEMPT): the add row of the devices that skip Dreadwatch */
++.exadd{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:10px}
++.exadd select{flex:1 1 220px;min-width:0}
++.exadd input{flex:0 1 190px;min-width:0}
+ .dwtbl td.dwst-ok{color:var(--jade)} .dwtbl td.dwst-failed{color:var(--amber)} .dwtbl td.dwst-off{color:var(--steel)} .dwtbl td.dwst-key{color:var(--amber)}
+ .cov{margin:4px 0 0}
+ .cov li.good::before{background:var(--jade)}
+@@ -208,6 +212,21 @@ textarea{width:100%;height:120px;resize:vertical;font-family:ui-monospace,Consol
+   </div>
+ </div>
+ 
++<!-- REAPER-DREAD-EXEMPT (2026-11-22, owner): devices that skip Dreadwatch. The /jffs list "dnsexempt" (MAC addresses,
++     at most 16), sent with the page's Save; the count column is dns_status "pass" - lookups of listed names the
++     resolver let through for the device, counted, never by name. -->
++<div class="card" id="excard">
++  <h2><#RDWT_70#></h2>
++  <div class="desc"><#RDWT_71#></div>
++  <table class="dwtbl"><thead><tr><th><#RDWT_19#></th><th><#MAC_Address#></th><th class="num"><#RDWT_72#></th><th></th></tr></thead>
++    <tbody id="exbody"></tbody></table>
++  <div class="exadd">
++    <select id="exsel" onchange="dwExPick()"></select>
++    <input type="text" id="exmac" maxlength="17" placeholder="AA:BB:CC:DD:EE:FF" autocomplete="off" spellcheck="false">
++    <button type="button" class="btng" onclick="dwExAdd()"><#RDWT_73#></button>
++  </div>
++</div>
++
+ <div class="card">
+   <h2><#RWDN_116#></h2>
+   <div class="desc"><#RWDN_118#></div>
+@@ -259,6 +278,7 @@ var NV = {
+   dns:    <% nvram_get_js("rwarden_dns"); %>,
+   dnsfeeds: <% nvram_get_js("rwarden_dns_feeds"); %>,
+   dnsallow: decodeURIComponent('<% rwarden_list("dnsallow"); %>'),
++  dnsexempt: decodeURIComponent('<% rwarden_list("dnsexempt"); %>'),
+   dnssrc: decodeURIComponent('<% rwarden_list("dnssrc"); %>'),
+   dnskeys: '<% rwarden_list("dnskeys"); %>'
+ };
+@@ -323,6 +343,37 @@ function dwDev(ip){
+   var n = ReaperNames.byIp(ip, '');
+   return n ? n + ' (' + ip + ')' : ip;
+ }
++/* ---- devices that skip Dreadwatch (REAPER-DREAD-EXEMPT, 2026-11-22): DWX = the list as edited (lower-case MACs),
++   DWXP = the let-through count per MAC from dns_status. Nothing is sent before Save. */
++var DWX = dwSplit(NV.dnsexempt).map(function(m){ return m.toLowerCase(); }), DWXP = {};
++function dwExOk(m){ return /^[0-9a-f]{2}(:[0-9a-f]{2}){5}$/.test(m); }
++function dwExChanged(){ dwExPaint(); if(window.ReaperPending) ReaperPending.check(); }
++function dwExPaint(){
++  var tb = $('exbody'); tb.textContent = '';
++  if(!DWX.length){ var tr0 = document.createElement('tr'), td0 = dwCell(tr0, `<#RDWT_74#>`, 'empty'); td0.colSpan = 4; tb.appendChild(tr0); }
++  DWX.forEach(function(m){
++    var tr = document.createElement('tr'), td = document.createElement('td');
++    dwCell(tr, ReaperNames.byMac(m, '\u2014')); dwCell(tr, m.toUpperCase(), 'mono'); dwCell(tr, dwNum(DWXP[m] || 0), 'num');
++    td.appendChild(dwBtn(`<#btn_remove#>`, function(){ DWX = DWX.filter(function(x){ return x !== m; }); dwExChanged(); }));
++    tr.appendChild(td); tb.appendChild(tr);
++  });
++  var sel = $('exsel'), cur = sel.value, o0 = document.createElement('option');
++  sel.textContent = ''; o0.value = ''; o0.textContent = `<#RDWT_75#>`; sel.appendChild(o0);
++  ReaperNames.macs().filter(function(m){ return DWX.indexOf(m) < 0; })
++    .map(function(m){ return {m: m, l: ReaperNames.byMac(m, m.toUpperCase())}; })
++    .sort(function(a, b){ var x = a.l.toLowerCase(), y = b.l.toLowerCase(); return x < y ? -1 : x > y ? 1 : 0; })
++    .forEach(function(d){ var o = document.createElement('option'); o.value = d.m; o.textContent = d.l + ' (' + d.m.toUpperCase() + ')'; sel.appendChild(o); });
++  sel.value = cur; if(sel.selectedIndex < 0) sel.selectedIndex = 0;
++}
++function dwExPick(){ if($('exsel').value) $('exmac').value = $('exsel').value.toUpperCase(); }
++function dwExAdd(){
++  var m = $('exmac').value.replace(/^\s+|\s+$/g, '').toLowerCase().replace(/-/g, ':');
++  if(!dwExOk(m)){ alert(`<#RDWT_76#>`); return; }
++  $('exmac').value = ''; $('exsel').value = '';
++  if(DWX.indexOf(m) >= 0) return;
++  if(DWX.length >= 16){ alert(`<#RDWT_77#>`); return; }
++  DWX.push(m); dwExChanged();
++}
+ /* ---- your own sources and the removed built-in rows (2026-10-27) */
+ function dwIds(){
+   return DNS_BUILTIN.filter(function(id){ return !DW.hidden[id]; }).concat(DW.customs.map(function(s){ return 'custom' + s.slot; }));
+@@ -485,6 +536,7 @@ var dwTested = false;
+ function dwRender(j){
+   var on = !!(j && j.enable);
+   if(j && j.ok) dwLast = j;
++  DWXP = {}; ((j && j.pass) || []).forEach(function(p){ DWXP[p.mac] = p.n; }); dwExPaint();	/* 2026-11-22: the devices that skip Dreadwatch */
+   var pill = $('pill');
+   pill.className = 'statuspill' + ((on && j.live && j.names > 0) ? '' : ' off');
+   pill.textContent = (on && j.live && j.names > 0) ? `<#RWDN_03#>` : `<#RWDN_04#>`;
+@@ -631,6 +683,7 @@ function dwSave(updateNow){
+   lf.append('action', 'save_lists');
+   lf.append('http_id', HID);
+   lf.append('dnsallow', dnsallow.ok);
++  lf.append('dnsexempt', DWX.join(' '));		/* 2026-11-22: the devices that skip Dreadwatch (MAC addresses) */
+   lf.append('dnssrc', src);			/* 2026-10-27: your own sources + removed rows; keys only when typed */
+   if(keys) lf.append('dnskeys', keys);
+   var lx = new XMLHttpRequest();
+@@ -649,11 +702,12 @@ dwSrcInit();
+ dwPaint();
+ dwPaintSrc();
+ dwPaintUrls();
++dwExPaint();
+ /* 2026-10-30: Save writes the switch, the feeds, the exemptions and the sources edited here - say when that is owed */
+ function dwSnap(){
+   return {on: $('tgdns').className.indexOf('on') >= 0 ? '1' : '0',
+           feeds: DNS_BUILTIN.filter(function(id){ var c = $('fd_' + id); return !DW.hidden[id] && c && c.checked; }).join(' '),
+-          allow: $('dnsallow').value, sources: dwSrcText(), keys: Object.keys(DW.keyUpd).sort().join(' ')};
++          allow: $('dnsallow').value, exempt: DWX.join(' '), sources: dwSrcText(), keys: Object.keys(DW.keyUpd).sort().join(' ')};
+ }
+ ReaperPending.watch({at: document.querySelector('button[onclick="dwSave(false)"]'), btnClass: 'btng', snap: dwSnap, label: `<#RADM_77#>`, discard: `<#Discard#>`});
+ ReaperPending.arm();
+diff --git a/release/src/router/www/Reaper_EncryptedDNS.asp b/release/src/router/www/Reaper_EncryptedDNS.asp
+index 11d2b2a174..78b811249a 100644
+--- a/release/src/router/www/Reaper_EncryptedDNS.asp
++++ b/release/src/router/www/Reaper_EncryptedDNS.asp
+@@ -377,7 +377,16 @@ function encLegs(j, st, running){
+   if(!up){ u.className = 'leg dim'; u.textContent = '\u2014'; return; }
+   if(!up.on){ u.className = 'leg bad'; encFill(u, up.servers > 0 ? `<#RENC_84#>` : `<#RENC_85#>`, LINK_DNS[0], LINK_DNS[1]); return; }
+   if(!up.servers){ u.className = 'leg bad'; encFill(u, `<#RENC_85#>`, LINK_DNS[0], LINK_DNS[1]); return; }
+-  if(!up.stubby){ t = `<#RENC_86#>`; cls = 'bad'; }
++  /* reaper 2026-11-20 REAPER-UPTLS: the automatic fallback of this leg (rc/rdnshc.c) - which state, why, since when.
++     fb = the plain WAN servers took over (Opportunistic), plain = the forwarder asks its servers in the clear
++     (Opportunistic), down = nothing answers and nothing is sent in the clear (Strict) */
++  var fb = up.fb || {}, fbt = fb.st === 'fb' ? `<#RENC_106#>` : (fb.st === 'plain' ? `<#RENC_107#>` : (fb.st === 'down' ? `<#RENC_108#>` : ''));
++  if(fbt){
++    t = fbt.replace('%1', fb.why === 'dead' ? `<#RENC_109#>` : (fb.why === 'tls' ? `<#RENC_111#>` : `<#RENC_110#>`))
++           .replace('%2', new Date(Date.now() - Math.max(0, Number(fb.age) || 0) * 1000).toLocaleString());
++    cls = 'bad';
++  }
++  else if(!up.stubby){ t = `<#RENC_86#>`; cls = 'bad'; }
+   else if(!up.clock){ t = `<#RENC_87#>`; cls = 'bad'; }
+   else if(up.probe === 0){ t = up.profile ? `<#RENC_88#>` : `<#RENC_89#>`; cls = 'bad'; }
+   else { t = `<#RENC_81#>`.replace('%1', up.profile ? `<#RENC_82#>` : `<#RENC_83#>`); cls = 'good'; }
+diff --git a/release/src/router/www/Reaper_Wallguard.asp b/release/src/router/www/Reaper_Wallguard.asp
+index dc46142263..5bc47c283d 100644
+--- a/release/src/router/www/Reaper_Wallguard.asp
++++ b/release/src/router/www/Reaper_Wallguard.asp
+@@ -110,12 +110,13 @@ label.chip{gap:7px;padding:5px 11px 5px 7px;border:1px solid var(--line-soft);bo
+ </div>
+ <p class="lede"><#RSHD_07#></p>
+ 
+-<!-- reaper 2026-11-15 (owner, concept B): five tabs in the Firewall page's tab row; a tab holding an unsaved change gets
++<!-- reaper 2026-11-15 (owner, concept B): five tabs (2026-11-20: six, with Allowed) in the Firewall page's tab row; a tab holding an unsaved change gets
+      the amber dot, the Lists tab says how many lists the last build lacked; Save sits at the right end -->
+ <div class="wins" id="wins" role="tablist">
+   <div class="win" data-t="overview" role="tab" tabindex="0"><#RSHD_192#><span class="cdot"></span></div>
+   <div class="win" data-t="lists" role="tab" tabindex="0"><#RSHD_21#><span class="wcnt" id="listprob"></span><span class="cdot"></span></div>
+   <div class="win" data-t="rules" role="tab" tabindex="0"><#RSHD_193#><span class="cdot"></span></div>
++  <div class="win" data-t="allowed" role="tab" tabindex="0"><#RSHD_208#><span class="cdot"></span></div>
+   <div class="win" data-t="devices" role="tab" tabindex="0"><#RSHD_194#><span class="cdot"></span></div>
+   <div class="win" data-t="activity" role="tab" tabindex="0"><#RSHD_195#><span class="cdot"></span></div>
+   <span class="savebar"><button class="btn primary" data-act="save"><#RWDN_28#></button></span>
+@@ -261,6 +262,32 @@ label.chip{gap:7px;padding:5px 11px 5px 7px;border:1px solid var(--line-soft);bo
+ </div>
+ </div>
+ 
++<!-- ============================= ALLOWED ============================= -->
++<!-- reaper 2026-11-20 (owner): REAPER-WG-ALLOWED - the three lists as tables, every change applied at once (a rebuild
++     from the lists on the router, seconds, no download): Allowed for 24 hours (Remove / +24 h / Make permanent, a
++     selection, Remove all), Never block and Always block (Remove / Move to the other list). The boxes under My rules
++     on the Rules tab stay the bulk editor of the last two. -->
++<div class="tab" id="tab_allowed" role="tabpanel">
++<div class="card">
++  <h2><#RSHD_42#></h2>
++  <div class="desc"><#RSHD_209#></div>
++  <div class="row"><input type="text" id="alfilter" maxlength="253" placeholder="<#RSHD_219#>" aria-label="<#RSHD_219#>" autocomplete="off" spellcheck="false"></div>
++  <div class="tblw"><table class="tbl"><thead><tr><th style="width:44px"><label class="ck"><input type="checkbox" id="a24all" aria-label="<#RSHD_220#>"><span class="box"></span></label></th><th><#RDWT_16#></th><th><#RSHD_210#></th><th></th></tr></thead><tbody id="a24body"></tbody></table></div>
++  <div class="row"><button type="button" class="btn ghost" data-act="a24delsel"><#RSHD_213#></button><button type="button" class="btn ghost" data-act="a24extsel"><#RSHD_211#></button><button type="button" class="btn ghost" data-act="a24delall"><#RSHD_214#></button></div>
++</div>
++<div class="duo">
++  <div class="card">
++    <h2><#RSHD_221#></h2>
++    <div class="tblw"><table class="tbl"><thead><tr><th><#RDWT_16#></th><th></th></tr></thead><tbody id="nbbody"></tbody></table></div>
++  </div>
++  <div class="card">
++    <h2><#RSHD_222#></h2>
++    <div class="tblw"><table class="tbl"><thead><tr><th><#RDWT_16#></th><th></th></tr></thead><tbody id="abbody"></tbody></table></div>
++  </div>
++</div>
++<div class="desc" style="margin-bottom:16px"><#RSHD_217#></div>
++</div>
++
+ <!-- ============================= DEVICES ============================= -->
+ <div class="tab" id="tab_devices" role="tabpanel">
+ <!-- reaper 2026-11-15 (concept B): one row per device and guest network; its profile menu writes the assignments
+@@ -274,6 +301,8 @@ label.chip{gap:7px;padding:5px 11px 5px 7px;border:1px solid var(--line-soft);bo
+ <div class="card">
+   <h2><#RSHD_43#></h2>
+   <div class="desc"><#RSHD_44#></div>
++  <!-- 2026-11-22 (REAPER-DREAD-EXEMPT): Bypass lifts Wallguard only - where Dreadwatch is lifted for a device -->
++  <div class="desc" id="bypassdw"><#RSHD_226#></div>
+   <div class="tblw"><table class="tbl"><thead id="profhead"></thead><tbody id="profbody"></tbody></table></div>
+   <div class="row"><input type="text" id="newprof" maxlength="30" placeholder="<#RSHD_48#>"><button type="button" class="btn ghost" data-act="addprof"><#RSHD_47#></button></div>
+ </div>
+@@ -395,7 +424,7 @@ function shNum(n){ return Number(n || 0).toLocaleString(); }
+ function shWhen(t){ return t > 0 ? new Date(t * 1000).toLocaleString() : DASH; }
+ function shCell(tr, text, cls){ var td = document.createElement('td'); td.textContent = text; if(cls) td.className = cls; tr.appendChild(td); return td; }
+ /* 2026-11-09: the blocked-name tables say nothing was blocked; the settings and live tables say they are empty */
+-var SH_EMPTY = {rwbody: 1, devrows: 1, livebody: 1};
++var SH_EMPTY = {rwbody: 1, devrows: 1, livebody: 1, a24body: 1, nbbody: 1, abbody: 1};
+ function shRows(id, rows, cols, fill){
+   var tb = $(id); tb.textContent = '';
+   if(!rows.length){ var tr = document.createElement('tr'), td = shCell(tr, SH_EMPTY[id] ? `<#IPConnection_VSList_Norule#>` : `<#RDWT_23#>`, 'empty'); td.colSpan = cols; tb.appendChild(tr); return; }
+@@ -664,8 +693,7 @@ function shPaint(){
+   $('block').value = String(cfg.block || '');
+   $('allow').value = String(cfg.allow || '');
+   $('adv').value = String(cfg.adv || ''); shPaintAdv();
+-  var a24 = String(cfg.allow24 || '').split('\n').map(function(l){ var p = l.split(' '); return p[1] ? p[1] + ' (' + shWhen(+p[0]) + ')' : ''; }).filter(function(x){ return x; });
+-  $('allow24box').style.display = a24.length ? '' : 'none'; $('allow24').textContent = a24.join(', ');
++  shPaintA24Line(); shPaintAllowed();
+   shPaintLists(); shPaintProfiles(); shPaintTargets(); shPaintPauses(); shPaintRewrites();
+ }
+ /* 2026-11-06 (owner): what the last build made of the Advanced rules (wallguardc adv's report) - text only */
+@@ -908,6 +936,119 @@ function shAddProfile(){
+   cfg.prof.push({id: id, mask: 1, name: name}); $('newprof').value = ''; shPaintProfiles();
+ }
+ 
++/* ---- reaper 2026-11-20 (owner): REAPER-WG-ALLOWED - the Allowed tab. Its tables show what the router holds (cfg.allow24 /
++   allow / block, from action=config); every button changes the router at once through reaper_wallguard.cgi -
++   action=allow24 (op del / extend / keep) or action=myrules (list allow / block, op del / move), names comma-separated,
++   at most 100 a request (a larger selection goes in turns) - and the router rebuilds the table from the lists on disk.
++   Then the config is read again (shConfig's light path: no unsaved edit elsewhere on the page is lost). The Rules
++   tab's boxes edit Never block / Always block in bulk; while one holds unsaved changes the tab refuses to change
++   those lists, so a later Save cannot undo the change made here. */
++var a24sel = {};
++/* the allows still running, one per name (its latest expiry), soonest to run out first */
++function shA24(){
++  var now = Date.now() / 1000, m = {};
++  String((cfg && cfg.allow24) || '').split('\n').forEach(function(l){
++    var p = l.trim().split(/\s+/);
++    if(p.length === 2 && /^\d+$/.test(p[0]) && +p[0] > now && (!m[p[1]] || +p[0] > m[p[1]])) m[p[1]] = +p[0];
++  });
++  return Object.keys(m).map(function(n){ return {n: n, t: m[n]}; }).sort(function(a, b){ return a.t - b.t; });
++}
++/* the names of a list file or box: each line's first word, lower case, once */
++function shNames(txt){
++  var seen = {}, out = [];
++  String(txt || '').split('\n').forEach(function(l){ var n = l.trim().split(/\s+/)[0].toLowerCase(); if(n && !seen[n]){ seen[n] = 1; out.push(n); } });
++  return out;
++}
++function shLeft(t){
++  var s = Math.max(0, Math.round(t - Date.now() / 1000));
++  return `<#RSHD_223#>`.replace('%1', Math.floor(s / 3600)).replace('%2', Math.floor((s % 3600) / 60));
++}
++/* the Rules tab's line (Allowed for 24 hours: name (until), ...) - the running allows only */
++function shPaintA24Line(){
++  var a24 = shA24().map(function(r){ return r.n + ' (' + shWhen(r.t) + ')'; });
++  $('allow24box').style.display = a24.length ? '' : 'none'; $('allow24').textContent = a24.join(', ');
++}
++/* a My rules box holding edits not saved yet */
++function shRuleDirty(k){ return $(k).value !== String((cfg && cfg[k]) || ''); }
++function shPaintAllowed(){
++  if(!cfg) return;
++  var f = $('alfilter').value.trim().toLowerCase(), a24 = shA24(), live = {}, rows;
++  function shown(n){ return !f || n.indexOf(f) >= 0; }
++  a24.forEach(function(r){ live[r.n] = 1; });
++  Object.keys(a24sel).forEach(function(n){ if(!live[n]) delete a24sel[n]; });
++  rows = a24.filter(function(r){ return shown(r.n); });
++  shRows('a24body', rows, 4, function(tr, r){
++    var tc = document.createElement('td'), ac;
++    tc.appendChild(shCk(a24sel[r.n], false, function(e){ if(e.target.checked) a24sel[r.n] = 1; else delete a24sel[r.n]; shA24All(rows); }));
++    tr.appendChild(tc);
++    shCell(tr, r.n, 'mono'); shCell(tr, shLeft(r.t), 'dim');
++    ac = shCell(tr, '', 'acts');
++    ac.appendChild(shBtn(`<#RSHD_55#>`, function(){ shA24Op('del', [r.n]); }, 1));
++    ac.appendChild(shBtn(`<#RSHD_211#>`, function(){ shA24Op('extend', [r.n]); }, 1));
++    ac.appendChild(shBtn(`<#RSHD_212#>`, function(){ shA24Op('keep', [r.n]); }, 1));
++  });
++  shA24All(rows);
++  [['allow', 'nbbody', `<#RSHD_215#>`], ['block', 'abbody', `<#RSHD_216#>`]].forEach(function(x){
++    shRows(x[1], shNames(cfg[x[0]]).filter(shown), 2, function(tr, n){
++      var ac;
++      shCell(tr, n, 'mono');
++      ac = shCell(tr, '', 'acts');
++      ac.appendChild(shBtn(`<#RSHD_55#>`, function(){ shRuleOp(x[0], 'del', n); }, 1));
++      ac.appendChild(shBtn(x[2], function(){ shRuleOp(x[0], 'move', n); }, 1));
++    });
++  });
++}
++function shA24All(rows){ $('a24all').checked = rows.length > 0 && rows.every(function(r){ return a24sel[r.n]; }); }
++function shA24Sel(){ var live = {}; shA24().forEach(function(r){ live[r.n] = 1; }); return Object.keys(a24sel).filter(function(n){ return live[n]; }); }
++/* names sent in turns of 100; the config is read again at the end (and after a refusal) */
++function shListOp(base, names){
++  var fin = ReaperBusy.startLast(), left = names.slice();
++  (function next(){
++    var p = {}, k;
++    for(k in base) p[k] = base[k];
++    p.name = left.splice(0, 100).join(',');
++    shPost(p, function(j){
++      if(!j || !j.ok){ fin(false); shErr(j); shConfig(); return; }
++      if(left.length) next(); else { fin(true); shConfig(); }
++    });
++  })();
++}
++function shA24Op(op, names){
++  if(!cfg) return;
++  if(!names.length){ alert(`<#RSHD_225#>`); return; }
++  if(op === 'keep' && shRuleDirty('allow')){ alert(`<#RSHD_224#>`); shTab('rules'); return; }
++  names.forEach(function(n){ delete a24sel[n]; });
++  shListOp({action: 'allow24', op: op}, names);
++}
++function shRuleOp(list, op, name){
++  if(!cfg) return;
++  if(shRuleDirty('allow') || shRuleDirty('block')){ alert(`<#RSHD_224#>`); shTab('rules'); return; }
++  shListOp({action: 'myrules', list: list, op: op}, [name]);
++}
++function shA24DelAll(){
++  var n = shA24().map(function(r){ return r.n; });
++  if(n.length && confirm(`<#RSHD_218#>`.replace('%1', n.length))) shA24Op('del', n);
++}
++/* a changed allow24 / allow / block from the router while nothing else in its config changed: a clean box takes the
++   router's text; a box with unsaved edits keeps them, and the names the router added since it was loaded (an Unbreak
++   "Always allow") join them, so Save does not drop those */
++function shLiveLists(j){
++  ['allow', 'block'].forEach(function(k){
++    var was = String(cfg[k] || ''), now = String(j[k] || ''), el = $(k), have = {}, old = {}, add;
++    if(now === was) return;
++    if(el.value === was) el.value = now;
++    else {
++      shNames(el.value).forEach(function(n){ have[n] = 1; });
++      shNames(was).forEach(function(n){ old[n] = 1; });
++      add = shNames(now).filter(function(n){ return !old[n] && !have[n]; });
++      if(add.length) el.value = el.value.replace(/\s+$/, '') + (el.value.trim() ? '\n' : '') + add.join('\n') + '\n';
++    }
++    cfg[k] = now;
++  });
++  cfg.allow24 = String(j.allow24 || '');
++  shPaintA24Line(); shPaintAllowed();
++}
++
+ /* ---- report */
+ var shSigLists = '', shSigTargets = '';
+ function shRender(j){
+@@ -972,15 +1113,17 @@ function shStoreLine(st){
+   el.textContent = (st.store ? `<#RSHD_131#>`.replace('%1', st.store) : `<#RSHD_132#>`) + (ht ? ' ' + ht : '') + ' ';
+   a.href = 'Reaper_Storage.asp'; el.appendChild(a);
+ }
+-function shStatus(cb){ shReq('GET', 'action=status', null, function(j){ shRender(j); shCounts(); if(typeof cb === 'function') cb(); }); }
++function shStatus(cb){ shReq('GET', 'action=status', null, function(j){ shRender(j); shCounts(); if(shCur === 'allowed') shPaintAllowed(); if(typeof cb === 'function') cb(); }); }
+ /* 2026-11-15 (concept B): a pause or resume changes only the pause list - when nothing else in the router's config
+    changed, the page keeps its unsaved edits (a Devices row's profile menu sits beside its Pause button) */
+ var shCfgSig = '';
+-function shCfgKey(j){ var o = {}, k; for(k in j) if(k !== 'pause' && k !== 'ss') o[k] = j[k]; return JSON.stringify(o); }
++/* reaper 2026-11-20 (REAPER-WG-ALLOWED): and the three lists the Allowed tab and Unbreak change at once (shLiveLists) */
++var SH_LIGHT = {pause: 1, ss: 1, allow24: 1, allow: 1, block: 1};
++function shCfgKey(j){ var o = {}, k; for(k in j) if(!SH_LIGHT[k]) o[k] = j[k]; return JSON.stringify(o); }
+ function shConfig(cb){ shReq('GET', 'action=config', null, function(j){
+   if(j && j.ok){
+     var sig = shCfgKey(j);
+-    if(cfg && sig === shCfgSig){ cfg.pause = j.pause || []; cfg.ss = j.ss || {}; shPaintPauses(); shPaintDevs(); }
++    if(cfg && sig === shCfgSig){ cfg.pause = j.pause || []; cfg.ss = j.ss || {}; shLiveLists(j); shPaintPauses(); shPaintDevs(); }
+     else { shCfgSig = sig; shParseConfig(j); shPaint(); ReaperPending.arm(); shArm(); }
+   }
+   if(cb) cb(); }); }
+@@ -1152,6 +1295,8 @@ function shPayload(){
+ function shSnap(){
+   var p = shPayload(), o = {}, k;
+   for(k in p) if(k !== 'keys') o[k] = p[k];
++  /* reaper 2026-11-20 (REAPER-WG-ALLOWED): a box equal to the router's list is "unchanged", whatever the list holds now */
++  o.block = shRuleDirty('block') ? p.block : ''; o.allow = shRuleDirty('allow') ? p.allow : '';
+   o.keys = Object.keys(cfg.keyUpd).sort().map(function(s){ return s + (cfg.keyUpd[s] === '-' ? ' -' : ' set'); }).join(' ');
+   o.on = $('tgon').className.indexOf('on') >= 0 ? '1' : '0';
+   o.mode = $('mode').value;
+@@ -1190,10 +1335,11 @@ function shSave(){
+ }
+ /* the page's controls (were inline onclick= / onchange= attributes) */
+ var ACT = {update: function(){ shAct('update'); }, addsrc: function(){ shSrcOpen(null); }, addprof: shAddProfile, save: shSave, addrw: shAddRewrite,
+-           pause: shPause, resume: shResume, why: shWhy, reset: shReset, golists: function(){ shTab('lists'); }};
++           pause: shPause, resume: shResume, why: shWhy, reset: shReset, golists: function(){ shTab('lists'); },
++           a24delsel: function(){ shA24Op('del', shA24Sel()); }, a24extsel: function(){ shA24Op('extend', shA24Sel()); }, a24delall: shA24DelAll};
+ /* ---- reaper 2026-11-15 (owner, concept B): the tabs - the Firewall page's tab row (#wins .win[data-t] over
+    .tab#tab_<name>); the last tab is remembered per browser (localStorage, when the browser keeps it) */
+-var TABS = ['overview', 'lists', 'rules', 'devices', 'activity'], shCur = 'overview';
++var TABS = ['overview', 'lists', 'rules', 'allowed', 'devices', 'activity'], shCur = 'overview';
+ function shTab(t){
+   if(TABS.indexOf(t) < 0) t = 'overview';
+   shCur = t;
+@@ -1201,6 +1347,7 @@ function shTab(t){
+   rp.wins().forEach(function(w){ var on = w.getAttribute('data-t') === t; w.classList.toggle('on', on); w.setAttribute('aria-selected', on ? 'true' : 'false'); });
+   try{ localStorage.setItem('reaper_wg_tab', t); }catch(e){}
+   if(t === 'devices' || t === 'overview') shCounts();
++  if(t === 'allowed') shPaintAllowed();	/* reaper 2026-11-20: the time left, as of now */
+ }
+ $('wins').addEventListener('click', function(e){ var w = e.target.closest ? e.target.closest('.win') : null; if(w) shTab(w.getAttribute('data-t')); });
+ $('wins').addEventListener('keydown', function(e){
+@@ -1234,6 +1381,13 @@ $('flyclose').addEventListener('keydown', function(e){ if(e.key === 'Enter' || e
+ document.addEventListener('keydown', function(e){ if(e.key === 'Escape' && $('flyout').classList.contains('open')) shHelp(false); });
+ $('svcprof').addEventListener('change', function(){ editPid = this.value || null; shPaintEditor(); });
+ $('livedev').addEventListener('change', function(){ shLivePaint(); });
++/* reaper 2026-11-20 (REAPER-WG-ALLOWED): the filter over the three tables; the header box selects every row shown */
++$('alfilter').addEventListener('input', function(){ shPaintAllowed(); });
++$('a24all').addEventListener('change', function(){
++  var on = this.checked, f = $('alfilter').value.trim().toLowerCase();
++  shA24().forEach(function(r){ if(!f || r.n.indexOf(f) >= 0){ if(on) a24sel[r.n] = 1; else delete a24sel[r.n]; } });
++  shPaintAllowed();
++});
+ document.addEventListener('click', function(e){
+   var b = e.target && e.target.closest ? e.target.closest('[data-act]') : null;
+   if(b && ACT[b.getAttribute('data-act')]) ACT[b.getAttribute('data-act')]();
+-- 
+2.25.1
+

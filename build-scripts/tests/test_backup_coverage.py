@@ -51,7 +51,7 @@ check("sources come before their keys (keys are pruned against the sources just 
 LISTS = {"gk_rl", "reaper_pbr_rulelist", "reaper_fw_obj", "reaper_fw_grp", "reaper_fw_svc", "reaper_fw_zone",
          "reaper_fw_zpol", "reaper_fw_rules", "reaper_fw_edef", "reaper_fw_nat"}
 # not nvram: a /jffs file or the Warden list store, named in the table
-STORE = {"rwarden_ban", "rwarden_allow", "rwarden_dnsallow", "rwarden_dnssrc", "rwarden_dnskeys", "rwarden_cfkeys", "rdev_dhcp6",
+STORE = {"rwarden_ban", "rwarden_allow", "rwarden_dnsallow", "rwarden_dnsexempt", "rwarden_dnssrc", "rwarden_dnskeys", "rwarden_cfkeys", "rdev_dhcp6",
          "rwatch_rules", "rlog_filter", "wallguard_lists", "wallguard_block", "wallguard_allow", "wallguard_profiles",
          "wallguard_assign", "wallguard_services", "wallguard_sched", "wallguard_safe", "wallguard_rewrite", "wallguard_keys",
          "wallguard_adv"}	# 2026-11-06: Advanced rules (/jffs/wallguard/adv)
@@ -65,6 +65,11 @@ FULL_ONLY = {   # in the full .rbk (all nvram + /jffs) only, on purpose
     "reaper_pbr_active": "state", "reaper_pbr_armed": "state", "reaper_pbr_err": "state",
     "reaper_fwsig_override": "one-shot confirm, cleared by its consumer", "reaper_upg_fail": "state",
     "rwarden_lastupd": "state",
+    "reaper_mlo_coldboot_owed": "state of this boot (rc/reaper_mloboot.c sets it every boot)",	# 2026-11-20
+    # 2026-11-21: the seal of the Security Review's accepted baseline (httpd writes it on Accept; no defaults row). It
+    # describes ONE file, /jffs/reaper/review/baseline, which only the full .rbk carries - alone in a settings file it
+    # would vouch for a baseline that file does not bring
+    "rwatch_review_seal": "state: travels with the /jffs baseline it seals",
     "reaper_ledns_state": "state", "reaper_ledns_err": "state", "reaper_ledns_when": "state",
     "reaper_store": "this router's USB store", "reaper_store_ds": "this router's USB store",
     "reaper_store_vid": "this router's USB volume pin", "reaper_store_vname": "this router's USB volume pin",
@@ -113,6 +118,12 @@ check("reaper_ap_isolate_lan (main network: Wi-Fi only / Wi-Fi and LAN ports) is
       "reaper_ap_isolate_lan" in carried and "reaper_ap_isolate_lan" in all_keys)
 check("apg_ap_isolate_lan is a template row in defaults.c and full-backup-only",
       "apg_ap_isolate_lan" in all_keys and "apg_ap_isolate_lan" in FULL_ONLY and "apg_ap_isolate_lan" not in carried)
+# 2026-11-21: the Security Review seal - in the full backup (router settings + /jffs together), never in the settings
+# file, and not a factory default (nvram restore takes it without one: its name contains the rwatch_review row's)
+check("rwatch_review_seal is full-backup-only: no settings-file row, no defaults row, written by httpd; the baseline's rules stay carried",
+      "rwatch_review_seal" in FULL_ONLY and "rwatch_review_seal" not in carried and "rwatch_review_seal" not in all_keys
+      and '#define RVIEW_SEAL_NV\t\t"rwatch_review_seal"' in web and "nvram_set(RVIEW_SEAL_NV, v);" in web
+      and "rwatch_rules" in carried and "rwatch_review" in carried and "rwatch_review" in all_keys)
 check("every carried nvram key exists in defaults.c (a typo would carry nothing)",
       not (carried - STORE - all_keys), sorted(carried - STORE - all_keys))
 fields = re.findall(r'\{ "([a-z]+)", SH_JFFS "/\1", sh_chk_[a-z]+ \}', web)
@@ -161,6 +172,7 @@ if CC and region and tbl and all(fns):
 #include <sys/stat.h>
 #include <arpa/inet.h>
 #include <reaper_rewrite.h>	/* 2026-11-05: Wallguard's DNS rewrite check (sh_chk_rewrite) */
+#include <reaper_dut_redir.h>	/* 2026-11-20: the login redirect's address (rcfg_put) */
 /* the router's /jffs is the working directory (router A exports, router B imports) */
 #define SH_JFFS "./wallguard"
 #define SH_LIST_MAX 16384
@@ -181,6 +193,8 @@ static char *rjf_get(const char *p, int *ex) { FILE *f = fopen(p, "r"); size_t n
 static int rjf_set(const char *p, const char *v, const char *tag) { FILE *f = fopen(p, "w"); (void)tag; if (!f) return -1; fputs(v, f); fclose(f); return 0; }
 static char *rw_list_get(const char *n) { char p[600]; int ex; snprintf(p, sizeof(p), "./rwarden/%s", n); return strdup(rjf_get(p, &ex)); }
 static int rw_list_set(const char *n, const char *v) { char p[600]; snprintf(p, sizeof(p), "./rwarden/%s", n); return rjf_set(p, v, "rwarden"); }
+#define RDW_EXEMPT_MAX 16	/* v3.8.4 (REAPER-DREAD-EXEMPT): the real check runs in test_dreadwatch_exempt.py */
+static int rdw_exempt_clean(const char *in, char *out, size_t osz) { snprintf(out, osz, "%s", in ? in : ""); return 0; }
 static char *rview_slurp(const char *p, size_t max) { int ex; char *v = rjf_get(p, &ex); (void)max; return ex ? strdup(v) : NULL; }
 static int rview_rules_ok(const char *v) { return strchr(v, '`') ? -1 : 0; }
 static void rview_alog(const char *a, const char *b) { (void)a; (void)b; }
@@ -236,7 +250,9 @@ int main(int argc, char **argv) {
             fa("reaper/logfilter", "dhcp\n")
             NVA = {"wallguard_enable": "1", "wallguard_mode": "nx", "reaper_dot_srv": "1", "reaper_dnshc_target": "10.20.0.98",
                    "reaper_export_url": "https://splunk.example:8088/services/collector?x=1&y=2", "reaper_export_token": "Tok-123/abc=",
-                   "rwatch_iv": "5", "rconn_names": "1", "rmcp_client": "192.168.50.97", "rwarden_reset": "7d", "rtraf_probe": "1.1.1.1"}
+                   "rwatch_iv": "5", "rconn_names": "1", "rmcp_client": "192.168.50.97", "rwarden_reset": "7d", "rtraf_probe": "1.1.1.1",
+                   # 2026-11-20 (item 9): the login redirect's address, three parts
+                   "reaper_dut_redir_proto": "https", "reaper_dut_redir_host": "router.example.net", "reaper_dut_redir_port": "8443"}
             r = subprocess.run([exe, "export"], cwd=A, input="".join("%s=%s\n" % (k, v.encode().hex()) for k, v in NVA.items()), capture_output=True, text=True)
             exp = dict(l.split("=", 1) for l in r.stdout.split("\n") if "=" in l)
             dec = {k: bytes.fromhex(v).decode() for k, v in exp.items()}
@@ -276,12 +292,16 @@ int main(int argc, char **argv) {
             bad = {"wallguard_block": "not a name!\n", "rwarden_dnssrc": "custom 9 https://x.example/l\n",
                    "reaper_export_url": 'https://x.example/"q', "wallguard_keys": "2 has space", "reaper_dot_srv": "1;reboot",
                    "wallguard_lists": "custom 1 http://plain.example/\n",
-                   "wallguard_rewrite": "nas.home.arpa 192.168.50.20,1.2.3.4\n"}   # a comma would split a host-record
+                   "wallguard_rewrite": "nas.home.arpa 192.168.50.20,1.2.3.4\n",   # a comma would split a host-record
+                   # 2026-11-20 (item 9): the login redirect's parts through the Tweaks page's own check
+                   "reaper_dut_redir_proto": "ftp", "reaper_dut_redir_host": "192.168.50.1", "reaper_dut_redir_port": "0"}
             before = {rel: rb(rel) for rel in ("wallguard/block", "rwarden/dnssrc", "wallguard/keys", "wallguard/lists", "wallguard/rewrite")}
             r = subprocess.run([exe, "import"], cwd=B, input="".join("%s=%s\n" % (k, v.encode().hex()) for k, v in bad.items()), capture_output=True, text=True)
             puts = dict(l.split()[1:3] for l in r.stdout.split("\n") if l.startswith("PUT "))
             check("import: a bad value in any store is refused", len(puts) == len(bad) and all(v == "-1" for v in puts.values()), puts)
             check("import: a refused value writes nothing", all(rb(rel) == v for rel, v in before.items()), {rel: rb(rel) for rel in before})
+            nvb2 = {l[3:].split("=", 1)[0] for l in r.stdout.split("\n") if l.startswith("NV ")}
+            check("import: a refused login redirect part is not stored (item 9)", not ({"reaper_dut_redir_proto", "reaper_dut_redir_host", "reaper_dut_redir_port"} & nvb2), nvb2)
     finally:
         shutil.rmtree(w, ignore_errors=True)
 print("%d failure(s)" % len(fails))

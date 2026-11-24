@@ -273,7 +273,8 @@ int main(int argc, char **argv) {
     chk = re.search(r"static int sh_chk_rewrite\(char \*l\)\n\{.*?\n\}\n", web, re.S)
     check("httpd: lower-cased, parsed by the shared rules, stored in its plain form (never longer than sent)",
           chk and "tolower(" in chk.group(0) and "rrw_parse(l, &r)" in chk.group(0) and "snprintf(l, n + 1," in chk.group(0))
-    ca = re.search(r"static int wallguard_config_answer\(char \*name, unsigned short qtype\)\n\{.*?\n\}\n", eng, re.S)
+    # v3.8.4 (REAPER-DREAD-EXEMPT): the function also takes the asking device (a device that skips Dreadwatch)
+    ca = re.search(r"static int wallguard_config_answer\(char \*name, unsigned short qtype, union mysockaddr \*client, time_t now\)\n\{.*?\n\}\n", eng, re.S)
     check("engine: the router's own records (rewrite, hosts, DHCP name) win; a cached upstream answer does not",
           ca and "cache_find_by_name(c, name, dnsmasq_time(), F_IPV4 | F_IPV6 | F_CNAME)" in ca.group(0)
           and "F_HOSTS | F_DHCP | F_CONFIG" in ca.group(0) and "time(NULL)" not in ca.group(0))

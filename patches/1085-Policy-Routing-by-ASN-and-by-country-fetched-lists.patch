@@ -1,0 +1,1528 @@
+From 9911a93d16775264b725041a60cbc3589e73f824 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Tue, 24 Nov 2026 11:43:50 -0500
+Subject: [PATCH] Policy Routing by ASN and by country: fetched lists
+
+- New object types on the Policy Routing page: an ASN list (one or more AS numbers) and a country list. The router
+  downloads their address ranges itself (ASN: ipverse, then RIPEstat, then HackerTarget; country: Warden's own loaded
+  list when it holds both families, then ipdeny, then ipverse), daily at 05:17, on Update now, and right after Apply
+  for a list never fetched. A list that has not arrived is asked for again when the WAN connects and every 15 minutes
+  until it has; a list every source answers with no ranges is left to the daily refresh.
+- A set is only ever replaced whole (temporary set, then ipset swap). A failed or refused update leaves the live set
+  and the saved list as they were, per family: a reply that brings IPv4 while its IPv6 request failed keeps the saved
+  IPv6 list.
+- Nothing from a list is taken on trust: only address/length tokens, nothing wider than /8 or /16, no prefix that
+  overlaps a private or reserved range, and a reply covering more than half of the Internet is refused whole.
+- Saved per list on /jffs (RAM when /jffs is full), restored at boot before any download; removed with the last rule
+  that uses the list, at Keep or Revert.
+- The list sources are added once, on first use, to Warden's whitelist and Dreadwatch's never-block names, so the
+  router's own filters cannot stop the downloads; an entry the admin deletes is never put back.
+- Warden's country table moves to a shared script used by both pages.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ release/src/router/rc/reaper_fw.c            | 571 ++++++++++++++++++-
+ release/src/router/rc/reaper_pbr.c           |  67 ++-
+ release/src/router/rc/rwarden.c              | 109 +++-
+ release/src/router/rc/wan.c                  |  33 +-
+ release/src/router/www/Reaper_VPNRouting.asp | 294 +++++++++-
+ release/src/router/www/Reaper_Warden.asp     |  25 +-
+ release/src/router/www/reaper/reaper_cc.js   |  26 +
+ 7 files changed, 1082 insertions(+), 43 deletions(-)
+ create mode 100644 release/src/router/www/reaper/reaper_cc.js
+
+diff --git a/release/src/router/rc/reaper_fw.c b/release/src/router/rc/reaper_fw.c
+index f863ad0130..5777fe638c 100644
+--- a/release/src/router/rc/reaper_fw.c
++++ b/release/src/router/rc/reaper_fw.c
+@@ -73,7 +73,8 @@
+  *        reaper_fw_svc reaper_fw_zone reaper_fw_zpol reaper_fw_rules
+  *
+  * RECORD FORMATS (list separator '<', field separator '>'):
+- *   obj:   <name>type>value>comment           type = host|cidr|range|mac|fqdn|geo
++ *   obj:   <name>type>value>comment           type = host|cidr|range|mac|fqdn|geo|asn
++ *          (asn = AS numbers, a Policy Routing list only - REAPER-FW-LISTS)
+  *   grp:   <name>member,member,...>comment     members = object names
+  *   svc:   <name>proto>ports>comment           proto = tcp|udp|both|icmp
+  *   zone:  <name>iface,iface,...>comment        iface = br0|vlanN|eth0|tun+|wgc+...
+@@ -139,6 +140,20 @@
+ #define RFW_VAL_MAX  2048                         /* an object's value field; a whole record is < RFW_REC_MAX (2048) */
+ #define RFW_SETCACHE RFW_CACHE "/sets"            /* fqdn set contents, saved by the resolver, restored at create */
+ #define RFW_PREVIEW  RFW_DIR "/preview.txt"       /* compile-preview output (never executed) */
++/* REAPER-FW-LISTS A-BEGIN (2026-11-22): fetched lists for Policy Routing - an ASN list (type asn) or a country list
++ * (type geo) that a Policy Routing rule names. Their sets are created by the set script and filled only by
++ * RFW_LISTS, which builds a temporary set and swaps it in. The saved lists are NOT under RFW_SETCACHE: the
++ * resolver deletes every file there that is not a domain list's, and the full backup cuts that folder short. */
++#define RFW_LISTS       RFW_DIR "/lists.sh"
++#define RFW_LISTWORK    RFW_DIR "/lists.w"
++#define RFW_LISTSTATUS  RFW_DIR "/lists.status"
++#define RFW_LISTCACHE   RFW_CACHE "/lists"
++#define RFW_ASN_MAXELEM 65536                     /* an ASN list's set, per family */
++#define RFW_CC_MAXELEM  262144                    /* a country list's set, per family (Warden's RW_GEO_MAXELEM) */
++#define RFW_ASN_PER_OBJ 16                        /* AS numbers in one list */
++#define RFW_ASN_TOTAL   32                        /* different AS numbers in use */
++#define RFW_CC_TOTAL    8                         /* different countries in use */
++/* REAPER-FW-LISTS A-END */
+ 
+ #define RFW_CONFIRM_MIN  15                       /* commit-confirm floor, seconds (S3: never 0) */
+ #define RFW_CONFIRM_DEF  60
+@@ -344,6 +359,83 @@ static int rfw_valid_cc(const char *s)
+ {
+ 	return s && strlen(s) == 2 && isalpha((int)s[0]) && isalpha((int)s[1]);
+ }
++/* REAPER-FW-LISTS B-BEGIN */
++/* One AS number as typed - "AS2906", "as2906" or "2906". Returns the number, or 0 when it is not one a public
++ * list can exist for: 0, AS_TRANS (23456), the documentation / private / reserved block 64496-131071 and the
++ * private block from 4200000000 up. Digits only reach the download address built from it. */
++static unsigned long rfw_asn_num(const char *s)
++{
++	unsigned long long v = 0;
++	int n = 0;
++
++	if (!s) return 0;
++	if ((s[0] == 'A' || s[0] == 'a') && (s[1] == 'S' || s[1] == 's')) s += 2;
++	for (; *s; s++, n++) {
++		if (*s < '0' || *s > '9' || n >= 10) return 0;
++		v = v * 10 + (unsigned)(*s - '0');
++	}
++	if (!n || v == 0 || v == 23456 || (v >= 64496 && v <= 131071) || v >= 4200000000ULL) return 0;
++	return (unsigned long)v;
++}
++
++static int rfw_fetched_type(const char *type)
++{
++	return !strcmp(type, "asn") || !strcmp(type, "geo");
++}
++
++static int rfw_word_in(const char *list, const char *w)
++{
++	size_t wl = strlen(w);
++	const char *p = list;
++
++	while ((p = strstr(p, w)) != NULL) {
++		if ((p == list || p[-1] == ' ') && (p[wl] == 0 || p[wl] == ' ')) return 1;
++		p += wl;
++	}
++	return 0;
++}
++
++/* The saved-list names of one fetched object, space separated: "as2906 as40027" for an ASN list (each number
++ * once, RFW_ASN_PER_OBJ at most), "cc_nl" for a country list. Returns how many; 0 = nothing valid in it. */
++static int rfw_fetched_keys(const char *type, const char *val, char *out, size_t ol)
++{
++	char *dup, *tok, *save = NULL;
++	size_t len = 0;
++	int n = 0;
++
++	out[0] = 0;
++	if (!strcmp(type, "geo")) {
++		if (!rfw_valid_cc(val)) return 0;
++		snprintf(out, ol, "cc_%c%c", tolower((int)val[0]), tolower((int)val[1]));
++		return 1;
++	}
++	if (!(dup = strdup(val))) return 0;
++	for (tok = strtok_r(dup, ", ", &save); tok; tok = strtok_r(NULL, ", ", &save)) {
++		unsigned long a = rfw_asn_num(tok);
++		char key[16];
++
++		if (!a) continue;
++		snprintf(key, sizeof(key), "as%lu", a);
++		if (rfw_word_in(out, key)) continue;
++		if (n >= RFW_ASN_PER_OBJ || len + strlen(key) + 2 > ol) break;
++		len += snprintf(out + len, ol - len, "%s%s", n ? " " : "", key);
++		n++;
++	}
++	free(dup);
++	return n;
++}
++
++/* A fetched list is loaded only while Policy Routing is on and one of its rules names the object (directly or
++ * through a group): no rule, no set, no download. */
++static int rfw_fetched_wanted(const char *type, const char *name, const char *val)
++{
++	char keys[RFW_ASN_PER_OBJ * 14 + 8];
++
++	if (!nvram_match("reaper_pbr_enable", "1")) return 0;
++	if (!rfw_fetched_keys(type, val, keys, sizeof(keys))) return 0;
++	return reaper_pbr_uses_object(name);
++}
++/* REAPER-FW-LISTS B-END */
+ 
+ /* a port list/range for a service object: comma list of N or LOW:HIGH,
+  * 1..65535, LOW<HIGH. Charset [0-9,:] only; emitted into -m multiport / --dport.
+@@ -676,6 +768,10 @@ static int rfw_obj_set(const rfw_cfg_t *c, const char *name, int v6,
+ 		snprintf(out, ol, "rw_g%s_%s", v6 ? "6" : "", cc);
+ 		return 1;
+ 	}
++	/* REAPER-FW-LISTS C-BEGIN: an ASN list is a Policy Routing object only (owner, 2026-11-22). The rules engine
++	 * never matches on it: a rule that names one resolves to nothing and is not emitted. */
++	if (!strcmp(type, "asn")) return 0;
++	/* REAPER-FW-LISTS C-END */
+ 	/* A MAC object has NO IPv6 representation. hash:mac carries no address
+ 	 * family, so rfw_emit_one_set() creates the v4 set only - and a rule that
+ 	 * matched rwfw6_<name> would reference a set that was never created, which
+@@ -861,6 +957,22 @@ static void rfw_emit_one_set(FILE *f, const char *type, const char *name,
+ 		logmessage("reaper_fw", "object %s: %d invalid value(s) IGNORED", name, bad);
+ }
+ 
++/* REAPER-FW-LISTS D-BEGIN */
++/* A fetched list's sets are only CREATED here, and kept. Never flushed, never destroyed, never filled: this
++ * script runs on every Policy Routing apply, reassert and self-monitor heal, and a flush would leave the rule
++ * that matches the set with nothing until the next download. RFW_LISTS fills the set by swapping a complete
++ * temporary set in, which also puts right a set left under this name by an object of another type. */
++static void rfw_emit_fetched_set(FILE *f, const char *type, const char *name, char *keep, size_t keeplen)
++{
++	int max = strcmp(type, "geo") ? RFW_ASN_MAXELEM : RFW_CC_MAXELEM;
++
++	fprintf(f, "ipset create %s%s hash:net maxelem %d -exist 2>/dev/null\n", RFW_SET4, name, max);
++	fprintf(f, "ipset create %s%s hash:net family inet6 maxelem %d -exist 2>/dev/null\n", RFW_SET6, name, max);
++	strlcat(keep, " ", keeplen); strlcat(keep, RFW_SET4, keeplen); strlcat(keep, name, keeplen);
++	strlcat(keep, " ", keeplen); strlcat(keep, RFW_SET6, keeplen); strlcat(keep, name, keeplen);
++}
++/* REAPER-FW-LISTS D-END */
++
+ /* create+fill every address object's sets, and remember the names we own. */
+ static void rfw_emit_sets(FILE *f, const rfw_cfg_t *c, char *keep, size_t keeplen)
+ {
+@@ -887,7 +999,14 @@ static void rfw_emit_sets(FILE *f, const rfw_cfg_t *c, char *keep, size_t keeple
+ 			logmessage("reaper_fw", "object with invalid name IGNORED");
+ 			continue;
+ 		}
+-		if (!strcmp(type, "geo")) continue;              /* S5: Warden owns it */
++		/* REAPER-FW-LISTS E: an ASN list, or a country list Policy Routing uses, gets its own set. S5 stands for
++		 * the rules engine - a firewall rule on a country object still resolves to Warden's rw_g_<cc>
++		 * (rfw_obj_set) - and a country object no Policy Routing rule names gets no set here, as before. */
++		if (rfw_fetched_type(type)) {
++			if (rfw_fetched_wanted(type, name, val))
++				rfw_emit_fetched_set(f, type, name, keep, keeplen);
++			continue;
++		}
+ 		if (strcmp(type, "host") && strcmp(type, "cidr") && strcmp(type, "range") &&
+ 		    strcmp(type, "mac")  && strcmp(type, "fqdn")) {
+ 			logmessage("reaper_fw", "object %s: unknown type IGNORED", name);
+@@ -1187,6 +1306,421 @@ static void rfw_gen_resolve(const rfw_cfg_t *c)
+ 		eval("cru", "d", "reaper_fw_dns");
+ 	}
+ }
++/* REAPER-FW-LISTS F-BEGIN */
++static int rfw_list_saved(const char *key)
++{
++	char p[128];
++
++	snprintf(p, sizeof(p), RFW_LISTCACHE "/%s.meta", key);
++	if (access(p, F_OK) == 0) return 1;
++	snprintf(p, sizeof(p), RFW_LISTWORK "/c/%s.meta", key);
++	return access(p, F_OK) == 0;
++}
++
++/* Write RFW_LISTS: a table of the fetched lists in use (name, kind, set size, saved-list names) followed by a
++ * fixed script. `fill` runs here, at once and without the network, so a boot or a reassert has the sets back
++ * from flash before the rules that match them go in; `missing` then fetches, in the background, a list that
++ * has never been fetched; `update` is the daily job and the page's Update now. With nothing in use the script
++ * runs once more to free what an earlier configuration left, and the job is removed. */
++static void rfw_gen_lists(const rfw_cfg_t *c)
++{
++	static const char body[] =
++	  "# REAPER-FW-LISTS: fetched lists (ASN / country) for Policy Routing. Modes: fill (no network: build the sets\n"
++	  "# from the saved lists), missing (fetch only lists never fetched), wan (the same when the WAN comes up, at once),\n"
++	  "# update (fetch every list in use).\n"
++	  "# A set is only ever replaced whole: build rwfx4 / rwfx6 beside it, then ipset swap. A failed or refused\n"
++	  "# update leaves the live set and the saved list as they were.\n"
++	  "# REAPER-FW-LISTS-FAMILY (2026-11-24): per family too - a reply that brings IPv4 while its IPv6 request failed (or\n"
++	  "# the reverse) keeps the saved IPv6 list; only a clean answer (200, or 404 = the source has none) empties a family.\n"
++	  "MODE=\"${1:-fill}\"\n"
++	  "D=\"${RFL_D:-/tmp/reaper_fw}\"\n"
++	  "JF=\"${RFL_JFFS:-/jffs}\"\n"
++	  "C=\"$JF/reaper_fw/lists\"\n"
++	  "MEMINFO=\"${RFL_MEMINFO:-/proc/meminfo}\"\n"
++	  "W=\"$D/lists.w\"\n"
++	  "ST=\"$D/lists.status\"\n"
++	  "NOW=$(date +%s)\n"
++	  "log() { logger -t reaper_fw \"lists: $*\"; }\n"
++	  "KEYS=$(echo \"$OBJS\" | awk '{ for (i = 4; i <= NF; i++) print $i }' | sort -u | tr '\\n' ' ')\n"
++	  "SETS=$(echo \"$OBJS\" | awk 'NF >= 4 { print \"rwfw_\" $1; print \"rwfw6_\" $1 }' | tr '\\n' ' ')\n"
++	  "\n"
++	  "# sets this script filled for an object that is gone or no longer used: free them (a set a rule still\n"
++	  "# references refuses the destroy and is left for the set script)\n"
++	  "if [ -d \"$W\" ]; then\n"
++	  "  for _p in \"$W\"/b.*; do\n"
++	  "    [ -f \"$_p\" ] || continue\n"
++	  "    _b=\"${_p##*/b.}\"\n"
++	  "    case \" $SETS \" in *\" $_b \"*) continue;; esac\n"
++	  "    ipset destroy \"$_b\" 2>/dev/null\n"
++	  "    rm -f \"$_p\"\n"
++	  "  done\n"
++	  "fi\n"
++	  "# saved lists nothing uses any more\n"
++	  "if [ -w \"$JF\" ] && [ -d \"$C\" ]; then\n"
++	  "  for _p in \"$C\"/*; do\n"
++	  "    [ -f \"$_p\" ] || continue\n"
++	  "    _b=\"${_p##*/}\"; _b=\"${_b%%.*}\"\n"
++	  "    case \" $KEYS \" in *\" $_b \"*) ;; *) rm -f \"$_p\";; esac\n"
++	  "  done\n"
++	  "  rmdir \"$C\" 2>/dev/null\n"
++	  "fi\n"
++	  "if [ -z \"$KEYS\" ]; then\n"
++	  "  rm -rf \"$W\"; rm -f \"$ST\"; cru d reaper_fw_lists_retry >/dev/null 2>&1\n"
++	  "  exit 0\n"
++	  "fi\n"
++	  "mkdir -p \"$W/c\" 2>/dev/null; chmod 700 \"$W\" 2>/dev/null\n"
++	  "\n"
++	  "# Reserved and private ranges never enter a routing set, and nothing wider than /8 (IPv4) or /16 (IPv6):\n"
++	  "# a wrong or hostile list must not be able to capture the LAN or the whole Internet. REAPER-FW-LISTS-OVERLAP\n"
++	  "# (2026-11-23): a prefix is dropped when it OVERLAPS a reserved range, not only when it starts inside one\n"
++	  "# (192.0.0.0/8 holds 192.168.0.0/16, 100.0.0.0/8 holds the carrier-NAT range).\n"
++	  "# (no ^ in these awk programs: busybox awk has it only with CONFIG_FEATURE_AWK_LIBM; p[] is a doubling table)\n"
++	  "flt4() { awk -F'[./]' 'BEGIN { p[0] = 1; for (i = 1; i <= 32; i++) p[i] = p[i - 1] * 2\n"
++	  "  n = split(\"0.0.0.0/8 10.0.0.0/8 100.64.0.0/10 127.0.0.0/8 169.254.0.0/16 172.16.0.0/12 192.168.0.0/16 224.0.0.0/3\", r, \" \")\n"
++	  "  for (i = 1; i <= n; i++) { split(r[i], q, \"[./]\"); rs[i] = ((q[1] * 256 + q[2]) * 256 + q[3]) * 256 + q[4]; re[i] = rs[i] + p[32 - q[5]] - 1 } }\n"
++	  "  { a = (($1 * 256 + $2) * 256 + $3) * 256 + $4; z = p[32 - $5]; s = int(a / z) * z; e = s + z - 1\n"
++	  "    for (i = 1; i <= n; i++) if (s <= re[i] && e >= rs[i]) next\n"
++	  "    print }'; }\n"
++	  "flt6() { grep -viE '^(::|0{1,4}:|fe[89ab]|f[cd]|ff)'; }\n"
++	  "# every source format (plain text, JSON) is cut into tokens; only a whole token of the form address/length counts\n"
++	  "tok() { tr -c '0-9a-fA-F.:/\\n' '\\n'; }\n"
++	  "x4() { tok | grep -E '^([0-9]{1,3}\\.){3}[0-9]{1,3}/[0-9]{1,2}$' | awk -F'[./]' '$1 <= 255 && $2 <= 255 && $3 <= 255 && $4 <= 255 && $5 >= 8 && $5 <= 32' | flt4 | sort -u; }\n"
++	  "x6() { tok | grep -iE '^[0-9a-f]{1,4}(:[0-9a-f]{0,4}){2,7}/[0-9]{1,3}$' | awk -F/ '$2 >= 16 && $2 <= 128' | tr 'A-F' 'a-f' | flt6 | sort -u; }\n"
++	  "cnt() { ipset list -t \"$1\" 2>/dev/null | sed -n 's/.*Number of entries: //p'; }\n"
++	  "lines() { if [ -f \"$1\" ]; then wc -l < \"$1\" | tr -d ' '; else echo 0; fi; }\n"
++	  "# a saved list: the copy in RAM (flash was full or read-only) wins over the one on flash\n"
++	  "cf() { if [ -f \"$W/c/$1\" ]; then echo \"$W/c/$1\"; else echo \"$C/$1\"; fi; }\n"
++	  "put() {\n"
++	  "  [ -w \"$JF\" ] || return 1\n"
++	  "  mkdir -p \"$C\" 2>/dev/null\n"
++	  "  _a=$(df -k \"$JF\" 2>/dev/null | awk 'NR == 2 { print $4 }')\n"
++	  "  _z=$(( $(wc -c < \"$1\") / 1024 * 2 + 256 ))\n"
++	  "  [ \"${_a:-0}\" -gt \"$_z\" ] 2>/dev/null || return 1\n"
++	  "  cp \"$1\" \"$2.tmp\" 2>/dev/null && mv \"$2.tmp\" \"$2\"\n"
++	  "}\n"
++	  "# keep one file of a list: flash when it can be written, else RAM. $1 = new file, $2 = name in the store\n"
++	  "keep() {\n"
++	  "  if cmp -s \"$1\" \"$C/$2\" 2>/dev/null; then rm -f \"$W/c/$2\"; return 1; fi\n"
++	  "  if put \"$1\" \"$C/$2\"; then rm -f \"$W/c/$2\"; return 0; fi\n"
++	  "  cmp -s \"$1\" \"$W/c/$2\" 2>/dev/null && return 1\n"
++	  "  [ -n \"$NOFLASH\" ] || { log \"the lists cannot be saved on /jffs (full or read-only) - kept in memory until the next restart\"; NOFLASH=1; }\n"
++	  "  cp \"$1\" \"$W/c/$2\"\n"
++	  "  return 0\n"
++	  "}\n"
++	  "\n"
++	  "# ---- fetching (missing / update) ----\n"
++	  "CURL='curl -fsSL --max-filesize 4194304 --retry 1 --max-time 20'\n"
++	  "if curl --proto-redir =https --version >/dev/null 2>&1; then CURL=\"$CURL --proto =https --proto-redir =https\"; fi\n"
++	  "# one download, added to $W/body only when it arrived whole\n"
++	  "dl() {\n"
++	  "  rm -f \"$W/dl\"\n"
++	  "  HC=$($CURL -w '%{http_code}' -o \"$W/dl\" \"$1\" 2>/dev/null); RC=$?\n"
++	  "  if [ \"$RC\" = 0 ] && [ -f \"$W/dl\" ]; then cat \"$W/dl\" >> \"$W/body\"; fi\n"
++	  "  rm -f \"$W/dl\"\n"
++	  "}\n"
++	  "# did this family's own request answer cleanly? 0 = it arrived, 22 with HTTP 404 = the source has none of it\n"
++	  "fam() { [ \"$1\" = 0 ] || { [ \"$1\" = 22 ] && [ \"$2\" = 404 ]; }; }\n"
++	  "why() { [ -n \"$WIDE\" ] && { echo wide; return; }; case \"$1\" in 0) echo empty;; 6) echo dns;; 7|28|35) echo conn;; 22) echo http;; 63) echo big;; *) echo \"err$1\";; esac; }\n"
++	  "# REAPER-FW-LISTS-WIDE (2026-11-23): no AS and no country holds half the Internet. A reply that adds up to more\n"
++	  "# (IPv4: over 2^31 addresses; IPv6: over 2^60 /64s, half of 2000::/3) is a wrong or hostile list: none of it is used.\n"
++	  "wide() { cat \"$W/n4\" \"$W/n6\" 2>/dev/null | awk -F/ 'BEGIN { p[0] = 1; for (i = 1; i <= 64; i++) p[i] = p[i - 1] * 2 }\n"
++	  "  { if ($1 ~ /:/) { if ($2 <= 64) w6 += p[64 - $2] } else w4 += p[32 - $2] } END { exit !(w4 > p[31] || w6 > p[60]) }'; }\n"
++	  "ext() {\n"
++	  "  WIDE=''; x4 < \"$W/body\" > \"$W/n4\"; x6 < \"$W/body\" > \"$W/n6\"\n"
++	  "  if wide; then WIDE=1; : > \"$W/n4\"; : > \"$W/n6\"; log \"$_k: a reply covers more than half of the Internet - not used\"; return 1; fi\n"
++	  "  [ -s \"$W/n4\" ] || [ -s \"$W/n6\" ]\n"
++	  "}\n"
++	  "# what a failed source says when both of its requests are counted: the first real failure, else \"empty\"\n"
++	  "two() { if [ \"$1\" != 0 ]; then why \"$1\"; else why \"$2\"; fi; }\n"
++	  "\n"
++	  "fetch_key() {\n"
++	  "  _k=\"$1\"; SRC=''; E1='-'; E2='-'; E3='-'; K4=''; K6=''\n"
++	  "  case \"$_k\" in\n"
++	  "  as*)\n"
++	  "    _n=\"${_k#as}\"\n"
++	  "    : > \"$W/body\"\n"
++	  "    dl \"https://raw.githubusercontent.com/ipverse/as-ip-blocks/master/as/$_n/ipv4-aggregated.txt\"; _r4=$RC; _h4=$HC\n"
++	  "    dl \"https://raw.githubusercontent.com/ipverse/as-ip-blocks/master/as/$_n/ipv6-aggregated.txt\"; _r6=$RC; _h6=$HC\n"
++	  "    if ext; then SRC=ipverse; E1=ok; fam \"$_r4\" \"$_h4\" && K4=1; fam \"$_r6\" \"$_h6\" && K6=1; else E1=$(two \"$_r4\" \"$_r6\"); fi\n"
++	  "    if [ -z \"$SRC\" ]; then\n"
++	  "      : > \"$W/body\"\n"
++	  "      dl \"https://stat.ripe.net/data/announced-prefixes/data.json?resource=AS$_n\"\n"
++	  "      if ext; then SRC=ripestat; E2=ok; K4=1; K6=1; else E2=$(why \"$RC\"); fi\n"
++	  "    fi\n"
++	  "    if [ -z \"$SRC\" ]; then\n"
++	  "      : > \"$W/body\"\n"
++	  "      dl \"https://api.hackertarget.com/aslookup/?q=AS$_n\"\n"
++	  "      if ext; then SRC=hackertarget; E3=ok; K4=1; K6=1; else E3=$(why \"$RC\"); fi\n"
++	  "    fi\n"
++	  "    ;;\n"
++	  "  cc_*)\n"
++	  "    _n=\"${_k#cc_}\"\n"
++	  "    # Warden already holds this country, both families: copy its loaded sets, no download. An empty IPv6 set may be\n"
++	  "    # a failed fetch of Warden's rather than a country without IPv6, so then the list is downloaded (REAPER-FW-LISTS-FAMILY)\n"
++	  "    if [ \"$(cnt \"rw_g_$_n\")\" -gt 0 ] 2>/dev/null && [ \"$(cnt \"rw_g6_$_n\")\" -gt 0 ] 2>/dev/null; then\n"
++	  "      # REAPER-FW-LISTS-BBAWK (2026-11-23): no concatenation onto a parenthesis - busybox awk reads `a (` as a call\n"
++	  "      # to a function a and stopped at the first bare address, cutting the copied list off there\n"
++	  "      { ipset save \"rw_g_$_n\" 2>/dev/null; ipset save \"rw_g6_$_n\" 2>/dev/null; } |\n"
++	  "        awk '$1 == \"add\" { a = $3; if (a !~ /\\//) { if (a ~ /:/) a = a \"/128\"; else a = a \"/32\" } print a }' > \"$W/body\"\n"
++	  "      if ext; then SRC=warden; E1=ok; K4=1; K6=1; else E1=$(why 0); fi\n"
++	  "    fi\n"
++	  "    if [ -z \"$SRC\" ]; then\n"
++	  "      : > \"$W/body\"\n"
++	  "      dl \"https://www.ipdeny.com/ipblocks/data/aggregated/$_n-aggregated.zone\"; _r4=$RC; _h4=$HC\n"
++	  "      [ \"$_r4\" = 0 ] || { dl \"https://www.ipdeny.com/ipblocks/data/countries/$_n.zone\"; _r4=$RC; _h4=$HC; }\n"
++	  "      dl \"https://www.ipdeny.com/ipv6/ipaddresses/aggregated/$_n-aggregated.zone\"; _r6=$RC; _h6=$HC\n"
++	  "      if ext; then SRC=ipdeny; E2=ok; fam \"$_r4\" \"$_h4\" && K4=1; fam \"$_r6\" \"$_h6\" && K6=1; else E2=$(two \"$_r4\" \"$_r6\"); fi\n"
++	  "    fi\n"
++	  "    if [ -z \"$SRC\" ]; then\n"
++	  "      : > \"$W/body\"\n"
++	  "      dl \"https://raw.githubusercontent.com/ipverse/country-ip-blocks/master/country/$_n/ipv4-aggregated.txt\"; _r4=$RC; _h4=$HC\n"
++	  "      dl \"https://raw.githubusercontent.com/ipverse/country-ip-blocks/master/country/$_n/ipv6-aggregated.txt\"; _r6=$RC; _h6=$HC\n"
++	  "      if ext; then SRC=ipverse; E3=ok; fam \"$_r4\" \"$_h4\" && K4=1; fam \"$_r6\" \"$_h6\" && K6=1; else E3=$(two \"$_r4\" \"$_r6\"); fi\n"
++	  "    fi\n"
++	  "    ;;\n"
++	  "  *) return;;\n"
++	  "  esac\n"
++	  "  rm -f \"$W/body\"\n"
++	  "  if [ -z \"$SRC\" ]; then\n"
++	  "    # REAPER-FW-LISTS-EMPTY (2026-11-24): every source answered and none has a prefix (an AS that announces nothing):\n"
++	  "    # the 15-minute retry job stops asking for it; boot, WAN up and the daily update still do\n"
++	  "    _e=1; for _x in $E1 $E2 $E3; do case \"$_x\" in -|empty|http) ;; *) _e='';; esac; done\n"
++	  "    if [ -n \"$_e\" ]; then : > \"$W/e.$_k\"; else rm -f \"$W/e.$_k\"; fi\n"
++	  "    echo \"$(date +%s) fail $E1 $E2 $E3\" > \"$W/r.$_k\"\n"
++	  "    if [ -f \"$(cf \"$_k.meta\")\" ]; then log \"$_k: no source answered ($E1 / $E2 / $E3) - keeping the list already saved\"\n"
++	  "    else log \"$_k: no source answered ($E1 / $E2 / $E3) - nothing loaded yet\"; fi\n"
++	  "    case \" $E1 $E2 $E3 \" in *\" conn \"*)\n"
++	  "      [ \"$(nvram get rwarden_self 2>/dev/null)\" = 1 ] && log \"Warden's router-traffic filter is on - a blocked country that covers a list host stops the router's own downloads\";;\n"
++	  "    esac\n"
++	  "    rm -f \"$W/n4\" \"$W/n6\"\n"
++	  "    return\n"
++	  "  fi\n"
++	  "  rm -f \"$W/e.$_k\"; _ch=0\n"
++	  "  for _f in 4 6; do\n"
++	  "    if [ \"$_f\" = 4 ]; then _kn=\"$K4\"; else _kn=\"$K6\"; fi\n"
++	  "    if [ -s \"$W/n$_f\" ]; then keep \"$W/n$_f\" \"$_k.$_f\" && _ch=1\n"
++	  "    elif [ -n \"$_kn\" ]; then\n"
++	  "      { [ -f \"$C/$_k.$_f\" ] || [ -f \"$W/c/$_k.$_f\" ]; } && _ch=1\n"
++	  "      rm -f \"$C/$_k.$_f\" \"$W/c/$_k.$_f\" 2>/dev/null\n"
++	  "    elif [ -f \"$(cf \"$_k.$_f\")\" ]; then\n"
++	  "      log \"$_k: the IPv$_f request did not answer - keeping the IPv$_f list already saved\"\n"
++	  "    fi\n"
++	  "  done\n"
++	  "  _m=''; [ -f \"$(cf \"$_k.meta\")\" ] && read -r _m _x < \"$(cf \"$_k.meta\")\"\n"
++	  "  if [ \"$_ch\" = 1 ] || [ \"$_m\" != \"$SRC\" ]; then\n"
++	  "    echo \"$SRC $(date +%s) $(lines \"$(cf \"$_k.4\")\") $(lines \"$(cf \"$_k.6\")\")\" > \"$W/meta\"\n"
++	  "    keep \"$W/meta\" \"$_k.meta\"\n"
++	  "    log \"$_k: $(lines \"$(cf \"$_k.4\")\") IPv4 + $(lines \"$(cf \"$_k.6\")\") IPv6 prefixes from $SRC\"\n"
++	  "  fi\n"
++	  "  echo \"$(date +%s) ok $E1 $E2 $E3\" > \"$W/r.$_k\"\n"
++	  "  rm -f \"$W/n4\" \"$W/n6\" \"$W/meta\"\n"
++	  "}\n"
++	  "\n"
++	  "case \"$MODE\" in\n"
++	  "update|missing|wan)\n"
++	  "  exec 9>\"$D/lists.lock\"\n"
++	  "  flock -n 9 || exit 0\n"
++	  "  # the page shows \"updating\" while this file is there (and not older than the time budget)\n"
++	  "  echo \"$NOW\" > \"$D/lists.run\"\n"
++	  "  trap 'rm -f \"$D/lists.run\"' EXIT\n"
++	  "  DEADLINE=$((NOW + 600))\n"
++	  "  for _key in $KEYS; do\n"
++	  "    if [ \"$MODE\" != update ]; then\n"
++	  "      [ -f \"$(cf \"$_key.meta\")\" ] && continue\n"
++	  "      # missing (boot, Apply, the retry job): a list that failed less than 10 minutes ago waits. wan (the WAN has\n"
++	  "      # just come up, REAPER-FW-LISTS-WANUP) asks at once: the try before it most likely ran with no WAN.\n"
++	  "      _t=''; [ -f \"$W/r.$_key\" ] && read -r _t _x < \"$W/r.$_key\"\n"
++	  "      [ \"$MODE\" = missing ] && [ -n \"$_t\" ] && [ $((NOW - _t)) -lt 600 ] && continue\n"
++	  "      [ \"$MODE\" = missing ] && [ -f \"$W/e.$_key\" ] && continue\n"
++	  "    fi\n"
++	  "    if [ \"$(date +%s)\" -ge \"$DEADLINE\" ]; then log \"the update time budget (600 s) ran out - the remaining lists are tried next time\"; break; fi\n"
++	  "    fetch_key \"$_key\"\n"
++	  "  done\n"
++	  "  # a list that has never arrived is asked for again every 15 minutes until it has (REAPER-FW-LISTS-RETRY); the\n"
++	  "  # job goes once every list in use has a saved copy\n"
++	  "  _miss=''\n"
++	  "  for _key in $KEYS; do [ -f \"$(cf \"$_key.meta\")\" ] || [ -f \"$W/e.$_key\" ] || _miss=1; done\n"
++	  "  if [ -n \"$_miss\" ]; then cru a reaper_fw_lists_retry \"*/15 * * * * sh " RFW_LISTS " missing\" >/dev/null 2>&1\n"
++	  "  else cru d reaper_fw_lists_retry >/dev/null 2>&1; fi\n"
++	  "  ;;\n"
++	  "esac\n"
++	  "\n"
++	  "# ---- building the sets (every mode) ----\n"
++	  "# build one family of one object's set from its saved lists. BS = \"<state> <count>\"\n"
++	  "build() {\n"
++	  "  _s=\"$1\"; _f=\"$2\"; _mx=\"$3\"; _au=\"$4\"; shift 4\n"
++	  "  : > \"$W/u\"\n"
++	  "  for _k in \"$@\"; do _p=$(cf \"$_k.$_f\"); [ -s \"$_p\" ] && cat \"$_p\" >> \"$W/u\"; done\n"
++	  "  if [ \"$_f\" = 4 ]; then x4 < \"$W/u\" > \"$W/v\"; else x6 < \"$W/u\" > \"$W/v\"; fi\n"
++	  "  _n=$(lines \"$W/v\")\n"
++	  "  if [ \"$_n\" = 0 ]; then\n"
++	  "    # every list of this object has been fetched and none has this family: the set is really empty\n"
++	  "    [ \"$_au\" = 1 ] && ipset flush \"$_s\" 2>/dev/null\n"
++	  "    BS=\"none 0\"; rm -f \"$W/u\" \"$W/v\"; return\n"
++	  "  fi\n"
++	  "  if [ \"$_n\" -gt \"$_mx\" ]; then\n"
++	  "    log \"$_s: $_n prefixes is over the limit of $_mx - not loaded, the set stays as it was\"\n"
++	  "    BS=\"big $_n\"; rm -f \"$W/u\" \"$W/v\"; return\n"
++	  "  fi\n"
++	  "  _ma=$(awk '/^MemAvailable:/ { print $2 }' \"$MEMINFO\" 2>/dev/null)\n"
++	  "  if [ \"${_ma:-0}\" -gt 0 ] 2>/dev/null && [ $((_n * 200 / 1024)) -gt $((_ma / 4)) ]; then\n"
++	  "    log \"$_s: not enough free memory for $_n prefixes - not loaded, the set stays as it was\"\n"
++	  "    BS=\"mem $_n\"; rm -f \"$W/u\" \"$W/v\"; return\n"
++	  "  fi\n"
++	  "  _t=\"rwfx$_f\"\n"
++	  "  ipset destroy \"$_t\" 2>/dev/null\n"
++	  "  if [ \"$_f\" = 6 ]; then ipset create \"$_t\" hash:net family inet6 maxelem \"$_mx\" 2>/dev/null\n"
++	  "  else ipset create \"$_t\" hash:net maxelem \"$_mx\" 2>/dev/null; fi\n"
++	  "  sed \"s/^/add $_t /\" \"$W/v\" > \"$W/r\"\n"
++	  "  if ! ipset restore -exist < \"$W/r\" 2>/dev/null; then\n"
++	  "    ipset flush \"$_t\" 2>/dev/null\n"
++	  "    while read -r _p; do ipset add \"$_t\" \"$_p\" -exist 2>/dev/null; done < \"$W/v\"\n"
++	  "  fi\n"
++	  "  _l=$(cnt \"$_t\")\n"
++	  "  if [ \"${_l:-0}\" -gt 0 ] 2>/dev/null && ipset swap \"$_t\" \"$_s\" 2>/dev/null; then BS=\"ok $_l\"\n"
++	  "  elif [ \"${_l:-0}\" -gt 0 ] 2>/dev/null && ipset destroy \"$_s\" 2>/dev/null && ipset rename \"$_t\" \"$_s\" 2>/dev/null; then BS=\"ok $_l\"\n"
++	  "  else log \"$_s could not be replaced - the set stays as it was\"; BS=\"busy 0\"; fi\n"
++	  "  ipset destroy \"$_t\" 2>/dev/null\n"
++	  "  rm -f \"$W/u\" \"$W/v\" \"$W/r\"\n"
++	  "}\n"
++	  "\n"
++	  "exec 8>\"$D/lists.build.lock\"\n"
++	  "_i=0\n"
++	  "until flock -n 8; do\n"
++	  "  _i=$((_i + 1)); [ \"$_i\" -gt 20 ] && exit 0\n"
++	  "  sleep 1\n"
++	  "done\n"
++	  "echo \"$OBJS\" | while read -r _name _kind _max _keys; do\n"
++	  "  [ -n \"$_keys\" ] || continue\n"
++	  "  _sig=''; _auth=1\n"
++	  "  for _k in $_keys; do\n"
++	  "    _m=''; [ -f \"$(cf \"$_k.meta\")\" ] && read -r _m < \"$(cf \"$_k.meta\")\"\n"
++	  "    [ -n \"$_m\" ] || _auth=0\n"
++	  "    _sig=\"$_sig$_k:$_m;\"\n"
++	  "  done\n"
++	  "  for _f in 4 6; do\n"
++	  "    if [ \"$_f\" = 4 ]; then _set=\"rwfw_$_name\"; else _set=\"rwfw6_$_name\"; fi\n"
++	  "    _n=$(cnt \"$_set\"); [ -n \"$_n\" ] || continue\n"
++	  "    _os=''; _osig=''\n"
++	  "    if [ -f \"$W/b.$_set\" ]; then { read -r _os _oc; read -r _osig; } < \"$W/b.$_set\"; fi\n"
++	  "    if [ \"$_osig\" = \"$_sig\" ]; then\n"
++	  "      case \"$_os\" in\n"
++	  "        ok) [ \"$_n\" -gt 0 ] && continue;;\n"
++	  "        none) continue;;\n"
++	  "        big|mem|busy) [ \"$MODE\" = update ] || continue;;\n"
++	  "      esac\n"
++	  "    fi\n"
++	  "    build \"$_set\" \"$_f\" \"$_max\" \"$_auth\" $_keys\n"
++	  "    { echo \"$BS\"; echo \"$_sig\"; } > \"$W/b.$_set\"\n"
++	  "  done\n"
++	  "done\n"
++	  "\n"
++	  "# ---- status for the page ----\n"
++	  "{\n"
++	  "  echo \"T|$(date +%s)|$MODE\"\n"
++	  "  for _key in $KEYS; do\n"
++	  "    _src='-'; _chg=0; _n4=0; _n6=0\n"
++	  "    [ -f \"$(cf \"$_key.meta\")\" ] && read -r _src _chg _n4 _n6 < \"$(cf \"$_key.meta\")\"\n"
++	  "    _chk=0; _res='-'; _e1='-'; _e2='-'; _e3='-'\n"
++	  "    [ -f \"$W/r.$_key\" ] && read -r _chk _res _e1 _e2 _e3 < \"$W/r.$_key\"\n"
++	  "    echo \"K|$_key|$_src|$_chg|$_n4|$_n6|$_chk|$_res|$_e1|$_e2|$_e3\"\n"
++	  "  done\n"
++	  "  echo \"$OBJS\" | while read -r _name _kind _max _keys; do\n"
++	  "    [ -n \"$_keys\" ] || continue\n"
++	  "    _s4='-'; _s6='-'\n"
++	  "    [ -f \"$W/b.rwfw_$_name\" ] && read -r _s4 _x < \"$W/b.rwfw_$_name\"\n"
++	  "    [ -f \"$W/b.rwfw6_$_name\" ] && read -r _s6 _x < \"$W/b.rwfw6_$_name\"\n"
++	  "    _l4=$(cnt \"rwfw_$_name\"); _l6=$(cnt \"rwfw6_$_name\")\n"
++	  "    echo \"O|$_name|$_kind|$_s4|${_l4:-0}|$_s6|${_l6:-0}\"\n"
++	  "  done\n"
++	  "} > \"$ST.tmp\" && mv \"$ST.tmp\" \"$ST\"\n"
++	  "exit 0\n";
++	char tmp[sizeof(RFW_LISTS) + 8];
++	unsigned long seen[RFW_ASN_TOTAL];
++	char seencc[RFW_CC_TOTAL][3];
++	char *dup = NULL, *tok, *save = NULL;
++	int nseen = 0, ncc = 0, any = 0, need = 0, n = 0;
++	FILE *f;
++
++	reaper_secure_dir(RFW_DIR, 0700);
++	snprintf(tmp, sizeof(tmp), "%s.tmp", RFW_LISTS);
++	if (!(f = fopen(tmp, "w"))) return;
++	fputs("#!/bin/sh\n# generated by reaper_fw - fetched lists (ASN / country) for Policy Routing\nOBJS='\n", f);
++	if (c->obj && *c->obj && (dup = strdup(c->obj)) != NULL) {
++		for (tok = strtok_r(dup, "<", &save); tok; tok = strtok_r(NULL, "<", &save)) {
++			char name[RFW_NAME_MAX + 2], type[16], val[RFW_VAL_MAX], keys[RFW_ASN_PER_OBJ * 14 + 8];
++			char *kd, *k, *ks = NULL;
++			int i, isgeo;
++
++			if (++n > RFW_MAX_OBJ) break;
++			if (!rfw_field(tok, 0, name, sizeof(name)) ||
++			    !rfw_field(tok, 1, type, sizeof(type)) ||
++			    !rfw_field(tok, 2, val,  sizeof(val)))
++				continue;
++			if (!rfw_valid_name(name) || !rfw_fetched_type(type)) continue;
++			if (!rfw_fetched_wanted(type, name, val)) continue;
++			rfw_fetched_keys(type, val, keys, sizeof(keys));
++			isgeo = !strcmp(type, "geo");
++			if (isgeo) {
++				for (i = 0; i < ncc; i++)
++					if (!strcmp(seencc[i], keys + 3)) break;
++				if (i == ncc) {
++					if (ncc >= RFW_CC_TOTAL) {
++						logmessage("reaper_fw", "country list %s NOT loaded: more than %d different countries are in use", name, RFW_CC_TOTAL);
++						continue;
++					}
++					strlcpy(seencc[ncc++], keys + 3, sizeof(seencc[0]));
++				}
++			} else {
++				unsigned long nw[RFW_ASN_PER_OBJ];
++				int nn = 0;
++
++				if (!(kd = strdup(keys))) continue;
++				for (k = strtok_r(kd, " ", &ks); k; k = strtok_r(NULL, " ", &ks)) {
++					unsigned long a = strtoul(k + 2, NULL, 10);
++
++					for (i = 0; i < nseen; i++)
++						if (seen[i] == a) break;
++					if (i == nseen && nn < RFW_ASN_PER_OBJ) nw[nn++] = a;
++				}
++				free(kd);
++				if (nseen + nn > RFW_ASN_TOTAL) {
++					logmessage("reaper_fw", "ASN list %s NOT loaded: more than %d different AS numbers are in use", name, RFW_ASN_TOTAL);
++					continue;
++				}
++				for (i = 0; i < nn; i++) seen[nseen++] = nw[i];
++			}
++			fprintf(f, "%s %s %d %s\n", name, isgeo ? "geo" : "asn", isgeo ? RFW_CC_MAXELEM : RFW_ASN_MAXELEM, keys);
++			any++;
++			if (!(kd = strdup(keys))) continue;
++			ks = NULL;
++			for (k = strtok_r(kd, " ", &ks); k; k = strtok_r(NULL, " ", &ks))
++				if (!rfw_list_saved(k)) need = 1;
++			free(kd);
++		}
++		free(dup);
++	}
++	fputs("'\n", f);
++	fputs(body, f);
++	fclose(f);
++	if (rename(tmp, RFW_LISTS) != 0) { unlink(tmp); return; }
++	chmod(RFW_LISTS, 0700);
++	if (any) {
++		/* REAPER-FW-LISTS-SEED: a fetched list is in use - the hosts the lists come from go into the operator's
++		 * "do not block" lists, once (rc/rwarden.c), before the first download is tried */
++		rwarden_listsrc_seed();
++		(void)(reaper_script_ok(RFW_LISTS) && system("sh " RFW_LISTS " fill >/dev/null 2>&1"));
++		if (need) (void)(reaper_script_ok(RFW_LISTS) && system("sh " RFW_LISTS " missing >/dev/null 2>&1 &"));
++		eval("cru", "a", "reaper_fw_lists", "17 5 * * * sh " RFW_LISTS " update");
++	} else {
++		if (access(RFW_LISTSTATUS, F_OK) == 0 || access(RFW_LISTWORK, F_OK) == 0 || access(RFW_LISTCACHE, F_OK) == 0)
++			(void)(reaper_script_ok(RFW_LISTS) && system("sh " RFW_LISTS " fill >/dev/null 2>&1"));
++		unlink(RFW_LISTS);
++		eval("cru", "d", "reaper_fw_lists");
++		eval("cru", "d", "reaper_fw_lists_retry");
++	}
++}
++/* REAPER-FW-LISTS F-END */
+ 
+ /* ---------------------------------------------------------------------------
+  * S1 PROTECTIVE HEAD. Emitted at the top of every owned chain, in every family,
+@@ -2914,10 +3448,41 @@ void reaper_fw_sets_only(void)
+ 			unlink(tmp);
+ 	}
+ 	rfw_gen_resolve(&c);
++	rfw_gen_lists(&c);	/* REAPER-FW-LISTS: the ASN / country lists Policy Routing uses */
+ 	rfw_sync_dnsmasq(&c);
+ 	rfw_cfg_free(&c);
+ }
+ 
++/* REAPER-FW-LISTS H-BEGIN */
++/* Policy Routing was switched off: no rule names a fetched list any more, so the daily job, the sets this
++ * engine filled and the saved lists go (rc/reaper_pbr.c stop_reaper_pbr). */
++void reaper_fw_lists_sync(void)
++{
++	rfw_cfg_t c;
++
++	if (!rfw_cfg_load(&c, nvram_match("reaper_fw_enable", "1") ? 1 : 0)) return;
++	rfw_gen_lists(&c);
++	rfw_cfg_free(&c);
++}
++
++/* The page's "Update now" (service start_reaper_fw_lists): fetch every list in use, in the background. The
++ * script takes its own lock, so a second request while one runs does nothing. */
++void reaper_fw_lists_update(void)
++{
++	if (access(RFW_LISTS, F_OK) != 0) return;
++	(void)(reaper_script_ok(RFW_LISTS) && system("sh " RFW_LISTS " update >/dev/null 2>&1 &"));
++}
++/* REAPER-FW-LISTS-WANUP (2026-11-23): the WAN came up (rc/wan.c wan_up). A list that has never arrived - the boot-time
++ * try ran before the WAN was up, or a settings import named a list this router never had - is asked for now, not at
++ * the next retry or 05:17 run. "wan" mode fetches only lists with no saved copy, without the 10-minute wait of
++ * "missing"; the script takes its own lock, so a second WAN event while one runs does nothing. */
++void reaper_fw_lists_wanup(void)
++{
++	if (access(RFW_LISTS, F_OK) != 0) return;
++	(void)(reaper_script_ok(RFW_LISTS) && system("sh " RFW_LISTS " wan >/dev/null 2>&1 &"));
++}
++/* REAPER-FW-LISTS H-END */
++
+ /* v2.6.9: the eight lists live in files (see shared/reaper_jfile.c). First
+  * boot on this build seeds the confirmed snapshot from nvram and clears the
+  * nvram copies; runs whether or not the engine is enabled, because the object
+@@ -3131,6 +3696,7 @@ void start_reaper_fw(void)
+ 	}
+ 	file_unlock(lock);
+ 	rfw_gen_resolve(&c);
++	rfw_gen_lists(&c);	/* REAPER-FW-LISTS: the ASN / country lists Policy Routing uses */
+ 	rfw_sync_dnsmasq(&c);
+ 	rfw_cfg_free(&c);
+ 	/* See the note in stop_reaper_fw(). Set only when the generated script
+@@ -3222,6 +3788,7 @@ void reaper_fw_apply(void)
+ 	}
+ 	file_unlock(lock);
+ 	rfw_gen_resolve(&c);
++	rfw_gen_lists(&c);	/* REAPER-FW-LISTS: the ASN / country lists Policy Routing uses */
+ 	/* The armed candidate populates its sets like any other ruleset. If the
+ 	 * confirm times out, reaper_fw_rollback() re-syncs from lastgood - it has
+ 	 * to, because the rollback script is pre-generated and would otherwise
+diff --git a/release/src/router/rc/reaper_pbr.c b/release/src/router/rc/reaper_pbr.c
+index b3bb3aacbe..5e7af2e2a8 100644
+--- a/release/src/router/rc/reaper_pbr.c
++++ b/release/src/router/rc/reaper_pbr.c
+@@ -115,6 +115,7 @@
+  * RECORD (list sep '<', field sep '>'):
+  *   <en>desc>seltype>selval>proto>port>target
+  *   en=0|1  seltype=ipset|domain|src|mac  target=OVPN1..5|WGC1..5|WAN|BLOCK
++ *   (an ipset selector names an object: host / cidr / range / fqdn, or a fetched list - asn / geo, REAPER-FW-LISTS)
+  *   (proto/port parsed but not emitted - deferred)
+  */
+ #include <stdio.h>
+@@ -437,8 +438,11 @@ static void ppbr_emit_skip_helpers(FILE *f)
+  * <name>type>value>comment, group records <name>member,member>comment. */
+ static int ppbr_obj_routable(const char *type)
+ {
++	/* REAPER-FW-LISTS: an ASN list and a country list are fetched lists - the object layer gives each its own
++	 * rwfw_<name> set while a rule here names it (reaper_fw.c rfw_fetched_wanted) */
+ 	return !strcmp(type, "host") || !strcmp(type, "cidr") ||
+-	       !strcmp(type, "range") || !strcmp(type, "fqdn");
++	       !strcmp(type, "range") || !strcmp(type, "fqdn") ||
++	       !strcmp(type, "asn") || !strcmp(type, "geo");
+ }
+ 
+ static int ppbr_obj_type(const char *name, char *type, size_t tl)
+@@ -465,10 +469,7 @@ static int ppbr_resolve_object(const char *name, char *out, size_t ol)
+ 
+ 	if (ppbr_obj_type(name, type, sizeof(type))) {
+ 		if (ppbr_obj_routable(type)) { snprintf(out, ol, "%s", name); return 1; }
+-		if (!strcmp(type, "geo"))
+-			snprintf(out, ol, "object %s is a country (geo) object - Warden owns the country sets and Policy Routing cannot select on them; use a firewall rule", name);
+-		else
+-			snprintf(out, ol, "object %s is a %s object, which has no destination set to select on", name, type);
++		snprintf(out, ol, "object %s is a %s object, which has no destination set to select on", name, type);
+ 		return -1;
+ 	}
+ 	grp = strdup(reaper_fw_list_get("grp"));
+@@ -482,7 +483,7 @@ static int ppbr_resolve_object(const char *name, char *out, size_t ol)
+ 	out[0] = 0;
+ 	for (tok = strtok_r(members, ",", &save); tok; tok = strtok_r(NULL, ",", &save)) {
+ 		if (!ppbr_obj_type(tok, type, sizeof(type)) || !ppbr_obj_routable(type)) {
+-			logmessage("reaper_pbr", "group %s: member %s skipped (not a host/cidr/range/fqdn object)", name, tok);
++			logmessage("reaper_pbr", "group %s: member %s skipped (not an address, domain, ASN or country object)", name, tok);
+ 			continue;
+ 		}
+ 		if (len + strlen(tok) + 2 > ol) break;
+@@ -494,6 +495,54 @@ static int ppbr_resolve_object(const char *name, char *out, size_t ol)
+ 	return n ? n : -1;
+ }
+ 
++/* REAPER-FW-LISTS D-BEGIN */
++/* Does an enabled rule of this list select on the object, directly or through a group that holds it? */
++static int ppbr_list_names(const char *list, const char *name)
++{
++	char *copy, *p, *rec;
++	int hit = 0;
++
++	if (!list || !*list || !(copy = strdup(list))) return 0;
++	p = copy;
++	while (!hit && (rec = strsep(&p, "<")) != NULL) {
++		char *en, *desc, *seltype, *selval, *proto, *port, *target, *grp, *gp, *g;
++
++		if (!*rec) continue;
++		if (vstrsep(rec, ">", &en, &desc, &seltype, &selval, &proto, &port, &target) != 7) continue;
++		(void)desc; (void)proto; (void)port; (void)target;
++		if (strcmp(en, "1") != 0) continue;
++		if (strcmp(seltype, "ipset") != 0 && strcmp(seltype, "domain") != 0) continue;
++		if (!strcmp(selval, name)) { hit = 1; break; }
++		if (!(grp = strdup(reaper_fw_list_get("grp")))) continue;
++		gp = grp;
++		while (!hit && (g = strsep(&gp, "<")) != NULL) {
++			char *gn = strsep(&g, ">"), *gm = strsep(&g, ">"), *m, *ms = NULL;
++
++			if (!gn || !gm || strcmp(gn, selval) != 0) continue;
++			for (m = strtok_r(gm, ",", &ms); m; m = strtok_r(NULL, ",", &ms))
++				if (!strcmp(m, name)) { hit = 1; break; }
++		}
++		free(grp);
++	}
++	free(copy);
++	return hit;
++}
++
++/* The object layer asks this before it builds a fetched list's set (an ASN or a country list): is the object
++ * named by a rule in the staged list or in the confirmed one? Both are read, so a set is there while a
++ * candidate is being confirmed and still there after it is rolled back. */
++int reaper_pbr_uses_object(const char *name)
++{
++	char *good;
++	int ex = 0;
++
++	if (!name || !*name) return 0;
++	if (ppbr_list_names(reaper_pbr_rl_get(), name)) return 1;
++	good = rjf_get(REAPER_PBR_RL, &ex);
++	return (ex > 0 && good) ? ppbr_list_names(good, name) : 0;
++}
++/* REAPER-FW-LISTS D-END */
++
+ /* Emit the idempotent teardown+build script for cfg. teardown_only=1 stops
+  * after the teardown block (used by stop_reaper_pbr and by the disabled path). */
+ static int ppbr_gen(const char *path, int teardown_only, const ppbr_cfg_t *cfg)
+@@ -1082,6 +1131,9 @@ void stop_reaper_pbr(void)
+ 	unlink(PPBR_CAND);
+ 	unlink(PPBR_CC);
+ 	nvram_set("reaper_pbr_active", "0");
++	/* REAPER-FW-LISTS: switched off, no rule names an ASN or a country list any more - their daily job, sets and
++	 * saved lists go. Not at shutdown or on a plain restart, where the switch is still on. */
++	if (!nvram_match("reaper_pbr_enable", "1")) reaper_fw_lists_sync();
+ }
+ 
+ /* Apply the COMMITTED ruleset. Boot, the restart_firewall re-hook, and the
+@@ -1383,6 +1435,8 @@ void reaper_pbr_confirm(void)
+ 		if (ok) unlink(REAPER_PBR_DRAFT);
+ 	}
+ 	reaper_fw_promote_objects();	/* v2.6.9: the domain lists edited on this page persist too */
++	reaper_fw_lists_sync();	/* REAPER-FW-LISTS-CONFIRM: a list the confirmed rules no longer name goes now (apply kept it
++					 * while the change could still be reverted) */
+ 	if (nvram_match("reaper_pbr_enable", "1")) {
+ 		if (rename(PPBR_CAND, PPBR_APPLY) != 0) {   /* the confirmed candidate becomes the boot-time script */
+ 			logmessage("reaper_pbr", "confirm: could not promote the candidate to the boot-time script");
+@@ -1411,4 +1465,5 @@ void reaper_pbr_rollback(void)
+ 		return;
+ 	}
+ 	(void)(reaper_script_ok(PPBR_ROLLBACK) && system("sh " PPBR_ROLLBACK " 2>/dev/null"));
++	reaper_fw_lists_sync();	/* REAPER-FW-LISTS-CONFIRM: a list only the reverted rules named goes now */
+ }
+diff --git a/release/src/router/rc/rwarden.c b/release/src/router/rc/rwarden.c
+index 48cbca0cc6..3e39ff11d7 100644
+--- a/release/src/router/rc/rwarden.c
++++ b/release/src/router/rc/rwarden.c
+@@ -128,6 +128,10 @@
+  * reaper-nx= form so a downgrade keeps blocking. The directory is root 0755 (REAPER_TMP_DIRS). */
+ #define RW_NX_DIR    "/tmp/reaper_nx"
+ #define RW_NX_DB     RW_NX_DIR "/threat.db"
++/* REAPER-DREAD-EXEMPT (2026-11-22): the devices that skip Dreadwatch, as dnsmasq reads them (beside the table: a
++ * directory its unprivileged user can read) */
++#define RW_DNS_EXEMPT RW_NX_DIR "/dns.exempt"
++static void rw_dns_exempt_sync(void);
+ #define RW_DNS_KGZ   "/jffs/rwarden/dns.k.gz"
+ #define RW_DNS_KSUM  "/jffs/rwarden/dns.k.sum"
+ #define RW_DNS_COUNT "/tmp/rwarden/dns.count"	/* names in the table (the pages) */
+@@ -1702,7 +1706,7 @@ domains:
+ 	  "        fi\n"
+ 	  "      fi\n"
+ 	  "      echo \"$DL\" > $RW_DNSN; head -n 1 $DN.f > $RW_DNS1\n"
+-	  "      { echo \"reaper-hitlog=$RW_DNSH\"; echo \"reaper-nx-db=$RW_NXDB\"; } > $RW_DNSC.new; if cmp -s $RW_DNSC.new $RW_DNSC 2>/dev/null; then rm -f $RW_DNSC.new; else mv -f $RW_DNSC.new $RW_DNSC; fi\n"
++	  "      { echo \"reaper-hitlog=$RW_DNSH\"; echo \"reaper-nx-db=$RW_NXDB\"; echo \"reaper-nx-exempt=$RW_NXDIR/dns.exempt\"; } > $RW_DNSC.new; if cmp -s $RW_DNSC.new $RW_DNSC 2>/dev/null; then rm -f $RW_DNSC.new; else mv -f $RW_DNSC.new $RW_DNSC; fi\n"
+ 	  "      date +%s > $RW_DNSU\n"
+ 	  "      logger -t rwarden \"threat domains: $DL loaded ($DSUM); $DX never-block, $DC covered by a listed parent$([ \"$DLONG\" -gt 0 ] && echo \", $DLONG over 253 characters (not DNS names)\")$([ \"$DNS_CHANGED\" = 1 ] && echo ', list changed - dnsmasq restarts')\"\n"
+ 	  "      [ \"$DOVER\" -gt 0 ] && awk '{ c[$2]++ } END { for (i in c) print i, c[i] }' $DN.cut > $DN.cc\n"
+@@ -2138,6 +2142,7 @@ static void rw_gen_dns(void)
+ 	  RSTORE_SH_DIR
+ 	  "# ---- Dreadwatch hit collector (generated by start_rwarden - do not edit)\n"
+ 	  "HF=" RW_HITS "\n"
++	  "PF=" RW_HITS ".pass\n"
+ 	  "CONF=" RW_DNS_CONF "\n"
+ 	  "CNT=" RW_DNS_COUNT "\n"
+ 	  "DCTR=" RW_DNS_CTRS "\n"
+@@ -2163,6 +2168,20 @@ static void rw_gen_dns(void)
+ 	  "# feeds counts for both), per NAME and per CLIENT (the 100 largest of each kept), DROPPED (records\n"
+ 	  "# dnsmasq could not write: its 50-a-second / 256 KB bounds); the raw records go to a 500-line tmpfs log.\n"
+ 	  "# Writes /jffs only when there is something new, or the Warden retention interval has passed.\n"
++	  "# REAPER-DREAD-EXEMPT (2026-11-22): listed names let through for the devices that skip Dreadwatch. dnsmasq\n"
++	  "# writes \"<epoch> <mac>\" per lookup, never the name; banked as PASS <mac> <count> <last> rows (32 at most).\n"
++	  "# The file is written by the unprivileged dnsmasq user: anything of another shape is dropped.\n"
++	  "dpassfold() {\n"
++	  "  [ -s \"$PF\" ] || return 0\n"
++	  "  _pw=/tmp/rwarden/dns.pass.$$\n"
++	  "  mv -f \"$PF\" \"$_pw\" 2>/dev/null || return 0\n"
++	  "  if [ -L \"$_pw\" ] || [ ! -f \"$_pw\" ]; then rm -rf \"$_pw\"; return 0; fi\n"
++	  "  [ -f \"$DCTR\" ] || echo \"SINCE $NOW\" > \"$DCTR\" 2>/dev/null\n"
++	  "  awk 'FILENAME==ARGV[1] { if ($1==\"PASS\") { pn[$2]=$3+0; pl[$2]=$4+0 } else print; next }\n"
++	  "       NF==2 && $1 ~ /^[0-9]+$/ && length($2)==17 && $2 ~ /^[0-9a-f:]+$/ { pn[$2]++; pl[$2]=$1+0 }\n"
++	  "       END { for (m in pn) if (n++ < 32) print \"PASS\", m, pn[m], pl[m] }' \"$DCTR\" \"$_pw\" > \"$DCTR.ptmp\" 2>/dev/null && mv -f \"$DCTR.ptmp\" \"$DCTR\"\n"
++	  "  rm -f \"$_pw\" \"$DCTR.ptmp\"\n"
++	  "}\n"
+ 	  "dfold() {\n"
+ 	  "  exec 8>$LOCK; _w=25; while ! flock -n 8 2>/dev/null && [ $_w -gt 0 ]; do _w=$((_w-1)); usleep 200000; done\n"
+ 	  "  NOW=$(date +%s)\n"
+@@ -2173,6 +2192,7 @@ static void rw_gen_dns(void)
+ 	  "    echo \"SINCE $NOW\" > \"$DCTR.tmp\" && mv -f \"$DCTR.tmp\" \"$DCTR\"; SINCE=$NOW\n"
+ 	  "    logger -t rwarden \"Dreadwatch counters reset - retention interval reached\"\n"
+ 	  "  fi\n"
++	  "  dpassfold\n"
+ 	  "  if [ ! -s \"$HF\" ]; then\n"
+ 	  "    [ -f \"$DCTR\" ] || echo \"SINCE $NOW\" > \"$DCTR\" 2>/dev/null\n"
+ 	  "    return 0\n"
+@@ -2185,12 +2205,12 @@ static void rw_gen_dns(void)
+ 	  "  _dvalid < \"$W\" > \"$W.v\"\n"
+ 	  "  _O=$DCTR; [ -f \"$_O\" ] || _O=/dev/null\n"
+ 	  "  awk -v SINCE=\"$SINCE\" -v DR=\"$_D\" '\n"
+-	  "    FILENAME==ARGV[1] { if ($1==\"TOTAL\") tot=$2+0; else if ($1==\"DROPPED\") dr=$2+0; else if ($1==\"FEED\") fe[$2]=$3+0\n"
++	  "    FILENAME==ARGV[1] { if ($1==\"TOTAL\") tot=$2+0; else if ($1==\"DROPPED\") dr=$2+0; else if ($1==\"FEED\") fe[$2]=$3+0; else if ($1==\"PASS\") { if (np < 32) ps[++np]=$0 }\n"
+ 	  "        else if ($1==\"NAME\") { nn[$2]=$3+0; nf[$2]=$4; nl[$2]=$5+0 } else if ($1==\"CLIENT\") { cn[$2]=$3+0; cl[$2]=$4+0 }\n"
+ 	  "        next }\n"
+ 	  "    FILENAME==ARGV[2] { h[$3]++; hl[$3]=$1; if (NF >= 4 && $4 != \"-\") lf[$3]=$4; hc[$2]++; hcl[$2]=$1; nt++; next }\n"
+ 	  "    END {\n"
+-	  "      print \"SINCE\", SINCE; print \"TOTAL\", tot+nt; print \"DROPPED\", dr+DR\n"
++	  "      print \"SINCE\", SINCE; print \"TOTAL\", tot+nt; print \"DROPPED\", dr+DR; for (i = 1; i <= np; i++) print ps[i]\n"
+ 	  "      for (d in h) { f = (d in lf) ? lf[d] : ((d in nf) ? nf[d] : \"-\"); n = split(f, a, \",\")\n"
+ 	  "        for (i = 1; i <= n; i++) fe[a[i]] += h[d]\n"
+ 	  "        nn[d] += h[d]; nf[d] = f; nl[d] = hl[d] }\n"
+@@ -2224,7 +2244,7 @@ static void rw_gen_dns(void)
+ 	  "  printf '],'\n"
+ 	  "  _O=$DCTR; [ -f \"$_O\" ] || _O=/dev/null\n"
+ 	  "  _R=$REC; [ -f \"$_R\" ] || _R=/dev/null\n"
+-	  "  awk 'FILENAME==ARGV[1] { if ($1==\"SINCE\") s=$2+0; else if ($1==\"TOTAL\") t=$2+0; else if ($1==\"DROPPED\") d=$2+0\n"
++	  "  awk 'FILENAME==ARGV[1] { if ($1==\"SINCE\") s=$2+0; else if ($1==\"TOTAL\") t=$2+0; else if ($1==\"DROPPED\") d=$2+0; else if ($1==\"PASS\") { if (length($2)==17 && $2 ~ /^[0-9a-f:]+$/) pa[++np]=sprintf(\"{\\\"mac\\\":\\\"%s\\\",\\\"n\\\":%d,\\\"t\\\":%d}\", $2, $3, $4) }\n"
+ 	  "        else if ($1==\"FEED\" && $2 ~ /^[a-z0-9-]+$/) fc[++nf]=sprintf(\"{\\\"id\\\":\\\"%s\\\",\\\"n\\\":%d}\", $2, $3)\n"
+ 	  "        else if ($1==\"NAME\" && nn<20 && $2 ~ /^[a-z0-9.-]+$/ && $4 ~ /^[a-z0-9,-]+$/) nm[++nn]=sprintf(\"{\\\"d\\\":\\\"%s\\\",\\\"n\\\":%d,\\\"f\\\":\\\"%s\\\",\\\"t\\\":%d}\", $2, $3, $4, $5)\n"
+ 	  "        else if ($1==\"CLIENT\" && $2 ~ /^[0-9A-Fa-f.:-]+$/) { ac++; if (nc<20) cl[++nc]=sprintf(\"{\\\"ip\\\":\\\"%s\\\",\\\"n\\\":%d,\\\"t\\\":%d}\", $2, $3, $4) }\n"
+@@ -2239,6 +2259,8 @@ static void rw_gen_dns(void)
+ 	  "        for (i = 1; i <= nc; i++) printf \"%s%s\", (i > 1 ? \",\" : \"\"), cl[i]\n"
+ 	  "        printf \"],\\\"recent\\\":[\"\n"
+ 	  "        for (i = nr; i >= 1 && i > nr - 100; i--) { split(r[i], x, \" \"); printf \"%s{\\\"t\\\":%d,\\\"ip\\\":\\\"%s\\\",\\\"d\\\":\\\"%s\\\"}\", (i < nr ? \",\" : \"\"), x[1], x[2], x[3] }\n"
++	  "        printf \"],\\\"pass\\\":[\"\n"
++	  "        for (i = 1; i <= np; i++) printf \"%s%s\", (i > 1 ? \",\" : \"\"), pa[i]\n"
+ 	  "        printf \"]}\\n\"\n"
+ 	  "      }' \"$_O\" \"$_R\"\n"
+ 	  "}\n"
+@@ -2246,7 +2268,7 @@ static void rw_gen_dns(void)
+ 	  "  exec 8>$LOCK; _w=25; while ! flock -n 8 2>/dev/null && [ $_w -gt 0 ]; do _w=$((_w-1)); usleep 200000; done\n"
+ 	  "  mkdir -p \"${DCTR%/*}\" 2>/dev/null\n"
+ 	  "  echo \"SINCE $(date +%s)\" > \"$DCTR.tmp\" && mv -f \"$DCTR.tmp\" \"$DCTR\"\n"
+-	  "  rm -f \"$REC\" \"$HF\"\n"
++	  "  rm -f \"$REC\" \"$HF\" \"$PF\"\n"
+ 	  "  logger -t rwarden \"Dreadwatch counters reset by the operator\"\n"
+ 	  "}\n"
+ 	  "case \"$1\" in\n"
+@@ -2473,6 +2495,42 @@ static void rw_seed_allow(void)
+ 	rwarden_ddns_seed();	/* 2026-10-22: only while ASUS DDNS / the certificate is in use */
+ }
+ 
++/* REAPER-FW-LISTS-SEED BEGIN (2026-11-22, owner): the hosts Policy Routing's fetched lists come from (rc/reaper_fw.c
++ * rfw_gen_lists), seeded like the Let's Encrypt server above - once, and only when the feature is in use (the
++ * first time an ASN or a country list is used by a rule), so a router that never uses one gets nothing added.
++ * Addresses, for Warden's whitelist: with the router-traffic filter on, a blocked country or a feed that covers a
++ * source stops the router's own download (RIPEstat is hosted in the Netherlands, ipdeny in France).
++ *   185.199.108-111.133 and 2606:50c0:8000-8003::154 = raw.githubusercontent.com (ipverse, the first source of
++ *     both kinds; shared GitHub frontends, so the entry exempts whatever GitHub serves from them - Warden's own
++ *     two GitHub-hosted feeds included, which had no entry before)
++ *   193.0.6.150 and 2001:67c:2e8:22::c100:696 = stat.ripe.net (RIPEstat)
++ *   45.33.65.164 = api.hackertarget.com (HackerTarget)
++ * (resolved 2026-11-22; www.ipdeny.com has had its entry since 2026-10-19). An address that moves leaves its
++ * entry stale: that source then fails, the page says "no connection" and the saved list stays in use.
++ * Names, for Dreadwatch's never-block list: ripe.net and hackertarget.com; githubusercontent.com and ipdeny.com
++ * are in RW_DNSALLOW_SEED already. A name takes effect at the next Dreadwatch list build.
++ * Own markers, so each fires once and a removed entry stays removed. Kept below rw_seed_allow(): the seed test
++ * lifts everything from rw_seed_has() to there and pins its list of #defines. */
++#define RW_LISTSRC_IPS  "185.199.108.133 185.199.109.133 185.199.110.133 185.199.111.133 " \
++	"2606:50c0:8000::154 2606:50c0:8001::154 2606:50c0:8002::154 2606:50c0:8003::154 " \
++	"193.0.6.150 2001:67c:2e8:22::c100:696 45.33.65.164"
++#define RW_SEED_MARK_LISTSRC REAPER_RW_DIR "/.seed_listsrc"
++#define RW_LISTSRC_NAMES "ripe.net hackertarget.com"
++#define RW_SEED_MARK_LISTSRC_DNS REAPER_RW_DIR "/.seed_listsrc_dns"
++
++void rwarden_listsrc_seed(void)
++{
++	if (!f_exists(REAPER_RW_DIR "/.committed"))
++		return;
++	if (rw_seed_one("allow", RW_LISTSRC_IPS, RW_SEED_MARK_LISTSRC,
++	                "the hosts Policy Routing's ASN and country lists are downloaded from (GitHub for ipverse, RIPEstat, HackerTarget)", "Warden")
++	 && nvram_match("rwarden_enable", "1"))
++		rw_seed_live(RW_LISTSRC_IPS);
++	rw_seed_one("dnsallow", RW_LISTSRC_NAMES, RW_SEED_MARK_LISTSRC_DNS,
++	            "the names of Policy Routing's list sources (RIPEstat, HackerTarget)", "Dreadwatch");
++}
++/* REAPER-FW-LISTS-SEED END */
++
+ /* 2026-10-19 threat domains. The include every dnsmasq instance is handed, or
+  * NULL. NULL whenever Warden or the domain list is off, AND whenever no list
+  * file exists even after replaying the /jffs copy (a boot before the first
+@@ -2552,6 +2610,43 @@ static void rw_nx_rebuild_bg(void)
+ 	logmessage("rwarden", "threat domains: rebuilding the table from the /jffs copy in the background - in force once it lands");
+ }
+ 
++/* REAPER-DREAD-EXEMPT (2026-11-22, owner): the devices that skip Dreadwatch - the admin's list (the /jffs list
++ * store, name dnsexempt; the Dreadwatch page) as dnsmasq reads it: one lower-case MAC address a line, at most 16,
++ * every entry checked for the 17-character shape here whatever the page or a settings file let through. Written
++ * only when it changed; dnsmasq looks at the file every two seconds, so nothing is restarted. */
++static void rw_dns_exempt_sync(void)
++{
++	char *list, *tok, *save = NULL, out[16 * 18 + 1] = "", cur[16 * 18 + 8] = "", m[18];
++	struct stat st;
++	int n = 0, i, have;
++
++	if (stat(RW_NX_DIR, &st) != 0 || !S_ISDIR(st.st_mode))
++		return;		/* no table yet: nothing is blocked, and the next dnsmasq start comes here again */
++	list = rw_list_get("dnsexempt");
++	for (tok = list ? strtok_r(list, " ,\r\n\t<>", &save) : NULL; tok && n < 16; tok = strtok_r(NULL, " ,\r\n\t<>", &save)) {
++		if (strlen(tok) != 17)
++			continue;
++		for (i = 0; i < 17; i++) {
++			if (i % 3 == 2 ? tok[i] != ':' : !isxdigit((unsigned char)tok[i]))
++				break;
++			m[i] = (char)tolower((unsigned char)tok[i]);
++		}
++		if (i != 17)
++			continue;
++		m[17] = 0;
++		if (strstr(out, m))
++			continue;
++		snprintf(out + strlen(out), sizeof(out) - strlen(out), "%s\n", m);
++		n++;
++	}
++	free(list);
++	have = f_read_string(RW_DNS_EXEMPT, cur, sizeof(cur)) >= 0;
++	if (have ? strcmp(cur, out) != 0 : *out != 0) {
++		reaper_write_atomic(RW_DNS_EXEMPT, out, strlen(out), 0644);
++		logmessage("rwarden", "Dreadwatch: %d device(s) skip the threat list", n);
++	}
++}
++
+ const char *reaper_warden_dns_conf(void)
+ {
+ 	FILE *f;
+@@ -2567,12 +2662,13 @@ const char *reaper_warden_dns_conf(void)
+ 	}
+ 	/* the two-line include every instance reads through conf-file= (the emitters are unchanged) */
+ 	if (!f_exists(RW_DNS_CONF) && (f = fopen(RW_DNS_CONF, "w")) != NULL) {
+-		fprintf(f, "reaper-hitlog=%s\nreaper-nx-db=%s\n", RW_HITS, RW_NX_DB);
++		fprintf(f, "reaper-hitlog=%s\nreaper-nx-db=%s\nreaper-nx-exempt=%s\n", RW_HITS, RW_NX_DB, RW_DNS_EXEMPT);	/* REAPER-DREAD-EXEMPT */
+ 		fclose(f);
+ 	}
+ 	if (!f_exists(RW_DNS_CONF))
+ 		return NULL;
+ 	rw_hits_dir();
++	rw_dns_exempt_sync();	/* REAPER-DREAD-EXEMPT: with every dnsmasq configuration */
+ 	return RW_DNS_CONF;
+ }
+ 
+@@ -2653,6 +2749,7 @@ void start_rwarden(void)
+ 	}
+ 	rw_gen_update(warden);
+ 	rw_gen_dns();		/* 2026-10-20: Dreadwatch hit collector */
++	rw_dns_exempt_sync();	/* REAPER-DREAD-EXEMPT: after the page's save (restart_rwarden) */
+ 	chmod(RW_UPDATE, 0700);
+ 	/* v3.2.3 boot-time deferral (measured 2026-09-20): this synchronous apply was
+ 	 * ~6 s of pid 1 on the path to start_wan - the awk split of the 1.7 MB cache,
+diff --git a/release/src/router/rc/wan.c b/release/src/router/rc/wan.c
+index 6e6c64362d..298cbdf057 100644
+--- a/release/src/router/rc/wan.c
++++ b/release/src/router/rc/wan.c
+@@ -3106,6 +3106,26 @@ static int dot_has_upstream(void)
+ }
+ #endif
+ 
++/* reaper 2026-11-20 REAPER-UPTLS: automatic fallback of the upstream DNS-over-TLS leg (Opportunistic profile).
++ * While the DNS-over-TLS forwarder (stubby) is dead or cannot reach any of its servers, the DNS health check
++ * daemon (rc/rdnshc.c uptls_tick) has dnsmasq ask the plain WAN DNS servers instead of 127.0.1.1, and puts the
++ * forwarder back when it answers again. update_resolvconf_plain() is update_resolvconf() with the DNS-over-TLS
++ * branch of the servers-file switched off for that one call: the same server collection (WAN units, Dual WAN,
++ * VPN clients, domains, IPv6), written under the same resolv lock, followed by the same dnsmasq reload. The
++ * router's own /tmp/resolv.conf is written exactly as with DNS-over-TLS on. reaper_uptls_plain is non-zero only
++ * inside that call; multi_wan.c reads it for the servers of the other WANs in a Multi-WAN group. */
++int reaper_uptls_plain;
++
++int update_resolvconf_plain(void)
++{
++	int r;
++
++	reaper_uptls_plain = 1;
++	r = update_resolvconf();
++	reaper_uptls_plain = 0;
++	return r;
++}
++
+ int update_resolvconf(void)
+ {
+ 	FILE *fp, *fp_servers;
+@@ -3141,6 +3161,8 @@ int update_resolvconf(void)
+ 	 * with DoT off, so 127.0.0.1 never becomes a dnsmasq upstream. */
+ 	int dot_self = dnspriv_enable && is_routing_enabled() && dot_has_upstream();
+ 	int dot_plain = !dot_self || !nvram_get_int("dnspriv_profile");
++	/* REAPER-UPTLS: what dnsmasq's servers-file follows - the switch, unless the fallback writes the plain servers */
++	int dnspriv_srv = dnspriv_enable && !reaper_uptls_plain;
+ #endif
+ 
+ #if defined(RTCONFIG_VPNC) && !defined(RTCONFIG_VPN_FUSION)
+@@ -3210,7 +3232,7 @@ int update_resolvconf(void)
+ 					break;
+ #endif
+ #ifdef RTCONFIG_DNSPRIVACY
+-				if (dnspriv_enable)
++				if (dnspriv_srv)	/* REAPER-UPTLS */
+ 					break;
+ #endif
+ //#if defined(RTCONFIG_WIREGUARD) && !defined(RTCONFIG_VPN_FUSION)
+@@ -3302,7 +3324,7 @@ int update_resolvconf(void)
+ 	}
+ #endif
+ #ifdef RTCONFIG_DNSPRIVACY
+-	if (dnspriv_enable)
++	if (dnspriv_srv)	/* REAPER-UPTLS */
+ 		fprintf(fp_servers, "server=%s\n", "127.0.1.1");
+ #endif
+ 
+@@ -3358,8 +3380,12 @@ NOIP:
+ 			}
+ #endif
+ #ifdef RTCONFIG_DNSPRIVACY
+-			if (dnspriv_enable)
++			if (dnspriv_srv)	/* REAPER-UPTLS */
+ 				continue;
++			if (dnspriv_enable) {	/* the fallback: dnsmasq gets the server; the router's own list as with DNS-over-TLS */
++				fprintf(fp_servers, "server=%s\n", tmp);
++				continue;
++			}
+ #endif
+ 			fprintf(fp, "nameserver %s\n", tmp);
+ 			fprintf(fp_servers, "server=%s\n", tmp);
+@@ -4445,6 +4471,7 @@ NOIP:
+ #if defined(RTCONFIG_WIREGUARD) || defined(RTCONFIG_OPENVPN)
+ 	amvpn_set_kilswitch_rules_all();
+ #endif
++	reaper_fw_lists_wanup();	/* REAPER-FW-LISTS-WANUP: a Policy Routing list that has never arrived is asked for now */
+ 
+ #ifdef RTCONFIG_MULTIWAN_PROFILE
+ 	mtwan_handle_ip_route(wan_unit);
+diff --git a/release/src/router/www/Reaper_VPNRouting.asp b/release/src/router/www/Reaper_VPNRouting.asp
+index 0824c93be7..6edb859bde 100644
+--- a/release/src/router/www/Reaper_VPNRouting.asp
++++ b/release/src/router/www/Reaper_VPNRouting.asp
+@@ -101,6 +101,16 @@ td.doms{font-family:ui-monospace,Consolas,monospace;font-size:11.5px;color:var(-
+ .applybar .note{font-size:11.5px;color:var(--steel)}
+ .applying{display:none;position:fixed;inset:0;background:rgba(6,6,8,.86);z-index:60;align-items:center;justify-content:center;color:var(--bone);font-family:var(--hdr);letter-spacing:.06em;font-size:15px}
+ .applying.show{display:flex}
++/* REAPER-FW-LISTS: ASN lists and Country lists */
++.advtag{font-family:var(--hdr);font-weight:600;font-size:10px;letter-spacing:.1em;color:var(--amber);border:1px solid rgba(224,169,59,.35);border-radius:4px;padding:1px 6px;margin-left:8px;vertical-align:middle}
++td.lst{font-size:11.7px;white-space:normal}
++td.lst .warn{color:var(--amber)}
++td.lst .muted{color:var(--steel)}
++.listbar{display:flex;gap:12px;align-items:center;margin-top:12px}
++.listbar .objnote{margin-top:0}
++/* REAPER-FW-LISTS-BUSY: a held button looks held; a refused field is outlined */
++.btng[disabled]{opacity:.4;cursor:not-allowed}
++.editor input.fbad,.editor textarea.fbad,.editor select.fbad{border-color:var(--danger)!important;box-shadow:0 0 0 1px var(--danger)}
+ </style>
+ </head>
+ <body>
+@@ -202,6 +212,60 @@ td.doms{font-family:ui-monospace,Consolas,monospace;font-size:11.5px;color:var(-
+   <div class="objnote" id="objsaved" style="display:none"></div>
+ </div>
+ 
++<!-- REAPER-FW-LISTS CARDS-BEGIN -->
++<div class="card" id="asncard">
++  <h2><#RVR_77#> &middot; <span class="cnt" id="asncnt">0</span> <span class="advtag"><#RVR_78#></span></h2>
++  <div class="tabintro">
++    <p><#RVR_79#></p>
++    <p class="ex"><#RVR_80#></p>
++  </div>
++  <div class="tblwrap">
++  <table>
++    <thead><tr><th><#RVR_42#></th><th><#RVR_81#></th><th><#RVR_82#></th><th><#RVR_83#></th><th><#RVR_11#></th><th></th></tr></thead>
++    <tbody id="asnrows"></tbody>
++  </table>
++  </div>
++  <div class="editor" id="asneditor" style="margin-top:14px">
++    <div class="fld"><label><#RVR_42#></label><input type="text" id="asn_name" maxlength="25"></div>
++    <div class="fld"><label><#RVR_11#></label><input type="text" id="asn_cmt" maxlength="60"></div>
++    <div class="fld wide"><label><#RVR_81#> <span style="text-transform:none;letter-spacing:0">(<#RVR_44#>)</span></label><textarea id="asn_val" rows="2" maxlength="400" spellcheck="false" placeholder="AS2906&#10;AS40027"></textarea></div>
++    <div class="fld"><label>&nbsp;</label><span><button class="btn" id="asn_add" onclick="flSave('asn')"><#RVR_45#></button><button class="btng cancel" onclick="flEditCancel('asn')"><#CTL_Cancel#></button></span></div>
++  </div>
++  <div class="listbar"><button class="btng flupd" onclick="flUpdate('asn')"><#RVR_87#></button><span class="objnote flrun" style="display:none"><#RVR_97#>&hellip;</span></div>
++  <ul class="tnotes">
++    <li><#RVR_98#></li>
++    <li><#RVR_99#></li>
++    <li><#RVR_100#></li>
++  </ul>
++  <div class="objnote" id="asnmsg" style="display:none"></div>
++</div>
++
++<div class="card" id="geocard">
++  <h2><#RVR_84#> &middot; <span class="cnt" id="geocnt">0</span> <span class="advtag"><#RVR_78#></span></h2>
++  <div class="tabintro">
++    <p><#RVR_85#></p>
++  </div>
++  <div class="tblwrap">
++  <table>
++    <thead><tr><th><#RVR_42#></th><th><#RVR_86#></th><th><#RVR_82#></th><th><#RVR_83#></th><th><#RVR_11#></th><th></th></tr></thead>
++    <tbody id="georows"></tbody>
++  </table>
++  </div>
++  <div class="editor" id="geoeditor" style="margin-top:14px">
++    <div class="fld"><label><#RVR_42#></label><input type="text" id="geo_name" maxlength="25"></div>
++    <div class="fld"><label><#RVR_11#></label><input type="text" id="geo_cmt" maxlength="60"></div>
++    <div class="fld"><label><#RVR_86#></label><select id="geo_val"><option value=""><#RVR_91#></option></select></div>
++    <div class="fld"><label>&nbsp;</label><span><button class="btn" id="geo_add" onclick="flSave('geo')"><#RVR_45#></button><button class="btng cancel" onclick="flEditCancel('geo')"><#CTL_Cancel#></button></span></div>
++  </div>
++  <div class="listbar"><button class="btng flupd" onclick="flUpdate('geo')"><#RVR_87#></button><span class="objnote flrun" style="display:none"><#RVR_97#>&hellip;</span></div>
++  <ul class="tnotes">
++    <li><#RVR_100#></li>
++  </ul>
++  <div class="objnote" id="geomsg" style="display:none"></div>
++</div>
++
++<!-- REAPER-FW-LISTS CARDS-END -->
++
+ <div class="card armcard" id="armcard" style="display:none">
+   <h2><#RFW_145#></h2>
+   <p class="hint" style="margin-top:0"><#RFW_148#> <b id="armleft">&mdash;</b> <#RFW_149#></p>
+@@ -222,6 +286,7 @@ td.doms{font-family:ui-monospace,Consolas,monospace;font-size:11.5px;color:var(-
+ 
+ <script src="/reaper_util.js"></script>
+ <script src="/reaper/reaper_pending.js"></script>
++<script src="/reaper/reaper_cc.js"></script>
+ <script>
+ var NV = {
+   enable:   <% nvram_get_js("reaper_pbr_enable"); %>,
+@@ -528,16 +593,18 @@ function loadObjects(){
+   fwcgi('action=cfg',function(j){
+     if(!j||!j.ok){ renderObjects(); return; }
+     OBJ=splitList(j.obj); GRP=splitList(j.grp);
++    FLW=(j.warden?String(j.wgeo||''):'').toLowerCase();   /* REAPER-FW-LISTS: the countries Warden blocks */
+     renderObjects();
+   });
+ }
+ function renderObjects(){
+   var sel=document.getElementById('e_obj'), keep=sel.value;
+   var h='<option value="">'+esc(`<#RVR_26#>`)+'</option>', i;
+-  /* v3.1.5 (review R06): only objects the engine can select on. A geo object is Warden's
+-     (no rwfw_ set exists to match) and a MAC object selects a source device - a rule naming
+-     either matched nothing while reading Active; rc now drops such a rule and says so. */
+-  for(i=0;i<OBJ.length;i++) if(OBJ[i][0] && OBJ[i][1]!=='geo' && OBJ[i][1]!=='mac') h+='<option value="'+esc(OBJ[i][0])+'">'+esc(OBJ[i][0])+(OBJ[i][1]==='fqdn'?'':' ('+esc(OBJ[i][1]==='cidr'?`<#RFW_110#>`:OBJ[i][1]==='range'?`<#RFW_111#>`:OBJ[i][1]==='mac'?`<#RFW_112#>`:OBJ[i][1]==='geo'?`<#RFW_114#>`:OBJ[i][1]||'')+')')+'</option>';
++  /* v3.1.5 (review R06): only objects the engine can select on. A MAC object selects a source
++     device - a rule naming one matched nothing while reading Active; rc drops such a rule and
++     says so. REAPER-FW-LISTS (2026-11-22): an ASN list and a country list are offered - the
++     router gives each its own address set while a rule here names it. */
++  for(i=0;i<OBJ.length;i++) if(OBJ[i][0] && OBJ[i][1]!=='mac') h+='<option value="'+esc(OBJ[i][0])+'">'+esc(OBJ[i][0])+(OBJ[i][1]==='fqdn'?'':' ('+esc(OBJ[i][1]==='cidr'?`<#RFW_110#>`:OBJ[i][1]==='range'?`<#RFW_111#>`:OBJ[i][1]==='asn'?`<#RVR_102#>`:OBJ[i][1]==='geo'?`<#RVR_103#>`:OBJ[i][1]||'')+')')+'</option>';
+   for(i=0;i<GRP.length;i++) if(GRP[i][0]) h+='<option value="'+esc(GRP[i][0])+'">'+esc(GRP[i][0])+` (<#RVR_62#>)</option>`;
+   sel.innerHTML=h; if(keep) sel.value=keep;
+   var tb=document.getElementById('objrows'); tb.innerHTML=''; var n=0;
+@@ -554,6 +621,7 @@ function renderObjects(){
+   document.getElementById('objcnt').textContent=n;
+   var eds=tb.querySelectorAll('.rowedt'); for(i=0;i<eds.length;i++) eds[i].onclick=function(){ objEdit(+this.getAttribute('data-e')); };
+   var dels=tb.querySelectorAll('.rowdel'); for(i=0;i<dels.length;i++) dels[i].onclick=function(){ objDelete(+this.getAttribute('data-d')); };
++  flRender();   /* REAPER-FW-LISTS: the ASN and Country list tables are views of the same object list */
+ }
+ function objNormalise(raw){
+   /* v2.7.6 (field: a 40-line paste "would not save", a few at a time did):
+@@ -623,9 +691,227 @@ function objDelete(k){
+   var used=false, i; for(i=0;i<ROWS.length;i++) if((ROWS[i].seltype==='ipset'||ROWS[i].seltype==='domain')&&ROWS[i].selval===r[0]) used=true;
+   if(used && !confirm(`<#RVR_52#>`)) return;
+   if(EDIT_OBJ===k) objEditCancel(); else if(EDIT_OBJ>k) EDIT_OBJ--;
++  flShift(k);   /* REAPER-FW-LISTS: a list being edited below this row moves up one */
+   OBJ.splice(k,1); renderObjects(); objStore();
+ }
+ 
++/* ---- REAPER-FW-LISTS JS-BEGIN: ASN lists and Country lists (fetched lists) ----
++   An ASN list is an object of type asn (value AS2906,AS40027), a country list one of type geo (value NL). The
++   router gives each its own address set while a rule on this page names it, fills it from downloaded lists once
++   a day and keeps the last good list (rc/reaper_fw.c rfw_gen_lists). Both are saved through the same object
++   list as the domain lists; reaper_pbr.cgi action=lists reports what is loaded and where it came from. */
++var LST={keys:{},objs:{},running:0,script:0,t:0}, EDIT_FL={asn:-1,geo:-1}, FLW='', flTimer=null, flSoon=null, flBusy=null, flBusyT=0;
++var RWSELF=<% nvram_get_js("rwarden_self"); %>;
++var FLSRC={ipverse:'ipverse',ripestat:'RIPEstat',hackertarget:'HackerTarget',warden:'Warden',ipdeny:'ipdeny'};
++var FLERR={dns:`<#RVR_104#>`,conn:`<#RVR_105#>`,http:`<#RVR_106#>`,empty:`<#RVR_107#>`,big:`<#RVR_112#>`,wide:`<#RVR_114#>`};
++/* the same test rc applies (rfw_asn_num): AS2906 or 2906; not 0, 23456, 64496-131071 or 4200000000 and up */
++function flAsns(v){
++  var a=String(v||'').split(/[\s,;]+/), out=[], seen={}, i, m, n;
++  for(i=0;i<a.length;i++){
++    if(!a[i]) continue;
++    m=/^(?:AS)?(\d{1,10})$/i.exec(a[i]); n=m?+m[1]:0;
++    if(!m || n<1 || n===23456 || (n>=64496 && n<=131071) || n>=4200000000){ out.push({bad:a[i]}); continue; }
++    if(seen[n]) continue;
++    seen[n]=1; out.push({n:n});
++  }
++  return out;
++}
++function flNums(v){ return flAsns(v).filter(function(x){ return x.n; }).map(function(x){ return 'AS'+x.n; }); }
++function flKeys(r){ return r[1]==='geo' ? ['cc_'+String(r[2]||'').toLowerCase()] : flNums(r[2]).map(function(x){ return x.toLowerCase(); }); }
++function flCountry(cc){
++  var t=window.ReaperCC||[], i, u=String(cc||'').toUpperCase();
++  for(i=0;i<t.length;i++) if(t[i][0]===u) return t[i][1]+' ('+u+')';
++  return u;
++}
++/* does an enabled rule on this page (as it stands now) select on the object, directly or through a group */
++function flUsed(name){
++  var i, g, r;
++  for(i=0;i<ROWS.length;i++){
++    r=ROWS[i]; if(!r.en || (r.seltype!=='ipset' && r.seltype!=='domain')) continue;
++    if(r.selval===name) return true;
++    for(g=0;g<GRP.length;g++) if(GRP[g][0]===r.selval && String(GRP[g][1]||'').split(',').indexOf(name)>=0) return true;
++  }
++  return false;
++}
++function flWhen(t){
++  if(!t) return '';
++  var d=new Date(t*1000); function p(n){ return (n<10?'0':'')+n; }
++  return d.getFullYear()+'-'+p(d.getMonth()+1)+'-'+p(d.getDate())+' '+p(d.getHours())+':'+p(d.getMinutes());
++}
++function flLoadedCell(r){
++  var o=LST.objs[r[0]], h, st;
++  if(!flUsed(r[0])) h='<span class="muted">'+esc(`<#RVR_92#>`)+'</span>';
++  else if(!o) h='<span class="muted">'+esc(`<#RVR_93#>`)+'</span>';
++  else {
++    st=[o.s4,o.s6];
++    h=esc(o.c4)+' IPv4 &middot; '+esc(o.c6)+' IPv6';
++    if(st.indexOf('big')>=0) h+=' <span class="warn">'+esc(`<#RVR_94#>`)+'</span>';
++    else if(st.indexOf('mem')>=0) h+=' <span class="warn">'+esc(`<#RVR_95#>`)+'</span>';
++  }
++  if(r[1]==='geo' && FLW.split(/[ ,<>]+/).indexOf(String(r[2]||'').toLowerCase())>=0) h+='<div class="warn">'+esc(`<#RVR_101#>`)+'</div>';
++  return h;
++}
++function flSourceCell(r){
++  var ks=flKeys(r), names=(r[1]==='geo')?['Warden','ipdeny','ipverse']:['ipverse','RIPEstat','HackerTarget'];
++  var srcs=[], last=0, fails=[], conn=false, i, e, k, why, t;
++  for(i=0;i<ks.length;i++){
++    k=LST.keys[ks[i]]; if(!k) continue;
++    if(k.src && k.src!=='-' && srcs.indexOf(FLSRC[k.src]||k.src)<0) srcs.push(FLSRC[k.src]||k.src);
++    if(k.chk>last) last=k.chk;
++    if(k.res!=='fail') continue;
++    why=[];
++    for(e=0;e<3;e++) if(k.e && k.e[e] && k.e[e]!=='-' && k.e[e]!=='ok'){ why.push(names[e]+': '+(FLERR[k.e[e]]||k.e[e])); if(k.e[e]==='conn') conn=true; }
++    fails.push((r[1]==='geo'?'':ks[i].toUpperCase()+' - ')+`<#RVR_96#>`+((!k.src||k.src==='-')?' ('+`<#RVR_111#>`+')':'')+(why.length?' - '+why.join(', '):''));
++  }
++  t=srcs.join(', '); if(last) t+=(t?' \u00b7 ':'')+flWhen(last);
++  var h=t?esc(t):'<span class="muted">&mdash;</span>';
++  for(i=0;i<fails.length;i++) h+='<div class="warn">'+esc(fails[i])+'</div>';
++  if(conn && RWSELF==='1') h+='<div class="warn">'+esc(`<#RVR_108#>`)+'</div>';
++  return h;
++}
++function flRender(){
++  ['asn','geo'].forEach(function(kind){
++    var tb=document.getElementById(kind+'rows'), n=0, i; if(!tb) return;
++    tb.innerHTML='';
++    for(i=0;i<OBJ.length;i++){ (function(k){
++      var r=OBJ[k]; if(r[1]!==kind) return; n++;
++      var tr=document.createElement('tr'); if(k===EDIT_FL[kind]) tr.className='editing';
++      var what=(kind==='asn')?flNums(r[2]).join(', '):flCountry(r[2]);
++      tr.innerHTML='<td>'+esc(r[0])+'</td>'+
++        '<td class="doms" title="'+esc(what)+'">'+esc(what)+'</td>'+
++        '<td class="lst">'+flLoadedCell(r)+'</td>'+
++        '<td class="lst">'+flSourceCell(r)+'</td>'+
++        '<td>'+(r[3]?esc(r[3]):'<span style="color:var(--steel)">&mdash;</span>')+'</td>'+
++        '<td style="white-space:nowrap"><button class="rowedt" data-e="'+k+'">'+esc(`<#CTL_modify#>`)+'</button><button class="rowdel" data-d="'+k+'">&times;</button></td>';
++      tb.appendChild(tr);
++    })(i); }
++    document.getElementById(kind+'cnt').textContent=n;
++    var eds=tb.querySelectorAll('.rowedt'); for(i=0;i<eds.length;i++) eds[i].onclick=function(){ flEdit(kind,+this.getAttribute('data-e')); };
++    var dels=tb.querySelectorAll('.rowdel'); for(i=0;i<dels.length;i++) dels[i].onclick=function(){ flDelete(kind,+this.getAttribute('data-d')); };
++  });
++  var b=document.querySelectorAll('.flupd'), s=document.querySelectorAll('.flrun'), q;
++  for(q=0;q<b.length;q++) b[q].disabled=!!LST.running || !LST.script;
++  for(q=0;q<s.length;q++) s[q].style.display=LST.running?'':'none';
++}
++function flMsg(kind,ok,msg){
++  var e=document.getElementById(kind+'msg'); if(!e) return;
++  e.style.display=''; e.style.color=ok?'var(--jade)':'var(--danger)'; e.textContent=msg;
++  clearTimeout(flMsg['t'+kind]);
++  if(ok) flMsg['t'+kind]=setTimeout(function(){ e.style.display='none'; },5000);   /* an error stays until the next attempt */
++}
++function flShift(k){ ['asn','geo'].forEach(function(q){ if(EDIT_FL[q]===k) flEditCancel(q); else if(EDIT_FL[q]>k) EDIT_FL[q]--; }); }
++function flEdit(kind,k){
++  var r=OBJ[k]; if(!r) return;
++  EDIT_FL[kind]=k;
++  document.getElementById(kind+'_name').value=r[0]||''; document.getElementById(kind+'_cmt').value=r[3]||'';
++  if(kind==='asn') document.getElementById('asn_val').value=flNums(r[2]).join('\n');
++  else {
++    var sel=document.getElementById('geo_val'), u=String(r[2]||'').toUpperCase();
++    sel.value=u;
++    if(sel.value!==u){ var op=document.createElement('option'); op.value=u; op.textContent=u; sel.appendChild(op); sel.value=u; }
++  }
++  document.getElementById(kind+'_add').textContent=`<#CTL_onlysave#>`;
++  document.getElementById(kind+'editor').classList.add('editing');
++  flRender();
++}
++function flEditCancel(kind){
++  EDIT_FL[kind]=-1;
++  ['_name','_cmt','_val'].forEach(function(s){ document.getElementById(kind+s).value=''; });
++  document.getElementById(kind+'_add').textContent=`<#RVR_45#>`;
++  document.getElementById(kind+'editor').classList.remove('editing');
++  flBad(kind,'');
++  flRender();
++}
++/* REAPER-FW-LISTS-BUSY: outline (and focus) the field a refusal is about; '' clears both */
++function flBad(kind,f){
++  ['_name','_val'].forEach(function(s){ var e=document.getElementById(kind+s); if(e) e.classList.toggle('fbad', s===f); });
++  if(f){ var e=document.getElementById(kind+f); if(e && e.focus) e.focus(); }
++}
++function flStore(kind,bf){
++  fwcgi('action=save&k=obj',function(j){
++    if(j&&j.ok){ flMsg(kind,true,`<#RVR_47#>`); if(bf) bf(true); }
++    else { flMsg(kind,false,(j&&j.error)||`<#RVR_48#>`); if(bf) bf(false); loadObjects(); }
++  }, 'v='+encodeURIComponent(joinList(OBJ)));
++}
++function flSave(kind){
++  var n=document.getElementById(kind+'_name').value.trim(), c=document.getElementById(kind+'_cmt').value.trim().replace(/[<>]/g,'');
++  var ed=EDIT_FL[kind], v, i, a, bad, good;
++  /* REAPER-FW-LISTS-BUSY (owner, 2026-11-22: the buttons must show they were used): the button shows Working, then
++     Done or Failed beside it, and a refused field is outlined and focused - a refusal can no longer go unseen */
++  var bf=ReaperBusy.start(document.getElementById(kind+'_add'),{after:document.querySelector('#'+kind+'editor .cancel')});
++  function no(m,f){ flMsg(kind,false,m); flBad(kind,f); bf(false); }
++  flBad(kind,'');
++  if(!/^[A-Za-z0-9_]{1,25}$/.test(n)){ no(`<#RFW_157#>`,'_name'); return; }
++  if(kind==='asn'){
++    a=flAsns(document.getElementById('asn_val').value);
++    bad=a.filter(function(x){ return x.bad; }).map(function(x){ return x.bad; });
++    good=a.filter(function(x){ return x.n; });
++    if(bad.length){ no(`<#RVR_89#>`+' '+bad.slice(0,8).join(', '),'_val'); return; }
++    if(!good.length){ no(`<#RVR_88#>`,'_val'); return; }
++    if(good.length>16){ no(`<#RVR_90#>`,'_val'); return; }
++    v=good.map(function(x){ return 'AS'+x.n; }).join(',');
++  } else {
++    v=String(document.getElementById('geo_val').value||'').toUpperCase();
++    if(!/^[A-Z]{2}$/.test(v)){ no(`<#RVR_91#>`,'_val'); return; }
++  }
++  for(i=0;i<OBJ.length;i++) if(i!==ed && OBJ[i][0]===n){ no(`<#RFW_65#>`,'_name'); return; }
++  for(i=0;i<GRP.length;i++) if(GRP[i][0]===n){ no(`<#RFW_65#>`,'_name'); return; }
++  var rec=[n,kind,v,c], cand=OBJ.slice();
++  if(ed>=0 && ed<cand.length) cand[ed]=rec; else cand.push(rec);
++  if(joinList(cand).length>=8192){ no(`<#RFW_328#>`,''); return; }
++  if(ed>=0 && OBJ[ed]){
++    var old=OBJ[ed][0]; OBJ[ed]=rec;
++    if(old!==n) for(i=0;i<ROWS.length;i++) if((ROWS[i].seltype==='ipset'||ROWS[i].seltype==='domain')&&ROWS[i].selval===old) ROWS[i].selval=n;  /* rename follows */
++  } else OBJ.push(rec);
++  flEditCancel(kind); renderObjects(); render(); flStore(kind,bf);
++}
++function flDelete(kind,k){
++  var r=OBJ[k], used=false, i; if(!r) return;
++  for(i=0;i<ROWS.length;i++) if((ROWS[i].seltype==='ipset'||ROWS[i].seltype==='domain')&&ROWS[i].selval===r[0]) used=true;
++  if(used && !confirm(`<#RVR_52#>`)) return;
++  if(EDIT_OBJ>k) EDIT_OBJ--;
++  flShift(k);
++  OBJ.splice(k,1); renderObjects(); flStore(kind);
++}
++function flLoad(){
++  pbrcgi('action=lists',function(j){
++    if(j&&j.ok){
++      var m={}, o={}, i, ks=j.keys||[], os=j.objs||[];
++      for(i=0;i<ks.length;i++) m[ks[i].k]=ks[i];
++      for(i=0;i<os.length;i++) o[os[i].n]=os[i];
++      LST={keys:m,objs:o,running:j.running?1:0,script:j.script?1:0,t:j.t||0};
++    }
++    /* REAPER-FW-LISTS-BUSY: the Update now press ends when the router's status is newer and nothing runs */
++    if(flBusy && j && j.ok && !LST.running && LST.t!==flBusyT){ var fb=flBusy; flBusy=null; fb(true); }
++    flRender();
++    clearTimeout(flTimer); flTimer=setTimeout(flLoad, LST.running?3000:30000);
++  });
++}
++function flUpdate(kind){
++  var bf=ReaperBusy.startLast({maxMs:180000});   /* REAPER-FW-LISTS-BUSY: busy until this run has finished */
++  pbrcgi('action=lists_update',function(j){
++    if(j&&j.ok){ flMsg(kind,true,`<#RVR_109#>`); flBusy=bf; flBusyT=LST.t; LST.running=1; flRender(); clearTimeout(flTimer); flTimer=setTimeout(flLoad,2000); }
++    else { flMsg(kind,false,(j&&j.error==='E_NOLISTS')?`<#RVR_110#>`:`<#RVR_113#>`); bf(false); }
++  });
++}
++/* after an Apply the router builds the sets and fetches what is missing: read the status again shortly after
++   every arm-state change (armUI runs when an apply settles and on each poll of the confirm window) */
++var flArmUI=armUI;
++armUI=function(){ flArmUI(); if(!flSoon) flSoon=setTimeout(function(){ flSoon=null; flLoad(); },2500); };
++/* whether a list is "used" follows the rules table: a rule added, switched or removed repaints both tables */
++var flRuleRender=render;
++render=function(){ flRuleRender(); flRender(); };
++(function(){
++  var sel=document.getElementById('geo_val'), t=window.ReaperCC||[], i, op;
++  for(i=0;sel && i<t.length;i++){ op=document.createElement('option'); op.value=t[i][0]; op.textContent=t[i][1]+' ('+t[i][0]+')'; sel.appendChild(op); }
++  ['asn','geo'].forEach(function(k){ ['_name','_val'].forEach(function(f){
++    var e=document.getElementById(k+f); if(!e) return;
++    var clr=function(){ e.classList.remove('fbad'); }; e.addEventListener('input',clr); e.addEventListener('change',clr);
++  }); });
++  flLoad();
++})();
++/* ---- REAPER-FW-LISTS JS-END ---- */
++
+ (function init(){
+   parseRules();
+   render();
+diff --git a/release/src/router/www/Reaper_Warden.asp b/release/src/router/www/Reaper_Warden.asp
+index b6c18e5c9b..38ce4ef10b 100644
+--- a/release/src/router/www/Reaper_Warden.asp
++++ b/release/src/router/www/Reaper_Warden.asp
+@@ -296,6 +296,7 @@ input.cc{width:100%;font-family:ui-monospace,Consolas,monospace}
+ </form>
+ 
+ <script src="/reaper_util.js"></script>
++<script src="/reaper/reaper_cc.js"></script>
+ <script>
+ /* ---------- nvram bootstrap (values are charset-constrained on save) ---------- */
+ var NV = {
+@@ -424,28 +425,8 @@ function rwCfeedCollect(){
+   }
+   return {ok: out.slice(0, CFEED_MAX).join('<'), bad: bad, keys: keys.join('\n')};
+ }
+-/* ISO 3166-1 alpha-2 subset (common + commonly-blocked). Codes only ever leave
+-   here as 2 ascii letters; the backend re-validates each as [A-Za-z]{2}. */
+-var COUNTRIES = [
+- ['AF','Afghanistan'],['AL','Albania'],['DZ','Algeria'],['AR','Argentina'],['AU','Australia'],
+- ['AT','Austria'],['AZ','Azerbaijan'],['BD','Bangladesh'],['BY','Belarus'],['BE','Belgium'],
+- ['BR','Brazil'],['BG','Bulgaria'],['KH','Cambodia'],['CA','Canada'],['CL','Chile'],
+- ['CN','China'],['CO','Colombia'],['HR','Croatia'],['CU','Cuba'],['CZ','Czechia'],
+- ['DK','Denmark'],['EG','Egypt'],['EE','Estonia'],['FI','Finland'],['FR','France'],
+- ['GE','Georgia'],['DE','Germany'],['GH','Ghana'],['GR','Greece'],['HK','Hong Kong'],
+- ['HU','Hungary'],['IN','India'],['ID','Indonesia'],['IR','Iran'],['IQ','Iraq'],
+- ['IE','Ireland'],['IL','Israel'],['IT','Italy'],['JP','Japan'],['KZ','Kazakhstan'],
+- ['KE','Kenya'],['KP','Korea, North'],['KR','Korea, South'],['KW','Kuwait'],['LV','Latvia'],
+- ['LB','Lebanon'],['LT','Lithuania'],['LU','Luxembourg'],['MY','Malaysia'],['MX','Mexico'],
+- ['MD','Moldova'],['MA','Morocco'],['NL','Netherlands'],['NZ','New Zealand'],['NG','Nigeria'],
+- ['NO','Norway'],['PK','Pakistan'],['PS','Palestine'],['PA','Panama'],['PE','Peru'],
+- ['PH','Philippines'],['PL','Poland'],['PT','Portugal'],['QA','Qatar'],['RO','Romania'],
+- ['RU','Russia'],['SA','Saudi Arabia'],['RS','Serbia'],['SG','Singapore'],['SK','Slovakia'],
+- ['SI','Slovenia'],['ZA','South Africa'],['ES','Spain'],['LK','Sri Lanka'],['SE','Sweden'],
+- ['CH','Switzerland'],['SY','Syria'],['TW','Taiwan'],['TH','Thailand'],['TR','Turkey'],
+- ['UA','Ukraine'],['AE','United Arab Emirates'],['GB','United Kingdom'],['US','United States'],
+- ['UZ','Uzbekistan'],['VE','Venezuela'],['VN','Vietnam'],['YE','Yemen'],['ZW','Zimbabwe']
+-];
++/* reaper 2026-11-22 (REAPER-FW-LISTS): the country table is /reaper/reaper_cc.js now, shared with Policy Routing */
++var COUNTRIES = window.ReaperCC || [];
+ 
+ function rwEsc(s){ return esc(s); }   /* consolidated to shared window.esc (reaper_util.js) */
+ 
+diff --git a/release/src/router/www/reaper/reaper_cc.js b/release/src/router/www/reaper/reaper_cc.js
+new file mode 100644
+index 0000000000..5b12a1b0eb
+--- /dev/null
++++ b/release/src/router/www/reaper/reaper_cc.js
+@@ -0,0 +1,26 @@
++/* SPDX-License-Identifier: GPL-2.0-only
++   Copyright (C) 2026 the Reaper project maintainer
++   Part of the Reaper hardened Asuswrt-Merlin build. See LICENSE / LICENSE.reaper. */
++/* reaper 2026-11-22 (REAPER-FW-LISTS): the country table, one copy for the pages that offer countries - Warden
++   (countries to block) and Policy Routing (country lists). ISO 3166-1 alpha-2 subset (common + commonly-blocked).
++   Codes only ever leave a page as 2 ascii letters; the backend re-validates each as [A-Za-z]{2}. */
++window.ReaperCC = [
++ ['AF','Afghanistan'],['AL','Albania'],['DZ','Algeria'],['AR','Argentina'],['AU','Australia'],
++ ['AT','Austria'],['AZ','Azerbaijan'],['BD','Bangladesh'],['BY','Belarus'],['BE','Belgium'],
++ ['BR','Brazil'],['BG','Bulgaria'],['KH','Cambodia'],['CA','Canada'],['CL','Chile'],
++ ['CN','China'],['CO','Colombia'],['HR','Croatia'],['CU','Cuba'],['CZ','Czechia'],
++ ['DK','Denmark'],['EG','Egypt'],['EE','Estonia'],['FI','Finland'],['FR','France'],
++ ['GE','Georgia'],['DE','Germany'],['GH','Ghana'],['GR','Greece'],['HK','Hong Kong'],
++ ['HU','Hungary'],['IN','India'],['ID','Indonesia'],['IR','Iran'],['IQ','Iraq'],
++ ['IE','Ireland'],['IL','Israel'],['IT','Italy'],['JP','Japan'],['KZ','Kazakhstan'],
++ ['KE','Kenya'],['KP','Korea, North'],['KR','Korea, South'],['KW','Kuwait'],['LV','Latvia'],
++ ['LB','Lebanon'],['LT','Lithuania'],['LU','Luxembourg'],['MY','Malaysia'],['MX','Mexico'],
++ ['MD','Moldova'],['MA','Morocco'],['NL','Netherlands'],['NZ','New Zealand'],['NG','Nigeria'],
++ ['NO','Norway'],['PK','Pakistan'],['PS','Palestine'],['PA','Panama'],['PE','Peru'],
++ ['PH','Philippines'],['PL','Poland'],['PT','Portugal'],['QA','Qatar'],['RO','Romania'],
++ ['RU','Russia'],['SA','Saudi Arabia'],['RS','Serbia'],['SG','Singapore'],['SK','Slovakia'],
++ ['SI','Slovenia'],['ZA','South Africa'],['ES','Spain'],['LK','Sri Lanka'],['SE','Sweden'],
++ ['CH','Switzerland'],['SY','Syria'],['TW','Taiwan'],['TH','Thailand'],['TR','Turkey'],
++ ['UA','Ukraine'],['AE','United Arab Emirates'],['GB','United Kingdom'],['US','United States'],
++ ['UZ','Uzbekistan'],['VE','Venezuela'],['VN','Vietnam'],['YE','Yemen'],['ZW','Zimbabwe']
++];
+-- 
+2.25.1
+

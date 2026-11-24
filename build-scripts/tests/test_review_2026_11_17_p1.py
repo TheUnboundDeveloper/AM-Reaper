@@ -200,19 +200,19 @@ check("httpd: the login-state hook starts no shell", bool(hook) and "popen(" not
       and "reaper_client_mac(mac_str, sizeof(mac_str))" in hook, hook[:200])
 
 # ---------------------------------------------------------------- iperf3 client request: checked in httpd, bounded in rc
-cg = body(wn, "do_set_iperf3_cli_cgi(char *url, FILE *stream)")
-check("iperf3: the port test can fail (conditions joined with ||, range 1-65535)",
-      "if(!isValid_digit_string(iperf3_cli_port) || atoi(iperf3_cli_port)<1 || atoi(iperf3_cli_port)>65535){" in cg)
+# v3.8.4 batch C (REAPER-UNUSED-V384C): set_iperf3_cli.cgi and its handler are gone - no page called them and the
+# phone app is not a supported client. Before, this pinned the B-4 fix inside the handler (the port test could
+# never fail; no field had a length limit). rc's own bounded copies stay checked below: nvram can still hold values.
+check("iperf3: no request sets the client fields any more (the handler and its row are gone)",
+      "do_set_iperf3_cli_cgi" not in wn and 'nvram_set("iperf3_cli_host"' not in wn and '{ "set_iperf3_cli.cgi"' not in wn)
 sv = nocomment(rd(os.path.join(SRC, "rc", "services.c")))
 ic = body(sv, "start_iperf3_client(void)")
 decl = re.search(r"char host\[(\d+)\], port\[(\d+)\], time\[(\d+)\], parallel\[(\d+)\], window\[(\d+)\], omit\[(\d+)\], buf_len\[(\d+)\], interval\[(\d+)\];", ic)
 names = ["host", "port", "time", "parallel", "window", "omit", "buf_len", "interval"]
 check("iperf3: rc copies every field with its buffer's size", bool(ic) and "strcpy(" not in ic.replace("strlcpy(", "")
       and all('strlcpy(%s, nvram_safe_get("iperf3_cli_%s"), sizeof(%s));' % (n, n, n) in ic for n in names), ic[:300])
-lim = dict(re.findall(r"strlen\(iperf3_cli_(\w+)\) > (\d+)", cg))
-check("iperf3: every length httpd accepts fits the buffer rc copies it into",
-      decl is not None and all(n in lim and int(lim[n]) < int(decl.group(i + 1)) for i, n in enumerate(names)),
-      (lim, decl.groups() if decl else None))
+check("iperf3: rc declares a bounded buffer for every field it copies (httpd no longer accepts them at all)",
+      decl is not None and all(int(decl.group(i + 1)) >= 2 for i in range(len(names))), decl.groups() if decl else None)
 
 # ---------------------------------------------------------------- portal web server: only the modules it configures
 uc = body(sv, "gen_uam_srv_conf(")
@@ -598,8 +598,8 @@ int main(void)
 dgp = os.path.join(SRC, "others", "reaper_diag")
 if os.path.isfile(dgp):
     dg = rd(dgp)
-    check("diag: v1.3.60 in the script and on the page", 'VER="REAPER-DIAG v1.3.61"' in dg
-          and "REAPER-DIAG v1.3.61</span>" in rd(os.path.join(SRC, "www", "Reaper_Diag.asp")))
+    check("diag: v1.3.60 in the script and on the page", 'VER="REAPER-DIAG v1.3.62"' in dg
+          and "REAPER-DIAG v1.3.62</span>" in rd(os.path.join(SRC, "www", "Reaper_Diag.asp")))
     check("diag: both process lists pass through the login-name rewrite",
           "top -bn1 2>/dev/null | head -12 | san_usercol | sed 's/^/  /'" in dg
           and "\nps w 2>/dev/null | san_usercol | sed 's/^/  /'\n" in dg and dg.count("san_usercol") == 4)

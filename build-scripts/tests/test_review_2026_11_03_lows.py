@@ -291,15 +291,17 @@ check("B-1: the injector carries the token hook for start_apply*.htm, apply.cgi 
 check("B-1: the hook is written only into authenticated responses, with a plain alphanumeric token",
       "if (reaper_req_authed && tn > 0 && tn <= 64 &&" in inj and 'strspn(tk, "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789") == tn' in inj)
 check("B-1: skip-listed and QIS_* pages get the hook alone (mode 6), no theme",
-      inj.count("return 6;") == 2 and "if (mode != 6)\n\t\t\tRP_PUT(conn_fp, RP_LINK_CSS);" in inj and "case 6:" in inj)
+      # REAPER-CUT8 (stage 5): token-only is also the default for an unlisted page (it replaced the stock skin, mode 1)
+      inj.count("return 6;") == 3 and "default:\t/* 6: token hook only (B-1) */\n\t\t\tbreak;" in inj and "RP_CSS_LINK" not in inj)
 check("B-1: httpd marks a request authenticated only after auth_check() passed, and clears it per request",
       "int reaper_req_authed = 0;" in hc and "\treaper_req_authed = 0;\n\treaper_req_post" in hc
       # review 2026-11-11 (B-3): the connection deadline is switched off on the next line, still inside the #ifndef
       and re.search(r"\t\t\t\t\treaper_req_authed = 1;\n(\t\t\t\t\treaper_conn_deadline_off\(\);[^\n]*\n)?#endif\n", hc) is not None)
 wb = rd(os.path.join(SRC, "httpd/web.c"))
 ok_fn = func(wb, "static int reaper_apply_token_ok(")
-check("B-1: browser applies need the token; the app, scripts, a pristine-stock UI and AiMesh nodes are exempt",
-      "check_user_agent(user_agent) != FROM_BROWSER" in ok_fn and 'nvram_match("reaper_inject", "0")' in ok_fn and 'nvram_match("re_mode", "1")' in ok_fn)
+# review 2026-11-24 (REAPER-NOAPP-TOKEN): a User-Agent that names the ASUS app is no longer exempt
+check("B-1: applies need the token, whatever the User-Agent; AiMesh nodes are exempt (the stock-UI exemption left in stage 5)",
+      "check_user_agent" not in ok_fn and "FROM_BROWSER" not in ok_fn and '"reaper_inject"' not in ok_fn and 'nvram_match("re_mode", "1")' in ok_fn)
 check("B-1: start_apply*.htm and apply.cgi / applyapp.cgi enforce it",
       'reaper_apply_token_ok(websGetVar(wp, "http_id", NULL), "start_apply")' in wb and 'reaper_apply_token_ok(get_cgi_json("http_id", root), "apply.cgi")' in wb)
 radp = rd(os.path.join(SRC, W("Reaper_RADIUS.asp")))

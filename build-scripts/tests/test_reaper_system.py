@@ -107,16 +107,16 @@ inj = rd(os.path.join(SRC, "httpd", "reaper_inject.c")); rpjs = rd(os.path.join(
 check("menu model, shell fallback rail and dashboard rows point at Reaper_System.asp; nothing Reaper-owned links the stock page",
       "T('Reaper_System.asp', `<#menu5_6_2#>`)" in menu and "Advanced_System_Content" not in menu
       and dash.count('data-go="Reaper_System.asp"') == 4 and "Advanced_System_Content" not in dash and "Advanced_System_Content" not in shell)
-check("httpd SUP map redirects the stock page and keeps the query (?af=)",
-      '{ "advanced_system_content.asp", "Reaper_System.asp", ' in inj
-      and 'var q=location.search;if(q&&s&&s.indexOf(\\"?\\")>=0){q=\\"&\\"+q.slice(1);}' in inj   # 2026-10-24: & after a ?tab= target
-      and 'top.location.replace(\\"/reaper_shell.asp#\\"+s+q);return;' in inj)
+check("httpd sends the stock page's address to Reaper_System.asp and keeps the query (?af=) - the gone-page stub (stage 5)",
+      '{ "advanced_system_content.asp", "Reaper_System.asp", 0 }' in inj
+      and "strchr(to, '?') ? \"&\" : \"?\"" in inj   # 2026-10-24: & after a ?tab= target
+      and 'top.location.replace(\\"/reaper_shell.asp#%s\\"+(q?\\"%s\\"+q:\\"\\"));' in inj)
 # 2026-10-23: r19/r20 were missing from reaper_native[], so httpd injected the stock skin (reaper_content.css)
 # and its .tab rules drew a red border and a red hover fill on the page's tab containers.
 check("httpd treats the page as native (bounce, no stock reaper_content.css)", '\t"Reaper_System.asp",' in inj
       and inj.index('\t"Reaper_System.asp",') > inj.index("static const char *reaper_native[]"))
 check("each tab body sits in the kit's static crimson frame (.rframe, owner 2026-10-23), with no hover state",
-      t.count('<div class="tab rframe" id="tab_') == 5 and ".rframe{background:rgba(225,6,0,.22);border:1px solid rgba(225,6,0,.30)}" in rpcss
+      t.count('<div class="tab rframe" id="tab_') == 6 and ".rframe{background:rgba(var(--cb-acc-rgb,225,6,0),.22);border:1px solid rgba(var(--cb-acc-rgb,225,6,0),.30)}" in rpcss
       and not re.search(r"\.(tab|rframe)(\.on)?:hover\s*[,{]", t + rpcss))
 unlisted = sorted(f for f in os.listdir(www) if f.endswith(".asp") and '<meta name="reaper-native" content="1">' in rd(os.path.join(www, f))
                   and ('"%s"' % f) not in inj)

@@ -56,8 +56,10 @@ check("B-5: the page JSON.parses the endpoint; nothing is evaluated",
       and "new Function" not in W and "eval(" not in W)
 WEB = rd(os.path.join(SRC, "httpd", "web.c")); C = WEB
 STOCK = rd(os.path.join(SRC, "httpd", "sysdeps", "web-broadcom-am.c"))
-check("B-5: get_wl_status_json registered next to get_wl_status (same #ifdef), defined in web.c (_GNU_SOURCE: open_memstream)",
-      '\t{ "get_wl_status", ej_wl_status_array},\n\t{ "get_wl_status_json", ej_wl_status_json},' in WEB
+check("B-5: get_wl_status_json registered under #ifdef RTCONFIG_BCMWL6 (the stock get_wl_status row went with REAPER-UNUSED-CUT8), "
+      "defined in web.c (_GNU_SOURCE: open_memstream)",
+      re.search(r'#ifdef RTCONFIG_BCMWL6\n(?:[^\n]*\n){0,3}\t\{ "get_wl_status_json", ej_wl_status_json\},', WEB) is not None
+      and '{ "get_wl_status", ej_wl_status_array}' not in WEB
       and "#ifdef RTCONFIG_BCMWL6\n/* reaper 2026-11-05 (review 2026-11-03 B-5)" in WEB and "\nstatic int\nej_wl_status_json(" in WEB
       and "#define _GNU_SOURCE" in WEB[:3000] and "reaper_wl_json" not in STOCK)
 check("B-5: the stock producer still feeds the stock pages; the JSON ej captures it and replies {} on any odd shape",

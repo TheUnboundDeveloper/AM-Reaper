@@ -234,7 +234,7 @@ for needle, what in [
     ('<input type="hidden" name="reaper_doh_srv" value="">', "its form field"),
     ('<input type="hidden" name="dnspriv_enable" value="1" disabled>', "the upstream switch is posted only when enabled for one Save"),
     ('id="leg_dev"', "the device-to-router line"), ('id="leg_up"', "the router-to-upstream line"),
-    (".leg.bad{color:var(--crimson)", "a failing leg is red"),
+    (".leg.bad{color:var(--cb-alert,var(--crimson))", "a failing leg is red (orange in colour-blind mode, 2026-11-26)"),
     ('id="dv_list"', "the device list"), ('id="d_doh_url"', "the address to paste"), ('id="appledl2"', "the Apple HTTPS profile"),
     ("(doh ? 'HTTPS' : 'TLS')", "the profile's protocol"), ("'/dns-query</string>'", "the profile's ServerURL"),
     ("UP && !UP.on && UP.servers > 0 && confirm(", "the upstream leg is offered only when a server is set, and asked"),

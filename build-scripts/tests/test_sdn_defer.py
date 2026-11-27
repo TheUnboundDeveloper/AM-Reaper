@@ -342,7 +342,7 @@ for nm, h in (("sdn.html", shtml), ("mlo.html", mhtml)):
     check("%s: the bar sits between the page title and the network list" % nm,
           h.count(bar) == 1 and h.find('<div class="function_desc_container">') < h.find(bar) < h.find('<div class="content_container">'))
 check("dashboard: a server-rendered notice, read through an array (absent hook = no notice), linking the Network page",
-      "var d=[<% reaper_sdn_defer(); %>][0];" in dash and 'id="rsdn_wait_badge" href="/reaper_shell.asp#SDN.asp"' in dash
+      "var d=[<% reaper_sdn_defer(); %>][0];" in dash and 'id="rsdn_wait_badge" href="/reaper_shell.asp#Reaper_Network.asp"' in dash
       and "<#RSDN_44#>" in dash)
 check("the page script keeps its state in a closure (no page globals besides the loaded mark)",
       dj.lstrip().startswith("/* REAPER-SDN-DEFER") and "\n(function(){\n\t'use strict';" in dj and dj.rstrip().endswith("})();")

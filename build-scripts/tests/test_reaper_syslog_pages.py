@@ -97,8 +97,10 @@ wb = rd(os.path.join(SRC, "httpd", "sysdeps", "web-broadcom-am.c"))
 check("reaper_pbr.cgi routes action: ip rule + every table (v4/v6) + rt_tables, fixed commands, capped",
       'if (strcmp(action, "routes") == 0) {' in web and 'fw_emit_cmd(stream, "ip -4 route show table all 2>/dev/null", 262144);' in web
       and 'fw_emit_cmd(stream, "ip -6 rule show 2>/dev/null", 32768);' in web)
-check("data_arrays.c: UPnP + pinhole descriptions and IPv6 hostnames go through lease_js_escape (no str_escape_quotes left for them)",
-      da.count("lease_js_escape(desc2, sizeof(desc2), desc);") == 2 and da.count("lease_js_escape(host_esc, sizeof(host_esc), hostname);") == 2
+check("data_arrays.c: UPnP + pinhole descriptions and IPv6 hostnames go through lease_js_escape (no str_escape_quotes left for them; "
+      "the second IPv6 site went with ej_lan_ipv6_clients_array, REAPER-UNUSED-CUT8)",
+      da.count("lease_js_escape(desc2, sizeof(desc2), desc);") == 2 and da.count("lease_js_escape(host_esc, sizeof(host_esc), hostname);") == 1
+      and "REAPER-UNUSED-CUT8: ej_lan_ipv6_clients_array() removed" in da
       and "str_escape_quotes(desc2" not in da)
 # 40585 base (merge stops 63/64): upstream serves every .css no_cache and do_file strips the query; the cache bust
 # answers .css with Cache-Control: no-cache plus a build-stamped ETag, so the old 60 s rp.css row is gone (moot)

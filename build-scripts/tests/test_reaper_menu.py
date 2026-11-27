@@ -131,7 +131,7 @@ if r.returncode == 0:
     check("rail: every visible menu has a first page and an icon; the dashboard is a top-level page",
           all(x.split(":")[2] == "1" and x.split(":")[1] for x in o["rail"]) and "menu_Index:Main_ReaperDash.asp:1" in o["rail"], o["rail"][:6])
     check("rail opens a real page, never an inherit-only one (the old __HIDE__-first problem)",
-          "menu_APP:Reaper_USBApps.asp:1" in o["rail"] and "menu_Setting:Advanced_OperationMode_Content.asp:1" in o["rail"], [x for x in o["rail"] if x.startswith("menu_APP") or x.startswith("menu_Setting")])
+          "menu_APP:Reaper_USBApps.asp:1" in o["rail"] and "menu_Setting:Reaper_OpMode.asp:1" in o["rail"], [x for x in o["rail"] if x.startswith("menu_APP") or x.startswith("menu_Setting")])
     # 2026-10-24 (owner): USB Application first, USB Disks last; 2026-11-03 USB wave: the hub is the kit page
     check("USB Applications: USB Application is the first tab and USB Disks the last",
           rt["menu_APP"][0] == "Reaper_USBApps.asp" and rt["menu_APP"][-1] == "Reaper_USB.asp", rt["menu_APP"])

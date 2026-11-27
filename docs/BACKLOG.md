@@ -1,6 +1,6 @@
 # RT-BE Series "Reaper" — Backlog
 
-> **Doc status:** current as of **v3.8.4** · 2026-11-24 <!--@stamp-->
+> **Doc status:** current as of **v3.8.5** · 2026-11-27 <!--@stamp-->
 
 What is left to do, one line per item, grouped by area. Status where known: **[owed]** (must be done), **[blocked]** (external cause), **[shelved]** / **[deferred]** (deliberately set aside),
 **[watch]** (not a defect today; a guard to keep), **[needs data]** (waiting on a capture or report).
@@ -39,6 +39,7 @@ internal quality, or deferred by decision.
 (recorded in the changelog), except a **[partial: ...]** line: it goes back to its section with only the open part.*
 
 
+
 ---
 
 ## Open bugs / under investigation
@@ -56,6 +57,7 @@ internal quality, or deferred by decision.
 - **[P2] BQ16: the Devices page reportedly does not show MLO devices properly** **[details needed]** ↳ notes: `bq16-devices-mlo-display.md`
 - **[P2] Aqara G410 doorbell: control works but no video in the Aqara app or Apple Home (Bastion off)** **[reported; data asked]** ↳ notes: `aqara-g410-doorbell-no-video.md`
 - **[P3] RT-BE86U bootloader: cma=48M (stock now 64M) and an RTL8372 blob stock does not link** **[needs data]** ↳ notes: `rt-be86u-uboot-cma-rtl8372.md`
+- **[P2] Alpha line: check the rest of the closed-object swap list for pairs that must cross together (the conn_diag case)** **[parked]** ↳ notes: `conn-diag-crash-bq16-alpha.md`
 
 ---
 
@@ -65,25 +67,11 @@ internal quality, or deferred by decision.
 private review report and the finding ID in it; review reports are never published.*
 
 - **[P1] Every supported model and hardware revision ships the drivers and radio firmware it needs: full per-model review** **[tester readings owed]** ↳ notes: `model-driver-completeness-review.md`
-- **[P3] Login redirect: the typed address counts as the router's own name while the redirect is off** **[not started]** ↳ notes: `review-2026-11-24-cut-readiness.md`
-- **[P3] Unused closed programs to remove after a consumer check** **[group B: router checks owed; ceventd stays]** ↳ report: `review-2026-11-03` F-11 · notes: `unused-programs-2026-11-09.md`
-- **[P3] About 30 stock pages no menu reaches are still served** **[~20 candidates found; full proof owed]** ↳ report: `review-2026-11-03` B-6 · notes: `stock-pages-unreached.md`
-- **[P3] AiMesh: the mesh daemon listens while no node is paired** **[owner call]** ↳ notes: `audit-findings-2026-11-05.md`
-- **[P3] AI Advisor: one connection at a time** **[owner call]** ↳ report: `review-2026-11-03` D-6
 - **[P3] jQuery Mobile 1.4.5 (end of life) ships for the AiMesh add-node wizard** **[with the wizard rewrite]** ↳ report: `review-2026-11-03` B-4
 - **[P3] Review coverage not reached: closed listener parsers, closed ioctl handlers, closed packet-path objects, some stock pages** **[watch]** ↳ report: `review-2026-11-17` (section 10)
-- **[P3] dnsmasq keeps its network administration capability** **[owner call]** ↳ report: `review-2026-11-11` A-6 · notes: `review-2026-11-11-remediation.md`
-- **[P3] Web login lock for IPv6 LAN devices: backstop into open code** **[owner call]** ↳ report: `review-2026-11-11` B-1 · notes: `review-2026-11-11-remediation.md`
-- **[P3] USB share and WAN action handlers: session token inside each handler** **[owner call]** ↳ report: `review-2026-11-11` B-2 (part 2) · notes: `review-2026-11-11-remediation.md`
-- **[P3] Kernel review items left unchanged** **[owner call]** ↳ report: `review-2026-11-11` A-2, A-3, A-4, A-5, Appendix A · notes: `review-2026-11-11-remediation.md`
-- **[P3] Kernel nvram notifications still carry the value** **[owner call]** ↳ report: `review-2026-11-11` A-1 · notes: `review-2026-11-11-remediation.md`
-- **[P3] Firewall log collector: run it under its own account** **[owner call]** ↳ report: `review-2026-11-11` D-5 · notes: `review-2026-11-11-remediation.md`
-- **[P3] Encrypted DNS and AiMesh leftovers from the 2026-11-11 review** **[owner call]** ↳ report: `review-2026-11-11` C-8 · notes: `review-2026-11-11-remediation.md`
-- **[P3] DNS queries with two OPT records** **[owner call]** ↳ report: `review-2026-11-11` Appendix A · notes: `review-2026-11-11-remediation.md`
-- **[P3] Channel picker control port: a local firewall rule by process owner** **[owner call]** ↳ report: `review-2026-11-11` D-C1 · notes: `review-2026-11-11-remediation.md`
 - **[P3] Maintainer tooling proposals (2026-11-11)** **[approved 2026-11-11; 7 of 19 done]** ↳ notes: `tooling-proposals-2026-11-11.md`
 - **[P2] ASUS releases of 2026-11-17 (firmware 394xx, GPL 39441-39448): what Reaper should take** **[B1-B4, B6 shipped; BQ16 waits for its GPL]** ↳ report: `drop-intake-2026-11-18` · notes: `asus-drop-intake-2026-11-18.md`
-- **[P2] Web server: retire the handling of requests that identify as the phone app, now that the app is not supported** **[not started]** ↳ notes: `httpd-fromapp-exemptions.md`
+- **[P3] Unused closed programs to remove after a consumer check** **[group B left; ceventd stays]** ↳ report: `review-2026-11-03` F-11 · notes: `unused-programs-2026-11-09.md`
 
 ---
 
@@ -91,15 +79,16 @@ private review report and the finding ID in it; review reports are never publish
 
 - **[P3] Reaper pages: the polishing redesign and formatting pass** **[not started]** ↳ notes: `loading-overlay-redesign.md`
 - **[P3] Option 162 log line says the offer changed when only a DNS Director rule did** **[not started]** ↳ notes: `review-2026-11-24-cut-readiness.md`
+- **[P3] Traffic Analyzer: download and upload use different colours in the tiles and the chart** **[reported; not started]** ↳ notes: `traffic-download-upload-colours.md`
 
 ---
 
 ## Potential Features to add
 
-- **[P1] Reaper-native UI: convert every stock page, then remove the stock pages** **[4 pages + AiMesh/Network left; then cutover]** ↳ notes: `reaper-native-ui.md`, `native-page-migration.md`
 - **[P2] Code signing: manifest + images, with a pre-upload verdict** **[scheduled]** ↳ notes: `manifest-signing-shelved.md`
 - **[P2] Two-tier admin credential for root-equivalent actions** **[designed 2026-10-19; owner call]** ↳ notes: `two-tier-admin-credential.md`
 - **[P3] Security review: watch more settings** **[left: Wi-Fi security mode]** ↳ notes: `security-review-coverage.md`
+- **[P3] Aura RGB lighting: merge ASUS's Aura LED support into every model that has the lights** **[not started]** ↳ notes: `aura-rgb-supporting-models.md`
 - **[P3] Encrypted DNS on isolated guest networks: DoT / DoH to the network's own gateway, with the option 162 offer** **[field request 2026-11-22; owner call]** ↳ notes: `guest-isolated-encrypted-dns.md`
 - **[P3] Dreadwatch lists on USB: a higher name limit while a USB store is attached** **[proposed; the limit to revisit]** ↳ notes: `dreadwatch-limit.md`
 - **[P3] Language packs on demand: English-only image, the admin installs their language** **[idea, measured]** ↳ notes: `language-packs-on-demand.md`
@@ -144,6 +133,14 @@ private review report and the finding ID in it; review reports are never publish
 
 *Not defects. Recorded so the same report is not re-investigated.*
 
+- **AiMesh: the mesh daemon listens while no node is paired** **[accepted 2026-11-24]** ↳ notes: `audit-findings-2026-11-05.md`
+- **AI Advisor: one connection at a time** **[accepted 2026-11-24]** ↳ report: `review-2026-11-03` D-6
+- **dnsmasq keeps its network administration capability** **[accepted 2026-11-24]** ↳ report: `review-2026-11-11` A-6 · notes: `review-2026-11-11-remediation.md`
+- **USB share and WAN action handlers: session token inside each handler** **[accepted 2026-11-24]** ↳ report: `review-2026-11-11` B-2 (part 2) · notes: `review-2026-11-11-remediation.md`
+- **Kernel review items left unchanged** **[accepted 2026-11-24]** ↳ report: `review-2026-11-11` A-2, A-3, A-4, A-5, Appendix A · notes: `review-2026-11-11-remediation.md`
+- **Kernel nvram notifications still carry the value** **[accepted 2026-11-24]** ↳ report: `review-2026-11-11` A-1 · notes: `review-2026-11-11-remediation.md`
+- **Firewall log collector: run it under its own account** **[accepted 2026-11-24]** ↳ report: `review-2026-11-11` D-5 · notes: `review-2026-11-11-remediation.md`
+- **Channel picker control port: a local firewall rule by process owner** **[accepted 2026-11-24]** ↳ report: `review-2026-11-11` D-C1 · notes: `review-2026-11-11-remediation.md`
 - **Boot chain: images are signed with the vendor SDK's key; an own key needs fused secure boot, which cannot be undone** **[accepted 2026-11-23]** ↳ report: `review-2026-11-03` E-12
 - **Guest networks: no encrypted DNS offer (DHCP option 162) on an isolated guest network, a portal, or a network with its own DNS servers** **[closed 2026-11-22]** ↳ notes: `guest-dnr-option-162.md`
 - **Image size: the RT-BE96U image fits its flash slot, 10,223,616 B spare in v3.8.3** **[closed 2026-11-20]** ↳ notes: `image-size-hunt.md`

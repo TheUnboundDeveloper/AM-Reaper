@@ -249,10 +249,13 @@ _ro = inj[inj.find("void reaper_output("):]
 check("Q-B-3 / Q-B-4 inject: one copy of each piece, written per mode - stock pages get no banner loader, native pages the small bounce (no SUP map), gate and banner-only pages keep the banner",
       "static const char RP_SECBANNER[] = REAPER_SECBANNER_JS;" in inj and "#define REAPER_NATIVE_JS" in inj
       and "static const char REAPER_BLOCK[]" not in inj and inj.count("REAPER_SECBANNER_JS;") == 1
-      and "case 2:\n\t\t\tRP_PUT(conn_fp, RP_NATIVE_JS);" in _ro and "case 3:\n\t\t\tRP_PUT(conn_fp, RP_CSS_LINK);\n\t\t\tRP_PUT(conn_fp, RP_SECBANNER);" in _ro
-      and "case 5:\n\t\t\tRP_PUT(conn_fp, RP_SECBANNER);" in _ro and "RP_PUT(conn_fp, RP_BOUNCE_HEAD);\n\t\t\tfwrite(sup, 1, sl, conn_fp);" in _ro
-      and 'if(self===top){var rp=location.pathname.split(\\"/\\").pop()||\\"index.asp\\";' in inj)
-check("Q-B-6 inject: the gone-page file test runs for .asp names only", 'if (ext && !strcasecmp(ext, ".asp") && access(file, R_OK) != 0) {' in inj)
+      # REAPER-CUT8 (stage 5): modes 1 (stock skin + SUP bounce) and 3 (first-run gate) left with the stock UI
+      and "case 2:\n\t\t\tRP_PUT(conn_fp, RP_LINK_CSS);\n\t\t\tRP_PUT(conn_fp, RP_NATIVE_JS);" in _ro
+      and "case 5:\n\t\t\tRP_PUT(conn_fp, RP_LINK_CSS);\n\t\t\tRP_PUT(conn_fp, RP_SECBANNER);" in _ro
+      and "RP_BOUNCE_HEAD" not in inj and "case 3:" not in _ro
+      and 'if(self===top){var rp=location.pathname.split(\\"/\\").pop()||\\"Main_ReaperDash.asp\\";' in inj)
+check("Q-B-6 inject: the gone-page file test runs for .asp names only",
+      'if (ext && !strcasecmp(ext, ".asp")) {' in inj and "if (access(file, R_OK) != 0)" in inj)
 enc_h = web[web.find("do_reaper_encdns_cgi(char *url, FILE *stream)"):web.find("do_reaper_encdns_cgi(char *url, FILE *stream)") + 7000]
 check("Q-B-7 encdns status: one pidof + kill, one shell for both reject counters, one for both set sizes",
       'int rpid = pidof("rednsd");' in enc_h and "kill(rpid, SIGUSR1);" in enc_h and 'pids("rednsd")' not in enc_h and 'killall("rednsd"' not in enc_h

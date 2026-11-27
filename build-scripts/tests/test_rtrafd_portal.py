@@ -208,7 +208,7 @@ check("the total chart's legend carries the two portal lines, hidden until a por
       'id="portleg_dn" style="display:none"' in page and 'id="portleg_up" style="display:none"' in page
       and "<#RTRF_104#>" in page and "<#RTRF_105#>" in page)
 check("the total chart draws two more lines, dashed",
-      "new LiveChart('wanchart',[],['var(--jade)','var(--crimson)','var(--jade)','var(--crimson)'])" in page
+      "new LiveChart('wanchart',[],['var(--cb-data,var(--jade))','var(--cb-alert,var(--crimson))','var(--cb-data,var(--jade))','var(--cb-alert,var(--crimson))'])" in page
       and "setAttribute('stroke-dasharray','6 4')" in page)
 check("...from the portal values in each sample, only while a portal runs",
       "pushSamp(wanSamp,[st, wan.rx_bps||0, wan.tx_bps||0, po?(po.dn||0):0, po?(po.up||0):0]);" in page

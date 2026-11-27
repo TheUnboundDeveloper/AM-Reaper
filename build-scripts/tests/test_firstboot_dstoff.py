@@ -49,23 +49,27 @@ def norm(s): return re.sub(r"\s+", " ", s)
 def rd(k): return open(os.path.join(SRC, FILES[k]), encoding="utf-8", errors="replace").read()
 
 pw = norm(nocomment(rd("pw")))
-i = pw.find("if(defaultPass){ require(['/require/modules/timeZone.js']")
+# 2026-11-26 (native-UI cutover stage 4): Main_Password.asp is a self-contained Reaper page - its own request for the
+# table (no jQuery), the zone from its own copy of the time zone tables; the facts below are the same ones
+i = pw.find("if (defaultPass){ timeZoneObj = tzGet(")
 check("Main_Password.asp: the first-boot time zone block is found", i >= 0)
 blk = pw[i:i + 2200] if i >= 0 else ""
-check("first boot fetches the bundled tz_db.json (no CDN)", '$.getJSON("/ajax/tz_db.json", function(tz_db){' in blk)
-check("the fetch runs only for a DST zone", re.search(r'if\(timeZoneObj\.hasDst\)\{ .*?dstBtn\.prop\("disabled", true\); \$\.getJSON\("/ajax/tz_db\.json"', blk, re.S) is not None)
-check("the rule is looked up by the zone the page writes", "var rule = tz_db[timeZoneObj.time_zone];" in blk)
+check("first boot fetches the bundled tz_db.json (no CDN)", "x.open('GET', '/ajax/tz_db.json', true);" in blk)
+check("the fetch runs only for a DST zone", re.search(r"if \(timeZoneObj\.hasDst\)\{ btn\.disabled = true; .*?x\.open\('GET', '/ajax/tz_db\.json'", blk, re.S) is not None)
+check("the rule is looked up by the zone the page writes", "rule = tz_db[timeZoneObj.time_zone];" in blk)
 check("a zone without a rule gets the wizard's fallback (the US rule), as QIS and the System page do",
-      'document.form.time_zone_dstoff.value = rule ? rule : "M3.2.0/2,M11.1.0/2";' in blk)
+      'f.time_zone_dstoff.value = rule ? rule : "M3.2.0/2,M11.1.0/2";' in blk)
 check("time_zone_dstoff is enabled only inside the table callback (an unread table changes nothing)",
-      re.search(r'function\(tz_db\)\{ var rule = [^}]*document\.form\.time_zone_dstoff\.disabled = false; \}\)\.always\(', blk) is not None)
+      re.search(r"if \(tz_db && typeof tz_db === 'object'\)\{ rule = [^}]*f\.time_zone_dstoff\.disabled = false; \}", blk) is not None
+      and pw.count("time_zone_dstoff.disabled = false") == 1)
 check("Apply is held until the table answers, the fetch fails, or 8 s pass (2026-10-13: a submit that beat the fetch sent no rule)",
-      'var dstBtn = $("#btn_modify input"), dstT = setTimeout(function(){ dstBtn.prop("disabled", false); }, 8000);' in blk
-      and 'dstBtn.prop("disabled", true); $.getJSON(' in blk
-      and '}).always(function(){ clearTimeout(dstT); dstBtn.prop("disabled", false); });' in blk)
+      "btn.disabled = true; dstT = setTimeout(function(){ btn.disabled = false; }, 8000);" in blk
+      and "} clearTimeout(dstT); btn.disabled = false; };" in blk
+      and "x.onerror = x.ontimeout = x.onabort = function(){ clearTimeout(dstT); btn.disabled = false; };" in blk
+      and "if (byId('btn_apply').disabled || !validForm()) return;" in pw)
 check("the zone and DST switch are still written as before",
-      "document.form.time_zone.value = timeZoneObj.time_zone;" in blk and
-      "document.form.time_zone_dst.value = (timeZoneObj.hasDst) ? 1 : 0;" in blk)
+      "f.time_zone.value = timeZoneObj.time_zone;" in blk and
+      "f.time_zone_dst.value = timeZoneObj.hasDst ? 1 : 0;" in blk)
 check("the hidden time_zone_dstoff field exists once and starts disabled",
       pw.count('name="time_zone_dstoff"') == 1 and '<input type="hidden" name="time_zone_dstoff" value="" disabled>' in pw)
 check("the field sits in the form that is submitted (after time_zone_dst)",
@@ -75,7 +79,13 @@ tzdb = json.loads(rd("tzdb"))
 check("tz_db.json loads as a zone -> rule map", isinstance(tzdb, dict) and len(tzdb) > 50, len(tzdb) if isinstance(tzdb, dict) else type(tzdb))
 check("US Eastern (EST5DST) carries the US rule", tzdb.get("EST5DST") == "M3.2.0/2,M11.1.0/2", tzdb.get("EST5DST"))
 
-mod = nocomment(rd("tzmod"))
+# the page carries its own copy of the two offset tables; the module stays for the set-up wizard: they must not drift apart
+# a zone name starts with a letter (the bare pattern also caught two "1" : "0" style ternaries in the page script)
+pairs = lambda s: sorted(set(re.findall(r'"(-?\d+(?:\.\d+)?)"\s*:\s*"([A-Za-z][A-Za-z0-9_.+-]*)"', s)))
+check("the password page's time zone tables are the module's (same offsets, same zones)",
+      len(pairs(nocomment(rd("pw")))) > 40 and pairs(nocomment(rd("pw"))) == pairs(nocomment(rd("tzmod"))),
+      [p for p in pairs(nocomment(rd("tzmod"))) if p not in pairs(nocomment(rd("pw")))][:6])
+mod = nocomment(rd("pw"))
 zones = set(re.findall(r'"-?\d+(?:\.\d+)?"\s*:\s*"([A-Za-z0-9_.+-]+)"', mod))
 dst_zones = sorted(z for z in zones if "DST" in z or "TDT" in z)
 check("timeZone.js offers DST zones to first boot", len(dst_zones) > 5, dst_zones)

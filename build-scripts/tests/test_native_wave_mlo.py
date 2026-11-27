@@ -85,8 +85,8 @@ check("backhaul: apg<N>_ssid + apg<N>_hide_ssid, restart_wireless;restart_sdn <i
 check("backhaul: SSID 1-32 bytes, no control characters", "bytes > 32" in t and "unescape(encodeURIComponent(s)).length" in t and "/[\\x00-\\x1f\\x7f]/" in t)
 check("backhaul: the password is masked until Show (stock printed it in clear)",
       'id="v_pwd">&bull;' in t and "v.textContent = v.dataset.pwd" in t)
-check("Add a Network: one-shot flag, then the SDN page",
-      "sessionStorage.setItem('reaper_sdn_wizard', 'MLO')" in t and "top.location.href = '/reaper_shell.asp#SDN.asp';" in t)
+check("Add a Network: one-shot flag, then the Network page (the kit page since cutover stage 3; lean test_cutover_stage3.py holds its side)",
+      "sessionStorage.setItem('reaper_sdn_wizard', 'MLO')" in t and "top.location.href = '/reaper_shell.asp#Reaper_Network.asp';" in t)
 
 sdn = rd("www", "sysdep", "FUNCTION", "SDN", "SDN.asp")
 check("SDN.asp: reads and clears the flag, opens only the MLO wizard, on the app frame's load",

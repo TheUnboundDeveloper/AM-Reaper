@@ -222,7 +222,7 @@ else:
 # point of this pin is still "no latency on the WAN chart", so any number of download/upload traces passes
 _wl = re.search(r"new LiveChart\('wanchart',\[\],\[([^\]]*)\]\)", page)
 check("the WAN chart is throughput only again (download/upload traces only, no latency, no right axis)",
-      _wl is not None and set(re.findall(r"'([^']*)'", _wl.group(1))) == {"var(--jade)", "var(--crimson)"}
+      _wl is not None and set(re.findall(r"'([^']*)'", _wl.group(1))) == {"var(--cb-data,var(--jade))", "var(--cb-alert,var(--crimson))"}
       and "wanC.raxis(" not in page
       and "lineChart('wanchart', series, maxv, fmtBps);" in page and "v/lmax*maxv" not in page)
 check("the latency & loss chart: its own card under WAN throughput, latency left (ms), loss right (%)",

@@ -58,6 +58,11 @@ BANNER_REF_FILES = {
     # stays a list; rule (4) below now says so in words when a new banner page
     # turns up here unlisted.
     "release/src/router/www/Reaper_WiFiSetup.asp",
+    # Added 2026-11-27 (v3.8.5): native-UI cutover stage 4b made the block, error and node-message pages
+    # self-contained, each with the sign-in banner.
+    "release/src/router/www/blocking.asp",
+    "release/src/router/www/error_page.htm",
+    "release/src/router/www/message.htm",
 }
 
 # Text files that legitimately carry a model CAPABILITY difference rather than a

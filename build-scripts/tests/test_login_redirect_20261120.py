@@ -106,12 +106,14 @@ int main(int argc, char **argv) { int i; for (i = 2; i < argc; i++) { char *v = 
 #include "reaper_dut_redir.h"
 #define DUT_DOMAIN_NAME "www.asusrouter.com"
 #define OLD_DUT_DOMAIN_NAME "router.asus.com"
-static const char *NVH = "";
+static const char *NVH = "", *NVR = "";
 static char *nvram_safe_get(const char *k) {
   if (!strcmp(k, "lan_ipaddr")) return "192.168.50.1"; if (!strcmp(k, "lan_hostname")) return "RT-BE96U";
+  if (!strcmp(k, "http_dut_redir")) return (char *)NVR;
   if (!strcmp(k, "lan_domain")) return "lan"; if (!strcmp(k, "reaper_dut_redir_host")) return (char *)NVH; return ""; }
 ''' + m.group(0) + r'''
-int main(int argc, char **argv) { int i; NVH = argv[1]; for (i = 2; i < argc; i++) printf("%d", reaper_host_is_self(argv[i])); printf("\n"); return 0; }
+/* argv[1] = the typed name, argv[2] = the redirect switch (http_dut_redir), then the names to ask about */
+int main(int argc, char **argv) { int i; NVH = argv[1]; NVR = argv[2]; for (i = 3; i < argc; i++) printf("%d", reaper_host_is_self(argv[i])); printf("\n"); return 0; }
 ''')
             exe = os.path.join(w, "s")
             r = subprocess.run([CC, "-Wall", "-I", os.path.join(SRC, "shared"), "-o", exe, c], capture_output=True, text=True)
@@ -119,11 +121,15 @@ int main(int argc, char **argv) { int i; NVH = argv[1]; for (i = 2; i < argc; i+
             if r.returncode == 0:
                 q = ["router.example.com", "ROUTER.example.COM", "router.example.com.evil.example", "evil.example", "192.168.50.1",
                      "www.asusrouter.com", "rt-be96u.lan", "router.example.co", ""]
-                a = subprocess.run([exe, "router.example.com"] + q, capture_output=True, text=True).stdout.strip()
+                a = subprocess.run([exe, "router.example.com", "1"] + q, capture_output=True, text=True).stdout.strip()
                 check("httpd: the typed name (any case) is this router; a longer or other name is not; the stock names still are",
                       a == "110011100", a)
-                b = subprocess.run([exe, "bad name\r\n"] + ["bad name\r\n", "evil.example"], capture_output=True, text=True).stdout.strip()
-                e = subprocess.run([exe, ""] + ["", "evil.example", "192.168.50.1"], capture_output=True, text=True).stdout.strip()
+                # review 2026-11-24 (REAPER-DUT-REDIR-SELF): the typed name counts only while the redirect is on
+                off = [subprocess.run([exe, "router.example.com", sw] + q, capture_output=True, text=True).stdout.strip() for sw in ("0", "", "2")]
+                check("httpd: with the redirect off the typed name is not this router; the stock names still are",
+                      off == ["000011100"] * 3, off)
+                b = subprocess.run([exe, "bad name\r\n", "1"] + ["bad name\r\n", "evil.example"], capture_output=True, text=True).stdout.strip()
+                e = subprocess.run([exe, "", "1"] + ["", "evil.example", "192.168.50.1"], capture_output=True, text=True).stdout.strip()
                 check("httpd: a stored name that fails the rules (set by hand) is never this router; an empty one adds nothing", b == "00" and e == "001", (b, e))
         finally:
             shutil.rmtree(w, ignore_errors=True)

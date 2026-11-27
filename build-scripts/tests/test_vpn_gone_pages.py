@@ -39,13 +39,14 @@ missing = [r[1] for r in rows if not _ships(r[1].split("?")[0])]
 check("every target page exists in www (the fragment before any ?tab=)", not missing, missing)
 check("targets carry no characters that could break the stub", all(re.fullmatch(r"[A-Za-z0-9_.?=&]+", r[1]) for r in rows))
 check("reaper_gone_target() compares the basename case-insensitively",
-      "base = strrchr(file, '/');" in inj and "!reaper_pagemap[i].shipped && strcasecmp(base, reaper_pagemap[i].name) == 0" in inj)
+      "base = strrchr(file, '/');" in inj and "(shipped_too || !reaper_pagemap[i].shipped) && strcasecmp(base, reaper_pagemap[i].name) == 0" in inj)
 out = inj[inj.find("void reaper_output("):]
 check("stub runs only for a missing .asp file (review 2026-10-24 Q-B-6: no access() for other fetches), before the inject decision, and keeps the query",
-      0 < out.find('if (ext && !strcasecmp(ext, ".asp") && access(file, R_OK) != 0) {') < out.find("mode = reaper_should_inject(handler, file);")
-      and 'top.location.replace(\\"/reaper_shell.asp#%s\\"+(q?\\"%s\\"+q:\\"\\"));' in out   # 2026-10-24: & after a ?tab= target
-      and "strchr(to, '?') ? \"&\" : \"?\"" in out
-      and '<noscript><meta http-equiv=\\"refresh\\"' in out and "#include <unistd.h>" in inj)
+      0 < out.find('if (ext && !strcasecmp(ext, ".asp")) {') < out.find("if (access(file, R_OK) != 0)") < out.find("reaper_put_stub(conn_fp, to);")
+      < out.find("mode = reaper_should_inject(handler, file);")
+      and 'top.location.replace(\\"/reaper_shell.asp#%s\\"+(q?\\"%s\\"+q:\\"\\"));' in inj   # 2026-10-24: & after a ?tab= target
+      and "strchr(to, '?') ? \"&\" : \"?\"" in inj
+      and '<noscript><meta http-equiv=\\"refresh\\"' in inj and "#include <unistd.h>" in inj)     # the stub: reaper_put_stub()
 # review 2026-10-24 (Q-B-2): handle_request() answered "file not found" before reaper_output() could run the stub
 hc = open(os.path.join(SRC, "httpd", "httpd.c"), encoding="utf-8", errors="replace").read()
 # 40585 base (merge stop 63): the gate matches on upstream's query-stripped file_path; the stub still gets `file`

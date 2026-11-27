@@ -61,19 +61,19 @@ if m:
                                   "ajax_captive_portal.asp", "ajax_captive_portal_log.asp", "jscolor"]), names(inner))
 check("www: the Guest Portal that IS offered keeps its templates (nothing under SDN/ is named in the block)",
       "www/SDN" not in blk)
-# the reason: the menu can show these pages only without the Network page
-rows = {n: l for n in ("Captive_Portal.asp", "Captive_Portal_Advanced.asp") for l in menu.split("\n") if "T('%s'" % n in l}
-check("menu: each editor's row still needs a model WITHOUT the Network page (the reason the files can go)",
-      len(rows) == 2 and all("!sup('mtlancfg')" in l for l in rows.values()), rows)
-check("menu: the guest tab is the Network page where it exists, the old page only elsewhere",
-      "T(sup('mtlancfg') ? 'SDN.asp' : 'Guest_network.asp'" in menu)
+# 2026-11-25 (native-UI cutover stage 1): the menu rows are gone as well - they needed a build WITHOUT the Network page,
+# and rc adds mtlancfg on every MULTILAN_CFG build (lean test_cutover_stage1.py holds the proof)
+check("menu: the two editors' rows are gone (no supported build could show them)",
+      "Captive_Portal.asp" not in menu and "Captive_Portal_Advanced.asp" not in menu)
+check("menu: the guest tab is the Network page",
+      "T('Reaper_Network.asp', sup('sdn_mwl')" in menu and "Guest_network.asp" not in menu)
 g = re.search(r"#ifdef RTCONFIG_MULTILAN_CFG\n(?:(?!#endif).)*?REAPER-GONE-CP.*?\n#endif\n#endif\n", inj, re.S)
 check("httpd: the old addresses bounce to the Network page, under the same build conditions",
-      g is not None and '{ "captive_portal.asp", "SDN.asp", 0 },' in g.group(0)
-      and '{ "guest_network.asp", "SDN.asp", 0 },' in g.group(0)
+      g is not None and '{ "captive_portal.asp", "Reaper_Network.asp", 0 },' in g.group(0)
+      and '{ "guest_network.asp", "Reaper_Network.asp", 0 },' in g.group(0)
       # v3.8.4 (REAPER-GONE-V384): the Advanced preview and the two portal data pages follow the editor's row
-      and re.search(r'#ifndef RTCONFIG_CP_ADVANCED\n\t\{ "captive_portal_advanced\.asp", "SDN\.asp", 0 \},\n'
-                    r'(?:\t\{ "[a-z_]+\.asp", "SDN\.asp", 0 \},[^\n]*\n)*#endif', g.group(0)) is not None)
+      and re.search(r'#ifndef RTCONFIG_CP_ADVANCED\n\t\{ "captive_portal_advanced\.asp", "Reaper_Network\.asp", 0 \},\n'
+                    r'(?:\t\{ "[a-z_]+\.asp", "Reaper_Network\.asp", 0 \},[^\n]*\n)*#endif', g.group(0)) is not None)
 
 # ---------------------------------------------------------------- three pages that only bounced
 k = mk.find("\n", mk.find("jquery-ui.css stay", j)) if j > 0 else -1
@@ -191,7 +191,7 @@ if i > 0:
 check("www: the phone-as-modem help (photos + fragment) is not shipped; nothing else is named in that block",
       sorted(pam) == ["images/phone_as_modem", "phone_as_modem_instructions.html"], pam)
 check("the reason the help can go: every request for the stock Network Map is sent to the dashboard",
-      "index.asp" in inj and "Main_ReaperDash.asp" in inj and 'rp.toLowerCase()===' in inj)
+      '{ "index.asp", "Main_ReaperDash.asp", 0 }' in inj)     # REAPER-CUT8: index.asp no longer ships; its address -> dashboard
 
 print()
 if fails:

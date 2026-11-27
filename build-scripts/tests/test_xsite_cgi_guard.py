@@ -70,9 +70,12 @@ check("cgi.c's unescape() found (the exemption must decode as init_cgi does)", u
 unescape_src = cg[ua:ub + 3] if ua >= 0 and ub > ua else "void unescape(char *s, size_t len) { (void)s; (void)len; }\n"
 check("the exemption decides on the decoded query, never the raw text (review S-B-2)",
       "unescape(q, sizeof(q));" in helpers and 'reaper_query_has(file, "re_mac")' in helpers and 'strstr(file, "re_mac")' not in helpers)
-check("the guard skips the ASUS app (fromapp)", "if (!fromapp && reaper_xsite_cgi_refused(" in hr)
+# review 2026-11-24 (REAPER-NOAPP): a User-Agent that names the ASUS app is no longer skipped, and the stock Referer
+# check is never told "this is the app"
+check("the guard runs for every User-Agent (the ASUS app is not skipped)",
+      "if (reaper_xsite_cgi_refused(" in hr and "fromapp && reaper_xsite_cgi_refused(" not in hr)
 auth = hr.find("auth_result = auth_check(url, file, cookies, fromapp, &add_try);")
-ref = hr.find("referer_result = referer_check(referer, fromapp);")
+ref = hr.find("referer_result = referer_check(referer, 0);")
 check("the guard runs in the authenticated branch, before the stock referer_check() and auth_check()",
       0 <= g < ref < auth and hr.rfind("if (handler->auth) {", 0, g) >= 0)
 blk = hr[g:hr.find("return;", g) + 7]
@@ -110,9 +113,10 @@ harness = r'''
 #define DUT_DOMAIN_NAME "www.asusrouter.com"
 #define OLD_DUT_DOMAIN_NAME "router.asus.com"
 static char referer_url[128], host_name[64];
-static const char *nv_ip = "192.168.50.1", *nv_hn = "RT-BE96U-1234", *nv_dom = "lan", *nv_dut = "";
+static const char *nv_ip = "192.168.50.1", *nv_hn = "RT-BE96U-1234", *nv_dom = "lan", *nv_dut = "", *nv_redir = "";
 static const char *nvram_safe_get(const char *k)
 {
+	if (!strcmp(k, "http_dut_redir")) return nv_redir;	/* review 2026-11-24: the typed name counts only while the redirect is on */
 	if (!strcmp(k, "lan_ipaddr")) return nv_ip;
 	if (!strcmp(k, "lan_hostname")) return nv_hn;
 	if (!strcmp(k, "lan_domain")) return nv_dom;
@@ -173,11 +177,14 @@ int main(void)
 	/* 2026-11-20 (item 9): the name typed for the login redirect is this router too; a bad stored one never is */
 	CX("http_typed_ref_unset",         "netool.cgi", "netool.cgi", "get", "", L, "http://router.example.net/x.asp\r\n", MOZ, 0);
 	nv_dut = "router.example.net";
+	CX("http_typed_ref_switch_off",    "netool.cgi", "netool.cgi", "get", "", L, "http://Router.Example.NET/x.asp\r\n", MOZ, 0);
+	nv_redir = "1";
 	CX("http_typed_ref",               "netool.cgi", "netool.cgi", "get", "", L, "http://Router.Example.NET/x.asp\r\n", MOZ, 0);
 	CX("http_typed_ref_other",         "netool.cgi", "netool.cgi", "get", "", L, "http://router.example.net.evil.example/x.asp\r\n", MOZ, 0);
 	nv_dut = "evil.example/x";
 	CX("http_typed_ref_bad",           "netool.cgi", "netool.cgi", "get", "", L, "http://evil.example/x.asp\r\n", MOZ, 0);
 	nv_dut = "";
+	nv_redir = "";
 	CX("http_browser_sfs_same_origin", "netool.cgi", "netool.cgi", "get", "same-origin", L, "", MOZ, 0);
 	CX("http_no_ua_no_headers",        "netool.cgi", "netool.cgi", "get", "", L, "", NULL, 0);
 	CX("http_script_no_headers",       "netool.cgi", "netool.cgi", "get", "", L, "", "python-requests/2.32", 0);
@@ -269,7 +276,7 @@ EXPECT = {
     # review 2026-10-24 S-B-1: plain HTTP, a browser with neither header is cross-site; scripts as before
     # review 2026-11-03 A-1: and on HTTPS too (a browser without Fetch Metadata whose Referer a page suppressed)
     "http_browser_no_headers": 1, "http_browser_no_headers_post": 1, "https_browser_no_headers": 1,
-    "http_browser_same_ref": 0, "http_browser_self_ref": 0, "http_typed_ref_unset": 1, "http_typed_ref": 0, "http_typed_ref_other": 1, "http_typed_ref_bad": 1, "http_browser_sfs_same_origin": 0,
+    "http_browser_same_ref": 0, "http_browser_self_ref": 0, "http_typed_ref_unset": 1, "http_typed_ref_switch_off": 1, "http_typed_ref": 0, "http_typed_ref_other": 1, "http_typed_ref_bad": 1, "http_browser_sfs_same_origin": 0,
     "http_no_ua_no_headers": 0, "http_script_no_headers": 0, "http_browser_page_not_cgi": 0,
     # review 2026-11-17 (P6-2-1): rows with an output function of their own, whatever the name; pages stay out
     "ownout_cert_xsite": 1, "ownout_http_nav": 1, "ownout_same_click": 0, "ownout_http_click": 0, "ownout_typed": 0,

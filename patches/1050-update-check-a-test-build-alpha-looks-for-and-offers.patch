@@ -1,0 +1,347 @@
+From 6accb76e8effa236ac0e263afc0bb9a6de97e7e5 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Sat, 14 Nov 2026 12:29:36 -0500
+Subject: [PATCH] update check: a test build (alpha) looks for and offers no
+ update
+
+A build stamped _ALPHA is a test build of the unified tree, published from
+the lean branch Dev-Uni and installed by hand. It must never be offered
+another image: the stable line is older, and a Dev beta would take the
+router off the tree it is testing.
+
+- reaper_webs_update.sh ends before the manifest is fetched when EXTENDNO
+  carries _ALPHA, and reports webs_state_channel=alpha. The scheduled check
+  and an AiMesh-triggered one end there too.
+- Firmware page: says why in place of "up to date" (RFWU_62, 25 packs), an
+  ALPHA badge beside the installed version, and the node comparison knows
+  an alpha build from a beta of the same number.
+
+No effect on a stable or beta build.
+
+Co-Authored-By: Claude Fable 5.2 <noreply@anthropic.com>
+---
+ .../router/rom/webs_scripts/reaper_webs_update.sh  | 14 ++++++++++++++
+ release/src/router/www/BR.dict                     |  1 +
+ release/src/router/www/CN.dict                     |  1 +
+ release/src/router/www/CZ.dict                     |  1 +
+ release/src/router/www/DA.dict                     |  1 +
+ release/src/router/www/DE.dict                     |  1 +
+ release/src/router/www/EN.dict                     |  1 +
+ release/src/router/www/ES.dict                     |  1 +
+ release/src/router/www/FI.dict                     |  1 +
+ release/src/router/www/FR.dict                     |  1 +
+ release/src/router/www/HU.dict                     |  1 +
+ release/src/router/www/IT.dict                     |  1 +
+ release/src/router/www/JP.dict                     |  1 +
+ release/src/router/www/KR.dict                     |  1 +
+ release/src/router/www/MS.dict                     |  1 +
+ release/src/router/www/NL.dict                     |  1 +
+ release/src/router/www/NO.dict                     |  1 +
+ release/src/router/www/PL.dict                     |  1 +
+ release/src/router/www/RO.dict                     |  1 +
+ release/src/router/www/RU.dict                     |  1 +
+ release/src/router/www/Reaper_Firmware.asp         | 11 +++++++++--
+ release/src/router/www/SL.dict                     |  1 +
+ release/src/router/www/SV.dict                     |  1 +
+ release/src/router/www/TH.dict                     |  1 +
+ release/src/router/www/TR.dict                     |  1 +
+ release/src/router/www/TW.dict                     |  1 +
+ release/src/router/www/UK.dict                     |  1 +
+ 27 files changed, 48 insertions(+), 2 deletions(-)
+
+diff --git a/release/src/router/rom/webs_scripts/reaper_webs_update.sh b/release/src/router/rom/webs_scripts/reaper_webs_update.sh
+index 51cb70543e..6d3aa7ccf4 100644
+--- a/release/src/router/rom/webs_scripts/reaper_webs_update.sh
++++ b/release/src/router/rom/webs_scripts/reaper_webs_update.sh
+@@ -68,6 +68,20 @@ esac
+ 
+ echo "---- model=$model variant=$variant running=$cur_ver ----" >> "$LOG"
+ 
++# 2026-11-14 (owner): a TEST build - EXTENDNO carries _ALPHA, the unified-tree builds published from the Dev-Uni
++# branch - is installed by hand and is never offered another image: not the stable line, and not a Dev beta, which
++# would take the box off the tree it is testing. Nothing is fetched. The Firmware page says why
++# (webs_state_channel=alpha); the scheduled check and an AiMesh-triggered one end here too.
++case "$(nvram get extendno)" in
++*_ALPHA*)
++	echo "---- test build (alpha): no update is looked for or offered ----" >> "$LOG"
++	logger -t reaper-fw "update check: this is a test build (alpha) - updates are installed by hand, nothing is offered"
++	nvram set webs_state_channel=alpha
++	nvram set webs_state_flag=0
++	nvram set webs_state_update=1
++	exit 0 ;;
++esac
++
+ /usr/sbin/wget $wget_options "$MANIFEST_URL" -O "$TMP"
+ if [ "$?" != "0" ] || [ ! -s "$TMP" ]; then
+ 	echo "---- manifest fetch failed ----" >> "$LOG"
+diff --git a/release/src/router/www/BR.dict b/release/src/router/www/BR.dict
+index 8e9bd61ae5..3e0d9142f9 100644
+--- a/release/src/router/www/BR.dict
++++ b/release/src/router/www/BR.dict
+@@ -9362,3 +9362,4 @@ RADM_83=Visão de cores
+ RADM_84=Modo para daltônicos
+ RADM_85=Substitui o vermelho, o verde, o azul-petróleo e o âmbar da interface por cores que continuam distintas para quem tem daltonismo. Só as cores mudam; vale para todos os dispositivos conectados a este roteador.
+ RADM_86=Cores padrão
++RFWU_62=Esta é uma versão de teste (alfa). Ela não procura nem oferece atualizações. Instale a próxima versão de teste manualmente a partir da página Releases do projeto.
+diff --git a/release/src/router/www/CN.dict b/release/src/router/www/CN.dict
+index 07868a74e5..7e78432cc9 100644
+--- a/release/src/router/www/CN.dict
++++ b/release/src/router/www/CN.dict
+@@ -9362,3 +9362,4 @@ RADM_83=色觉
+ RADM_84=色盲模式
+ RADM_85=将界面中的红色、绿色、青色和琥珀色替换为色盲人士也能区分的颜色。只改变颜色；适用于登录此路由器的所有设备。
+ RADM_86=标准颜色
++RFWU_62=这是测试版本（alpha）。它不会检查或提供更新。请从项目的 Releases 页面手动安装下一个测试版本。
+diff --git a/release/src/router/www/CZ.dict b/release/src/router/www/CZ.dict
+index 152c271a64..741ee3dd36 100644
+--- a/release/src/router/www/CZ.dict
++++ b/release/src/router/www/CZ.dict
+@@ -9362,3 +9362,4 @@ RADM_83=Barevné vidění
+ RADM_84=Režim pro barvoslepé
+ RADM_85=Nahradí v rozhraní červenou, zelenou, modrozelenou a jantarovou barvami, které zůstávají rozlišitelné i při barvosleposti. Mění se jen barvy; platí na všech zařízeních přihlášených k tomuto routeru.
+ RADM_86=Standardní barvy
++RFWU_62=Toto je testovací sestavení (alfa). Nehledá ani nenabízí aktualizace. Další testovací sestavení nainstalujte ručně ze stránky Releases projektu.
+diff --git a/release/src/router/www/DA.dict b/release/src/router/www/DA.dict
+index 7371c67518..15ac4dc020 100644
+--- a/release/src/router/www/DA.dict
++++ b/release/src/router/www/DA.dict
+@@ -9362,3 +9362,4 @@ RADM_83=Farvesyn
+ RADM_84=Farveblindtilstand
+ RADM_85=Erstatter rød, grøn, blågrøn og rav i brugerfladen med farver, der forbliver tydelige ved farveblindhed. Kun farverne ændres; det gælder på alle enheder, der er logget ind på denne router.
+ RADM_86=Standardfarver
++RFWU_62=Dette er en testversion (alfa). Den søger ikke efter og tilbyder ikke opdateringer. Installer den næste testversion manuelt fra projektets Releases-side.
+diff --git a/release/src/router/www/DE.dict b/release/src/router/www/DE.dict
+index 18c1db03b3..8d158ee51d 100644
+--- a/release/src/router/www/DE.dict
++++ b/release/src/router/www/DE.dict
+@@ -9362,3 +9362,4 @@ RADM_83=Farbsehen
+ RADM_84=Modus für Farbenblinde
+ RADM_85=Ersetzt Rot, Grün, Türkis und Bernstein in der Oberfläche durch Farben, die auch bei Farbenblindheit unterscheidbar bleiben. Nur die Farben ändern sich; gilt auf jedem Gerät, das an diesem Router angemeldet ist.
+ RADM_86=Standardfarben
++RFWU_62=Dies ist ein Test-Build (Alpha). Er sucht nicht nach Updates und bietet keine an. Installieren Sie den nächsten Test-Build von Hand von der Releases-Seite des Projekts.
+diff --git a/release/src/router/www/EN.dict b/release/src/router/www/EN.dict
+index d09fd3d04c..868682c984 100644
+--- a/release/src/router/www/EN.dict
++++ b/release/src/router/www/EN.dict
+@@ -9362,3 +9362,4 @@ RADM_83=Colour vision
+ RADM_84=Colour-blind mode
+ RADM_85=Replaces red, green, teal and amber across the interface with colours that stay distinct for colour-blind vision. Only colours change; it applies on every device signed in to this router.
+ RADM_86=Standard colours
++RFWU_62=This is a test build (alpha). It does not look for or offer updates. Install the next test build by hand from the Releases page of the project.
+diff --git a/release/src/router/www/ES.dict b/release/src/router/www/ES.dict
+index b6fa5a135d..ba1e6e46b8 100644
+--- a/release/src/router/www/ES.dict
++++ b/release/src/router/www/ES.dict
+@@ -9362,3 +9362,4 @@ RADM_83=Visión del color
+ RADM_84=Modo para daltónicos
+ RADM_85=Sustituye el rojo, el verde, el verde azulado y el ámbar de la interfaz por colores que siguen siendo distinguibles con daltonismo. Solo cambian los colores; se aplica en todos los dispositivos conectados a este router.
+ RADM_86=Colores estándar
++RFWU_62=Esta es una compilación de prueba (alfa). No busca ni ofrece actualizaciones. Instale la siguiente compilación de prueba a mano desde la página Releases del proyecto.
+diff --git a/release/src/router/www/FI.dict b/release/src/router/www/FI.dict
+index 634add4a12..8df32b2fe2 100644
+--- a/release/src/router/www/FI.dict
++++ b/release/src/router/www/FI.dict
+@@ -9362,3 +9362,4 @@ RADM_83=Värinäkö
+ RADM_84=Värisokeustila
+ RADM_85=Korvaa käyttöliittymän punaisen, vihreän, sinivihreän ja meripihkan väreillä, jotka erottuvat myös värisokealle. Vain värit muuttuvat; koskee kaikkia tähän reitittimeen kirjautuneita laitteita.
+ RADM_86=Vakiovärit
++RFWU_62=Tämä on testiversio (alfa). Se ei etsi eikä tarjoa päivityksiä. Asenna seuraava testiversio käsin projektin Releases-sivulta.
+diff --git a/release/src/router/www/FR.dict b/release/src/router/www/FR.dict
+index 96247e0339..2aead7ccfd 100644
+--- a/release/src/router/www/FR.dict
++++ b/release/src/router/www/FR.dict
+@@ -9362,3 +9362,4 @@ RADM_83=Vision des couleurs
+ RADM_84=Mode daltonien
+ RADM_85=Remplace le rouge, le vert, le bleu-vert et le jaune ambré par des couleurs qui restent distinctes pour les personnes daltoniennes. Seules les couleurs changent ; valable sur tous les appareils connectés à ce routeur.
+ RADM_86=Couleurs standard
++RFWU_62=Ceci est une version de test (alpha). Elle ne recherche ni ne propose de mises à jour. Installez la prochaine version de test à la main depuis la page Releases du projet.
+diff --git a/release/src/router/www/HU.dict b/release/src/router/www/HU.dict
+index 17fac0a50c..ff273ba284 100644
+--- a/release/src/router/www/HU.dict
++++ b/release/src/router/www/HU.dict
+@@ -9362,3 +9362,4 @@ RADM_83=Színlátás
+ RADM_84=Színvak mód
+ RADM_85=A felület piros, zöld, kékeszöld és borostyán színeit olyan színekre cseréli, amelyek színtévesztéssel is megkülönböztethetők. Csak a színek változnak; minden, ehhez a routerhez bejelentkezett eszközön érvényes.
+ RADM_86=Normál színek
++RFWU_62=Ez egy tesztverzió (alfa). Nem keres és nem kínál frissítéseket. A következő tesztverziót kézzel telepítse a projekt Releases oldaláról.
+diff --git a/release/src/router/www/IT.dict b/release/src/router/www/IT.dict
+index 19c846fa35..494be96324 100644
+--- a/release/src/router/www/IT.dict
++++ b/release/src/router/www/IT.dict
+@@ -9362,3 +9362,4 @@ RADM_83=Visione dei colori
+ RADM_84=Modalità daltonici
+ RADM_85=Sostituisce rosso, verde, verde acqua e ambra con colori che restano distinguibili per chi è daltonico. Cambiano solo i colori; vale su tutti i dispositivi connessi a questo router.
+ RADM_86=Colori standard
++RFWU_62=Questa è una versione di prova (alfa). Non cerca e non propone aggiornamenti. Installare a mano la prossima versione di prova dalla pagina Releases del progetto.
+diff --git a/release/src/router/www/JP.dict b/release/src/router/www/JP.dict
+index ee4443ac50..6b16378194 100644
+--- a/release/src/router/www/JP.dict
++++ b/release/src/router/www/JP.dict
+@@ -9362,3 +9362,4 @@ RADM_83=色覚
+ RADM_84=色覚サポートモード
+ RADM_85=画面の赤・緑・青緑・琥珀色を、色覚の違いがあっても見分けやすい色に置き換えます。変わるのは色だけで、このルーターにサインインしているすべての端末に適用されます。
+ RADM_86=標準の色
++RFWU_62=これはテストビルド（アルファ）です。更新の確認や提供は行いません。次のテストビルドは、プロジェクトの Releases ページから手動でインストールしてください。
+diff --git a/release/src/router/www/KR.dict b/release/src/router/www/KR.dict
+index c2c4329a56..dbb5edaceb 100644
+--- a/release/src/router/www/KR.dict
++++ b/release/src/router/www/KR.dict
+@@ -9362,3 +9362,4 @@ RADM_83=색각
+ RADM_84=색맹 모드
+ RADM_85=화면의 빨강, 초록, 청록, 호박색을 색각 이상이 있어도 구별되는 색으로 바꿉니다. 색만 바뀌며 이 라우터에 로그인한 모든 기기에 적용됩니다.
+ RADM_86=기본 색상
++RFWU_62=이것은 테스트 빌드(알파)입니다. 업데이트를 확인하거나 제공하지 않습니다. 다음 테스트 빌드는 프로젝트의 Releases 페이지에서 수동으로 설치하십시오.
+diff --git a/release/src/router/www/MS.dict b/release/src/router/www/MS.dict
+index 58c26abf4a..7b2a64dc45 100644
+--- a/release/src/router/www/MS.dict
++++ b/release/src/router/www/MS.dict
+@@ -9362,3 +9362,4 @@ RADM_83=Penglihatan warna
+ RADM_84=Mod buta warna
+ RADM_85=Menggantikan merah, hijau, biru kehijauan dan ambar pada antara muka dengan warna yang kekal jelas bagi penglihatan buta warna. Hanya warna yang berubah; terpakai pada semua peranti yang log masuk ke penghala ini.
+ RADM_86=Warna standard
++RFWU_62=Ini ialah binaan ujian (alfa). Ia tidak mencari atau menawarkan kemas kini. Pasang binaan ujian seterusnya secara manual dari halaman Releases projek.
+diff --git a/release/src/router/www/NL.dict b/release/src/router/www/NL.dict
+index 60b830d49c..255f027033 100644
+--- a/release/src/router/www/NL.dict
++++ b/release/src/router/www/NL.dict
+@@ -9362,3 +9362,4 @@ RADM_83=Kleurenzien
+ RADM_84=Kleurenblindmodus
+ RADM_85=Vervangt rood, groen, blauwgroen en amber in de interface door kleuren die ook bij kleurenblindheid te onderscheiden blijven. Alleen de kleuren veranderen; geldt op elk apparaat dat bij deze router is aangemeld.
+ RADM_86=Standaardkleuren
++RFWU_62=Dit is een testbuild (alfa). Deze zoekt niet naar updates en biedt er geen aan. Installeer de volgende testbuild handmatig vanaf de Releases-pagina van het project.
+diff --git a/release/src/router/www/NO.dict b/release/src/router/www/NO.dict
+index b53c556897..a772e87af6 100644
+--- a/release/src/router/www/NO.dict
++++ b/release/src/router/www/NO.dict
+@@ -9362,3 +9362,4 @@ RADM_83=Fargesyn
+ RADM_84=Fargeblindmodus
+ RADM_85=Erstatter rødt, grønt, blågrønt og rav i grensesnittet med farger som forblir tydelige ved fargeblindhet. Bare fargene endres; gjelder på alle enheter som er logget på denne ruteren.
+ RADM_86=Standardfarger
++RFWU_62=Dette er en testversjon (alfa). Den søker ikke etter og tilbyr ikke oppdateringer. Installer neste testversjon manuelt fra prosjektets Releases-side.
+diff --git a/release/src/router/www/PL.dict b/release/src/router/www/PL.dict
+index d3f1e23e17..5b257433d7 100644
+--- a/release/src/router/www/PL.dict
++++ b/release/src/router/www/PL.dict
+@@ -9362,3 +9362,4 @@ RADM_83=Widzenie barw
+ RADM_84=Tryb dla daltonistów
+ RADM_85=Zastępuje czerwień, zieleń, morski i bursztyn w interfejsie kolorami, które pozostają rozróżnialne przy daltonizmie. Zmieniają się tylko kolory; dotyczy każdego urządzenia zalogowanego do tego routera.
+ RADM_86=Kolory standardowe
++RFWU_62=To jest wersja testowa (alfa). Nie wyszukuje ani nie proponuje aktualizacji. Następną wersję testową zainstaluj ręcznie ze strony Releases projektu.
+diff --git a/release/src/router/www/RO.dict b/release/src/router/www/RO.dict
+index d0ba5b9984..5ddd746b80 100644
+--- a/release/src/router/www/RO.dict
++++ b/release/src/router/www/RO.dict
+@@ -9362,3 +9362,4 @@ RADM_83=Vederea culorilor
+ RADM_84=Mod pentru daltoniști
+ RADM_85=Înlocuiește roșul, verdele, turcoazul și chihlimbarul din interfață cu culori care rămân distincte pentru persoanele cu daltonism. Se schimbă doar culorile; se aplică pe toate dispozitivele conectate la acest router.
+ RADM_86=Culori standard
++RFWU_62=Aceasta este o versiune de test (alfa). Nu caută și nu oferă actualizări. Instalați manual următoarea versiune de test din pagina Releases a proiectului.
+diff --git a/release/src/router/www/RU.dict b/release/src/router/www/RU.dict
+index 02a02f64a6..c2fe4e6f34 100644
+--- a/release/src/router/www/RU.dict
++++ b/release/src/router/www/RU.dict
+@@ -9362,3 +9362,4 @@ RADM_83=Цветовое зрение
+ RADM_84=Режим для дальтоников
+ RADM_85=Заменяет красный, зелёный, бирюзовый и янтарный цвета интерфейса цветами, которые остаются различимыми при дальтонизме. Меняются только цвета; действует на всех устройствах, вошедших в этот роутер.
+ RADM_86=Стандартные цвета
++RFWU_62=Это тестовая сборка (альфа). Она не ищет и не предлагает обновления. Следующую тестовую сборку установите вручную со страницы Releases проекта.
+diff --git a/release/src/router/www/Reaper_Firmware.asp b/release/src/router/www/Reaper_Firmware.asp
+index 7ae60fec67..850f3309a1 100644
+--- a/release/src/router/www/Reaper_Firmware.asp
++++ b/release/src/router/www/Reaper_Firmware.asp
+@@ -211,6 +211,9 @@ var BETA_EN = <% nvram_get_js("reaper_fwbeta"); %>;
+ /* the noMCP build stamps "_noMCP" into EXTENDNO (same signal the backend
+    scripts read from the filesystem) - no extra probe needed */
+ var IS_MCP = EXTENDNO.indexOf('_noMCP') < 0;
++/* 2026-11-14: a test build (_ALPHA, published from the Dev-Uni branch) never looks for or offers another image -
++   reaper_webs_update.sh ends before it fetches anything and reports webs_state_channel=alpha */
++var IS_ALPHA = /_ALPHA(_|$)/.test(EXTENDNO);
+ var busy = 0;
+ 
+ /* ---- mesh nodes -------------------------------------------------------- *
+@@ -338,7 +341,7 @@ function prettyVer(s){
+ function verKey(s){
+   var m = String(s||'').match(/Reaper_v([0-9][0-9a-z.\-]*)/);
+   if(!m) return '';
+-  return m[1] + (/_BETA(_|$)/.test(String(s)) ? '-beta' : '');
++  return m[1] + (/_BETA(_|$)/.test(String(s)) ? '-beta' : (/_ALPHA(_|$)/.test(String(s)) ? '-alpha' : ''));
+ }
+ 
+ /* ONE-SHOT completion guard. A failed XMLHttpRequest fires readystatechange
+@@ -433,7 +436,7 @@ function checkDone(r){
+     return;
+   }
+   if(FW.flag === '1'){ showAvail(); }
+-  else setStat('chkStat', esc(`<#RFWU_5#>`), 'ok');
++  else setStat('chkStat', esc((IS_ALPHA || FW.chan === 'alpha') ? `<#RFWU_62#>` : `<#RFWU_5#>`), 'ok');
+ }
+ 
+ /* v2.7.3: explicit override for a signature-refused manifest. Deliberately
+@@ -867,6 +870,10 @@ function boot(){
+   showLastRefusal();
+   $id('rvVariant').innerHTML = IS_MCP ? `<#Reaper_c_ai_advisor#> <span class="badge">MCP</span>` : `<#RFWU_48#> <span class="badge">noMCP</span>`;
+   $id('rvVer').textContent = prettyVer(EXTENDNO);
++  if(IS_ALPHA){
++    $id('rvVer').innerHTML = esc(prettyVer(EXTENDNO)) + ' <span class="badge">ALPHA</span>';
++    setStat('chkStat', esc(`<#RFWU_62#>`), 'ok');
++  }
+   $id('rvBase').textContent = FIRMVER + '.' + BUILDNO;
+   loadNodes();
+   $id('schedChk').checked = (CHK_EN === '1');
+diff --git a/release/src/router/www/SL.dict b/release/src/router/www/SL.dict
+index 47dd3af88f..268704f3d7 100644
+--- a/release/src/router/www/SL.dict
++++ b/release/src/router/www/SL.dict
+@@ -9362,3 +9362,4 @@ RADM_83=Barvni vid
+ RADM_84=Način za barvno slepe
+ RADM_85=Rdečo, zeleno, modrozeleno in jantarno v vmesniku zamenja z barvami, ki ostanejo razločne tudi pri barvni slepoti. Spremenijo se le barve; velja na vseh napravah, prijavljenih v ta usmerjevalnik.
+ RADM_86=Standardne barve
++RFWU_62=To je preizkusna različica (alfa). Ne išče in ne ponuja posodobitev. Naslednjo preizkusno različico namestite ročno s strani Releases projekta.
+diff --git a/release/src/router/www/SV.dict b/release/src/router/www/SV.dict
+index 99c199b7ab..974ff5ee3e 100644
+--- a/release/src/router/www/SV.dict
++++ b/release/src/router/www/SV.dict
+@@ -9362,3 +9362,4 @@ RADM_83=Färgseende
+ RADM_84=Färgblindhetsläge
+ RADM_85=Ersätter rött, grönt, blågrönt och bärnsten i gränssnittet med färger som går att skilja åt vid färgblindhet. Bara färgerna ändras; gäller på alla enheter som är inloggade på den här routern.
+ RADM_86=Standardfärger
++RFWU_62=Detta är en testversion (alfa). Den söker inte efter och erbjuder inte uppdateringar. Installera nästa testversion för hand från projektets Releases-sida.
+diff --git a/release/src/router/www/TH.dict b/release/src/router/www/TH.dict
+index 624bbf5161..2cd199cea9 100644
+--- a/release/src/router/www/TH.dict
++++ b/release/src/router/www/TH.dict
+@@ -9362,3 +9362,4 @@ RADM_83=การมองเห็นสี
+ RADM_84=โหมดตาบอดสี
+ RADM_85=แทนที่สีแดง เขียว เขียวอมฟ้า และเหลืองอำพันในหน้าจอด้วยสีที่ยังแยกแยะได้สำหรับผู้ที่ตาบอดสี เปลี่ยนเฉพาะสีเท่านั้น และมีผลกับทุกอุปกรณ์ที่ลงชื่อเข้าใช้เราเตอร์นี้
+ RADM_86=สีมาตรฐาน
++RFWU_62=นี่คือรุ่นทดสอบ (อัลฟา) ซึ่งจะไม่ตรวจหาหรือเสนอการอัปเดต โปรดติดตั้งรุ่นทดสอบถัดไปด้วยตนเองจากหน้า Releases ของโครงการ
+diff --git a/release/src/router/www/TR.dict b/release/src/router/www/TR.dict
+index 60b29f54af..9b688e2adf 100644
+--- a/release/src/router/www/TR.dict
++++ b/release/src/router/www/TR.dict
+@@ -9362,3 +9362,4 @@ RADM_83=Renk görme
+ RADM_84=Renk körlüğü modu
+ RADM_85=Arayüzdeki kırmızı, yeşil, turkuaz ve kehribar renklerini renk körlüğünde de ayırt edilebilen renklerle değiştirir. Yalnızca renkler değişir; bu yönlendiricide oturum açmış tüm cihazlarda geçerlidir.
+ RADM_86=Standart renkler
++RFWU_62=Bu bir test sürümüdür (alfa). Güncelleme aramaz ve sunmaz. Sonraki test sürümünü projenin Releases sayfasından elle yükleyin.
+diff --git a/release/src/router/www/TW.dict b/release/src/router/www/TW.dict
+index 082e6f2f90..3cd4993992 100644
+--- a/release/src/router/www/TW.dict
++++ b/release/src/router/www/TW.dict
+@@ -9362,3 +9362,4 @@ RADM_83=色覺
+ RADM_84=色盲模式
+ RADM_85=將介面中的紅色、綠色、青色與琥珀色換成色盲者也能分辨的顏色。只改變顏色；適用於登入此路由器的所有裝置。
+ RADM_86=標準色彩
++RFWU_62=這是測試版本（alpha）。它不會檢查或提供更新。請從專案的 Releases 頁面手動安裝下一個測試版本。
+diff --git a/release/src/router/www/UK.dict b/release/src/router/www/UK.dict
+index 832f054cce..cfa22c0819 100644
+--- a/release/src/router/www/UK.dict
++++ b/release/src/router/www/UK.dict
+@@ -9362,3 +9362,4 @@ RADM_83=Кольоровий зір
+ RADM_84=Режим для дальтоніків
+ RADM_85=Замінює червоний, зелений, бірюзовий і бурштиновий кольори інтерфейсу кольорами, які лишаються розрізненними при дальтонізмі. Змінюються лише кольори; діє на всіх пристроях, що увійшли до цього роутера.
+ RADM_86=Стандартні кольори
++RFWU_62=Це тестова збірка (альфа). Вона не шукає і не пропонує оновлення. Наступну тестову збірку встановіть вручну зі сторінки Releases проєкту.
+-- 
+2.25.1
+

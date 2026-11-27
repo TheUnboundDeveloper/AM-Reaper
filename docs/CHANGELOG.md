@@ -87,6 +87,10 @@ Everything in v3.8.4 is included. Both lines carry the same changes: RT-BE96U, R
   VPN server are answered inside the tunnel, as plain DNS.
 - **Smaller image:** `chilli_radconfig` (unused, 236 KB) and ten more stock pages nothing reached no longer ship.
 - **Guide:** section 9 says which stock files remain and why.
+- **Test line (alpha) only.** The same changes as above on the unify tree. **BQ16, BQ16 Pro and GT-BE19000 as AiMesh router:**
+  the AiMesh diagnostics service (conn_diag) no longer restarts about every 94 seconds. On this line these three models
+  paired a newer diagnostics component with their own older one, and the two disagreed on a record layout; each model
+  now keeps its own matching pair. Reports from BQ16, BQ16 Pro and GT-BE19000 owners are wanted.
 
 ## v3.8.4 — Policy Routing by ASN and by country; encrypted DNS falls back to plain DNS; Network page changes with one Wi-Fi restart; Security Review seal; unused web handlers removed
 
@@ -144,6 +148,9 @@ Everything in v3.8.3 is included. Both lines carry the same changes: RT-BE96U, R
   review seal are masked.
 - **Guide:** every menu covered again, including the Security Review, Operation Mode, the WAN verdict, the login lock
   and the log cap.
+- **Test line (alpha) only.** The same changes as above on the unify tree, where the GT-BE98, GT-BE19000, BQ16 and
+  BQ16 Pro build on ASUS's newer components. Nothing on this line changes beyond the list above; reports from
+  testers of these four models are welcome.
 
 ## v3.8.3 — Guest networks can reach chosen main-network devices; AP Isolation keeps wired devices reachable; guest VPN routing after a WAN reconnect
 
@@ -184,6 +191,10 @@ guest networks and about devices that could no longer reach each other on the ma
   reads 2.4 GHz.
 - **Phones**: a menu's tab bar keeps its size when a page is wider than the screen (Administration > System on an
   iPhone); long values on that page wrap.
+- **Test line (alpha) only.** The same changes as above on the unify tree. The AP Isolation change matters most for
+  the GT-BE98 here: from v3.8.1 its newer components kept wired devices apart while AP Isolation was on (a TV could
+  not find a NAS behind the 10G port); with **Wi-Fi only**, the default, they reach each other again. Reports from
+  GT-BE98 and BQ16 Pro owners are still wanted.
 
 ## v3.8.2 — Security review fixes (kernel, Guest Portal, USB, web server); faster firewall loads; QoS queue fix; a smaller image; ASUS's nvram line-break guard
 
@@ -247,6 +258,10 @@ v3.8.1 and from ASUS's releases of 2026-11-17.
 - **3006.102.8 line.** The web server takes the 3006.102.10 hardening it lacked (format strings, the certificate file
   name check, the iperf3 service list, bounds in four diagnostic handlers), the DHCP range is copied with bounds, and
   the Wi-Fi start scripts of all four models match the 3006.102.10 line.
+- **BQ16 Pro and GT-BE98, this test line only.** The BQ16 Pro's Wi-Fi driver, data-plane and router components and
+  its radio firmware are now those of its own newer ASUS GPL drop, 102_39442; the workarounds the older components
+  needed stay for the BQ16 only. The GT-BE98 takes 20 router components from ASUS GPL 102_39448, which carry ASUS's
+  line-break guard; its Wi-Fi driver set stays at 102_40585. Reports from BQ16 Pro and GT-BE98 owners are wanted.
 
 ## v3.8.1 — Device names reach every page; names keep their spaces; Wi-Fi restarts no longer stall the 5 and 6 GHz radios; guest network links, SNMP and VPN fixes
 
@@ -290,6 +305,11 @@ Everything in v3.8.0 is included. Both lines carry the same changes: RT-BE96U, R
 - **Auto refresh.** The Auto refresh switches on Firewall Status and Rule Status, and the box on the System Log, keep
   your choice per browser.
 - **Tweaks.** The connection limit help says that its default is the maximum.
+- **GT-BE98, this test line only.** The GT-BE98's Wi-Fi driver, data-plane and router components are now the ASUS
+  GPL 102_40585 set, the level this tree is built on (thanks to gnuton, whose Asuswrt-Merlin tree published them),
+  so the model no longer needs the compatibility layer for older components. Its boot loader is unchanged: flash
+  the normal image, not the loader one. Reports from GT-BE98 owners are wanted: WAN on the 10G and the 2.5G port,
+  AiMesh nodes, 6 GHz and MLO clients.
 
 ## v3.8.0 — VPN-routed guest networks reach the internet; the portal passcode on every subnet; DHCP leases kept across a restart; one rule for device names; Wallguard finds the culprit
 

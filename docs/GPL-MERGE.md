@@ -13,7 +13,7 @@ inlined into 165 pages, do that refactor first (see "Appendix B").
 - **Branch:** `be96u-only` for the 3006.102.10 line, `be96u-102.8` for the 3006.102.8 line (local only, **never pushed** upstream)
 - **Build clone (authoritative):** `/home/reaper/asuswrt-be96u` on WSL `Ubuntu-20.04`, user `reaper`; the 3006.102.8 line is its worktree `/home/reaper/wt-102.8`
 - **Upstream base of the current stack:** `ca72a61f8bc` (Asuswrt-Merlin 3006.102.10, ASUS GPL 102_40585; everything after it is reaper work; before v3.6.0 the base was `a7ebfa133a`, 3006.102.8-beta2)
-- **Models:** RT-BE96U (primary), RT-BE86U, RT-BE88U and GT-BE98 Pro on the 3006.102.10 line; GT-BE98, GT-BE19000, ZenWiFi BQ16 and BQ16 Pro on the 3006.102.8 line (all BCM4916, `release/src-rt-5.04behnd.4916`; targets `make rt-be96u` / `rt-be86u` / `rt-be88u` / `gt-be98_pro` / `gt-be98` / `gt-be19000` / `bq16` / `bq16_pro`)
+- **Models:** RT-BE96U (primary), RT-BE86U, RT-BE88U and GT-BE98 Pro with the 3006.102.10 tree's own closed objects; GT-BE98, GT-BE19000, ZenWiFi BQ16 and BQ16 Pro on the same tree with the model-specific closed objects of their older GPL drops (section 14; until then they built from a separate 3006.102.8 line) (all BCM4916, `release/src-rt-5.04behnd.4916`; targets `make rt-be96u` / `rt-be86u` / `rt-be88u` / `gt-be98_pro` / `gt-be98` / `gt-be19000` / `bq16` / `bq16_pro`)
 
 ---
 
@@ -312,7 +312,7 @@ router.
 - Sync the lean repo (`REAPER-FIXES.md`, `patches/` = `git format-patch` of the
   hardening commits, and this guide), then push **the lean repo only**.
 
-**Patch-series regeneration recipe (the series is now at 1048 <!--@patchcount--> patches, through v3.8.5 <!--@treever-->,
+**Patch-series regeneration recipe (the series is now at 1053 <!--@patchcount--> patches, through v3.8.5 <!--@treever-->,
 appended + full-replay verified — `git am --keep-cr` of the series onto a fresh
 worktree of the base returned `AM_EXIT=0` and reproduced `release/src/router` with the
 only differences being vendored `*.md` files the pathspec
@@ -476,6 +476,99 @@ Adopted as **v3.6.0** the same evening:
   from the sibling branches, which stay on the old base until their next port: GT-BE98 Pro lost
   three top-level `rc/prebuild/*.o` hunks (40585 stages `rc/prebuild/<MODEL>/` at build time),
   RT-BE88U's `target.mak` hunk was regenerated onto upstream's new block.
+
+## 14. One tree for every model: the four with older closed objects (2026-11-04)
+
+GT-BE98 and GT-BE19000 (ASUS GPL 102_39274) and BQ16 and BQ16 Pro (102_39256) left the
+3006.102.10 tree at v3.6.0 because the 40585 open source did not link against their closed
+objects. They are back on it, each keeping the closed objects that belong to the model and
+taking the ones every 3006.102.10 model shares. Nothing was applied wholesale; every piece was
+checked against the older objects.
+
+Which closed object follows which drop:
+
+- **Model-specific objects stay with the model's drop.** A per-package object
+  (`release/src/router/*/prebuil[dt]/<MODEL>/`) counts as shared when RT-BE96U, RT-BE86U,
+  RT-BE88U and GT-BE98 Pro carry one identical blob for it, otherwise as model-specific. Of 154
+  such objects, 117 are shared; board bring-up (`broadcom.o`, `private.o`, `ate*.o`), AiMesh
+  control (`cfg_server`, `cfg_client`, `amas_apg.o` ...), the httpd hooks and Wi-Fi event
+  daemons are model-specific.
+- **Shared objects take this tree's bytes**, listed in `overlays/common-blobs.list` and asserted
+  by `ci/container_build.sh` (phase `common-blobs`) after the platform archive is unpacked. One
+  exception per drop, found by the closure test below: the BQ16s keep their own
+  `libamas-utils.so` / `amas-utils-cli`, which export functions their closed AiMesh objects use
+  and the newer library does not. The GT-BE98 alpha keeps 19 objects of its own (see the
+  2026-11-18 note at the end of this section). GT-BE19000, BQ16 and BQ16 Pro keep their own
+  `conn_diag-sql.o` (the 2026-11-25 note).
+- **The Wi-Fi driver and dataplane set stays with the drop as a unit**: `hnd_extra/prebuilt/*.o`
+  (including the objects that happen to be shared), `wl.o`, `dhd.o`, the radio firmware,
+  `wlconf`, `eapd`, `bp3` and the bootloader objects. The shared, non-dataplane parts of
+  `router-sysdep.<model>` (the Wi-Fi start-up scripts, the nvram library pair, `urlfilterd`)
+  take this tree's copies.
+
+The compatibility layer (`RTCONFIG_REAPER_LEGACY_BLOBS`, declared in `config/config.in`, set by
+the four models' `target.mak` blocks, off for everyone else). The four blocks sit after the
+RT-BE92U block, clear of the RT-BE96U, GT-BE98 Pro, RT-BE88U and RT-BE86U blocks: the identity
+overlays of those models carry `target.mak` hunks that must still find canon's layout there.
+
+- `rc/reaper_legacy_blobs_shim.c` and `httpd/reaper_legacy_blobs_httpd.c`: weak definitions of
+  the functions the newer open source calls that only the newer model-specific objects carry
+  (the Wi-Fi generation reported to AiMesh nodes, the raw-WDS test of the guest-SDN WDS fix, the
+  LAN-only rule for `telnetd_enable`, an unused ASP status function, and three helpers that used
+  to live in a per-tree `reaper_chanlist_shim.c`). Weak, so a later drop that brings the real
+  function wins at link time.
+- `rc/usb.c`: a one-argument `find_dms_dbdir_candidate()` for objects compiled against the older
+  form of that function, bounded at the media-server path size.
+- `httpd/web.c`: `upload_config_sync.cgi` is not served on these models (CVE-2026-19386; the older
+  objects carry the unfixed handler).
+- BQ16 and BQ16 Pro keep their firmware's switch-init timing (`init_switch_pre()` after
+  `start_services()`), without the LAN port power-cycle this tree does at switch init (at that
+  late point it would drop LAN and wired-backhaul links), and their stock Broadcom licence set
+  (`targets/pakl/legacy-39256`).
+
+How it is proven, before any hardware:
+
+- `build-scripts/tests/test_blob_matrix.py`: every symbol a model's closed objects import that
+  only some closed object provides is defined inside the model's own set (or by the shim); the
+  networkmap binary opens the OUI file this tree installs; on a built tree, the staged rootfs is
+  dynamically closed (every undefined dynamic symbol is exported somewhere in it). A BQ16 rootfs
+  given the newer `libamas-utils.so` fails the last check with six unresolved symbols.
+- The overlay and platform archive of each model are generated from its branch and proven to
+  reproduce it exactly: canon + overlay + archive equals the model branch's tree.
+- `verify_markers.txt`: a marker for a feature a model's stock `target.mak` leaves out takes the
+  build flag it needs as a fifth field (`||RTCONFIG_CAPTIVE_PORTAL`) and is checked only where the
+  build `.config` sets it; BQ16 and BQ16 Pro have no captive portal, so no lighttpd and no Coova.
+- Local builds of all four linked with the switch on (2026-11-04, v3.7.1 source); RT-BE96U with
+  the switch off differs from the plain build only in stamps.
+- 2026-11-14: the branches were moved onto v3.7.7. The layer replayed unchanged apart from the
+  two items above (block position, LAN power-cycle); no closed object changed in canon in
+  between, and none of the functions added since is one the older objects lack.
+
+Removal: when ASUS publishes a GPL for one of the four at this tree's level, re-import its closed
+objects and drop `REAPER_LEGACY_BLOBS=y` from its block; the shim, the guards and its
+`common-blobs` exceptions go with it.
+
+2026-11-16: done for the GT-BE98. Its closed objects were re-imported at 102_40585 - the GT-BE98
+files published in the Asuswrt-Merlin gnuton tree
+(github.com/Asuswrt-Merlin/asuswrt-merlin.ng-gnuton,
+release 3006.102.9_1-gnuton1), 56 files, each
+checked against that tree's hash - and its `target.mak` block no longer sets the token. Its boot
+loader objects and build-host tools stay at 102_39274. GT-BE19000, BQ16 and BQ16 Pro are unchanged.
+Thanks to gnuton for publishing the set.
+
+2026-11-18 (alpha line only): the GT-BE98 takes 20 router objects from ASUS GPL 102_39448 for
+their `nvram_safe_get` newline guard; each has the same global interface as the 40585 copy it
+replaces. 19 of them are on `overlays/common-blobs.list`, so they carry a `-GT-BE98` exception
+there.
+
+2026-11-25 (alpha line only): GT-BE19000, BQ16 and BQ16 Pro keep their own
+`rc/prebuild/<MODEL>/conn_diag-sql.o` (each from the same ASUS drop as the model's `conn_diag.o`; the BQ16 Pro's
+from GPL 102_39442). The two objects share the station record of the AiMesh diagnostics, and this tree's pair
+has one more field in it. With this tree's `conn_diag-sql.o` beside an older `conn_diag.o`, conn_diag on an
+AiMesh router restarted about every 94 seconds; the link itself showed nothing. The three lines carry
+`-GT-BE19000 -BQ16 -BQ16_PRO`; the GT-BE98's 40585 objects are of this tree's generation and take the shared
+copy. Rule for the list: an object goes on it only when every closed object that needs its exports is of the
+same generation (`build-scripts/tests/test_common_blobs_pairs.py` pins this pair).
 
 
 ---

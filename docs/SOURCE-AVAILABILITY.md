@@ -62,7 +62,10 @@ clean-room build ([`../build-scripts/ci/container_build.sh`](../build-scripts/ci
   Pro, on the branches that build them (`Dev-102.8`, `Dev-Uni`). The model's platform tree (`router-sysdep.<model>` and the model's files
   under `release/src/router`), which the pinned base does not carry because these
   models come from different ASUS GPL releases. It holds GPL source and the vendor's
-  prebuilt components, as ASUS published them in that model's GPL release.
+  prebuilt components, as ASUS published them in that model's GPL release. The
+  GT-BE98's closed components are the ASUS GPL 102_40585 set as published in
+  the Asuswrt-Merlin gnuton tree (github.com/Asuswrt-Merlin/asuswrt-merlin.ng-gnuton,
+  release 3006.102.9_1-gnuton1); its boot loader objects are from 102_39274.
 - **`uboot-rtl8372-*.tar.gz`** — the models whose boot loader drives a Realtek
   RTL8372 switch (RT-BE86U, GT-BE98, GT-BE98 Pro, GT-BE19000). One prebuilt object,
   `RTL_OBJS.o`, linked into u-boot. ASUS distributes it as an object file in its

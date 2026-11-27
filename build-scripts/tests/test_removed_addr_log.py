@@ -8,6 +8,8 @@ httpd writes one system-log line when that happens, so the caller can be found b
 The owner's conditions: the answer stays the 404 any unknown name gets; the line carries the name and the client
 address, never the query string or the body; nobody on the LAN can flood the log (one line per name per boot);
 and it must not become a way to tell a signed-in client from a signed-out one.
+REAPER-UNUSED-CUT8 (stage 5 follow-up, owner 2026-11-27) appended two more at the end: update.cgi* and
+rog_first_qos.cgi* (55 names).
 
 WHAT IT DOES. Static: the table and the function are in httpd/httpd.c under the tag, with the delete-me note; the
 one call sits first in handle_request()'s no-handler branch (after the handler loop, where no login check ran), is
@@ -58,7 +60,9 @@ B2 = ["set_family_group.cgi", "block_device_internet.cgi", "internet_ctrl.cgi*",
 BC = ["set_iperf3_svr.cgi", "set_iperf3_cli.cgi", "get_iperf3_state.cgi", "splash_page.cgi*", "splash_page_del.cgi*",
       "create_sdn_profile.cgi*", "create_sdn_mwl.cgi*", "create_sdn_legacy.cgi*", "reset_sdn_rule.cgi*",
       "auto_guestnetwork.cgi", "wl_apply.cgi*", "set_wl_band.cgi*", "mld_enable.cgi*", "clean_ddns.cgi*"]
-WANT = OLD + [(p, p.rstrip("*")) for p in B1 + B2 + BC]
+# REAPER-UNUSED-CUT8 (stage 5 follow-up, owner 2026-11-27): appended after batch C
+CUT8 = ["update.cgi*", "rog_first_qos.cgi*"]
+WANT = OLD + [(p, p.rstrip("*")) for p in B1 + B2 + BC + CUT8]
 
 # ------------------------------------------------------------------------------------------------ static
 a = hc.find("/* REAPER-REMOVED-LOG (v3.8.4)")
@@ -76,15 +80,21 @@ check("the table is a const array of two-piece names ending in { NULL, NULL }",
 check("every name is split after its first four characters",
       bool(pairs) and all(len(h) == 4 and r for h, r in pairs), [x for x in pairs if len(x[0]) != 4][:3])
 lits = re.findall(r'"((?:\\.|[^"\\\n])*)"', re.sub(r"/\*.*?\*/", "", hc, flags=re.S))
-whole = sorted(set(t.rstrip("*") for t in table if any(t.rstrip("*") in l for l in lits)))
+# update.cgi is a tail of a longer removed name of the table itself (dns_block_list_insert_or_update.cgi), so the
+# substring test cannot hold for it; the image proves its removal by the handler's own text (verify_markers !arg%d)
+INSIDE = {"update.cgi"}
+whole = sorted(set(t.rstrip("*") for t in table if t.rstrip("*") not in INSIDE and any(t.rstrip("*") in l for l in lits)))
 check("httpd.c holds no removed address as one string literal (the image check 'usr/sbin/httpd|!name' stays provable)",
       bool(table) and not whole, whole)
+check("update.cgi is in no string literal of httpd.c except inside the longer removed name dns_block_list_insert_or_update.cgi",
+      not [l for l in lits if "update.cgi" in l and "dns_block_list_insert_or_" not in l])
 missing = [p for p, _ in WANT if p not in table]
-check("the table holds the 2 addresses of 2026-11-17, the 3 of 2026-11-20 and the 34 + 14 of v3.8.4 (53)", not missing and len(table) == len(set(table)) == 53,
+check("the table holds the 2 addresses of 2026-11-17, the 3 of 2026-11-20, the 34 + 14 of v3.8.4 and the 2 of REAPER-UNUSED-CUT8 (55)",
+      not missing and len(table) == len(set(table)) == 55,
       "missing %s, %d entries" % (missing, len(table)))
 check("hooks are not in the table (addresses only)", not [t for t in table if "." not in t])
-check("batch C sits at the END of the table (a name's position is its byte in the seen-file: the batch-B positions did not move)",
-      table[:39] == [p for p, _ in OLD] + B1 + B2 and table[39:] == BC, table[36:42])
+check("batch C and then REAPER-UNUSED-CUT8 sit at the END of the table (a name's position is its byte in the seen-file: older positions did not move)",
+      table[:39] == [p for p, _ in OLD] + B1 + B2 and table[39:53] == BC and table[53:] == CUT8, table[50:])
 
 mh = re.search(r"struct mime_handler mime_handlers\[\] =\s*\{(.*?)\n\};", web, re.S)
 def nocomment_c(text):
@@ -238,11 +248,11 @@ conc = [c for _, c in WANT]
 rc, o = run("all", *conc)
 lines = [l for l in o.split("\n") if l.startswith("LOG ")]
 named = set(re.findall(r"removed address (\S+) came", o))
-check("every one of the 53 addresses is recognised by a concrete request name; each line once though asked twice",
-      "N 53" in o and len(lines) == 53 and named == set(p for p, _ in WANT), "%d lines; missing %s" % (len(lines), sorted(set(p for p, _ in WANT) - named)))
+check("every one of the 55 addresses is recognised by a concrete request name; each line once though asked twice",
+      "N 55" in o and len(lines) == 55 and named == set(p for p, _ in WANT), "%d lines; missing %s" % (len(lines), sorted(set(p for p, _ in WANT) - named)))
 check("the line names the table's entry, never the requested text (backup_jffs_RT-BE96U.tar is logged as backup_jffs*.tar)",
       "backup_jffs*.tar" in o and "backup_jffs_RT-BE96U" not in o, o[:200])
-check("IPv6 client addresses are kept", o.count("came from fe80::1 ") == 53)
+check("IPv6 client addresses are kept", o.count("came from fe80::1 ") == 55)
 reboot()
 for nm in ("blocking.cgi?x=1", "sub/blocking.cgi", "blocking.cgix", "xblocking.cgi", "Blocking.cgi", "blocking.asp", "appGet.cgi", "", "set_family_group.cgi/../x"):
     rc, o = run("one", nm, "192.168.50.23")

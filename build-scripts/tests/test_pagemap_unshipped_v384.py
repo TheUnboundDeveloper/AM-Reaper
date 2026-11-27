@@ -39,8 +39,8 @@ WANT = {
     "gamedashboard.asp": "Main_ReaperDash.asp", "gearaccelerator.asp": "Main_ReaperDash.asp",
     "uuaccelerator.asp": "Main_ReaperDash.asp", "wifi_insight.asp": "Main_ReaperDash.asp",
     "adguard_dns.asp": "Reaper_DNS.asp", "ajax_wanlink.asp": "Reaper_Internet.asp",
-    "captive_portal_preview.asp": "SDN.asp", "captive_portal_advanced_preview.asp": "SDN.asp",
-    "ajax_captive_portal.asp": "SDN.asp", "ajax_captive_portal_log.asp": "SDN.asp",
+    "captive_portal_preview.asp": "Reaper_Network.asp", "captive_portal_advanced_preview.asp": "Reaper_Network.asp",
+    "ajax_captive_portal.asp": "Reaper_Network.asp", "ajax_captive_portal_log.asp": "Reaper_Network.asp",
 }
 CP = ("captive_portal_preview.asp", "captive_portal_advanced_preview.asp", "ajax_captive_portal.asp", "ajax_captive_portal_log.asp")
 

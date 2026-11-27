@@ -1,0 +1,177 @@
+From 08b6495acc8f3c8fbcf5256e4da3cde0a07ae95b Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Fri, 27 Nov 2026 11:52:35 -0500
+Subject: [PATCH] Audit fixes: two OPT records refused, mesh channel planner
+ node limit, chilli_radconfig not shipped
+
+- dnsmasq: a query whose additional section carries two or more OPT records is answered FORMERR (RFC 6891 6.1.1),
+  built in place with the question kept, on UDP and TCP, before the query is logged or its options are edited. A
+  packet that cannot be walked is left to dnsmasq as before. On TCP the refusal counts against the per-connection
+  query limit. (REAPER-TWO-OPT)
+- reaper_meshchan: the node table holds the router plus RTCONFIG_MAX_RE nodes (8 -> 17; a build fails if the option
+  ever exceeds it) and the two JSON buffers grow 24576 -> 65536. (REAPER-MC-MAXNODES / REAPER-MC-JSONBUF)
+- buildFS: coova-chilli's chilli_radconfig (236 KB) is no longer installed. Only coova's own init script runs it,
+  and that script is not installed; rc, httpd and the other chilli programs do not name it. (REAPER-UNUSED-B5)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ release/src-rt-5.04behnd.4916/targets/buildFS |  5 +++
+ release/src/router/dnsmasq/src/dnsmasq.h      |  1 +
+ release/src/router/dnsmasq/src/edns0.c        | 40 +++++++++++++++++++
+ release/src/router/dnsmasq/src/forward.c      | 31 ++++++++++++++
+ release/src/router/rc/reaper_meshchan.c       | 10 ++++-
+ 5 files changed, 85 insertions(+), 2 deletions(-)
+
+diff --git a/release/src-rt-5.04behnd.4916/targets/buildFS b/release/src-rt-5.04behnd.4916/targets/buildFS
+index a1982c1a2a..744511478b 100755
+--- a/release/src-rt-5.04behnd.4916/targets/buildFS
++++ b/release/src-rt-5.04behnd.4916/targets/buildFS
+@@ -916,3 +916,8 @@ for t in flash_otp_dump flash_otp_erase flash_otp_info flash_otp_lock flash_otp_
+ # boot through its sw alias (init-broadcom.c init_others)
+ rm -f $R_FS/sbin/test_disk1 $R_FS/usr/sbin/hub-ctrl $R_FS/usr/bin/uniconv $R_FS/bin/dry \
+ 	$R_FS/bin/ivictl $R_FS/usr/sbin/chilli_response
++# ---- Reaper (2026-11-24, owner: review-2026-11-03 F-11 group B5) REAPER-UNUSED-B5: coova-chilli's fetcher of a
++# configuration from the RADIUS server. Only coova's own init script (conf/functions, never installed) runs it,
++# when an administrative RADIUS user is set; rc writes the portal's configuration itself, and neither chilli,
++# rc nor httpd names the program.
++rm -f $R_FS/usr/sbin/chilli_radconfig
+diff --git a/release/src/router/dnsmasq/src/dnsmasq.h b/release/src/router/dnsmasq/src/dnsmasq.h
+index f557f42cb4..ff0a464917 100644
+--- a/release/src/router/dnsmasq/src/dnsmasq.h
++++ b/release/src/router/dnsmasq/src/dnsmasq.h
+@@ -2002,6 +2002,7 @@ int reaper_nx_exempt(union mysockaddr *client, time_t now);
+ int reaper_nx_merge_ok(union mysockaddr *a, union mysockaddr *b, time_t now);
+ int reaper_nx_pass(const char *name, union mysockaddr *client, time_t now);
+ union mysockaddr *reaper_client(union mysockaddr *addr);	/* reaper 2026-10-21, edns0.c */
++size_t reaper_two_opt_reply(struct dns_header *header, size_t plen);	/* REAPER-TWO-OPT, edns0.c */
+ /* reaper 2026-10-21: Wallguard (wallguard.c) */
+ size_t wallguard_answer(struct dns_header *header, char *limit, size_t qlen,	/* + int *ede (phase 2) */
+ 		     union mysockaddr *client, unsigned short qtype, time_t now, int *ede);
+diff --git a/release/src/router/dnsmasq/src/edns0.c b/release/src/router/dnsmasq/src/edns0.c
+index f1ddb6efbc..859194736a 100644
+--- a/release/src/router/dnsmasq/src/edns0.c
++++ b/release/src/router/dnsmasq/src/edns0.c
+@@ -666,3 +666,43 @@ size_t add_edns0_config(struct dns_header *header, size_t plen, size_t outlen,
+   return plen;
+ }
+ 
++
++/* reaper (review 2026-11-11, Appendix A) REAPER-TWO-OPT. RFC 6891 6.1.1: a query that carries more than
++   one OPT record gets FORMERR. find_pseudoheader() keeps the last OPT it meets, so the first one was
++   ignored without a word. Returns the length of the FORMERR reply, built in place with the question
++   kept, or 0 when the query has at most one OPT or cannot be walked to its end - a malformed packet is
++   left to the rest of dnsmasq, as before. */
++size_t reaper_two_opt_reply(struct dns_header *header, size_t plen)
++{
++  int i, opts = 0, arcount = ntohs(header->arcount);
++  unsigned char *ansp, *qend;
++  unsigned short type, rdlen;
++
++  if (arcount < 2 || !(qend = skip_questions(header, plen)) ||
++      !(ansp = skip_section(qend, ntohs(header->ancount) + ntohs(header->nscount), header, plen)))
++    return 0;
++
++  for (i = 0; i < arcount; i++)
++    {
++      if (!(ansp = skip_name(ansp, header, plen, 10)))
++	return 0;
++      GETSHORT(type, ansp);
++      ansp += 6; /* class, TTL */
++      GETSHORT(rdlen, ansp);
++      if (!ADD_RDLEN(header, ansp, plen, rdlen))
++	return 0;
++      if (type == T_OPT)
++	opts++;
++    }
++
++  if (opts < 2)
++    return 0;
++
++  header->hb3 = (header->hb3 & ~(HB3_AA | HB3_TC)) | HB3_QR;
++  header->hb4 = (header->hb4 & ~HB4_AD) | HB4_RA;
++  SET_RCODE(header, FORMERR);
++  header->ancount = htons(0);
++  header->nscount = htons(0);
++  header->arcount = htons(0);
++  return (size_t)(qend - (unsigned char *)header);
++}
+diff --git a/release/src/router/dnsmasq/src/forward.c b/release/src/router/dnsmasq/src/forward.c
+index 2bba7d449a..3f46492777 100644
+--- a/release/src/router/dnsmasq/src/forward.c
++++ b/release/src/router/dnsmasq/src/forward.c
+@@ -1906,6 +1906,20 @@ void receive_query(struct listener *listen, time_t now)
+     have_mark = get_incoming_mark(&source_addr, &dst_addr, /* istcp: */ 0, &mark);
+ #endif
+ 
++  /* reaper (review 2026-11-11, Appendix A) REAPER-TWO-OPT: more than one OPT record is a format error
++     (RFC 6891 6.1.1); answered here, before anything reads the options. */
++  if (OPCODE(header) == QUERY)
++    {
++      size_t two_opt = reaper_two_opt_reply(header, (size_t)n);
++
++      if (two_opt)
++	{
++	  send_from(listen->fd, option_bool(OPT_NOWILD) || option_bool(OPT_CLEVERBIND),
++		    (char *)header, two_opt, &source_addr, &dst_addr, if_index);
++	  return;
++	}
++    }
++
+   if (OPCODE(header) != QUERY)
+     log_query_mysockaddr((auth_dns ? F_NOERR : 0) | F_QUERY | F_FORWARD | F_CONFIG, NULL, &source_addr, NULL, OPCODE(header));
+   else if (extract_request(header, (size_t)n, daemon->namebuff, &type, NULL))
+@@ -2562,6 +2576,23 @@ void tcp_request(int confd, time_t now, struct iovec *bigbuff,
+ 
+ 	  if (size < (int)sizeof(struct dns_header) || (header->hb3 & HB3_QR))
+ 	    continue;
++
++	  /* reaper REAPER-TWO-OPT over TCP (see receive_query) */
++	  if (OPCODE(header) == QUERY)
++	    {
++	      size_t two_opt = reaper_two_opt_reply(header, (size_t)size);
++
++	      if (two_opt)
++		{
++		  u16 two_len = htons((u16)two_opt);
++
++		  query_count++;
++		  if (!read_write(confd, (unsigned char *)&two_len, sizeof(two_len), RW_WRITE) ||
++		      !read_write(confd, (unsigned char *)header, two_opt, RW_WRITE))
++		    break;
++		  continue;
++		}
++	    }
+ 	  
+ 	  /* Make sure we have a buffer big enough for the largest answer. */
+ 	  expand_buf(bigbuff, 65536 + MAXDNAME + RRFIXEDSZ);
+diff --git a/release/src/router/rc/reaper_meshchan.c b/release/src/router/rc/reaper_meshchan.c
+index 919f787dd0..d5300b3409 100644
+--- a/release/src/router/rc/reaper_meshchan.c
++++ b/release/src/router/rc/reaper_meshchan.c
+@@ -70,7 +70,12 @@
+ #endif
+ 
+ /* ---- MESHCHAN_PURE_BEGIN (libc only; the lean host test compiles this block) ---- */
+-#define MC_MAXNODES	8
++/* review 2026-11-11 (C-8) REAPER-MC-MAXNODES: every node AiMesh can pair (RTCONFIG_MAX_RE, 16) and the router
++ * itself. With 8, the channel limits of a ninth node were left out of the fit. */
++#define MC_MAXNODES	17
++#if defined(RTCONFIG_MAX_RE) && (RTCONFIG_MAX_RE + 1 > MC_MAXNODES)
++#error "MC_MAXNODES is smaller than the AiMesh node limit"
++#endif
+ #define MC_NCH		256
+ #define MC_NB		3
+ #define MC_MAXCOV	16
+@@ -915,7 +920,8 @@ static size_t mc_snap_load(char *have, size_t len)
+  */
+ static int mc_load(struct mc_nodes *nds, int held[MC_NB])
+ {
+-	static char buf[24576], have[24576], rec[MC_NOP_MAX], was[MC_NOP_MAX], fresh[512];
++	/* REAPER-MC-JSONBUF: 65536 - the nodes' lists of 17 entries (was 24576, sized for 8) */
++	static char buf[65536], have[65536], rec[MC_NOP_MAX], was[MC_NOP_MAX], fresh[512];
+ 	static struct mc_nodes prev;
+ 	FILE *f;
+ 	size_t n, m;
+-- 
+2.25.1
+

@@ -63,9 +63,11 @@ a = wc.find("apply_cgi(webs_t wp, char_t *urlPrefix")
 ae = wc.find("\nAPPLY_FINISH:", a)
 ac = wc[a:ae]
 g = ac.find('reaper_apply_needs_post("apply.cgi")')
-check("apply.cgi refuses a browser's action_mode=apply on a GET before validate_apply(), other modes untouched",
+# review 2026-11-24 (REAPER-NOAPP-POST): for every User-Agent - naming the ASUS app no longer lets a GET apply
+check("apply.cgi refuses action_mode=apply on a GET before validate_apply(), whatever the User-Agent, other modes untouched",
       0 <= g < ac.find("validate_apply(wp,root)")
-      and 'if (!strcmp(action_mode, "apply") && check_user_agent(user_agent) == FROM_BROWSER && reaper_apply_needs_post("apply.cgi"))' in ac
+      and 'if (!strcmp(action_mode, "apply") && reaper_apply_needs_post("apply.cgi"))' in ac
+      and "check_user_agent(user_agent) == FROM_BROWSER && reaper_apply_needs_post" not in ac
       and "goto APPLY_FINISH;" in ac[g:g + 200]
       and ac.find('"firmware_check"') > g)
 check("the two legitimate GETs of apply.cgi (firmware check / upgrade) are the only ones shipped, and neither is an apply",

@@ -123,7 +123,8 @@ fi
 # so a source sha-compare gives false positives. Check presence, non-trivial
 # size, and expected content markers (survive the transform) instead.
 # 2026-10-24 (page review): Advanced_VPNStatus.asp no longer ships (Reaper_VPNStatus.asp replaces it)
-critical="index.asp Main_ReaperDash.asp Reaper_VPNStatus.asp Reaper_Warden.asp"
+# 2026-11-26 (REAPER-CUT8, stage 5): index.asp no longer ships; the shell takes its place in the list
+critical="reaper_shell.asp Main_ReaperDash.asp Reaper_VPNStatus.asp Reaper_Warden.asp"
 missp=""; smallp=""
 for w in $critical; do
   f="$FS/www/$w"
@@ -388,6 +389,23 @@ if out=$(python3 /home/reaper/reaper_build/reaper_langcheck.py "$FS/www" 2>&1); 
 else
   echo "$out" | sed 's/^/    /'
   fail "i18n-quote" "dict token embedded in a breakable JS string context (see above)"
+fi
+
+# ---- 16b. dictionary tokens resolve (REAPER-CUT8-DICT, 2026-11-27) ----------
+# The www install drops from the staged packs the keys only removed stock pages named (router/tools/
+# reaper_dict_prune.py, list reaper_dict_prune.txt). This re-checks the finished image: the 25 packs are lockstep
+# and every <#token#> a shipped page, script or stylesheet names resolves to a non-empty string in every language pack - on the named
+# (102.10) and the renumbered, line-indexed (102.8) packs alike. A token that resolves to nothing prints nothing.
+_DSDIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+DICTCHK="$_DSDIR/reaper_dictcheck.py"
+[ -f "$DICTCHK" ] || DICTCHK=/home/reaper/reaper_build/reaper_dictcheck.py
+if [ ! -f "$DICTCHK" ]; then
+  warn "dict-tokens" "reaper_dictcheck.py not found - check skipped"
+elif out=$(python3 "$DICTCHK" "$FS/www" 2>&1); then
+  pass "dict-tokens" "$(echo "$out" | tail -1)"
+else
+  echo "$out" | sed 's/^/    /'
+  fail "dict-tokens" "a page names a dictionary key the staged packs do not carry, or the packs are not lockstep (see above)"
 fi
 
 # ---- 19. CSRF gate <-> caller coherence (reaper_csrfcheck.py) --------------

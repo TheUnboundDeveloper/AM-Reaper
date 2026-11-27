@@ -83,9 +83,10 @@ check("login page: only a name of httpd's shape replaces the stock one (labels, 
       and "(pr !== 'http' && pr !== 'https')" in blk and "if (!/^[1-9][0-9]{0,4}$/.test(pt) || +pt > 65535)" in blk
       and "ROUTERHOSTNAME = h;" in blk)
 check("login page: the chdom.json probe still decides (an address that does not answer never moves the browser)",
-      "loadScript(`${domainNameUrl}/chdom.json?hostname=${header_info.host}`)" in lp and lp.find("REAPER-DUT-REDIR") < lp.find("loadScript(`${domainNameUrl}/chdom.json"))
-check("httpd: the typed name counts as this router in the cross-site check (exact, any case, checked again)",
-      re.search(r'const char \*dh = nvram_safe_get\("reaper_dut_redir_host"\);\n\n\t\tif \(dh\[0\] && rdr_host_ok\(dh\) && !strcasecmp\(h, dh\)\)\n\t\t\treturn 1;', src) is not None)
+      "loadScript(domainNameUrl + '/chdom.json?hostname=' + header_info.host);" in lp and lp.find("REAPER-DUT-REDIR") < lp.find("loadScript(domainNameUrl + '/chdom.json"))
+# review 2026-11-24 (REAPER-DUT-REDIR-SELF): and only while the redirect is on
+check("httpd: the typed name counts as this router in the cross-site check (exact, any case, checked again) while the redirect is on",
+      re.search(r'const char \*dh = nvram_safe_get\("reaper_dut_redir_host"\);\n\n(\t\t/\*[^\n]*\*/\n)?\t\tif \(!strcmp\(nvram_safe_get\("http_dut_redir"\), "1"\) && dh\[0\] && rdr_host_ok\(dh\) && !strcasecmp\(h, dh\)\)\n\t\t\treturn 1;', src) is not None)
 
 if fails:
     print("\n".join("FAILED: " + f for f in fails)); sys.exit(1)

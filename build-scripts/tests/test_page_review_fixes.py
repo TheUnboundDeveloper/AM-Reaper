@@ -94,9 +94,8 @@ check("Reaper_Conn: filter input and header clicks wired; sort remembered per br
       and 'localStorage.setItem("reaper_conn_sort"' in CN)
 
 # ---- httpd bounce ----
-check("httpd bounce keeps the query with & when the target already has ?tab=",
-      'var q=location.search;if(q&&s&&s.indexOf(\\"?\\")>=0){q=\\"&\\"+q.slice(1);}' in INJ
-      and "strchr(to, '?') ? \"&\" : \"?\"" in INJ and 'top.location.replace(\\"/reaper_shell.asp#%s\\"+(q?\\"%s\\"+q:\\"\\"))' in INJ)
+check("httpd bounce (the gone-page stub; the stock-page SUP bounce left in stage 5) keeps the query with & when the target already has ?tab=",
+      "strchr(to, '?') ? \"&\" : \"?\"" in INJ and 'top.location.replace(\\"/reaper_shell.asp#%s\\"+(q?\\"%s\\"+q:\\"\\"))' in INJ)
 
 # ---- the validators under node, against the forms rc accepts ----
 node = shutil.which("node")

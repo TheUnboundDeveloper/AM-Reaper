@@ -64,8 +64,9 @@ PP_PROTECT_EXACT="release/src-rt/version.conf release/src-rt/target.mak"
 # residual", so the two had to move together. The fallback is the historical
 # six with a warning, never fewer: a broken derivation must fail loud at the
 # parity check, not quietly stop classifying pages as banner-normalized.
+# 2026-11-27 (v3.8.5): *.htm added - error_page.htm and message.htm carry the banner since cutover stage 4b.
 PP_BANNER_REFS=$(git -C "${R:-/home/reaper/asuswrt-be96u}" grep -l -- '_REAPER_Header' "${PP_CANON:-be96u-only}" -- \
-    'release/src/router/www/*.asp' 'release/src/router/www/*.js' 2>/dev/null \
+    'release/src/router/www/*.asp' 'release/src/router/www/*.htm' 'release/src/router/www/*.js' 2>/dev/null \
   | sed "s/^${PP_CANON:-be96u-only}://" | sort | tr '\n' ' ')
 if [ "$(echo $PP_BANNER_REFS | wc -w)" -lt 6 ]; then
   echo "_port_protect: WARNING - could not derive the banner-referencing pages from canon; using the historical six (a newer page will read as a shared residual)" >&2

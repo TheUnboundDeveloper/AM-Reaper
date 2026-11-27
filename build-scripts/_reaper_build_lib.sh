@@ -528,5 +528,9 @@ reaper_build() {
   else echo "== BUILD INCOMPLETE - inspect $LOG (grep MAKE_EXIT / MISMATCH / Error) =="; return 1; fi
 
   [ "$DO_SHIP" = "ship" ] && reaper_ship "$VER"
+  # 2026-11-25 (owner): images older than 14 days move off the WSL disk to the Windows side, and the drive holding
+  # the WSL disk file is checked (guest df cannot see it). A no-op on CI; it can never fail the build.
+  local _pi="$(dirname "${BASH_SOURCE[0]}")/reaper_prune_images.sh"
+  [ -f "$_pi" ] && { REAPER_TREE="$R" bash "$_pi" || true; }
   echo "############ $PREFIX $VER done $(date) ############"
 }

@@ -26,8 +26,8 @@ def check(name, cond, detail=""):
 rd = lambda *p: open(os.path.join(SRC, *p), encoding="utf-8", errors="replace").read()
 
 PAGES = {   # page -> (stock page it replaces, what it must carry)
-    "Reaper_USBApps.asp": ("APP_Installation.asp", ["Reaper_Samba.asp", "Reaper_FTP.asp", "Reaper_MediaServer.asp", "PrinterServer.asp",
-                                                   "Advanced_TimeMachine.asp", "sup('printer') && !sup('noprinter')", "sup('timemachine')"]),
+    "Reaper_USBApps.asp": ("APP_Installation.asp", ["Reaper_Samba.asp", "Reaper_FTP.asp", "Reaper_MediaServer.asp", "Reaper_Printer.asp",
+                                                   "Reaper_TimeMachine.asp", "sup('printer') && !sup('noprinter')", "sup('timemachine')"]),
     "Reaper_MediaServer.asp": ("mediaserver.asp", ["dms_dir_x", "dms_dir_type_x", "dms_dir_manual", "daapd_enable", "rc_service = 'restart_media'",
                                                   "MAXLEN = 128", "/ajax_dms_status.asp"]),
     "Reaper_Samba.asp": ("Advanced_AiDisk_samba.asp", ["computer_name", "st_samba_workgroup", "smbd_protocol", "smbd_simpler_naming", "smbd_master",

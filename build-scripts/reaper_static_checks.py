@@ -599,8 +599,9 @@ def check_pbr_fwmark_regex(router):
 #            only as "sae"/"psk2sae", enforces 8..63, turns Smart Connect on,
 #            sets x_Setting=1 before it commits (v3.3.1), commits,
 #            never restarts services itself, registered with do_auth
-#   inject : the banner CTA points at the page; the page is in reaper_skip[] and
-#            reaper_css_only[] (theme yes, bounce no) and NOT in reaper_banner_only[]
+#   inject : the banner CTA points at the page; the page is in reaper_skip[] (bounce no)
+#            and reaper_banner_only[] (banner yes); since REAPER-CUT8 (2026-11-26) it carries
+#            its own copy of the stock-skin rules it used, and reaper_css_only[] is gone
 #   dicts  : every pack carries the same RWFS_ set as EN; the page uses only those
 # ---------------------------------------------------------------------------
 def check_firstboot_wifi(router):
@@ -703,10 +704,16 @@ def check_firstboot_wifi(router):
         return '"Reaper_WiFiSetup.asp"' in inj[i:j]
     if not in_list("reaper_skip"):
         bad.append("Reaper_WiFiSetup.asp is not in reaper_skip[] (it would be bounced into the shell)")
-    if not in_list("reaper_css_only"):
-        bad.append("Reaper_WiFiSetup.asp is not in reaper_css_only[] (it would render as raw stock)")
-    if in_list("reaper_banner_only"):
-        bad.append("Reaper_WiFiSetup.asp is in reaper_banner_only[] (must not be)")
+    if not in_list("reaper_banner_only"):
+        bad.append("Reaper_WiFiSetup.asp is not in reaper_banner_only[] (no security banner on the first-boot box)")
+    if "static const char *reaper_css_only[]" in inj:
+        bad.append("reaper_css_only[] is back (the stock skin left in stage 5, REAPER-CUT8)")
+    try:
+        wfs = open(os.path.join(www, "Reaper_WiFiSetup.asp"), encoding="utf-8", errors="replace").read()
+    except OSError:
+        wfs = ""
+    if "REAPER-CUT8" not in wfs or ".button{background:linear-gradient(180deg,#1a1a1f,#101014)!important" not in wfs:
+        bad.append("Reaper_WiFiSetup.asp lacks its own copy of the skin rules (REAPER-CUT8 style block)")
 
     langs = "BR CN CZ DA DE EN ES FI FR HU IT JP KR MS NL NO PL RO RU SL SV TH TR TW UK".split()
     def rwfs(lang):
@@ -1155,6 +1162,7 @@ def check_warden_outbound_log(router):
 QIS_ALLOWED_FILES = {
     "aimesh/aimesh_topology.html",          # THE AiMesh add-node entry
     "Advanced_OperationMode_Content.asp",   # AiMesh node + Repeater only (sub-check 7 pins the flags)
+    "Reaper_OpMode.asp",                    # the kit chooser that replaces it (2026-11-25): the same flows, the same pin
     "Makefile",                             # the wizard's own install lines
     "reaper_qis.css",                       # the theme sheet's comment
     "state.js", "start_apply.htm", "start_apply2.htm", "detect.js", "help.js",
@@ -1197,7 +1205,9 @@ def check_qis_entries(router):
         if "QIS_wizard.htm" in s or "QIS_default.cgi" in s:
             bad.append("%s: still sends the browser into the wizard after a "
                        "LAN-subnet change" % rel)
-        if 'new_lan_ip)+"/";' not in s:
+        # 2026-11-26 (native-UI cutover stage 4): the Reaper error page has no detect_router() (the stock one was never called);
+        # the address-change page keeps the rule
+        if 'new_lan_ip)+"/";' not in s and not (rel == "www/error_page.htm" and "detect_router" not in s):
             bad.append("%s: detect_router() does not land on the new address's /"
                        % rel)
 
@@ -1277,6 +1287,19 @@ def check_qis_entries(router):
             if "/Reaper_ModeSetup.asp?mode=%s'" % m not in om:
                 bad.append("www/Advanced_OperationMode_Content.asp: no jump to "
                            "Reaper_ModeSetup.asp?mode=%s" % m)
+    # 2026-11-25 (native-UI cutover): the kit chooser, Reaper_OpMode.asp, is held to the same rule
+    ko = rd("www/Reaper_OpMode.asp", code=True)
+    if ko:
+        for fl in sorted(set(re.findall(r"QIS_wizard\.htm\?flag=([A-Za-z0-9_]+)", ko))):
+            if fl not in ("amasnode_page", "sitesurvey_rep", "sitesurvey_exp2", "sitesurvey_exp5"):
+                bad.append("www/Reaper_OpMode.asp: flag=%s goes to the stock wizard "
+                           "(Reaper_ModeSetup.asp owns AP / Media Bridge / Router)" % fl)
+        if "/Reaper_ModeSetup.asp?mode=" not in ko:
+            bad.append("www/Reaper_OpMode.asp: no jump to Reaper_ModeSetup.asp")
+    # 2026-11-26 (native-UI cutover, stage 4a): Add node runs in the kit AiMesh page itself
+    ka = rd("www/Reaper_AiMesh.asp", code=True)
+    if ka and "QIS_wizard" in ka:
+        bad.append("www/Reaper_AiMesh.asp: names the stock wizard again (Add node is the page's own dialog)")
     mlo = rd("www/sysdep/FUNCTION/SDN/SDN/mlo.js", code=True)
     if mlo and "QIS_wizard.htm" in mlo:
         bad.append("www/sysdep/FUNCTION/SDN/SDN/mlo.js: the MLO button goes to the stock wizard again")

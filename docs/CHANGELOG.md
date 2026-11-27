@@ -1,6 +1,6 @@
 # RT-BE Series "Reaper" — Changelog
 
-> **Doc status:** current as of **v3.8.4** · 2026-11-24 <!--@stamp-->
+> **Doc status:** current as of **v3.8.5** · 2026-11-27 <!--@stamp-->
 
 High-level history of the Reaper build. One entry per version, big changes only —
 the exhaustive security detail is in [`REAPER-FIXES.md`](REAPER-FIXES.md) and the
@@ -48,6 +48,45 @@ node, not only on the primary router.
 > design; compare `--exported` instead.
 
 ---
+
+## v3.8.5 — The stock web interface is gone; colour-blind mode; web login lock per device; 77 unused web handlers removed
+
+Everything in v3.8.4 is included. Both lines carry the same changes: RT-BE96U, RT-BE86U, RT-BE88U and GT-BE98 Pro on
+3006.102.10; GT-BE98, GT-BE19000, BQ16 and BQ16 Pro on 3006.102.8.
+
+- **Every page is a Reaper page.** The last stock pages are replaced: **Printer Server**, **Time Machine**, **Speed**,
+  **Operation Mode**, **AiMesh** (Add node is now a dialog of the AiMesh page) and **Network** (guest, IoT and VLAN
+  profiles, schedules, portal). The sign-in, password, error, block and status pages no longer load any stock script.
+  The stock skin and the switch that served the stock interface again are removed, the dashboard is the start page
+  for "/", and the old addresses of the replaced pages open the Reaper page that does the job. 391 stock files no
+  longer ship; the RT-BE96U image is about 1.5 MB smaller than v3.8.4. Kept on purpose: the setup wizard (Repeater,
+  Express Way and AiMesh node modes), the two stock pages an AiMesh node serves, the pages closed ASUS code names, and
+  the small scripts add-on pages load.
+- **AiMesh: Add node switches WPS back off.** When adding a node over Wi-Fi switches WPS on (as stock does), the
+  router switches it off again once the node has joined, or after 10 minutes if it never does.
+- **Colour-blind mode.** Administration > System > **Accessibility**: one switch swaps the interface's red, green,
+  teal and amber for a colour-blind-safe blue, cyan, light cyan, gold and orange, on every page, chart and dialog,
+  the sign-in and status pages included. Saved on the router, off by default.
+- **Web login lock per device.** After 20 failed logins on one side (LAN or WAN) within 5 minutes, that side takes no
+  new login for 5 minutes, but an admin who is already signed in keeps working and a device that signed in correctly
+  before (and has not failed since) can still sign in. An IPv6 device on the LAN is counted on its own address, no
+  longer together with every device on the same /64. The lock of one device after 5 failures is unchanged.
+- **Unused web handlers removed.** 77 request addresses, file rows and page hooks that no shipped page calls since the
+  stock pages left are gone from the web server, among them `update.cgi`, which ran any page hook named in the
+  request, and hooks that could switch the WAN, install USB apps or change share rights. A request for `update.cgi`
+  or `rog_first_qos.cgi` is logged once per boot.
+- **Requests from the phone app get no exemptions.** The ASUS Router app is not supported; a request that identifies
+  as the app now passes the same cross-site, Referer and page-token checks as a browser, and an apply by GET is
+  refused for every client.
+- **Language packs:** the strings only the removed pages used no longer ship (about 430 KB over the 25 languages);
+  the build checks that every label a shipped page shows has text in all 25 languages.
+- **Login redirect:** the address you type counts as the router's own name only while the redirect to your own
+  address is on.
+- **DNS:** a query that carries two OPT records is answered FORMERR (RFC 6891) instead of being forwarded.
+- **AiMesh channel fit** plans for up to 16 nodes (was 7). The Encrypted DNS page notes that devices on the router's
+  VPN server are answered inside the tunnel, as plain DNS.
+- **Smaller image:** `chilli_radconfig` (unused, 236 KB) and ten more stock pages nothing reached no longer ship.
+- **Guide:** section 9 says which stock files remain and why.
 
 ## v3.8.4 — Policy Routing by ASN and by country; encrypted DNS falls back to plain DNS; Network page changes with one Wi-Fi restart; Security Review seal; unused web handlers removed
 

@@ -1,8 +1,8 @@
 # Reaper — the owner's guide
 
-> **Doc status:** current as of **v3.8.4** · 2026-11-24 <!--@stamp-->
+> **Doc status:** current as of **v3.8.5** · 2026-11-27 <!--@stamp-->
 
-**Applies to:** Reaper firmware for the ASUS RT-BE96U (primary model) and the sibling RT-BE86U, RT-BE88U, GT-BE98, GT-BE98 Pro, GT-BE19000, ZenWiFi BQ16 and ZenWiFi BQ16 Pro, in two lines with the same Reaper version: `3006.102.10_Reaper_v<X>` (RT-BE96U, RT-BE86U, RT-BE88U, GT-BE98 Pro) and `3006.102.8_Reaper_v<X>` (GT-BE98, GT-BE19000, BQ16, BQ16 Pro; see 2.1). This guide describes the feature set as of the v3.8.4 <!--@treever--> source tree. The newest *published* release may be behind that; where a feature is newer than the image you are running, the page simply will not be there yet. See [`CHANGELOG.md`](CHANGELOG.md) for what each version added and [`BACKLOG.md`](BACKLOG.md) for what is still pending confirmation.
+**Applies to:** Reaper firmware for the ASUS RT-BE96U (primary model) and the sibling RT-BE86U, RT-BE88U, GT-BE98, GT-BE98 Pro, GT-BE19000, ZenWiFi BQ16 and ZenWiFi BQ16 Pro, in two lines with the same Reaper version: `3006.102.10_Reaper_v<X>` (RT-BE96U, RT-BE86U, RT-BE88U, GT-BE98 Pro) and `3006.102.8_Reaper_v<X>` (GT-BE98, GT-BE19000, BQ16, BQ16 Pro; see 2.1). This guide describes the feature set as of the v3.8.5 <!--@treever--> source tree. The newest *published* release may be behind that; where a feature is newer than the image you are running, the page simply will not be there yet. See [`CHANGELOG.md`](CHANGELOG.md) for what each version added and [`BACKLOG.md`](BACKLOG.md) for what is still pending confirmation.
 
 Reaper is based on **Asuswrt-Merlin by Eric "Merlin" Sauvageau**. Every line of Reaper is a patch on top of that work; the base firmware, most of its features, and most of what is good about the result are his. Reaper is an independent fork. Neither ASUS nor the Asuswrt-Merlin project has reviewed, approved or endorsed it, and neither should be contacted about it (see [Where to report issues](#214-where-to-report-issues)).
 
@@ -180,11 +180,12 @@ This guide is written for someone who will install and run the firmware: technic
      - 4.27.4 [System > Time and NTP](#4274-system--time-and-ntp)
      - 4.27.5 [System > Hardware](#4275-system--hardware)
      - 4.27.6 [System > Maintenance](#4276-system--maintenance)
-     - 4.27.7 [Backup & Restore](#4277-backup--restore)
-     - 4.27.8 [SNMP](#4278-snmp)
-     - 4.27.9 [Tweaks: the other settings](#4279-tweaks-the-other-settings)
-     - 4.27.10 [System Information](#42710-system-information)
-     - 4.27.11 [The security banner](#42711-the-security-banner)
+     - 4.27.7 [System > Accessibility](#4277-system--accessibility)
+     - 4.27.8 [Backup & Restore](#4278-backup--restore)
+     - 4.27.9 [SNMP](#4279-snmp)
+     - 4.27.10 [Tweaks: the other settings](#42710-tweaks-the-other-settings)
+     - 4.27.11 [System Information](#42711-system-information)
+     - 4.27.12 [The security banner](#42712-the-security-banner)
    - 4.28 [USB Application](#428-usb-application)
      - 4.28.1 [The USB Application page](#4281-the-usb-application-page)
      - 4.28.2 [Accounts and folder rights (Samba and FTP)](#4282-accounts-and-folder-rights-samba-and-ftp)
@@ -214,9 +215,12 @@ This guide is written for someone who will install and run the firmware: technic
    - 8.4 [What a factory reset actually restores](#84-what-a-factory-reset-actually-restores)
 9. [Present but inactive](#9-present-but-inactive)
    - 9.1 [The stock firmware-update page](#91-the-stock-firmware-update-page)
-   - 9.2 [The AiProtection pages](#92-the-aiprotection-pages)
-   - 9.3 [The setup wizard pages](#93-the-setup-wizard-pages)
-   - 9.4 [Why they were not simply deleted](#94-why-they-were-not-simply-deleted)
+   - 9.2 [AiProtection](#92-aiprotection)
+   - 9.3 [The setup wizard](#93-the-setup-wizard)
+   - 9.4 [Kept for an AiMesh node](#94-kept-for-an-aimesh-node)
+   - 9.5 [Kept because closed code names them](#95-kept-because-closed-code-names-them)
+   - 9.6 [Kept for add-ons](#96-kept-for-add-ons)
+   - 9.7 [Why these were kept](#97-why-these-were-kept)
 
 ---
 
@@ -240,7 +244,7 @@ Reaper is distributed as a patch series applied to the public Asuswrt-Merlin sou
 - **The USB application network installer** (v3.3.7): it installed plain-HTTP packages as root. The USB Application page, the mount chain and the disk check stay.
 - **Phone-home.** The ASUS AWS-IoT cloud connector and account binding, the AAE/AiHome cloud tunnel, AiCloud/WebDAV, the AiDisk cloud-share wizard, the stock privacy-policy check, the stock "Security Update" (Trend Micro signature) panel, and every browser-side callback to ASUS servers — device and app icons, the FAQ index, DNS-provider and ISP lists, the Open NAT game database, timezone tables and so on. The build now fails if an ASUS CDN reference reaches the shipped web root, so this cannot silently creep back. Nothing in the web interface contacts ASUS any more; the only outbound checks the firmware makes on its own are the opt-in firmware check, which goes to the Reaper GitHub release channel, and — with the LAN name resolution check switched on (4.14a, off at factory) — one DNS query a minute for a random name under the domain you set there, or the stock network-monitoring name, which that domain's DNS servers see.
 - **Adaptive QoS / Trend Micro DPI.** AiProtection, DPI-based Adaptive QoS and the web-history feature are gone with the engine that powered them. Reaper's own hardware QoS and Traffic Analyzer take their place.
-- **Alexa / Google Assistant** integration, the Download Master advert, the stock Network Map page (its device list and per-device detail now live on the dashboard and the Devices page), the Open NAT menu entry (it was port forwarding, which is still there), and the legacy SNMPv1/v2c protocols (SNMPv3 only; SHA with AES is the default and the choice to keep, MD5, DES and no privacy remain selectable for old managers, 4.27.8).
+- **Alexa / Google Assistant** integration, the Download Master advert, the stock Network Map page (its device list and per-device detail now live on the dashboard and the Devices page), the Open NAT menu entry (it was port forwarding, which is still there), and the legacy SNMPv1/v2c protocols (SNMPv3 only; SHA with AES is the default and the choice to keep, MD5, DES and no privacy remain selectable for old managers, 4.27.9).
 - **Instant Guard and the VPN Fusion app.** Both needed the ASUS account and phone app that the phone-home removal took out, so they could never pair. Their old addresses open the VPN Server and VPN Client pages, where every server and client type they offered is configured instead.
 - **Unused stock request addresses and page hooks (v3.8.4).** 51 request addresses and 36 page hooks that no
   shipped page and no part of the firmware calls are gone. Among them: the stock /jffs archive download and restore
@@ -255,6 +259,12 @@ Reaper is distributed as a patch series applied to the public Asuswrt-Merlin sou
   asked, so an add-on that still uses one can be found (System Log: `a request for the removed address ...`). The
   release notes list every name. strongSwan no longer loads its `vici` control plugin, which nothing in the
   firmware uses (the IPsec server works as before).
+- **Stock hooks and addresses the native interface left without a caller.** The stock pages the native interface
+  replaced were the last callers of 48 page hooks and 29 request rows; those are gone too, with the code only they
+  reached. Among them: the stock generic hook reader `update.cgi`, the hooks that connected or disconnected the WAN,
+  switched the USB shares and started USB application installs, the stock ROG first-QoS address
+  `rog_first_qos.cgi`, and the rows of the stock offline, manifest and network-map files. A request for
+  `update.cgi` or `rog_first_qos.cgi` also writes the system-log line described above.
 - **No packet-capture page is bundled.** If you want `tcpdump`, install it through Entware on a USB stick.
 
 ### 1.3 What it adds
@@ -1859,7 +1869,7 @@ The tab fills these steps with your certificate's name and the router's LAN addr
 
 ##### 4.3.4.5 How the server runs and what it respects
 
-- **Where it answers** (the card of that name): the main LAN address (IPv4 and IPv6), each guest/VLAN network's address, and, when the WAN address is public, the WAN address *for devices on this network that look the name up* (the certificate's name resolves to the WAN address; the connection still arrives through the LAN bridge). An address marked *could not listen here* is held by something else. It accepts a connection only from a LAN or guest/VLAN subnet, and port 853 is dropped on every other interface (WAN, VPN) while it runs.
+- **Where it answers** (the card of that name): the main LAN address (IPv4 and IPv6), each guest/VLAN network's address, and, when the WAN address is public, the WAN address *for devices on this network that look the name up* (the certificate's name resolves to the WAN address; the connection still arrives through the LAN bridge). An address marked *could not listen here* is held by something else. It accepts a connection only from a LAN or guest/VLAN subnet, and port 853 is dropped on every other interface (WAN, VPN) while it runs. A device connected through the router's VPN server is therefore not served: its lookups reach the router's DNS inside the tunnel, as plain DNS (the page says so under *How it works*).
 - **Each lookup** goes to the resolver of the device's **own** network over the router's loopback, tagged with the device's address in a private field the resolver reads (only from the router itself) and removes before anything leaves the router. Dreadwatch, Wallguard profiles, the cache, DNS-over-TLS upstream and each guest network's settings apply exactly as for plain DNS, and Dreadwatch and Wallguard record the device itself. Answers too large for UDP are fetched again over TCP.
 - **DNS Director**: a device it sends to another DNS server (per device, per guest network, or by the global mode) is refused before the TLS handshake. Android's *Automatic* setting then falls back to plain DNS, where DNS Director applies; a device on the hostname setting fails instead. Devices set to *Router* or *No redirection* are served.
 - **Gatekeeper**: a held or blocked device cannot use it and keeps plain DNS, where Gatekeeper's rules apply.
@@ -2893,7 +2903,7 @@ pinned on.
 
 ### 4.17 Administration → Tweaks: the Reaper setting
 
-The menu names this tab **Tweaks**, under **Administration**. There is no Tools menu. The page has four panels: **Warden** (below), **Connection tracking**, **Advanced tweaks** (including *mDNS across networks*) and **Wireless stability**; 4.27.9 describes the other three. The Warden panel has one setting, with a **?** beside it:
+The menu names this tab **Tweaks**, under **Administration**. There is no Tools menu. The page has four panels: **Warden** (below), **Connection tracking**, **Advanced tweaks** (including *mDNS across networks*) and **Wireless stability**; 4.27.10 describes the other three. The Warden panel has one setting, with a **?** beside it:
 
 - **Warden feed update schedule** — cron format; empty = 04:30 daily.
 
@@ -3554,7 +3564,8 @@ database in `/tmp`, backed up to `/jffs`, and needs a few minutes after a start 
 ### 4.21 Network: guest networks, VLANs and the Guest Portal
 
 **What it is.** The **Network** page (menu *Network*; on a model without the Wi-Fi-per-network feature the menu reads
-*Guest Network*) is the stock ASUS **Guest Network Pro** editor (`SDN.asp`, `sysdep/FUNCTION/SDN/`). Each card on it
+*Guest Network*) is a Reaper page (`Reaper_Network.asp`) with the functions and rules of the stock ASUS **Guest Network
+Pro** editor, which it replaces in the menu. Each card on it
 is one network: a Wi-Fi name (SSID) on chosen bands and AiMesh nodes, usually with its own subnet, bridge (`br5x`),
 DHCP server and resolver, and optionally a VLAN tag, a VPN client, a schedule and a guest portal. The settings live
 in the `sdn_rl`, `subnet_rl`, `vlan_rl`, `apgN_*` and `sdn_access_rl` NVRAM keys.
@@ -3563,11 +3574,12 @@ What is stock and what is Reaper's:
 
 | Part | Owner |
 |---|---|
-| The editor, the network types, Wi-Fi, subnet, DHCP, schedule, MAC filter, bandwidth limiter, portal pages | Stock ASUS (kept by Asuswrt-Merlin) |
+| The network types, their settings and rules, what a save stores and which services it restarts, the portal pages | Stock ASUS behaviour, kept by the Reaper page: it stores the same settings in the same form, so a network made on the stock page is the same network here |
+| The page itself: layout, dialogs, a refused value named under its field, the Wi-Fi share code | Reaper |
 | **Guest isolation** (what a guest network may reach), its DNS rules, the VPN and policy-routing exits | Reaper (`rc/reaper_guest.c`) |
 | Guest Portal DNS (Cloudflare for Families by default), the portal secret, the passcode checks | Reaper |
 | mDNS across networks (the reflector), the Default IoT Network port fix, the VPN client switched on with its network | Reaper |
-| The Wi-Fi key masked in the reconnect card after Apply; the quick connect sheet that stays open to print | Reaper |
+| No Wi-Fi key on screen after Apply; the Wi-Fi share sheet (code, name, key) with its own print button | Reaper |
 | **Hold Wi-Fi restarts until Apply**, **Delete selected**, an Access Intranet / VPN / DNS / DHCP edit without a Wi-Fi restart | Reaper |
 | The LAN-port (VLAN) assignment per AiMesh node | Stock logic, Reaper page (LAN > VLAN, 4.22.4) |
 
@@ -3583,7 +3595,7 @@ changes share one restart (4.21.12); and **Delete selected** removes several net
 
 The page shows one card per network: its name, its connection types (wired, Wi-Fi, Wi-Fi 7), tags (**VPN Client**,
 **VPN Server**, **Free WiFi**, **Message Board**, a countdown for one-time access) and an on/off switch. Clicking a
-card opens its editor; **Add a Network** opens the type list; **Quick Start** is the same list with descriptions.
+card opens its editor beside the list; **Add a Network** opens the type list, each type with its description.
 The model sets the maximum number of networks; when it is reached the page says *Your rules have reached the
 maximum*.
 
@@ -3593,13 +3605,12 @@ points to **Set up this router** (2.3); the main network is created at the first
 | Type | Made for | What the wizard sets by default |
 |---|---|---|
 | **Guest Network** | Visitors | Own subnet; **AP Isolation on** (Wi-Fi only); **WiFi Scheduling on**, with *Scheduled* or *One Time Access*; no intranet access |
-| **Kid's Network** | Children's devices | Own subnet; WiFi Scheduling on; no intranet access; a *Kid's Network LED* switch on models with that LED; where the model offers it, **Portal Type** preselected to **Message Board** (choose None for no page) |
+| **Kid's Network** | Children's devices | Own subnet; WiFi Scheduling on; no intranet access; where the model offers it, **Portal Type** preselected to **Message Board** (choose None for no page) |
 | **IoT Network** | Cameras, speakers, plugs | **Use same subnet as main network: on**; 2.4 GHz only; optional *Sync to all AiMesh node(s)* (the Default IoT Network, 4.21.5) |
 | **VPN Network** | Devices that must leave by a VPN | Own subnet; **Access Intranet to the Main Network on**; a VPN client with its Kill Switch on |
 | **Multi-Link Operation (MLO)** | Wi-Fi 7 devices | An MLO network over at least two bands; see 2.8 |
 | **Customized Network** | Anything else | Own subnet; every switch off |
 | **Guest Portal** | Walk-in guests | Own subnet; **AP Isolation** on (Wi-Fi only); a sign-in page (4.21.7). Not on BQ16 / BQ16 Pro |
-| **Gaming Network** | Game consoles | Only on models with ASUS's gaming network feature |
 | **Employee**, **Scheduled Network** | Offices | Only on ASUS business models |
 
 The type only chooses the starting values. After creation every network has the same editor; the type is shown
@@ -3626,21 +3637,20 @@ three sections: **General**, **Advanced Settings** and **AiMesh**.
 | Setting | What it does | Default |
 |---|---|---|
 | **WiFi7 Mode** | Wi-Fi 7 (802.11be) for this SSID. On requires WPA2/WPA3-Personal or WPA3 (or the Enterprise equivalents); choosing another method turns it off, with a warning | Per type |
-| **MLO Fronthaul for Clients** | Main network and Gaming Network on MLO models: offer MLO to clients on this SSID | Off |
-| **Network Name (SSID)** | The Wi-Fi name, up to 32 characters, no `"`. The QR icon beside it shows a code to join | - |
+| **MLO Fronthaul for Clients** | Main network on MLO models: offer MLO to clients on this SSID | Off |
+| **Network Name (SSID)** | The Wi-Fi name, up to 32 characters, no `"` | - |
 | **WiFi Band** | 2.4 / 5 / 6 GHz combinations, or **None**: a wired-only network (no SSID; the Wi-Fi rows hide). The main network has band check boxes instead | 2.4 + 5 GHz (IoT: 2.4 GHz) |
 | **Security** | Guest and Guest Portal: **Open** or **Password**. Main network: Open, Password or **RADIUS Setting** (Enterprise) | Password (Guest Portal: Open) |
 | **Authentication Method** | WPA2-Personal, WPA/WPA2-Personal, WPA2/WPA3-Personal, WPA3-Personal. 6 GHz: WPA3-Personal only. MLO: WPA2/WPA3 or WPA3. RADIUS: WPA2-, WPA/WPA2-, WPA2/WPA3-, WPA3-Enterprise and WPA3-Enterprise 192-bit | WPA2-Personal; 6 GHz WPA3-Personal |
 | **WPA Encryption** | AES, TKIP, TKIP+AES, AES+GCMP256, Suite B (as the method allows) | AES |
 | **Network Password** | 8 to 63 characters, or 64 hex digits; no spaces | - |
 | **Server IP Address / Server Port / Connection Secret** | The RADIUS server, with Enterprise security | - |
-| **Print the WiFi quick connect sheet** | A printable page with the SSID, password and a QR code. From v3.7.8 the sheet stays open until printed | - |
+| **WiFi Share** (button at the top of the editor) | The code a phone scans to join, with the network name and key, and a Free WiFi passcode if one is set. **Print the WiFi quick connect sheet** prints it; **QR Code (PNG)** saves the code. Not offered for an Enterprise or wired-only network, or while the schedule holds the SSID off | - |
 | **Bandwidth Limiter** | Download and upload caps in Mb/s for the whole network. Turning it on **turns hardware acceleration off** (the page asks first). Not offered on IoT, Default IoT, main or portal networks | Off |
 | **Access Intranet** | Which other networks this one may reach: **Main Network** and each network that has its own subnet (`SSID (VLAN n)`). See 4.21.3 | Unticked, except VPN Network (Main Network ticked) |
 | **Reach these main-network devices** | Router mode; a network with its own subnet that is not a Guest Portal and does not have Main Network ticked in Access Intranet. Lists the main-network devices with a reserved address (LAN > DHCP Server, Manual Assignment on) by Name, else Hostname, with their address. AiMesh nodes and the router are never listed. Guests may open connections to the ticked devices only; those devices cannot open connections to the guests. At most 16. A ticked device whose reservation was removed shows *no reserved address* and is skipped until unticked. See 4.21.3 | None |
 | **Device discovery with the main network** | Same conditions. On: pick **Printing**, **AirPlay**, **Google Cast**, **HomeKit / Matter**, **Spotify / Sonos** and/or **Other service types** (`_name._tcp` / `_name._udp`, separated by commas; at most 16 service types in all). Switching on starts with Printing, AirPlay and Google Cast. Devices of those kinds show up between this network and the main network in both directions; never between two guest networks; the router's own names are not announced here. Not available while **AP Isolation** is on. Discovery only shows devices: to use one, tick it in the list above. See 4.21.8 | Off |
 | **WiFi Scheduling** | When the SSID is on. **Scheduled**: weekly time slots. **One Time Access** (Guest Network): the SSID runs for a set time (2 hours preselected, quick choices or Custom) and the card counts down | Guest and Kid's: on; others off |
-| **LED** | The network's LED effect, on models with it | Kid's / VPN / Gaming: on |
 | **Enable MAC Filter** | **Disable**, **Accept** (only listed devices may join) or **Reject** (listed devices may not), with a MAC list | Disable |
 
 The setup wizards do not offer **Reach these main-network devices** or **Device discovery**; set them after the network is created. A save that changes only these two applies them without restarting Wi-Fi.
@@ -3669,20 +3679,21 @@ instead.
 | **DNS Server** | **Default** (the router's resolver for this network) or **Assign**: a provider from the list or two addresses. See 4.21.6 | Copied from the main LAN's *Handed to clients* servers (4.22.2) when the network is created; empty = Default |
 | **AP Isolation** | Wi-Fi devices on this SSID cannot reach each other. While it is on, **Isolate** picks what else it keeps apart: **Wi-Fi only** - wired devices on the network stay reachable unless its VLAN profile sets **Port Isolation** (4.22.4); **Wi-Fi and LAN ports** - the network's LAN ports are kept apart too, from each other and from Wi-Fi (devices behind one external switch still reach each other; the uplink port, VLAN trunk ports and a port with an AiMesh node behind it are never isolated). On a guest network the trunk to AiMesh nodes keeps the firmware's own isolation with either choice, so Wi-Fi guests on different nodes stay apart. On a Reaper AiMesh node the choice does not apply: the node keeps the firmware's own behaviour (on 3006.102.10 that isolates its wired LAN ports too while AP Isolation is on), never less isolation than stock. On models whose LAN ports partly sit behind an external switch chip (the GT-BE98 Pro, and the GT-BE98 on the test line), isolation between the ports behind that chip is left as the firmware sets it: with **Wi-Fi only**, devices on those ports may not reach each other while AP Isolation is on (they still reach the router, the internet, Wi-Fi and the other LAN ports). The main network's choice covers every network on the main subnet; a network with its own subnet keeps its own. Switched off, the choice is kept for the next time. Also keeps the network out of the mDNS reflector (4.21.8) | Guest and Guest Portal: on; **Isolate**: Wi-Fi only |
 | **IPv6** | IPv6 for this network: **Auto Configuration Setting** *Auto* (SLAAC) or *Stateful* (DHCPv6), the pool's first and last host part (up to 4 hex digits), up to three IPv6 DNS servers. Reaper keeps these on screen for a wired-only network (WiFi Band None), where stock hid them | Off |
-| **Smart Connect Rule** | Opens the Smart Connect page, on models with band steering | - |
 
 **AiMesh**: the router and each node, with a tick for the nodes that broadcast this SSID and the bands each can
 carry. A node whose bands are full for SSIDs cannot take another network; older nodes cannot sync every band.
 
 **VPN tab** (router mode, not for a network on the main subnet): **VPN** on/off; a list of **VPN Client** profiles
-(`OVPN1..5`, `WG1..5`) and, if any, the router's own **VPN Server** profiles; **VPN Client Kill Switch**.
+(`OVPN1..5`, `WG1..5`) and, if any, the router's own **VPN Server** profiles; **VPN Client Kill Switch**; **Go Setting**
+opens the VPN client or VPN server page. On the 102.8 firmware line (GT-BE98, GT-BE19000, BQ16, BQ16 Pro) the tab follows
+that line's stock page: there is no Kill Switch control, and the tab is also shown for a network on the main subnet.
 See 4.21.4.
 
-**Clients tab**: the devices online on this network, *All list*, *Wired* or *Wireless*.
+**Clients tab**: the devices online on this network, each marked wired or wireless, with its MAC and IP address.
 
 **Portal tab**: 4.21.7.
 
-**Delete** (the bin icon, or the button at the bottom) removes the network.
+**Delete** (the button at the top of the editor) removes the network.
 
 #### 4.21.3 What a guest network may reach (guest isolation)
 
@@ -3859,13 +3870,11 @@ WISP) mode and only when the model reports portal support (`captivePortal` and `
 |---|---|---|
 | **Portal Type** | **None** (no portal) or **Free WiFi**. Each portal type serves one network; a type in use is marked *(Used)*, and only one type can be active at a time | Free WiFi (Guest Portal) |
 | **Brand Name** | The title on the sign-in page, up to 40 characters | - |
-| Background image | Click the preview to upload JPG, PNG or SVG, up to 10 MB (2 MB after compression) | Stock image |
+| Background image | **Modify** opens the picture list: one of the bundled pictures, or your own JPG, PNG or SVG, up to 10 MB (2 MB after it is scaled) | Stock image |
 | **Connection Timeout** (minutes) | The guest's session time; when it expires, the connection is cut and the guest signs in again | 60 |
 | **Landing Page (Redirect to your website)** | Where the guest is sent after signing in, up to 256 characters. Empty: the success page | Empty |
 | **Add your own Passcode** / **Passcode** | Guests must enter this code. Up to **15** characters, printable ASCII, no spaces, no `<` or `>` | Off |
 | **Add your own Terms of Service** / **Terms of Service** | A tick box the guest must accept, with your text (up to 5120 characters; a template is filled in) | On |
-
-The live preview beside the settings shows the page as a phone will.
 
 **Message Board** (Kid's Network, where offered): **Description** (up to 80 characters) and a background image,
 shown on a page before the device gets the internet. A network with a Message Board is treated as a portal by guest
@@ -3967,7 +3976,7 @@ Access Intranet also works, but the network is then no longer isolated.
 
 1. **Add a Network > Guest Network**. Name `Home-Guest`, Security **Password**, a password you can read out.
 2. **WiFi Scheduling**: on, **One Time Access**, 4 hours, for an evening; or **Scheduled** for regular hours.
-3. **Apply**. **Print the WiFi quick connect sheet** gives visitors the QR code.
+3. **Apply**. **WiFi Share** in the network's editor shows the QR code and prints the quick connect sheet for visitors.
 4. Leave Access Intranet unticked and **AP Isolation** on: visitors reach the internet and nothing else.
 
 **A kids' network with a schedule.**
@@ -5269,22 +5278,21 @@ The **Administration** menu holds the router-wide settings. Its tabs, in menu or
 
 | Tab | Page | Owner | Section |
 |---|---|---|---|
-| Operation Mode | `Advanced_OperationMode_Content.asp` | Stock | Below (shown unless the model hides the mode switch) |
+| Operation Mode | `Reaper_OpMode.asp` | Reaper page, stock choices | Below (shown unless the model hides the mode switch) |
 | System | `Reaper_System.asp` | Reaper page, stock settings | 4.27.1 to 4.27.6 |
 | DNS Failover | `Reaper_Failover.asp` | Reaper | 4.14a, 4.14b (routing modes only) |
 | Firmware Upgrade | `Reaper_Firmware.asp` | Reaper | 4.14 |
-| Backup & Restore | `Reaper_Backup.asp` | Reaper | 4.27.7 |
+| Backup & Restore | `Reaper_Backup.asp` | Reaper | 4.27.8 |
 | System Temperature | `Advanced_PerformanceTuning_Content.asp` | Stock | Only on a model with fan control; none of the current models has it |
-| Feedback | `Feedback_Info.asp` | Stock | Only where the feedback feature is built; it is not built on the current models |
-| SNMP | `Reaper_SNMP.asp` | Reaper page, Merlin agent | 4.27.8 |
-| Tweaks | `Reaper_Tweaks.asp` | Reaper | 4.17 and 4.27.9 |
+| SNMP | `Reaper_SNMP.asp` | Reaper page, Merlin agent | 4.27.9 |
+| Tweaks | `Reaper_Tweaks.asp` | Reaper | 4.17 and 4.27.10 |
 | Diagnostics | `Reaper_Diag.asp` | Reaper | 4.13 |
 | Data Export | `Reaper_Analytics.asp` | Reaper | 4.11 |
 
-**System Info** is a menu of its own (4.27.10). `Reaper_SecBanner.asp` is not a page (4.27.11).
+**System Info** is a menu of its own (4.27.11). `Reaper_SecBanner.asp` is not a page (4.27.12).
 
-**Operation Mode** is the stock page that switches the router between the operation modes the model offers (wireless
-router and the others). The mode decides which menus exist: in a mode that does not route (access point, repeater,
+**Operation Mode** (`Reaper_OpMode.asp`) switches the router between the operation modes the model offers (wireless
+router and the others); it lists them, marks the one in use and describes the one you pick. The mode decides which menus exist: in a mode that does not route (access point, repeater,
 media bridge), Parental Controls, the Firewall, Traffic Manager, DNS Failover and the other routing features are
 hidden, as on stock.
 
@@ -5308,7 +5316,8 @@ setup wizard for their steps (9.3).
 
 **What it is.** Reaper's replacement for the stock System page (`Advanced_System_Content.asp`, which no longer
 ships). Every setting the stock page posted is here, under the same nvram keys, in five tabs: **Login and access**,
-**SSH**, **Time and NTP**, **Hardware** and **Maintenance**. A tab whose panels do not apply to the model or the
+**SSH**, **Time and NTP**, **Hardware** and **Maintenance**; a sixth, **Accessibility**, holds the colour-blind mode
+switch (4.27.7). A tab whose panels do not apply to the model or the
 operation mode is hidden. On a phone (from the image after v3.8.2) the menu's tab bar keeps its size: a page wider than the screen
 pans sideways instead of shrinking the tabs, and long values such as the remote-access address wrap inside the screen.
 
@@ -5316,7 +5325,7 @@ pans sideways instead of shrinking the tabs, and long values such as the remote-
   and restarts only the services those settings need: the time service for the time zone, NTP and the reboot
   schedule; SSH for the SSH settings; the LEDs; USB hibernation; the web server for the protocol and the ports;
   the firewall for remote access, access restrictions, SSH, the WAN-down notice and the local NTP server.
-  A change that needs nothing restarted is only saved.
+  A change that needs nothing restarted is only saved; a change of colour-blind mode reloads the whole window.
 - **Unsaved changes: N** counts the edited settings; each tab with an edit carries a dot. **Discard** reloads the page.
 - A setting that fails its check opens its tab, marks the row in red and names the rule. Nothing is saved until every
   check passes.
@@ -5341,7 +5350,7 @@ list of addresses allowed to reach the interface and SSH.
 3. Enter the **New login name** and the **New password** twice. Press the box's own **Apply**.
 4. The router saves the account and signs you out. Sign in with the new name and password.
 
-The new password is also the SSH password (4.27.3). The login name is also the SNMPv3 user name (4.27.8) and the
+The new password is also the SSH password (4.27.3). The login name is also the SNMPv3 user name (4.27.9) and the
 first account of the USB file services (4.28.2), so those follow the change.
 
 **Rules for the login.** Name: 2 to 32 letters, digits, `-` or `_`, starting with a letter or digit; not `root`,
@@ -5394,7 +5403,10 @@ be renewed here. With the protocol at HTTP only, the renew buttons are hidden. T
 - The certificate buttons and a protocol or port change all restart the web server; open sessions end.
 - **Wrong passwords lock one address, not the LAN (v3.7.5).** Five wrong passwords from one address refuse that
   address for 5 minutes; the login page then says that other addresses can still sign in. Twenty failures on one side
-  (LAN or WAN) within 5 minutes still lock that whole side. A connection on the remote-access listener counts as the
+  (LAN or WAN) within 5 minutes stop new sign-ins on that side for 5 minutes - except from an address that signed in
+  correctly before and has not failed since - and a device that is already signed in keeps working (before, they
+  turned away every browser on that side). On the LAN every device is counted by its own address, IPv6 included.
+  A connection on the remote-access listener counts as the
   WAN side, and an IPv6 address is judged by its own address (before v3.7.5 five failures locked every browser on that
   side, signed-in admins included, and any IPv6 address counted as the LAN). Locked out of your own PC: wait 5 minutes or
   sign in from another device. The Security Review (4.1.1b) reports bursts of 10 or more failures from one source.
@@ -5405,7 +5417,9 @@ be renewed here. With the protocol at HTTP only, the renew buttons are hidden. T
   account and remote connection went with the phone-home code (1.2), and from v3.8.4 the request addresses only
   the app used - family groups, per-device internet blocking, the remote-control switch, the notification centre,
   its own way of creating guest and IoT networks, the speed test between AiMesh nodes - are gone. Whatever the app
-  still shows or changes on the LAN is not tested and can stop working in any release.
+  still shows or changes on the LAN is not tested and can stop working in any release. A request that names the app
+  in its User-Agent gets the same checks as a browser - the cross-site and Referer checks, the page token on a
+  save, saves by POST only - because any client can claim that name.
 
 #### 4.27.3 System > SSH
 
@@ -5543,7 +5557,48 @@ The router reboots at that time by its own clock (4.27.4). A weekly schedule nee
   them back when it returns. Turn it off if a WAN outage should leave LAN traffic untouched.
 - A custom script that does not run: see *When a script seems not to run* in 2.9.
 
-#### 4.27.7 Backup & Restore
+#### 4.27.7 System > Accessibility
+
+**What it is.** One switch, **Colour-blind mode**, which swaps the interface's red, green, teal and amber for colours
+that stay distinct with colour-blind vision. Only colours change: no page, control, word or behaviour changes, and the
+Reaper logo pictures (the header and the animated sign-in logo) keep their own colours.
+
+**How to use it**
+
+1. Open **Administration > System**, tab **Accessibility**, panel **Colour vision**.
+2. Switch **Colour-blind mode** on and press **Apply**. The whole window reloads in the new colours.
+
+Under the switch, **Preview** shows the same few controls twice - a button, a switch, three status labels and a small
+download / upload chart - in the standard colours on the left and in colour-blind mode on the right, whichever mode is
+on.
+
+**What changes**
+
+| Today | Used for | Colour-blind mode |
+|---|---|---|
+| Red, the accent | The selected menu item, buttons, active tabs, headings, client bars | Blue `#3B82F6` |
+| Green | Connected, secure, OK, active; a switch that is on | Cyan `#38BDF8` |
+| Green / teal on charts | The download line and the rate figures | Light sky blue `#7DD3FC` |
+| Amber | Warnings, a gauge in its middle range, the BETA badge, latency | Gold `#FACC15` |
+| Red that means a problem | A field that fails its check, a link or node that is down, a denied slot, dropped traffic, errors; the upload and loss lines | Orange `#FB923C` |
+| Dark red boxes | The tinted boxes behind icons and highlighted rows | Slate blue `#1E293B` |
+
+The charts with several series (Traffic Analyzer classes and networks, QoS diagnostics queues) take a set of colours
+chosen to stay apart for every kind of colour-blind vision.
+
+| Setting | What it does | Default |
+|---|---|---|
+| Colour-blind mode | The colour-blind palette on every page (`reaper_cbmode`). | Off |
+
+**Limits and gotchas**
+
+- The choice is saved on the router, not in the browser: it applies on every device and browser that signs in, the
+  sign-in page included, and travels with the settings backup.
+- States already differ by more than colour where it matters (a switch is filled when on and hollow when off; status
+  labels carry a word); the new colours add separation, they do not replace the words.
+- The stock setup wizard that Operation Mode still runs for Repeater and AiMesh Node follows the switch as far as Reaper restyles it.
+
+#### 4.27.8 Backup & Restore
 
 **What it is.** Reaper's page for both backups and the factory reset. It replaced the stock Restore/Save/Upload
 Setting page in v2.9.8. What each file holds, sealing, and what a restore does are in **2.5**; the factory reset and
@@ -5578,7 +5633,7 @@ the `/jffs` checkbox are in **8.4**. This section lists the page's controls.
   releases itself; nothing was changed.
 - The page's **?** opens 2.5 of this guide.
 
-#### 4.27.8 SNMP
+#### 4.27.9 SNMP
 
 **What it is.** Reaper's page for the router's SNMP agent (net-snmp, from Asuswrt-Merlin). Only **SNMPv3** is
 served: v1 and v2c send the community string in clear text and are not configured at all, whatever the old
@@ -5617,7 +5672,7 @@ served: v1 and v2c send the community string in clear text and are not configure
 - **What SNMP SET can change (from the image after v3.8.0).** The user reads the whole tree and can SET three objects only: `sysContact`, `sysName` and `sysLocation`. Everything else answers *noAccess* to a SET: interface state, the agent's own user and access tables, the tunnel tables. Stock gave the user write access to every writable object (`rwuser`), which included a module loader that loads a library by path as root; that module is no longer in the build. With **WAN access** on, nothing is writable. For a wider SET, add your own `view` / `access` lines to `/jffs/configs/snmpd.conf.add`.
 - A guest or IoT network does not reach the agent: it answers on the main LAN address only.
 
-#### 4.27.9 Tweaks: the other settings
+#### 4.27.10 Tweaks: the other settings
 
 **Administration > Tweaks** (`Reaper_Tweaks.asp`) has four panels. 4.17 describes the first, **Warden** (the feed
 update schedule). The other three:
@@ -5637,7 +5692,7 @@ almost every network; Apply restarts connection tracking.
 | Setting | What it does | Default |
 |---|---|---|
 | Redirect the login page to the router domain name | Opening the router by its IP address switches the browser to `www.asusrouter.com`, or to the address in **Redirect to** below (`http_dut_redir`). | Off |
-| Redirect to | Shown while the switch above is on: your own address for the router - protocol (`https` / `http`), name and port (`reaper_dut_redir_proto`, `reaper_dut_redir_host`, `reaper_dut_redir_port`). An empty name keeps `www.asusrouter.com`; an empty port uses the router's own port for that protocol (8443 for https, 80 for http, unless changed). The name: letters, digits and `-` in parts joined by dots, no `-` at either end of a part, up to 57 characters, not an IP address; the port 1 to 65535. The name must lead to this router for the devices on your network (your DNS, or a DNS rewrite in Wallguard, 4.3.3.14) and, with https, needs a certificate for that name (Let's Encrypt or an uploaded certificate under WAN › DDNS, the one the web interface uses - 4.3.4.3, or your own). The login page moves only when the address answers, so a wrong one changes nothing. The address is sent to the login page only while the redirect is switched on. Saved only, nothing restarts. | https / empty / empty |
+| Redirect to | Shown while the switch above is on: your own address for the router - protocol (`https` / `http`), name and port (`reaper_dut_redir_proto`, `reaper_dut_redir_host`, `reaper_dut_redir_port`). An empty name keeps `www.asusrouter.com`; an empty port uses the router's own port for that protocol (8443 for https, 80 for http, unless changed). The name: letters, digits and `-` in parts joined by dots, no `-` at either end of a part, up to 57 characters, not an IP address; the port 1 to 65535. The name must lead to this router for the devices on your network (your DNS, or a DNS rewrite in Wallguard, 4.3.3.14) and, with https, needs a certificate for that name (Let's Encrypt or an uploaded certificate under WAN › DDNS, the one the web interface uses - 4.3.4.3, or your own). The login page moves only when the address answers, so a wrong one changes nothing. The address is sent to the login page only while the redirect is switched on. The web interface's cross-site check follows the same switch: the name counts as the router's own only while the redirect is on. Saved only, nothing restarts. | https / empty / empty |
 | Drop IPv6 neighbour solicitation floods on the WAN | Drops multicast neighbour solicitations arriving on the WAN, for providers that flood them (`ipv6_ns_drop`). Restarts the firewall. | Off |
 | Answer WPAD requests with an empty entry | The DHCP server answers the WPAD option with an empty value, so Windows stops searching for a proxy file (`dhcpd_send_wpad`). Restarts DNS and DHCP. | On |
 | mDNS across networks | Devices on the main network and on every network with **Main Network** ticked in Access Intranet find each other (casting, printers, AirPlay); avahi relays mDNS between those networks (`reaper_mdns_reflect`). Networks with **AP Isolation**, networks without intranet access and Guest Portals are left out, and the router does not answer mDNS on the last two. Routing modes. | On |
@@ -5655,7 +5710,7 @@ time and give each a few days.
 **Not on the page any more: Portal secret.** The Guest Portal sign-in secret has no control here. Each router makes
 a random secret of its own the first time a portal starts, and keeps it.
 
-#### 4.27.10 System Information
+#### 4.27.11 System Information
 
 **What it is.** A read-only Reaper page (its own menu, **System Info**) that replaced the stock `Tools_Sysinfo.asp`
 in v3.1.8. It reads the same router data as the stock page, grouped by question. Nothing on it changes a setting.
@@ -5667,14 +5722,14 @@ Uptime sits in the header.
 | Processor | CPU, cores, clock, load average over 1, 5 and 15 minutes against the core count, per-core usage bars, CPU and per-radio temperatures. |
 | Memory | Used, buffers, cache and free as one bar; total, **Available** and swap. *Available* is the figure that matters: buffers and cache are handed back on demand, so a low *Free* on a busy router is normal. |
 | Storage | NVRAM used of its fixed size, and JFFS used. A full NVRAM is what stops settings saving (2.4). |
-| Network capacity | Active connections against the router's connection-tracking maximum, with the headroom left (the limit is set on Tweaks, 4.27.9); hardware acceleration state; per radio the wireless clients associated, authorised and authenticated. An off radio reads *off*. |
+| Network capacity | Active connections against the router's connection-tracking maximum, with the headroom left (the limit is set on Tweaks, 4.27.10); hardware acceleration state; per radio the wireless clients associated, authorised and authenticated. An off radio reads *off*. |
 | Add-on board | Model, hardware, firmware and address of an add-on board; shown only on a router that reports one. |
 | Capabilities | The features this image was built with, by name. They decide which pages and options exist, which is why a setting another model has can be absent here. |
 
 The figures refresh every 2.5 to 5 seconds while the page is open. Band labels come from each radio's band, so a
 quad-band model is labelled correctly.
 
-#### 4.27.11 The security banner
+#### 4.27.12 The security banner
 
 `Reaper_SecBanner.asp` is not a page and has no menu entry. It is the text of the first-boot banner (2.3), fetched by
 every signed-in admin page while the login or the Wi-Fi is still at its factory value; it is never served before
@@ -5688,7 +5743,7 @@ The **USB Application** menu exists on models with USB. Its tabs: **USB Applicat
 Server**, **Network Place (Samba) Share**, **NFS Exports** (only where built), **FTP Share** and **USB Disks** (4.12).
 The overview, Media Server, Samba and FTP are Reaper pages since v3.7.1; they write the stock settings through the
 stock handlers, and the stock pages they replace no longer ship (their old addresses open the new pages). The
-Printer Server and Time Machine pages are stock (4.31). Formatting, the health scan and safe removal are on **USB
+Printer Server and Time Machine pages are Reaper pages as well (4.31). Formatting, the health scan and safe removal are on **USB
 Disks** (4.12); filesystems are in 2.6.
 
 The services are off at factory (8.3). The USB application network installer is gone (1.2).
@@ -6026,11 +6081,20 @@ such an entry as it is and never creates one (a leading `@` typed into a name is
 
 #### 4.31.1 AiMesh
 
-**AiMesh** (`AiMesh.asp`) is the stock AiMesh page: the mesh topology, node search and add, and per-node settings. It
-keeps the stock layout with a Reaper stylesheet (3). The menu shows on a router that can be an AiMesh router in its
-current mode. AiMesh is kept because nothing open replaces it, and its sync and discovery services are closed vendor
-binaries (1.1). Related: adding a new Reaper node (2.2), node firmware updates (4.14), backhaul parking (4.10.13), the
-roaming block list (4.25) and **Keep devices that a node claims** (4.27.9).
+**AiMesh** (`Reaper_AiMesh.asp`) is the AiMesh page on a Reaper page, with the stock page's functions and rules. The
+**Topology** tab draws the mesh as a tree: each node sits under the member it connects to, with its uplink type and
+connection quality in words (the coloured bar repeats it), and its count of connected devices. **Add AiMesh Node**
+finds nodes in range and pairs one; **Optimization** asks the wireless nodes to look for a better uplink. Selecting
+a member shows its location (28 presets or a custom text), connection quality and signal, and firmware version, and
+three views. **Clients** lists the devices connected through it; a wireless device can be reconnected, bound to a
+node or unbound, and a click on a connected device opens **Devices** (4.8). **Network** shows the WAN status (the
+router) or the uplink (a node), the port states, the backhaul link and one card per radio, with traffic figures when
+the connection diagnostics are on. **Management**, for a node, holds the settings the node reports it supports: LED,
+backhaul connection priority, preferred Wi-Fi uplink AP, link aggregation, the radios, reconnect, reboot and remove.
+The **System Settings** tab holds Ethernet-only backhaul, the system LED switch with its schedule (the stock
+scheduler), the roaming block list (4.25), and system reset and reboot. The menu shows on a router that can be an
+AiMesh router in its current mode. AiMesh's sync and discovery services are closed vendor binaries (1.1). Related: adding a new Reaper node (2.2), node firmware updates (4.14), backhaul parking (4.10.13), the
+roaming block list (4.25) and **Keep devices that a node claims** (4.27.10).
 
 From the image after v3.8.2 a device connected with MLO shows the MLO icon on the AiMesh tab, and *MLO* as its band
 in the client list, whenever Reaper's own device scan knows it is MLO: on the main router and in Access Point mode,
@@ -6041,24 +6105,29 @@ interface.
 
 #### 4.31.2 Traffic Manager > Internet Speed
 
-**Internet Speed** (`AdaptiveQoS_InternetSpeed.asp`) is the stock Ookla speed test, shown on models built with it
-(all current models). A test you start sends traffic to Ookla's servers; nothing runs on its own. All models use ASUS's
+**Internet Speed** (`Reaper_Speed.asp`) is the Ookla speed test on a Reaper page, shown on models built with it
+(all current models): **Go**, the result tiles (download, upload, ping, jitter), the server menu (**Auto** or a
+server nearby), the interface menu when a VPN client is up, the speed **Level** and the **History** of the last 50
+results. A test you start sends traffic to Ookla's servers; nothing runs on its own. All models use ASUS's
 102_40585 setup: 100 free tests, then 3 per 24 hours once setup is complete, and the page says when the quota is used
-up (v3.6.3). Reaper's changes are fixes only: the page loads at once inside the shell, a run no longer gives up early
-or freezes the browser, and a failed run says why. Several runs at a quiet hour give the upload figure QoS needs
+up (v3.6.3). A run never freezes the browser or gives up early, and a failed run says why; while QoS is on the page says what
+rate QoS caps the result at. Several runs at a quiet hour give the upload figure QoS needs
 (4.5.2).
 
 #### 4.31.3 Network Printer Server
 
-`PrinterServer.asp` is the stock page, opened from its card on the USB Application page (4.28.1); it has no tab of its
-own. It switches the USB printer server on or off (`usb_printer`, off at factory) and describes the two ways to print:
-ASUS's EZ printer sharing utility and LPR. Shown on models with printer support.
+`Reaper_Printer.asp`, opened from its card on the USB Application page (4.28.1); it has no tab of its own. It switches
+the USB printer server on or off (`usb_printer`, off at factory; saved with **Apply**, which restarts the LPR and USB
+printer services) and names the two ways to print: ASUS's EZ printer sharing utility and LPR. Shown on models with
+printer support. The stock page's address opens this page.
 
 #### 4.31.4 Time Machine
 
-`Advanced_TimeMachine.asp` is the stock page for macOS Time Machine backups over AFP (netatalk), opened from its card
-on the USB Application page; it has no tab of its own. Settings: **Enable Time Machine** (`timemachine_enable`, off at
-factory), the target partition and a volume size limit (`tm_vol_size`). The AFP server has Reaper's CVE fixes and
+`Reaper_TimeMachine.asp` sets up macOS Time Machine backups over AFP (netatalk); it is opened from its card on the USB
+Application page and has no tab of its own. Settings: **Enable Time Machine** (`timemachine_enable`, off at factory),
+the **Backup Path** (a menu of the mounted partitions with their free and total space; one with 1 GB free or less
+cannot be chosen) and a **volume size** limit in GB (`tm_vol_size`; 0 = no limit, at most the partition's free space;
+choosing another partition clears it). The stock page's address opens this page. The AFP server has Reaper's CVE fixes and
 offers the DHX2 login only (v3.7.2). The backup folder is root's own on the volume.
 
 ---
@@ -6113,7 +6182,7 @@ offers the DHX2 login only (v3.7.2). The backup folder is root's own on the volu
 | Dreadwatch or Wallguard: a source of your own says it sends an API key but no key is saved | The source's **Modify** | Enter the key there; it is stored write-only and never shown again (4.3.2.4). |
 | Dashboard shows an amber bar: *N unreviewed change(s) to scripts, cron entries or exposure settings* | Firewall › Status, the Security review card; log `rwatch: security review:` | The self-monitor found a difference from the baseline you accepted (4.1.1b). Read the list: your own change → **Accept**; a script, cron entry or forward you did not make → treat it as a compromise and check the diagnostics report. Nothing has been undone. |
 | Security Review row is amber *Baseline* after a reboot; the review card says *no report yet* | Dashboard; Firewall › Status, the Security review card | Not a fault: the report lives in RAM, and the first check after a boot waits out the 5-minute boot grace and the next five-minute tick — up to 10 minutes. The row turns green (or red) on its own. |
-| Log line `httpd: reaper: a request for the removed address <name> came from <address> (written once per boot)` | System Log | Something on your network asked for a request address that v3.8.4 removed (1.2): an add-on page, a script, the ASUS app. Harmless; it tells you what to update. The notice is temporary and goes away after the next stable version. |
+| Log line `httpd: reaper: a request for the removed address <name> came from <address> (written once per boot)` | System Log | Something on your network asked for a request address that v3.8.4 or a later release removed (1.2): an add-on page, a script, the ASUS app. Harmless; it tells you what to update. The notice is temporary and goes away after the next stable version. |
 | Security Review card shows an amber row *This baseline has no seal* after updating | Firewall › Status, the Security review card; log `rwatch: security review: the baseline on this router has no seal` | Expected once after updating to v3.8.4: older firmware did not seal the baseline. Check the list and press **Accept current state as baseline**. |
 | Red row *The accepted baseline or the watch rules were changed outside this page*; dashboard bar is red | The same card; log `rwatch: security review: the accepted baseline or the watch rules were changed outside the Firewall page (fingerprint sealed ..., found now: ...)` | `/jffs/reaper/review/baseline` or `/jffs/reaper/review/rules` was changed without an Accept on the card (SSH, a script, a settings import with other rules, a restore of older router settings). Review the whole list; accept it if it is yours. |
 | The Security Review is still on after a settings import or a script that posts settings; log `review: switching the security review off through a settings file REFUSED` (or `through the settings handler`) | System Log; Firewall › Status, the Security review card | Intended (v3.8.4): only the card's own switch turns the review off. The import reports that value as rejected; everything else in the file is applied. |
@@ -6271,7 +6340,7 @@ Earlier editions of this guide also listed `psc6g` (6 GHz preferred scanning cha
 `0` to `1`. On every model in the fleet the stock factory value was already `1`; the stock table's
 second, conflicting entry applies only to two unrelated ASUS models.
 
-Reaper also **adds 133** entries of its own (8.2) and **removes 18** that belong to features it strips
+Reaper also **adds 134** entries of its own (8.2) and **removes 18** that belong to features it strips
 out: AiCloud and WebDAV (`enable_webdav`, `st_webdav_mode`, `webdav_proxy`, `webdav_aidisk`,
 `webdav_http_port`, `webdav_https_port`, `acc_webdavproxy`, `enable_webdav_captcha`,
 `enable_webdav_lock`, `webdav_acc_lock`, `webdav_lock_interval`, `webdav_lock_times`,
@@ -6362,7 +6431,7 @@ on every network with Main Network ticked in Access Intranet can find each other
 those networks only. A network with **AP Isolation** on, a network without intranet access and a Guest
 Portal are left out, and on the last two the router no longer answers mDNS at all. Off (`0`): each network sees only its own devices. `reaper_mdns_types` empty (v3.8.4): every kind of device is relayed. Set from **Only chosen kinds of devices** to presets (`print`, `airplay`, `cast`, `homekit`, `audio`) and service types, comma-separated, at most 16 types expanded: only those are relayed between the main network and the Access Intranet networks (4.21.8). Carried by the settings file. Per guest network (stored with the network's own Wi-Fi settings; their three template rows are in this count): `apgN_rg_devs` (the devices ticked in Reach these main-network devices) and `apgN_rg_mdns` (the Device discovery service types), both empty at factory and cleared when the network is deleted (4.21.2), and `apgN_ap_isolate_lan` `0` (the network's **AP Isolation** choice: `0` Wi-Fi only, `1` Wi-Fi and LAN ports; set to `0` for a new network and cleared when the network is deleted).
 
-**Login page redirect address** (Administration › Tweaks, 4.27.9) — `reaper_dut_redir_proto` `https`,
+**Login page redirect address** (Administration › Tweaks, 4.27.10) — `reaper_dut_redir_proto` `https`,
 `reaper_dut_redir_host` empty, `reaper_dut_redir_port` empty: with the redirect switch (`http_dut_redir`) on, the
 login page moves to the stock router domain name, as before. A name typed here replaces it (with that protocol, and
 that port or the router's own one). Kept in the settings file (Backup).
@@ -6374,6 +6443,9 @@ ports are never isolated. It covers every network on the main subnet.
 **Hold Wi-Fi restarts until Apply** (Network menu, top of the page, 4.21.12) — `reaper_sdn_defer` `0`: each network
 save restarts Wi-Fi at once, as stock. `1`: a create / edit / switch-on is saved at once and its Wi-Fi restart waits
 for **Apply now** (or for the next change that runs at once); kept in the settings backup.
+
+**Colour-blind mode** (Administration › System, tab Accessibility, 4.27.7) — `reaper_cbmode` `0`: the standard
+colours. `1`: every page, the sign-in page included, uses the colour-blind palette; kept in the settings backup.
 
 **Guest Portal secret** — the portal's sign-in secret is a random one the router makes for itself the first time a
 portal starts and keeps (the stock value was the same on every router). The secret is never shown. The Tweaks control
@@ -6429,7 +6501,6 @@ a session file in `/tmp`, so every reboot comes up dark.
 
 | Key | Absent means |
 |---|---|
-| `reaper_inject` | The Reaper theme is on. Never set it: `0` turns the theme off, and Reaper's own pages need it. |
 | `reaper_wanport` | No WAN port pinned. Written only when Auto detection finds the WAN (4.19). |
 | `rwatch_gdx` | The accelerator probe in `rwatch` is off (5, item 11). |
 | `rmcp_code_hash`, `rmcp_code_salt` | No Advisor arming code is set (4.16). |
@@ -6603,62 +6674,70 @@ log carries a timestamp at each step (`factory reset: begin` … `nvram erased, 
 
 ## 9. Present but inactive
 
-Some stock ASUS pages are still inside the firmware image but are **not reachable from the menu**.
-They are not hidden bugs, and they are not doing anything. They were left in place rather than
-deleted because each still shares state or code with something Reaper does use. This section lists
-them, so that finding one by typing its address does not look like a discovery. Since v3.4.9 most
-stock pages a Reaper page replaces no longer ship at all; their addresses open the Reaper page.
+Every page in the menu is a Reaper page, and the stock ASUS interface is no longer in the firmware: there is no setting
+that brings it back. A few stock files are still inside the image, each kept for one reason given below; **none is in
+the menu**. This section lists them, so that finding one by typing its address does not look like a discovery. The
+stock pages a Reaper page replaced no longer ship; their old addresses open the Reaper page.
 
 ### 9.1 The stock firmware-update page
 
-`Advanced_FirmwareUpgrade_Content.asp` no longer ships (v3.4.9); its address opens Reaper's own
-Firmware page (4.14), which replaces it. It is listed here because Reaper's page reuses the stock
-update variables — `webs_state_update`, `webs_state_info`, `webs_state_url`, `webs_state_flag`,
-`webs_state_error`, `webs_state_upgrade`, `webs_state_sha` — rather than inventing parallel ones, so
-those keys are still present.
+`Advanced_FirmwareUpgrade_Content.asp` no longer ships; its address opens Reaper's own Firmware page (4.14), which
+replaces it. It is listed here because Reaper's page reuses the stock update variables (`webs_state_update`,
+`webs_state_info`, `webs_state_url`, `webs_state_flag`, `webs_state_error`, `webs_state_upgrade`, `webs_state_sha`)
+rather than inventing parallel ones, so those keys are still present.
 
-The automatic check it used to drive is off (`firmware_check_enable` `0`, see 8.1), because it
-queried ASUS. Reaper checks its own GitHub release manifest instead, over HTTPS with certificate
-validation and a pinned host, and verifies each image's SHA-256 and size before flashing (2.11).
+The automatic check it used to drive is off (`firmware_check_enable` `0`, see 8.1), because it queried ASUS. Reaper
+checks its own GitHub release manifest instead, over HTTPS with certificate validation and a pinned host, and verifies
+each image's SHA-256 and size before flashing (2.11).
 
-### 9.2 The AiProtection pages
+### 9.2 AiProtection
 
-Five `AiProtection_*.asp` pages remain in the image — Home Security, Malicious Sites Blocking,
-Intrusion Prevention, Infected Device Prevention and Web Protector (their three mobile variants and the old device
-list left the image in v3.7.3, their addresses opening the matching Reaper page). **None is in the menu.**
-
-The engine behind them is gone. AiProtection is a TrendMicro product: the router ships traffic
-metadata to TrendMicro's cloud for classification, which is precisely the arrangement Reaper exists
-to remove. The DPI engine that fed those pages is compiled out of the build, so the pages have
-nothing left to talk to.
+The `AiProtection_*.asp` pages no longer ship; their addresses open Warden (4.3.1). The engine behind them is gone.
+AiProtection is a TrendMicro product: the router ships traffic metadata to TrendMicro's cloud for classification,
+which is precisely the arrangement Reaper exists to remove. The DPI engine that fed those pages is compiled out of the
+build.
 
 What replaces them, and what does not:
 
-- **Malicious-site and threat blocking** — Warden (4.3.1), using public IP threat feeds and country
-  blocks, and Dreadwatch (4.3.2), which answers known malware and botnet host names with NXDOMAIN at
-  the router's resolver and counts what it blocked. Both work on addresses and names rather than on
-  inspected content, and neither needs a cloud service.
-- **Per-device access control** — Gatekeeper (4.2).
-- **Content and keyword filtering** — the firewall's URL Filter and Keyword Filter tabs (4.1).
-- **Deep packet inspection, and signature-based intrusion prevention** — **nothing replaces this.**
-  It cannot be done locally at line rate on this hardware without a commercial signature feed. If
-  that specific capability is what you need, Reaper is not the firmware for you. That is an honest
-  trade, not an oversight.
+- **Malicious-site and threat blocking** - Warden (4.3.1), using public IP threat feeds and country blocks, and
+  Dreadwatch (4.3.2), which answers known malware and botnet host names with NXDOMAIN at the router's resolver and
+  counts what it blocked. Both work on addresses and names rather than on inspected content, and neither needs a cloud
+  service.
+- **Per-device access control** - Gatekeeper (4.2).
+- **Content and keyword filtering** - the firewall's URL Filter and Keyword Filter tabs (4.1).
+- **Deep packet inspection, and signature-based intrusion prevention** - **nothing replaces this.** It cannot be done
+  locally at line rate on this hardware without a commercial signature feed. If that specific capability is what you
+  need, Reaper is not the firmware for you. That is an honest trade, not an oversight.
 
-### 9.3 The setup wizard pages
+### 9.3 The setup wizard
 
-The stock Quick Internet Setup page (`QIS_wizard.htm`) remains in the image. From v3.4.2
-the setup routes into it are closed: the default setup address sends you to the dashboard, the first-use redirect
-while the WAN is down is gone, the landing after a LAN subnet change goes to the dashboard, and the menu
-entry is removed. Three parts are still used: the **AiMesh add-node** window (AiMesh → Add node), and the
-**Repeater** and **AiMesh Node** choices of Operation Mode (4.27), which run the stock wizard's steps for those
-modes; Access Point, Media Bridge and the return to Router use Reaper's own step page instead. The add-node window
-carries the Reaper look and its own wording in all 25 languages.
+The stock Quick Internet Setup page (`QIS_wizard.htm`, with the `mobile/` files and the stock scripts it loads) stays
+for two choices of Operation Mode (4.27): **Repeater** and **AiMesh Node** run the stock wizard's steps for those
+modes. Access Point, Media Bridge and the return to Router use Reaper's own step page, and AiMesh → Add node is part of
+the AiMesh page. The other setup routes into the wizard are closed: the default setup address sends you to the
+dashboard, there is no first-use redirect while the WAN is down, and the landing after a LAN subnet change is the
+dashboard. The wizard follows the colour-blind switch (4.27.7).
 
-### 9.4 Why they were not simply deleted
+### 9.4 Kept for an AiMesh node
 
-Removing a page means removing every reference to it: menu entries, help mappings, redirect targets,
-and any shared NVRAM. Each removal is a chance to break something that still works, for no benefit a
-user can see — an unreachable page costs a few kilobytes of flash and nothing else. They may go in a
-later release, once the shared state is untangled. Until then they are inert, unreferenced, and safe
-to ignore.
+The stock `PrinterServer.asp` and `Advanced_TimeMachine.asp` stay, with the stock scripts they load, because an AiMesh
+node serves them. On the main router their addresses open Reaper's Network Printer Server and Time Machine pages.
+
+### 9.5 Kept because closed code names them
+
+`SDN/sdn.html` (the stock network editor) and `internet_speed.html` (the stock speed test) stay, with the files they
+load, because a closed library in the firmware names them and it cannot be checked when it asks for one. They are not
+in the menu, carry no Reaper styling, and Reaper's Network (4.21) and Internet Speed pages replace them.
+
+### 9.6 Kept for add-ons
+
+A few small stock scripts that third-party Merlin add-on pages may load (`detect.js`, `base64.js`, `ajax.js`, the
+chart scripts and the like) stay, and so does the stock menu file `require/modules/menuTree.js`, which add-on
+installers edit to add their tab (Reaper reads the add-on entries from it).
+
+### 9.7 Why these were kept
+
+Each file above is still loaded by something that works, or may be: a mode change, an AiMesh node, closed code, or an
+add-on. Removing one would break that flow for no benefit a user can see. Everything else the stock interface used
+was removed from the image, including the language-pack strings that only the removed pages displayed (about 430 KB
+across the 25 languages). Every string a shipped page displays is still present in every language.

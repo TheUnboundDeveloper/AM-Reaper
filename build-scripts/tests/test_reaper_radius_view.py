@@ -244,7 +244,7 @@ console.log(JSON.stringify({html: els.bands.innerHTML, apply: els.applybtn.style
                   "192.168.50.10" in h and "1812" in h and "RNW_11" in h and "WPA2/WPA3-Enterprise / WPA3-Enterprise" in h, h[:400])
             check("migrated: second servers shown with their set state", "[fd00::9]:1815" in h and "10.0.0.9:1813" in h, h[:600])
             check("migrated: no input field, Apply hidden, the button opens the Network page",
-                  "<input" not in h and o["apply"] == "none" and o["href"] == "/reaper_shell.asp#SDN.asp", (o["apply"], o["href"]))
+                  "<input" not in h and o["apply"] == "none" and o["href"] == "/reaper_shell.asp#Reaper_Network.asp", (o["apply"], o["href"]))
             check("migrated: no secret in the HTML", not any(s in h for s in SECRETS))
         o, err = run(sdn, res.get("personal", (0, ""))[1])
         check("migrated, Personal mode: says not in use", o is not None and "RNW_12" in o["html"] and "WPA2/WPA3-Personal" in o["html"], err)

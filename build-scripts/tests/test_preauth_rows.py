@@ -98,20 +98,25 @@ for name in MUST_NOT_PREAUTH:
             die("row %r is compiled in and served without authentication (ends in %r)" % (name, fields[-1]))
     ok("%s is %s" % (name, "authenticated" if name in live_rows else "compiled out"))
 
-# these stay compiled in behind a login: the Feedback page downloads fb_data.tgz.gz
-# through the archive wildcards, and stock admin pages load PIE.htc
-EXPECT_AUTH = ["**.part.*", "**.gz", "**.tgz", "**.zip", "**.ipk", "**.swf", "**.htc"]
+# these stay compiled in behind a login: the generic archive wildcards (add-on files may use them) and the
+# component rows. REAPER-UNUSED-CUT8 (2026-11-27): **.part.* went with the split feedback downloads it served.
+EXPECT_AUTH = ["**.gz", "**.tgz", "**.zip", "**.ipk", "**.swf", "**.htc"]
 for name in EXPECT_AUTH:
     if name not in live_rows:
         die("row %r is missing from the compiled table (expected it behind do_auth)" % name)
 ok("archive and component rows present behind do_auth")
 
-# audit 2026-10-06 V4 (2026-10-08): the retired QIS / repeater pages require a login; the offline page's
-# WAN poll carries only the WAN state it reads (no dual-WAN list, auto-detect state or dual_wanstate)
+# audit 2026-10-06 V4 (2026-10-08): the retired QIS / repeater pages require a login. REAPER-UNUSED-CUT8
+# (2026-11-27) removed the rows of gotoHomePage.htm and ureip.asp with their files: gone is fine, a row that is
+# there must end in do_auth. The offline page's WAN poll carries only the WAN state it reads (no dual-WAN list,
+# auto-detect state or dual_wanstate)
+if "ure_success.htm" not in live_rows:
+    die("row 'ure_success.htm' is missing from the compiled table")
 for name in ("gotoHomePage.htm", "ure_success.htm", "ureip.asp"):
-    if name not in live_rows:
-        die("row %r is missing from the compiled table" % name)
-ok("retired pre-login pages gotoHomePage.htm, ure_success.htm, ureip.asp are behind do_auth")
+    for fields in live_rows.get(name, []):
+        if fields[-1] != "do_auth":
+            die("row %r is served without authentication (ends in %r)" % (name, fields[-1]))
+ok("retired pre-login pages: ure_success.htm behind do_auth; gotoHomePage.htm, ureip.asp gone or behind do_auth")
 wi = open(os.path.join(SRC, "www", "WAN_info.asp"), encoding="utf-8", errors="replace").read()
 tags = re.findall(r"<%[^%]*%>", wi)
 if tags != ["<% wanstate(); %>"]:

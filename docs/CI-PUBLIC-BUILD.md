@@ -172,7 +172,9 @@ pinned upstream base genuinely does not carry. It is vendored here as
 branch. The GT-BE19000, ZenWiFi BQ16 and ZenWiFi BQ16 Pro, which joined later from
 their own ASUS GPL releases, carry the same kind of archive
 (`overlays/<MODEL>-platform.tar.gz`, each with its `.sha256`); the other models get
-their platform tree from the pinned base.
+their platform tree from the pinned base. These archives are carried on the branches
+that build those models (`Dev-102.8`, and the alpha branch `Dev-Uni`), not on `Dev`,
+whose four models need none.
 
 The originally proposed source (`github.com/ExtremeFiretop/AM-Reaper/releases`)
 was **not** used — it returned HTTP 404, so it could not be inspected or hashed.

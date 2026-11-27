@@ -98,6 +98,7 @@ exceptions are the vendor files the clean-room build cannot get from the pinned
 base, carried unmodified and SHA-256 pinned in [`overlays/`](overlays/): the
 `libnvram.so` / `libwlcsm.so` pair from ASUS's public 9.0.0.6.102_42015 firmware
 (`wlcsm-42015-blobs.tar.gz`), the prebuilt components inside the sibling platform
-trees taken from each model's ASUS GPL release (`<MODEL>-platform.tar.gz`), and the
+trees taken from each model's ASUS GPL release (`<MODEL>-platform.tar.gz`, on the branches
+that build those models), and the
 Realtek object above (`uboot-rtl8372-*.tar.gz`). See
 [`docs/SOURCE-AVAILABILITY.md`](docs/SOURCE-AVAILABILITY.md) §1.

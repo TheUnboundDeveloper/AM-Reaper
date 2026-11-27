@@ -59,7 +59,7 @@ clean-room build ([`../build-scripts/ci/container_build.sh`](../build-scripts/ci
   reference them (11 to 25 files). Reaper-authored source, in `git format-patch`
   form like the series.
 - **`<MODEL>-platform.tar.gz`** — GT-BE98, GT-BE19000, ZenWiFi BQ16 and ZenWiFi BQ16
-  Pro. The model's platform tree (`router-sysdep.<model>` and the model's files
+  Pro, on the branches that build them (`Dev-102.8`, `Dev-Uni`). The model's platform tree (`router-sysdep.<model>` and the model's files
   under `release/src/router`), which the pinned base does not carry because these
   models come from different ASUS GPL releases. It holds GPL source and the vendor's
   prebuilt components, as ASUS published them in that model's GPL release.

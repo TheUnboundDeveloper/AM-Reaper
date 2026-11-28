@@ -115,8 +115,8 @@ check("httpd sends the stock page's address to Reaper_System.asp and keeps the q
 # and its .tab rules drew a red border and a red hover fill on the page's tab containers.
 check("httpd treats the page as native (bounce, no stock reaper_content.css)", '\t"Reaper_System.asp",' in inj
       and inj.index('\t"Reaper_System.asp",') > inj.index("static const char *reaper_native[]"))
-check("each tab body sits in the kit's static crimson frame (.rframe, owner 2026-10-23), with no hover state",
-      t.count('<div class="tab rframe" id="tab_') == 6 and ".rframe{background:rgba(var(--cb-acc-rgb,225,6,0),.22);border:1px solid rgba(var(--cb-acc-rgb,225,6,0),.30)}" in rpcss
+check("each tab body sits in the kit's static frame (.rframe; quiet since 2026-11-28: a trace of the accent, the kit's line), with no hover state",
+      t.count('<div class="tab rframe" id="tab_') == 6 and ".rframe{background:rgba(255,255,255,.022);border:1px solid var(--line)}" in rpcss
       and not re.search(r"\.(tab|rframe)(\.on)?:hover\s*[,{]", t + rpcss))
 unlisted = sorted(f for f in os.listdir(www) if f.endswith(".asp") and '<meta name="reaper-native" content="1">' in rd(os.path.join(www, f))
                   and ('"%s"' % f) not in inj)
@@ -152,11 +152,14 @@ ACLQ = ("  if (ROUTER && c.enable_acc_restriction === '1' && (c.enable_acc_restr
         "      && String(location.hostname).indexOf(':') >= 0 && !confirm(`<#RADM_81#>`)) return NOPOST;\n")
 v0 = t.find("function validate(c){\n"); v1 = t.find("\n}\n", v0)
 VAL = t[v0:v1 + 3] if v0 > 0 else ""
+# REAPER-APP-OPTIN (2026-11-28): one more question follows it - switching the ASUS Router app exemption ON
+APPQ = ("  /* REAPER-APP-OPTIN: switching the app exemption ON is asked in so many words; off needs no question */\n"
+        "  if (c.reaper_app_allow === '1' && !isOn(NV.reaper_app_allow) && !confirm(`<#RAPP_8#>`)) return NOPOST;\n")
 check("validate(): a page open over IPv6 (':' in location.hostname) asks RADM_81 before the restriction is turned on or its list changes",
-      ACLQ in VAL and VAL.rstrip().endswith(ACLQ.rstrip() + "\n  return '';\n}"), VAL[-500:])
+      ACLQ in VAL and VAL.rstrip().endswith(ACLQ.rstrip() + "\n" + APPQ + "  return '';\n}"), VAL[-700:])
 check("Cancel posts nothing and shows no error",
       "var NOPOST = '\\x01';" in t and "  var c = collect(), err = validate(c), changed, n, k;\n  if (err){ if (err !== NOPOST) msg(err); return; }\n" in t
-      and t.count("NOPOST") == 3)
+      and t.count("NOPOST") == 4)	# the definition, applyAll, the IPv6 question, the app opt-in question
 fwc = rd(os.path.join(SRC, "rc", "firewall.c"))
 f0 = fwc.find("void write_access_restriction(FILE *fp_ipv4, FILE *fp_ipv6)\n{"); f1 = fwc.find("\n}\n", f0)
 FWA = fwc[f0:f1] if f0 > 0 else ""

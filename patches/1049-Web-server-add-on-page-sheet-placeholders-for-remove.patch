@@ -1,0 +1,1428 @@
+From 73bbcb2b8117af80a9b62c008d469f57b7b40f51 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Sat, 28 Nov 2026 12:47:00 -0500
+Subject: [PATCH] Web server: add-on page sheet, placeholders for removed
+ hooks, device pictures and types, ASUS Router app opt-in
+
+- Add-on pages (REAPER-ADDON-SKIN): user<N>.asp, and an add-on's own copy of a page Reaper no longer ships, get the
+  add-on sheet (reaper/reaper_addon.css), the shell bounce, the colour-blind block and the page token. They had
+  shown the stock banner, menu and tabs since the stock skin left.
+- Removed page hooks (REAPER-HOOK-PLACEHOLDER): nine hooks add-on pages still use as values (apps_info,
+  bwdpi_appStat, bwdpi_wanStat, dns_appStat, dns_wanStat, dns_status, usb_is_exist, cpu_core_num, get_label_mac)
+  print an empty value of the right kind and one log line per hook per boot instead of nothing.
+- Guest portal look: get_customized_attribute takes a profile id of 1 to 13 digits only.
+- Device pictures and types (REAPER-DEVICON): reaper_dev.cgi gains set_icon, del_icon, set_type, icon_list and
+  icon_get (POST, page token, same origin; PNG / JPEG / WebP checked by content, 32 KB each, 256 pictures, refused
+  when /jffs is nearly full; written with O_EXCL | O_NOFOLLOW and a rename). The old paths are closed: the picture
+  field of the settings handler, get_usericon_md5.cgi, backup_all_usericon.cgi and upload_all_usericon.cgi.
+  Clearing a device's name no longer drops its type.
+- ASUS Router app (REAPER-APP-OPTIN): reaper_app_allow, off at factory. With it on, a request skips the cross-site
+  refusal, the Referer checks, the page token and the POST-only rule only when its User-Agent is the app's, it
+  arrived on the LAN-side listener and its sender is on the main network (IPv4 inside the LAN subnet, IPv6 on the LAN
+  bridge). One decision per request (reaper_app_exempt); one log line on first use per boot, and one (at most every
+  10 s) for a request that names the app from anywhere else. With it off nothing changes. The switch is in the full
+  backup only and is watched by the Security Review.
+- Wireless Log: the station list carries the Rx and Tx retry counters.
+
+Co-Authored-By: Claude Fable 5.2 <noreply@anthropic.com>
+---
+ release/src/router/httpd/ej.c                 |  58 +-
+ release/src/router/httpd/httpd.c              |  93 +-
+ release/src/router/httpd/httpd.h              |   1 +
+ release/src/router/httpd/reaper_inject.c      |  61 +-
+ .../router/httpd/sysdeps/web-broadcom-am.c    |  20 +-
+ release/src/router/httpd/web.c                | 798 +++++++++++++-----
+ release/src/router/rc/rwatch.c                |   2 +-
+ release/src/router/shared/defaults.c          |   1 +
+ 8 files changed, 803 insertions(+), 231 deletions(-)
+
+diff --git a/release/src/router/httpd/ej.c b/release/src/router/httpd/ej.c
+index 4ffa0a4b28..2c5add5e20 100644
+--- a/release/src/router/httpd/ej.c
++++ b/release/src/router/httpd/ej.c
+@@ -76,11 +76,59 @@ get_arg(char *args, char **next)
+ 	return arg;
+ }
+ 
++/* REAPER-HOOK-PLACEHOLDER (2026-11-27, owner): a <% name(); %> hook with no handler prints nothing. For most removed
++ * hooks that is harmless (a quoted value becomes "", a statement hook leaves nothing), but a hook written as a bare
++ * JavaScript value - `var a = <% apps_info("asus"); %>;` - turns into `var a = ;`, a syntax error that stops every
++ * script in that block. Third-party add-on pages written for stock Merlin may still use these hooks, so each one
++ * that the stock pages used as a bare value prints a harmless empty value of the same shape instead. Printed only
++ * when no handler matched: a hook that is still built (on any model) answers as before. Each row also writes one
++ * system log line per httpd run naming the page, so the add-on that still uses it can be found. */
++static const struct ej_removed_row { const char *name, *value; } ej_removed_hooks[] = {
++	{ "apps_info", "[]" },
++	{ "bwdpi_appStat", "[]" },
++	{ "bwdpi_wanStat", "[]" },
++	{ "dns_appStat", "[]" },
++	{ "dns_wanStat", "[]" },
++	{ "dns_status", "[]" },
++	{ "usb_is_exist", "0" },
++	{ "get_label_mac", "\"\"" },
++	{ "cpu_core_num", "0" },
++	{ NULL, NULL }
++};
++static const char *ej_cur_page;		/* do_ej(): the page being served (for the log line only) */
++
++static void
++ej_removed_hook(const char *func, FILE *stream)
++{
++	static unsigned int logged;	/* one bit per row: each row logs once per httpd run */
++	const char *p;
++	char page[65];
++	int i, n;
++
++	for (i = 0; ej_removed_hooks[i].name; i++) {
++		if (strcmp(ej_removed_hooks[i].name, func) != 0)
++			continue;
++		fputs(ej_removed_hooks[i].value, stream);
++		if (i < 32 && !(logged & (1u << i))) {
++			logged |= 1u << i;
++			p = ej_cur_page ? strrchr(ej_cur_page, '/') : NULL;
++			p = p ? p + 1 : (ej_cur_page ? ej_cur_page : "");
++			for (n = 0; *p && n < (int)sizeof(page) - 1; p++)	/* a file name: keep the plain characters only */
++				if (isalnum((unsigned char)*p) || *p == '.' || *p == '_' || *p == '-')
++					page[n++] = *p;
++			page[n] = '\0';
++			logmessage("httpd", "reaper: page %s uses removed hook %s (an empty value was written; logged once)",
++				n ? page : "(unknown)", func);
++		}
++		return;
++	}
++}
++
+ static void
+ call(char *func, FILE *stream)
+ {
+ 	char *args, *end, *next;
+-	int argc;
++	int argc, matched = 0;
+ 	char * argv[16];
+ 	struct ej_handler *handler;
+ 
+@@ -100,9 +148,13 @@ call(char *func, FILE *stream)
+ 	/* Call handler */
+ 	for (handler = &ej_handlers[0]; handler->pattern; handler++) {
+ //		if (strncmp(handler->pattern, func, strlen(handler->pattern)) == 0)
+-		if (strcmp(handler->pattern, func) == 0)
++		if (strcmp(handler->pattern, func) == 0) {
+ 			handler->output(0, stream, argc, argv);
++			matched = 1;
++		}
+ 	}
++	if (!matched)
++		ej_removed_hook(func, stream);	/* REAPER-HOOK-PLACEHOLDER */
+ }
+ #ifdef TRANSLATE_ON_FLY
+ static const char *asp_mark1 = "<%", *asp_mark2 = "%>", *kw_mark1 = "<#", *kw_mark2 = "#>";
+@@ -253,6 +305,7 @@ do_ej(char *path, FILE *stream)
+ 
+ 	if (!(fp = fopen(path, "r")))
+ 		return;
++	ej_cur_page = path;	/* REAPER-HOOK-PLACEHOLDER: named in the removed-hook log line */
+ 
+ #ifdef TRANSLATE_ON_FLY
+ 	char *current_lang = NULL;
+@@ -421,6 +474,7 @@ do_ej(char *path, FILE *stream)
+ 
+ 	fflush (stream);
+ 
++	ej_cur_page = NULL;
+ 	fclose(fp);
+ }
+ #endif  // defined TRANSLATE_ON_FLY
+diff --git a/release/src/router/httpd/httpd.c b/release/src/router/httpd/httpd.c
+index 4cf952f2f4..c9462a3597 100644
+--- a/release/src/router/httpd/httpd.c
++++ b/release/src/router/httpd/httpd.c
+@@ -965,6 +965,81 @@ static int reaper_wan_listener(void)
+ 	return http_ifname && *http_ifname && *lan && strcmp(http_ifname, "lo") && strcmp(http_ifname, lan);
+ }
+ 
++/* REAPER-APP-OPTIN (2026-11-28, field request; owner: a choice the admin takes on). The ASUS Router phone app sends
++ * no Referer and no page token, so since REAPER-NOAPP (2026-11-24) its requests fail the checks every browser
++ * request gets. With the switch reaper_app_allow on (Administration > System > Login and access; off at factory,
++ * never set by the firmware) a request is let past those checks - the cross-site refusal, the Referer rule and the
++ * two Referer checks behind it, the page token on an apply, the "an apply is a POST" rule of apply.cgi - and past
++ * nothing else: it still has to sign in. It earns that only when ALL of this holds:
++ *   - the switch is 1;
++ *   - its User-Agent is the app's own kind, check_user_agent() == FROM_DUTUtil ("asusrouter-<os>-DUTUtil-<version>").
++ *     The other FROM_* kinds of shared.h (IFTTT, Alexa, ASSIA, WebView, ATE, MyASUS, unknown) earn nothing;
++ *   - it came in on a LAN listener: not the remote-access listener, not the loopback one;
++ *   - its peer is on the main network (reaper_peer_main_lan(), below).
++ * The User-Agent is the client's own word - any device or program on the main network can claim it; that is the
++ * risk the switch's page text spells out. Decided ONCE per request, in handle_request() (reaper_req_app); the
++ * five places read that result, web.c through httpd.h. With the switch 0 nothing here changes any request. */
++int reaper_req_app = 0;	/* REAPER-APP-OPTIN: this request earns the opt-in app exemption */
++#define REAPER_APP_USED	"/tmp/reaper/.app_optin_used"	/* made at the first use after a boot (one log line per boot) */
++
++/* Is the peer of this connection a device on the main network? IPv4: an address inside lan_ipaddr / lan_netmask that
++ * is not the router's own. A client from the internet (web access from WAN forwards the port to the LAN address,
++ * the peer keeps its own address), a VPN-server client and a guest or other network with its own subnet are outside
++ * it. IPv6: only on the listener rc bound to the LAN bridge (-i <lan_ifname>, SO_BINDTODEVICE) - a packet that came
++ * in on any other interface never reaches that socket; with no bound interface (access-point mode) IPv6 earns
++ * nothing. A network that shares the main subnet cannot be told apart here. */
++static int reaper_peer_main_lan(void)
++{
++	const char *lan = nvram_safe_get("lan_ifname");
++	struct in_addr ip, mask;
++
++	if (uaddr_is_unspecified(&login_uip_tmp) || uaddr_is_localhost(&login_uip_tmp))
++		return 0;
++	if (reaper_wan_listener() || (http_ifname && !strcmp(http_ifname, "lo")))
++		return 0;
++	switch (login_uip_tmp.family) {
++	case AF_INET:
++		if (inet_aton(nvram_safe_get("lan_ipaddr"), &ip) == 0 || inet_aton(nvram_safe_get("lan_netmask"), &mask) == 0 ||
++		    !mask.s_addr || login_uip_tmp.in.s_addr == ip.s_addr)
++			return 0;
++		return (ip.s_addr & mask.s_addr) == (login_uip_tmp.in.s_addr & mask.s_addr);
++#ifdef RTCONFIG_IPV6
++	case AF_INET6:
++		return http_ifname && *lan && !strcmp(http_ifname, lan);
++#endif
++	}
++	return 0;
++}
++
++/* fromapp = what check_user_agent() made of this request's User-Agent. 1 = the exemption applies to this request. */
++static int reaper_app_exempt(int fromapp)
++{
++	static long last;
++	static int said;
++	char ip[64];
++	int fd;
++
++	if (fromapp != FROM_DUTUtil || !nvram_match("reaper_app_allow", "1"))
++		return 0;
++	if (!reaper_peer_main_lan()) {
++		if (uptime() - last >= 10) {	/* as the neighbouring refusals: one line per 10 s */
++			last = uptime();
++			logmessage("httpd", "reaper: a request names the ASUS Router app from outside the home network (%s) - no exemption, it is checked like a browser",
++				safe_uaddr_ntop(&login_uip_tmp, ip, sizeof(ip)));
++		}
++		return 0;
++	}
++	if (!said) {	/* once per boot, whichever listener sees it first */
++		said = 1;
++		if ((fd = open(REAPER_APP_USED, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0600)) >= 0) {
++			close(fd);
++			logmessage("httpd", "reaper: the ASUS Router app exemption is in use (first request since boot, from %s) - the cross-site checks are relaxed for app requests from the home network",
++				safe_uaddr_ntop(&login_uip_tmp, ip, sizeof(ip)));
++		}
++	}
++	return 1;
++}
++
+ void
+ send_login_page(int fromapp_flag, int error_status, char* url, char* file, int lock_time, int logintry)
+ {
+@@ -2132,7 +2207,8 @@ reaper_gk_wait_page(void)
+  * cross-site navigation there, so over HTTP "no header" is exactly the
+  * cross-site case; a same-origin request from the router's own pages always
+  * carries its Referer (nothing served here sets a no-referrer policy). The
+- * ASUS app (fromapp) is not a browser and is not checked here.
++ * ASUS app is checked like a browser (REAPER-NOAPP-XSITE, 2026-11-24), unless the admin switched the app
++ * exemption on and the request earns it (REAPER-APP-OPTIN, 2026-11-28: reaper_app_exempt()).
+  *
+  * One stock cross-DEVICE flow is kept: an AiMesh node's wizard (QIS_V3
+  * handler.js goTo.Conncap) navigates to http://<DUT domain>/cfg_onboarding.cgi
+@@ -2698,6 +2774,7 @@ handle_request(void)
+ 		strlcpy(user_agent, "", sizeof(user_agent));
+ 
+ 	fromapp = check_user_agent(useragent);
++	reaper_req_app = reaper_app_exempt(fromapp);	/* REAPER-APP-OPTIN: decided once per request */
+ 	reaper_req_authed = 0;
+ 	reaper_req_post = strcasecmp(method, "post") == 0;	/* reaper 2026-10-25 (review S-C2-1): web.c refuses an apply on anything else */
+ 
+@@ -2746,7 +2823,8 @@ handle_request(void)
+ 	}
+ 
+ 	/* review 2026-11-24 (REAPER-NOAPP-REFERER): the Referer rule of a page is looked up for every request - it
+-	 * was skipped when the User-Agent named the ASUS app, which any client can claim */
++	 * was skipped when the User-Agent named the ASUS app, which any client can claim. REAPER-APP-OPTIN
++	 * (2026-11-28): the rule is dropped again only for a request the opt-in exemption applies to. */
+ 	// check doreferer first
+ 	for (doreferer = &mime_referers[0]; doreferer->pattern; doreferer++) {
+ 		if(match(doreferer->pattern, url))
+@@ -2755,6 +2833,8 @@ handle_request(void)
+ 			break;
+ 		}
+ 	}
++	if (reaper_req_app)	/* REAPER-APP-OPTIN: the app sends no Referer */
++		do_referer = 0;
+ 
+ 	// for each page, mime_exception is defined to do exception handler
+ 	// check exception first
+@@ -2843,15 +2923,16 @@ handle_request(void)
+ 					/* REAPER-XSITE-OWNOUT (P6-2-1): and for every row with an output function of its own */
+ 					reaper_xsite_own_out = handler->output && handler->output != do_ej && handler->output != do_file;
+ 					/* reaper 2026-10-23: cross-site refusal for every authenticated CGI */
+-					/* review 2026-11-24 (REAPER-NOAPP-XSITE): also for a request that names the ASUS app in its User-Agent */
+-					if (reaper_xsite_cgi_refused(url, file, method, sec_fetch_site, useragent, do_ssl)) {
++					/* review 2026-11-24 (REAPER-NOAPP-XSITE): also for a request that names the ASUS app in its User-Agent -
++					 * REAPER-APP-OPTIN (2026-11-28): unless the opt-in exemption applies to this request */
++					if (!reaper_req_app && reaper_xsite_cgi_refused(url, file, method, sec_fetch_site, useragent, do_ssl)) {
+ 						if(strcasecmp(method, "post") == 0 && handler->input)	//response post request
+ 							{ int _dn = cl; if (_dn > 65536) _dn = 65536; while (_dn-- > 0 && fgetc(conn_fp) != EOF) ; }
+ 						send_error( 403, "Forbidden", (char*) 0, "Cross-site request refused." );
+ 						return;
+ 					}
+ 					if(do_referer&CHECK_REFERER){
+-						referer_result = referer_check(referer, 0);	/* REAPER-NOAPP-REFCHK: was fromapp */
++						referer_result = referer_check(referer, reaper_req_app ? fromapp : 0);	/* REAPER-NOAPP-REFCHK: the app flag only with the opt-in (REAPER-APP-OPTIN) */
+ 						if(referer_result != 0){
+ 							if(strcasecmp(method, "post") == 0 && handler->input)	//response post request
+ 								{ int _dn = cl; if (_dn > 65536) _dn = 65536; while (_dn-- > 0 && fgetc(conn_fp) != EOF) ; }
+@@ -2896,7 +2977,7 @@ handle_request(void)
+ 					app_http_login(&login_uip_tmp);
+ 			}else{
+ 				if(do_referer&CHECK_REFERER){
+-					referer_result = check_noauth_referrer(referer, 0);	/* REAPER-NOAPP-NOAUTHREF: was fromapp */
++					referer_result = check_noauth_referrer(referer, reaper_req_app ? fromapp : 0);	/* REAPER-NOAPP-NOAUTHREF: the app flag only with the opt-in (REAPER-APP-OPTIN) */
+ 					if(referer_result != 0){
+ 						if(strcasecmp(method, "post") == 0 && handler->input)	//response post request
+ 							{ int _dn = cl; if (_dn > 65536) _dn = 65536; while (_dn-- > 0 && fgetc(conn_fp) != EOF) ; }
+diff --git a/release/src/router/httpd/httpd.h b/release/src/router/httpd/httpd.h
+index 89d42517d6..d9000605b1 100644
+--- a/release/src/router/httpd/httpd.h
++++ b/release/src/router/httpd/httpd.h
+@@ -515,6 +515,7 @@ extern char indexpage[128];
+ extern char url[128];
+ extern char referer_url[128];
+ extern int reaper_req_post;	/* reaper 2026-10-25: the current request is a POST (httpd.c; an apply needs it) */
++extern int reaper_req_app;	/* REAPER-APP-OPTIN 2026-11-28: this request earns the opt-in app exemption (httpd.c reaper_app_exempt) */
+ extern unsigned int login_ip; // the logined ip
+ extern unsigned int app_login_ip; // the app logined ip
+ extern char cookies_buf[10000];
+diff --git a/release/src/router/httpd/reaper_inject.c b/release/src/router/httpd/reaper_inject.c
+index 625edf9241..f8e9653b60 100644
+--- a/release/src/router/httpd/reaper_inject.c
++++ b/release/src/router/httpd/reaper_inject.c
+@@ -15,7 +15,10 @@
+  *     with a bounce to the Reaper page that replaced it (reaper_pagemap[]);
+  *   - the shell bounce for a Reaper page opened by its own address (mode 2);
+  *   - the security banner loader on the top-level admin pages (mode 5);
+- *   - the bare-link colour floor (modes 2 and 5) and the colour-blind block;
++ *   - the bare-link colour floor (modes 2, 5 and 7) and the colour-blind block;
++ *   - the add-on page skin (mode 7, REAPER-ADDON-SKIN): a third-party add-on page (user<N>.asp, or an add-on's
++ *     copy mounted over the address of a stock page that no longer ships) gets reaper/reaper_addon.css and the
++ *     shell bounce, so it shows inside the shell without the stock banner, menu and tabs;
+  *   - nothing at all on an AiMesh node (re_mode / disable_ui).
+  *
+  * reaper_output() wraps mime_handler->output(). For a text/html page it captures
+@@ -58,6 +61,16 @@
+ 	"<script>(function(){if(self===top){var rp=location.pathname.split(\"/\").pop()||\"Main_ReaperDash.asp\";" \
+ 	"location.replace(\"/reaper_shell.asp#\"+rp+location.search);}})();</script>"
+ 
++/* Mode 7 (REAPER-ADDON-SKIN, 2026-11-27, owner): third-party add-on pages are built on the stock page template - the
++ * stock scripts draw the ASUS banner, the left menu and the tab strip into them, at the stock fixed width. REAPER-CUT8
++ * removed the stock skin that hid those parts, so add-on pages showed the whole stock chrome inside the shell frame.
++ * This sheet hides that chrome, lets the page use the full frame width and gives the template's panels, tables and
++ * controls the Reaper colours. Written after the page's own stylesheets (the pieces sit before </head>). The mode
++ * also takes the same shell bounce as a Reaper page (RP_NATIVE_JS), so an add-on page opened by its own address
++ * shows inside the shell. */
++#define REAPER_ADDON_CSS \
++	"<link rel=\"stylesheet\" href=\"/reaper/reaper_addon.css\">"
++
+ /* v2.9.1 unsecured-router banner. Replaces the six first-boot gates that used to
+  * block every page until Reaper_FirstBoot.asp was completed. Nothing is blocked
+  * now: the box is usable on admin/admin and simply says so, everywhere, until both
+@@ -173,6 +186,8 @@
+  *                                                        box: own chrome, top-level; the shell IS the bounce target,
+  *                                                        but the banner must show there)
+  *   mode 6 token only:      nothing visual              (reaper_skip[], QIS_*, and since REAPER-CUT8 every other page)
++ *   mode 7 add-on page:     LINK_CSS ADDON_CSS NATIVE_JS (user<N>.asp, and an add-on's page mounted over the address of
++ *                                                        a stock page that no longer ships - REAPER-ADDON-SKIN)
+  * Every mode also gets the colour-blind block and the token hook below, on an authenticated answer.
+  * REAPER-CUT8: mode 1 (stock page: the reaper_content.css skin + the superseded-page bounce) and mode 3 (first-run
+  * gate: skin + banner) are gone with the stock UI. */
+@@ -212,6 +227,7 @@ extern int reaper_req_authed;	/* httpd.c: auth_check() passed for this request *
+ static const char RP_CB[] = REAPER_CB_BLOCK;
+ static const char RP_LINK_CSS[] = REAPER_LINK_CSS;
+ static const char RP_NATIVE_JS[] = REAPER_NATIVE_JS;
++static const char RP_ADDON_CSS[] = REAPER_ADDON_CSS;
+ static const char RP_SECBANNER[] = REAPER_SECBANNER_JS;
+ #define RP_PUT(f, a)	fwrite((a), 1, sizeof(a) - 1, (f))
+ 
+@@ -631,6 +647,18 @@ static int reaper_page_ext(const char *name)
+ 	       strcasecmp(dot, "html") == 0;
+ }
+ 
++/* REAPER-ADDON-SKIN: the Merlin add-on page slots, user<N>.asp (/www/userN.asp -> /www/user/userN.asp ->
++ * /tmp/var/wwwext). No Reaper or stock page has such a name; the shell's ReaperAddons uses the same rule. */
++static int reaper_addon_name(const char *name)
++{
++	size_t d;
++
++	if (strncasecmp(name, "user", 4) != 0)
++		return 0;
++	d = strspn(name + 4, "0123456789");
++	return d > 0 && strcasecmp(name + 4 + d, ".asp") == 0;
++}
++
+ static int reaper_should_inject(struct mime_handler *h, const char *file)
+ {
+ 	const char *b;
+@@ -721,6 +749,13 @@ static int reaper_should_inject(struct mime_handler *h, const char *file)
+ 		if (strcasecmp(name, reaper_native[i]) == 0)
+ 			return 2;
+ 
++	/* REAPER-ADDON-SKIN (2026-11-27, owner): a third-party add-on page slot gets the add-on sheet and the shell
++	   bounce. (An add-on's page mounted over the address of a stock page that no longer ships is found by
++	   reaper_output(), which knows whether the file is on disk.) Only these: a kept stock page is not an add-on
++	   page (below). */
++	if (reaper_addon_name(name))
++		return 7;
++
+ 	/* REAPER-CUT8: every other page - the kept stock files (the setup wizard's documents, the node pages
+ 	   served on a router by address, the hidden apply frames) - gets the token hook only, as a skip-listed
+ 	   page does. Mode 1 (the stock skin + the superseded-page bounce) is gone. */
+@@ -775,7 +810,7 @@ void reaper_output(struct mime_handler *handler, char *file, FILE *conn_fp)
+ 	size_t bodylen = 0;
+ 	char *body = NULL, *tag;
+ 	FILE *mem;
+-	int mode;
++	int mode, overlay = 0;
+ 
+ 	if (!handler || !handler->output)
+ 		return;
+@@ -786,7 +821,13 @@ void reaper_output(struct mime_handler *handler, char *file, FILE *conn_fp)
+ 	 * Review 2026-10-24 (Q-B-6): the file test runs for .asp names only - every image, script and
+ 	 * stylesheet fetch used to pay an access() here for a table that holds nothing but .asp names.
+ 	 * REAPER-CUT8: a page that still ships only for an AiMesh node (a shipped = 1 row) gets the same stub on a
+-	 * router - before stage 5 the stock skin's bounce sent it to the Reaper page (owner, stage 5 question 3). */
++	 * router - before stage 5 the stock skin's bounce sent it to the Reaper page (owner, stage 5 question 3).
++	 * REAPER-ADDON-SKIN: a shipped = 0 row whose file IS present can only be a file from outside the image - www/Makefile
++	 * removes every one of those pages at install (the conditional rows use the Makefile's own options) - in practice
++	 * an add-on that mounts its page over the stock address (YazDHCP over Advanced_DHCP_Content.asp). That page is
++	 * served and gets the add-on treatment (overlay). The test is by name and presence only, never by content, so the
++	 * stub the router itself answers for an absent file is never mistaken for one; a shipped = 1 row (a stock page the
++	 * image keeps for AiMesh nodes) is never an overlay. */
+ 	{
+ 		const char *ext = strrchr(file, '.');
+ 		if (ext && !strcasecmp(ext, ".asp")) {
+@@ -795,8 +836,10 @@ void reaper_output(struct mime_handler *handler, char *file, FILE *conn_fp)
+ 				to = reaper_gone_target(file, 0);
+ 			else if (!reaper_is_node()) {
+ 				to = reaper_gone_target(file, 1);
+-				if (to && reaper_gone_target(file, 0))
++				if (to && reaper_gone_target(file, 0)) {
+ 					to = NULL;	/* a shipped = 0 row whose file is present (an add-on): serve the file */
++					overlay = 1;
++				}
+ 			}
+ 			if (to) {
+ 				reaper_put_stub(conn_fp, to);
+@@ -805,6 +848,8 @@ void reaper_output(struct mime_handler *handler, char *file, FILE *conn_fp)
+ 		}
+ 	}
+ 	mode = reaper_should_inject(handler, file);
++	if (overlay && mode == 6)
++		mode = 7;	/* REAPER-ADDON-SKIN: an add-on's page over a stock address (YazDHCP over Advanced_DHCP_Content.asp) */
+ 	if (!mode) {
+ 		handler->output(file, conn_fp);
+ 		return;
+@@ -824,12 +869,18 @@ void reaper_output(struct mime_handler *handler, char *file, FILE *conn_fp)
+ 	tag = reaper_find_tag(body, bodylen);
+ 	if (tag) {
+ 		fwrite(body, 1, (size_t)(tag - body), conn_fp);			/* head */
+-		/* the mode's pieces (see the RP_* arrays): 2 = reaper-native page, 5 = banner only, 6 = token hook only */
++		/* the mode's pieces (see the RP_* arrays): 2 = reaper-native page, 5 = banner only, 6 = token hook only,
++		   7 = add-on page */
+ 		switch (mode) {
+ 		case 2:
+ 			RP_PUT(conn_fp, RP_LINK_CSS);
+ 			RP_PUT(conn_fp, RP_NATIVE_JS);
+ 			break;
++		case 7:		/* REAPER-ADDON-SKIN */
++			RP_PUT(conn_fp, RP_LINK_CSS);
++			RP_PUT(conn_fp, RP_ADDON_CSS);
++			RP_PUT(conn_fp, RP_NATIVE_JS);
++			break;
+ 		case 5:
+ 			RP_PUT(conn_fp, RP_LINK_CSS);
+ 			RP_PUT(conn_fp, RP_SECBANNER);
+diff --git a/release/src/router/httpd/sysdeps/web-broadcom-am.c b/release/src/router/httpd/sysdeps/web-broadcom-am.c
+index 6ea8aa66a0..4bcec2e9ed 100644
+--- a/release/src/router/httpd/sysdeps/web-broadcom-am.c
++++ b/release/src/router/httpd/sysdeps/web-broadcom-am.c
+@@ -369,6 +369,7 @@ ej_wl_unit_status_array(int eid, webs_t wp, int argc, char_t **argv, int unit)
+ 	unsigned int flagentry;
+ 	int found, foundipv6 = 0, noclients = 0;
+ 	char rxrate[12], txrate[12];
++	char rtx[64];	/* reaper 2026-11-27: the row's retry counters (REAPER-WLRETRY) */
+ 	char ea[ETHER_ADDR_STR_LEN];
+ #ifdef RTCONFIG_MLO
+ 	char mld_mac[ETHER_ADDR_STR_LEN];
+@@ -762,10 +763,21 @@ sta_list:
+ 				 * MAC, "" for an ordinary client) - a backhaul station has no lease and no name of its own */
+ 				if (!reaper_node_of_sta(rawea, nodemac, sizeof(nodemac)) && strcmp(rawea, ea))
+ 					reaper_node_of_sta(ea, nodemac, sizeof(nodemac));
++				/* reaper 2026-11-27 (owner, REAPER-WLRETRY): four more fields after the node, for the Wireless Log's
++				 * retry column - frames sent to the station, the retransmissions they took, unicast frames received
++				 * from it, and how many of those carried the retry bit. Driver counters since the station joined;
++				 * the page turns them into percentages. Empty without SCB stats. */
++#if (WL_STA_VER >= 4)
++				if (sta->flags & WL_STA_SCBSTATS)
++					snprintf(rtx, sizeof(rtx), "\"%u\",\"%u\",\"%u\",\"%u\"",
++						sta->tx_pkts_total, sta->tx_pkts_retries, sta->rx_ucast_pkts, sta->rx_pkts_retried);
++				else
++#endif
++					strlcpy(rtx, "\"\",\"\",\"\",\"\"", sizeof(rtx));
+ 				if (subunit == 1)
+-					ret += websWrite(wp, "\"\",\"\",\"%s\"],", nodemac);
++					ret += websWrite(wp, "\"\",\"\",\"%s\",%s],", nodemac, rtx);
+ 				else if (subunit == 0)	// identify Main BSS
+-					ret += websWrite(wp, "\"Main BSS\",\"\",\"%s\"],", nodemac);
++					ret += websWrite(wp, "\"Main BSS\",\"\",\"%s\",%s],", nodemac, rtx);
+ 				else {
+ // SSID (for Guest Networks identification)
+ 					{
+@@ -786,9 +798,9 @@ sta_list:
+ 					}
+ // VLAN
+ #ifdef RTCONFIG_MULTILAN_CFG
+-					ret += websWrite(wp, "\"%d\",\"%s\"],", guestvlan, nodemac);
++					ret += websWrite(wp, "\"%d\",\"%s\",%s],", guestvlan, nodemac, rtx);
+ #else
+-					ret += websWrite(wp, "\"\",\"%s\"],", nodemac);	/* reaper (review 2026-10-24 Q-B-12): was `webswrite`, a typo in a branch this build does not compile */
++					ret += websWrite(wp, "\"\",\"%s\",%s],", nodemac, rtx);	/* reaper (review 2026-10-24 Q-B-12): was `webswrite`, a typo in a branch this build does not compile */
+ #endif
+ 				}
+ 			}
+diff --git a/release/src/router/httpd/web.c b/release/src/router/httpd/web.c
+index 18bf89a83c..e069744f95 100644
+--- a/release/src/router/httpd/web.c
++++ b/release/src/router/httpd/web.c
+@@ -3244,125 +3244,9 @@ void save_interface_to_index(char *wans_dualwan){
+ }
+ #endif
+ 
+-#ifdef RTCONFIG_JFFS2USERICON
+-void del_upload_icon(char *value) {
+-
+-	char *buf, *g, *p;
+-	char filename[48]={0}, mac_str[32]={0};
+-	struct json_object *md5_obj = NULL;
+-
+-	md5_obj = json_object_from_file(USERICON_MD5_FILE);
+-
+-	g = buf = strdup(value);
+-
+-	while (buf) {
+-		if ((p = strsep(&g, ">")) == NULL) break;
+-		if(strcmp(p, "")) {
+-			strlcpy(mac_str, p, sizeof(mac_str));
+-			toUpperCase(mac_str);
+-			trim_colon(mac_str);
+-			if(strcmp(mac_str, "") == 0){
+-				goto FINISH;
+-			}
+-			if(strlen(mac_str) == 12 && isValidMacAddress(mac_str)){
+-				//HTTPD_DBG("get user icon\n");
+-			}
+-			else if(strlen(mac_str) < 12 && isValid_digit_string(mac_str)){
+-				//HTTPD_DBG("get device type icon\n");
+-			}else{
+-				goto FINISH;
+-			}
+-			snprintf(filename, sizeof(filename), "/jffs/usericon/%s.log", mac_str);
+-
+-			//Delete exist file
+-			if(check_if_file_exist(filename))
+-				unlink(filename);
+-
+-			if(md5_obj && json_object_get_type(md5_obj) == json_type_object)
+-				json_object_object_del(md5_obj, mac_str);
+-		}
+-	}
+-
+-FINISH:
+-	free(buf);
+-
+-	if(md5_obj){
+-		json_object_to_file(USERICON_MD5_FILE, md5_obj);
+-		json_object_put(md5_obj);
+-	}
+-}
+-
+-void handle_upload_icon(char *value, char *usericon_mac) {
+-
+-	int upload_mac = 0;
+-	char *name = NULL, *uploadicon = NULL;
+-	char filename[32] = {0};
+-	struct json_object *md5_obj = NULL;
+-
+-	//Check folder exist or not
+-	if(!check_if_dir_exist(JFFS_USERICON))
+-		mkdir(JFFS_USERICON, 0755);
+-
+-	if(vstrsep(value, ">", &name, &uploadicon) == 2) {
+-		if(strlen(name) == 12 && isValidMacAddress(name)){
+-			upload_mac = 1;
+-			HTTPD_DBG("upload user mac file\n");
+-		}
+-		else if(strlen(name) < 12 && isValid_digit_string(name)){
+-			HTTPD_DBG("upload device type file\n");
+-		}
+-		else{
+-			HTTPD_DBG("invalid input\n");
+-			return;
+-		}
+-
+-		snprintf(filename, sizeof(filename), "/jffs/usericon/%s.log", name);
+-
+-		//Delete exist file
+-		if(isValidMacAddress(usericon_mac)){
+-			del_upload_icon(usericon_mac);
+-		}else if(upload_mac == 1){
+-			del_upload_icon(name);
+-		}
+-
+-		//If upload icon string is not noupload, then write to file.
+-		if(strcmp(uploadicon, "noupload")) {
+-			if(upload_mac == 1){
+-				int i = 0;
+-				char md5string[33] = {0};
+-				unsigned char key[MD5_DIGEST_LENGTH] = {0};
+-				MD5_CTX mdContext;
+-
+-				MD5_Init(&mdContext);
+-				MD5_Update(&mdContext, uploadicon, strlen(uploadicon));
+-				MD5_Final(key,&mdContext);
+-
+-				for(i = 0; i < 16; ++i)
+-					snprintf(&md5string[i*2], 3, "%02x", (unsigned int)key[i]);
+-
+-				if((md5_obj = json_object_from_file(USERICON_MD5_FILE)) == NULL)
+-					md5_obj = json_object_new_object();
+-				else if(json_object_get_type(md5_obj) != json_type_object){
+-					json_object_put(md5_obj);
+-					md5_obj = json_object_new_object();
+-				}
+-
+-				json_object_object_add(md5_obj, name, json_object_new_string(md5string));
+-				json_object_to_file(USERICON_MD5_FILE, md5_obj);
+-				if(md5_obj)
+-					json_object_put(md5_obj);
+-			}
+-			FILE *fp;
+-			if((fp = fopen(filename, "w")) != NULL) {
+-				fprintf(fp, "%s", uploadicon);
+-				fclose(fp);
+-			}
+-		}
+-		/* 0:nvram 1:openvpn 2:ipsec 3:usericon */
+-		sync_profile_update_time(3);
+-	}
+-}
+-#endif
++/* REAPER-DEVICON (2026-11-27): the two stock writers (del_upload_icon, handle_upload_icon) are gone with its only caller
++ * (the custom_usericon apply field, closed). They wrote the posted text to /jffs/usericon unchecked. The store and its
++ * format stay: reaper_dev.cgi set_icon / del_icon write it, renew_upload_icon() keeps its md5 index at httpd start. */
+ 
+ #if defined(RTCONFIG_DUALWAN) && defined(RTCONFIG_MULTISERVICE_WAN)
+ /// handle extension unit only.
+@@ -5059,16 +4943,17 @@ int validate_apply(webs_t wp, json_object *root)
+ 			}
+ #endif
+ #ifdef RTCONFIG_JFFS2USERICON
+-			else if(!strcmp(name, "custom_usericon")) {
+-				char *usericon_mac = safe_get_cgi_json("usericon_mac", root);
+-				(void)handle_upload_icon(value, usericon_mac);
+-				nvram_set(name, "");
+-				nvram_modified = 1;
+-			}
+-			else if(!strcmp(name, "custom_usericon_del")) {
+-				(void)del_upload_icon(value);
+-				nvram_set(name, "");
+-				nvram_modified = 1;
++			/* REAPER-DEVICON (2026-11-27, owner): the stock device-picture upload through the settings handler is
++			 * closed. It wrote whatever text arrived to /jffs/usericon/<name>.log with no check of what the picture
++			 * was, and no shipped page uses it any more. Device pictures go through reaper_dev.cgi set_icon /
++			 * del_icon (the Devices page), which check the picture. A posted value is dropped here - never stored,
++			 * and never left to the generic branch below, which would put it into nvram. */
++			else if(!strcmp(name, "custom_usericon") || !strcmp(name, "custom_usericon_del")) {
++				static long rdic_apply_last;
++				if (uptime() - rdic_apply_last >= 10) {
++					rdic_apply_last = uptime();
++					logmessage("httpd", "reaper: device picture through the settings handler refused (%s) - the Devices page sets pictures", name);
++				}
+ 			}
+ #endif
+ #ifdef RTCONFIG_WIREGUARD
+@@ -5819,12 +5704,16 @@ static int reaper_apply_needs_post(const char *where)
+  * reaper_inject.c writes into each authenticated page adds it to every form and request aimed at start_apply*.htm,
+  * apply.cgi and applyapp.cgi. Not asked of an AiMesh node (its UI is never injected; REAPER-CUT8: the reaper_inject=0
+  * stock-UI exemption left with the stock UI in stage 5). review 2026-11-24 (REAPER-NOAPP-TOKEN): a User-Agent that names the ASUS app is asked
+- * too - the app is not supported, and the name alone used to wave the token through. */
++ * too - the app is not supported, and the name alone used to wave the token through. REAPER-APP-OPTIN (2026-11-28):
++ * not asked of a request the opt-in exemption applies to (httpd.c reaper_app_exempt(): the admin's switch, the
++ * app's User-Agent, a peer on the main network) - the app has no page to read the token from. */
+ static int reaper_apply_token_ok(const char *hid, const char *where)
+ {
+ 	static long last;
+ 	const char *want;
+ 
++	if (reaper_req_app)	/* REAPER-APP-OPTIN */
++		return 1;
+ 	if (nvram_match("re_mode", "1") || nvram_match("disable_ui", "1"))
+ 		return 1;
+ 	want = nvram_safe_get("http_id");
+@@ -13764,8 +13653,9 @@ apply_cgi(webs_t wp, char_t *urlPrefix, char_t *webDir, int arg,
+ 
+ 	/* reaper 2026-10-25 (review 2026-10-24, S-C2-1): a browser's action_mode=apply arrives by POST (every
+ 	 * form does); firmware_check, firmware_upgrade and the other modes are untouched. review 2026-11-24
+-	 * (REAPER-NOAPP-POST): whatever the User-Agent says. */
+-	if (!strcmp(action_mode, "apply") && reaper_apply_needs_post("apply.cgi")) {
++	 * (REAPER-NOAPP-POST): whatever the User-Agent says - REAPER-APP-OPTIN (2026-11-28): except a request the
++	 * opt-in exemption applies to. */
++	if (!strcmp(action_mode, "apply") && !reaper_req_app && reaper_apply_needs_post("apply.cgi")) {
+ 		websWrite(wp, "{\"modify\":\"0\"}\n");
+ 		goto APPLY_FINISH;
+ 	}
+@@ -20531,6 +20421,16 @@ ej_get_customized_attribute(int eid, webs_t wp, int argc, char **argv) {
+ 		from_app = 1;
+ 	}
+ 
++	/* REAPER-NET-FF385 (2026-11-27): the id goes into a /jffs path - only the form the upload handler
++	 * (do_splash_page_post_SDN) writes: digits, 1..13 of them. Anything else answers NoData, as a missing file does. */
++	if(strcmp(profile_id, "") && (strlen(profile_id) > 13 || strspn(profile_id, "0123456789") != strlen(profile_id))) {
++		static long rnet_last;
++		if (uptime() - rnet_last >= 10) {
++			rnet_last = uptime();
++			logmessage("httpd", "reaper: portal look asked for a profile id that is not a number - answered NoData");
++		}
++		profile_id = "";
++	}
+ 	if(strcmp(profile_id, "")) {
+ 		char file_name[64];
+ 		memset(file_name, 0, 64);
+@@ -32263,6 +32163,337 @@ static void rdev_merge_clientlist(struct json_object *clients, struct json_objec
+ 	}
+ }
+ 
++/* REAPER-DEVICON-BEGIN (2026-11-27, owner: device pictures and device types, both steps)
++ * The device pictures live in the stock store, written and read here only:
++ *   /jffs/usericon/<MAC12>.log       one device's picture as a data URL - the stock format, so pictures set on the
++ *                                    old pages show without a migration
++ *   /jffs/usericon/<type>.log        a picture for a whole device type (stock; read here, never written)
++ *   /jffs/usericon/usericon_md5.json the stock index (MAC12 -> md5 of the data URL); renew_upload_icon() rebuilds
++ *                                    it at every httpd start
++ * A picture is accepted only as data:image/png, image/jpeg or image/webp in base64 - never SVG, which is a document
++ * that can carry script - at most RDIC_MAX_BYTES once decoded, and only when its first bytes are what the type says.
++ * The page shrinks it to 64 x 64 pixels in a canvas first, so a real one is a few KB. The MAC passes the 17-character
++ * shape check and isValidMacAddress() before any path is built from it; files are opened with O_NOFOLLOW, written to
++ * a temporary file and renamed over the old one. At most RDIC_MAX_FILES pictures, and a write needs RDIC_MIN_FREE
++ * bytes free on /jffs. A stored picture is checked again, the same way, every time it is read. */
++#define RDIC_DIR	"/jffs/usericon"
++#define RDIC_MAX_BYTES	32768				/* one decoded picture */
++#define RDIC_B64_MAX	(((RDIC_MAX_BYTES + 2) / 3) * 4)
++#define RDIC_URL_MAX	(24 + RDIC_B64_MAX)		/* the longest prefix is 23 characters */
++#define RDIC_MAX_FILES	256
++#define RDIC_MIN_FREE	(256 * 1024)			/* /jffs bytes left free after a write */
++#define RDIC_GET_MAX	32				/* pictures per icon_get request */
++
++/* the only accepted forms: no image/svg+xml, no other type, no parameters */
++static const char *const rdic_prefix[] = { "data:image/png;base64,", "data:image/jpeg;base64,", "data:image/webp;base64,", NULL };
++static unsigned char rdic_buf[RDIC_MAX_BYTES];
++
++/* 0 png, 1 jpeg, 2 webp by the prefix, -1 for anything else; *b64 = the base64 that follows */
++static int rdic_kind(const char *u, const char **b64)
++{
++	int i;
++
++	if (!u)
++		return -1;
++	for (i = 0; rdic_prefix[i]; i++) {
++		size_t n = strlen(rdic_prefix[i]);
++		if (!strncmp(u, rdic_prefix[i], n)) {
++			*b64 = u + n;
++			return i;
++		}
++	}
++	return -1;
++}
++
++static int rdic_b64v(unsigned char c)
++{
++	if (c >= 'A' && c <= 'Z') return c - 'A';
++	if (c >= 'a' && c <= 'z') return c - 'a' + 26;
++	if (c >= '0' && c <= '9') return c - '0' + 52;
++	if (c == '+') return 62;
++	if (c == '/') return 63;
++	return -1;
++}
++
++/* strict base64 into rdic_buf: a multiple of 4 characters, the 64-character alphabet only, '=' only as the last one or
++ * two. Returns the decoded length, -1 for malformed input, -2 when it would not fit RDIC_MAX_BYTES. */
++static int rdic_b64dec(const char *s)
++{
++	size_t n = strlen(s), i, o = 0;
++	int pad = 0;
++
++	if (n == 0 || n % 4)
++		return -1;
++	if (n > RDIC_B64_MAX)
++		return -2;
++	if (s[n - 1] == '=') {
++		pad = 1;
++		if (s[n - 2] == '=')
++			pad = 2;
++	}
++	for (i = 0; i < n; i += 4) {
++		int v[4], k, nb = 3;
++		for (k = 0; k < 4; k++) {
++			unsigned char c = (unsigned char)s[i + k];
++			if (c == '=' && i + 4 == n && k >= 4 - pad)
++				v[k] = 0;
++			else if ((v[k] = rdic_b64v(c)) < 0)
++				return -1;
++		}
++		if (i + 4 == n)
++			nb = 3 - pad;
++		if (o + nb > sizeof(rdic_buf))
++			return -2;
++		rdic_buf[o++] = (unsigned char)((v[0] << 2) | (v[1] >> 4));
++		if (nb > 1) rdic_buf[o++] = (unsigned char)(((v[1] & 15) << 4) | (v[2] >> 2));
++		if (nb > 2) rdic_buf[o++] = (unsigned char)(((v[2] & 3) << 6) | v[3]);
++	}
++	return (int)o;
++}
++
++/* the file starts the way its type says (the decoded bytes, not the label) */
++static int rdic_magic_ok(int kind, const unsigned char *b, int n)
++{
++	static const unsigned char png[8] = { 0x89, 'P', 'N', 'G', 0x0d, 0x0a, 0x1a, 0x0a };
++
++	if (n < 16)
++		return 0;
++	if (kind == 0) return !memcmp(b, png, sizeof(png));
++	if (kind == 1) return b[0] == 0xff && b[1] == 0xd8 && b[2] == 0xff;
++	if (kind == 2) return !memcmp(b, "RIFF", 4) && !memcmp(b + 8, "WEBP", 4);
++	return 0;
++}
++
++/* NULL when u is a picture this store keeps, else the error key for the page */
++static const char *rdic_check(const char *u)
++{
++	const char *b64 = NULL;
++	int kind, n;
++
++	if (!u || strlen(u) > RDIC_URL_MAX)
++		return "RDIC_14";
++	kind = rdic_kind(u, &b64);
++	if (kind < 0)
++		return "RDIC_13";
++	n = rdic_b64dec(b64);
++	if (n == -2)
++		return "RDIC_14";
++	if (n < 0 || !rdic_magic_ok(kind, rdic_buf, n))
++		return "RDIC_13";
++	return NULL;
++}
++
++/* the picture's file stem from a MAC that passed both checks: 12 upper-case hex digits, no separator */
++static int rdic_mac12(const char *mac, char *out)
++{
++	int i, o = 0;
++
++	if (!gk_valid_mac(mac) || !isValidMacAddress(mac))
++		return 0;
++	for (i = 0; i < 17; i++)
++		if (mac[i] != ':')
++			out[o++] = (char)toupper((unsigned char)mac[i]);
++	out[o] = 0;
++	return o == 12;
++}
++
++/* a stored file's name: 1 = <12 hex>.log (a device), 2 = <1..3 digits>.log (a device type), 0 = anything else.
++ * stem (17 bytes) gets the part before ".log". */
++static int rdic_name_kind(const char *name, char *stem)
++{
++	size_t n = strlen(name), s;
++
++	if (n < 5 || n > 16 || strcmp(name + n - 4, ".log"))
++		return 0;
++	s = n - 4;
++	if (s == 12 && strspn(name, "0123456789ABCDEFabcdef") == 12) {
++		if (stem) { memcpy(stem, name, 12); stem[12] = 0; }
++		return 1;
++	}
++	if (s >= 1 && s <= 3 && strspn(name, "0123456789") == s) {
++		if (stem) { memcpy(stem, name, s); stem[s] = 0; }
++		return 2;
++	}
++	return 0;
++}
++
++/* /jffs/usericon as a real directory, created when missing (mk); 0 when it is anything else (a link, a file) */
++static int rdic_dir_ok(int mk)
++{
++	struct stat st;
++
++	if (lstat(RDIC_DIR, &st) != 0) {
++		if (!mk || mkdir(RDIC_DIR, 0755) != 0 || lstat(RDIC_DIR, &st) != 0)
++			return 0;
++	}
++	return S_ISDIR(st.st_mode) ? 1 : 0;
++}
++
++/* device pictures stored; *mine = one exists for this MAC (any letter case). With drop: unlink this MAC's files,
++ * keeping the one spelled exactly m12 when keep_exact. unlink() never follows a link. */
++static int rdic_scan(const char *m12, int *mine, int drop, int keep_exact)
++{
++	DIR *d;
++	struct dirent *e;
++	char stem[17], p[64];
++	int n = 0;
++
++	if (mine)
++		*mine = 0;
++	if (!rdic_dir_ok(0) || (d = opendir(RDIC_DIR)) == NULL)
++		return 0;
++	while ((e = readdir(d)) != NULL) {
++		if (rdic_name_kind(e->d_name, stem) != 1)
++			continue;
++		n++;
++		if (!m12 || strcasecmp(stem, m12))
++			continue;
++		if (mine)
++			*mine = 1;
++		if (drop && !(keep_exact && !strcmp(stem, m12))) {
++			snprintf(p, sizeof(p), RDIC_DIR "/%.16s", e->d_name);
++			unlink(p);
++		}
++	}
++	closedir(d);
++	return n;
++}
++
++/* a whole file in RDIC_DIR: written to .<name>.tmp (O_EXCL | O_NOFOLLOW), then renamed over <name> */
++static int rdic_put(const char *name, const char *data, size_t len)
++{
++	char tmp[80], dst[80];
++	size_t off = 0;
++	int fd;
++
++	snprintf(tmp, sizeof(tmp), RDIC_DIR "/.%s.tmp", name);
++	snprintf(dst, sizeof(dst), RDIC_DIR "/%s", name);
++	unlink(tmp);
++	fd = open(tmp, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW, 0644);
++	if (fd < 0)
++		return -1;
++	while (off < len) {
++		ssize_t w = write(fd, data + off, len - off);
++		if (w < 0 && errno == EINTR)
++			continue;
++		if (w <= 0) {
++			close(fd);
++			unlink(tmp);
++			return -1;
++		}
++		off += (size_t)w;
++	}
++	if (fsync(fd) != 0) {
++		close(fd);
++		unlink(tmp);
++		return -1;
++	}
++	if (close(fd) != 0 || rename(tmp, dst) != 0) {
++		unlink(tmp);
++		return -1;
++	}
++	return 0;
++}
++
++/* the stock md5 index: set this device's entry (url) or drop it (url NULL) */
++static void rdic_md5_set(const char *m12, const char *url)
++{
++#ifdef RTCONFIG_HTTPS
++	struct json_object *o = json_object_from_file(RDIC_DIR "/usericon_md5.json");
++	const char *s;
++
++	if (!o || !json_object_is_type(o, json_type_object)) {
++		if (o)
++			json_object_put(o);
++		o = json_object_new_object();
++	}
++	if (url) {
++		unsigned char key[MD5_DIGEST_LENGTH];
++		char hex[2 * MD5_DIGEST_LENGTH + 1];
++		MD5_CTX c;
++		int i;
++
++		MD5_Init(&c);
++		MD5_Update(&c, url, strlen(url));
++		MD5_Final(key, &c);
++		for (i = 0; i < MD5_DIGEST_LENGTH; i++)
++			snprintf(hex + i * 2, 3, "%02x", (unsigned int)key[i]);
++		json_object_object_add(o, m12, json_object_new_string(hex));
++	}
++	else
++		json_object_object_del(o, m12);
++	s = json_object_to_json_string(o);
++	if (s)
++		rdic_put("usericon_md5.json", s, strlen(s));
++	json_object_put(o);
++#endif
++}
++
++/* a stored picture file, returned (malloc'd, NUL-ended, *len set) only when it passes the same check as an upload;
++ * NULL otherwise. The open never follows a link and never waits on a FIFO (O_NONBLOCK); only a regular file of a
++ * plausible size is read. Used by icon_get and by the stock get_upload_icon hook. */
++static char *rdic_load(const char *p, size_t *len)
++{
++	char *b;
++	struct stat st;
++	size_t got = 0;
++	int fd;
++
++	fd = open(p, O_RDONLY | O_NOFOLLOW | O_NONBLOCK);
++	if (fd < 0)
++		return NULL;
++	if (fstat(fd, &st) != 0 || !S_ISREG(st.st_mode) || st.st_size <= 0 || st.st_size > RDIC_URL_MAX + 2 ||
++	    (b = malloc((size_t)st.st_size + 1)) == NULL) {
++		close(fd);
++		return NULL;
++	}
++	while (got < (size_t)st.st_size) {
++		ssize_t r = read(fd, b + got, (size_t)st.st_size - got);
++		if (r < 0 && errno == EINTR)
++			continue;
++		if (r <= 0)
++			break;
++		got += (size_t)r;
++	}
++	close(fd);
++	b[got] = 0;
++	while (got && (b[got - 1] == '\n' || b[got - 1] == '\r'))
++		b[--got] = 0;
++	if (rdic_check(b) != NULL) {
++		free(b);
++		return NULL;
++	}
++	*len = got;
++	return b;
++}
++
++/* one stored picture as  ,"stem":"data:..."  (only one that passes the check) */
++static void rdic_emit(FILE *stream, const char *stem, int *first)
++{
++	char p[64], *b;
++	size_t got = 0;
++
++	snprintf(p, sizeof(p), RDIC_DIR "/%s.log", stem);
++	if ((b = rdic_load(p, &got)) == NULL)
++		return;
++	websWrite(stream, "%s\"%s\":\"", *first ? "" : ",", stem);
++	websWriteData(stream, b, got);
++	websWrite(stream, "\"");
++	*first = 0;
++	free(b);
++}
++
++/* field 3 (the device type) of a custom_clientlist record, given the part after the MAC: set and not "0" */
++static int rdic_tail_typed(const char *tail)
++{
++	const char *g = tail ? strchr(tail, '>') : NULL;
++
++	if (!g || !g[1] || g[1] == '>')
++		return 0;
++	return !(g[1] == '0' && (g[2] == '>' || !g[2]));
++}
++/* REAPER-DEVICON-END */
++
+ /* REAPER-AIMESH-MLO-BEGIN */
+ /* reaper 2026-11-19 (v3.8.1 alpha field report: "devices connected as MLO are not showing in the AiMesh tab as
+  * MLO even when connected to the main router"). The AiMesh tab (aimesh_topology.html) and the stock client lists
+@@ -32611,10 +32842,15 @@ static void do_reaper_dev_cgi(char *url, FILE *stream)
+ 				strlcat(out, "<", cap); strlcat(out, tok, cap);
+ 			}
+ 			free(b);
++			/* REAPER-DEVICON (2026-11-27): clearing the name used to drop the whole record, and the device type chosen
++			 * for it (field 3) went with it. A record that carries a type now stays, with an empty name; one that
++			 * says nothing more is dropped as before. */
++			if (!keep && rdic_tail_typed(oldtail))
++				keep = 2;
+ 			if (keep) {
+ 				/* re-add: preserved tail, or stock defaults for a new record */
+ 				char add[288];
+-				snprintf(add, sizeof(add), "<%s>%s>%s", clean, umac,
++				snprintf(add, sizeof(add), "<%s>%s>%s", keep == 1 ? clean : "", umac,
+ 					oldtail[0] ? oldtail : "0>0>>0");
+ 				if (strlen(out) + strlen(add) + 1 < cap) strlcat(out, add, cap);
+ 				else { free(out); websWrite(stream, "{\"ok\":0,\"error\":\"name store full\",\"ek\":\"RDEVE_4\"}"); return; }
+@@ -32623,7 +32859,7 @@ static void do_reaper_dev_cgi(char *url, FILE *stream)
+ 		nvram_set("custom_clientlist", out);
+ 		nvram_commit();
+ 		free(out);
+-		rdev_audit(keep ? "name" : "name_clear", umac, keep ? clean : "");
++		rdev_audit(clean[0] ? "name" : "name_clear", umac, clean);
+ 		websWrite(stream, "{\"ok\":1}");
+ 		return;
+ 	}
+@@ -32893,6 +33129,208 @@ static void do_reaper_dev_cgi(char *url, FILE *stream)
+ 		return;
+ 	}
+ 
++	/* ---------------- REAPER-DEVICON (2026-11-27): device types and pictures ---------------- */
++	/* a change is a POST, like an apply (the page token and the same-origin check above apply to every action) */
++	if (!strcmp(action, "set_type") || !strcmp(action, "set_icon") || !strcmp(action, "del_icon")) {
++		if (!reaper_req_post) {
++			websWrite(stream, "{\"ok\":0,\"error\":\"a change must be a POST\",\"ek\":\"RDIC_P\"}");
++			return;
++		}
++	}
++
++	/* SET_TYPE: field 3 of the device's custom_clientlist record (name>MAC>group>type>...). 0 = as detected: a
++	 * record left with no name and no type is dropped. Every other device's record stays byte for byte. */
++	if (!strcmp(action, "set_type")) {
++		char *mac = get_cgi("mac");
++		char *ty  = get_cgi("type");
++		char umac[18], oname[64] = "", otail[224] = "", ntail[240], add[340], *cl, *out, *b, *tok, *sp = NULL;
++		size_t cap;
++		int i, t = 0, found = 0;
++
++		if (!gk_valid_mac(mac) || !isValidMacAddress(mac)) {
++			websWrite(stream, "{\"ok\":0,\"error\":\"bad mac\",\"ek\":\"RDEVE_2\"}");
++			return;
++		}
++		if (!ty || !ty[0] || strlen(ty) > 3 || strspn(ty, "0123456789") != strlen(ty) || (t = atoi(ty)) > 255) {
++			websWrite(stream, "{\"ok\":0,\"error\":\"bad device type\",\"ek\":\"RDIC_18\"}");
++			return;
++		}
++		for (i = 0; i < 17; i++) umac[i] = toupper((unsigned char)mac[i]);
++		umac[17] = 0;
++		cl = nvram_safe_get("custom_clientlist");
++		cap = strlen(cl) + 360;
++		out = calloc(1, cap);
++		b = strdup(cl);
++		if (!out || !b) {
++			free(out); free(b);
++			websWrite(stream, "{\"ok\":0,\"error\":\"oom\",\"ek\":\"RDEVE_3\"}");
++			return;
++		}
++		for (tok = strtok_r(b, "<", &sp); tok; tok = strtok_r(NULL, "<", &sp)) {
++			char *f1 = strchr(tok, '>');
++			if (f1) {
++				char tmac[18] = "", *m = f1 + 1, *f2 = strchr(m, '>');
++				size_t l = f2 ? (size_t)(f2 - m) : strlen(m);
++				if (l < sizeof(tmac)) { memcpy(tmac, m, l); tmac[l] = 0; }
++				if (!strcasecmp(tmac, umac)) {
++					/* every record of this MAC goes (as set_name heals duplicates); the first one's name and
++					 * other fields are kept */
++					if (!found) {
++						size_t nl = (size_t)(f1 - tok);
++						if (nl < sizeof(oname)) { memcpy(oname, tok, nl); oname[nl] = 0; }
++						if (f2) strlcpy(otail, f2 + 1, sizeof(otail));
++						found = 1;
++					}
++					continue;
++				}
++			}
++			strlcat(out, "<", cap); strlcat(out, tok, cap);
++		}
++		free(b);
++		{
++			const char *g = otail[0] ? strchr(otail, '>') : NULL;
++			if (!g)
++				snprintf(ntail, sizeof(ntail), "0>%d>>0", t);
++			else {
++				const char *h = strchr(g + 1, '>');
++				snprintf(ntail, sizeof(ntail), "%.*s>%d%s", (int)(g - otail), otail, t, h ? h : ">>0");
++			}
++		}
++		if (t != 0 || oname[0]) {
++			snprintf(add, sizeof(add), "<%s>%s>%s", oname, umac, ntail);
++			if (strlen(out) + strlen(add) + 1 >= cap) {
++				free(out);
++				websWrite(stream, "{\"ok\":0,\"error\":\"name store full\",\"ek\":\"RDEVE_4\"}");
++				return;
++			}
++			strlcat(out, add, cap);
++		}
++		nvram_set("custom_clientlist", out);
++		nvram_commit();
++		free(out);
++		rdev_audit("type", umac, ty);
++		websWrite(stream, "{\"ok\":1}");
++		return;
++	}
++
++	/* ICON_LIST: which pictures exist - {"icons":{"<MAC12>":"<version>"},"types":{"<type>":"<version>"}}, the version
++	 * being the file's time and size, so a page asks again only for a picture that changed */
++	if (!strcmp(action, "icon_list")) {
++		static char types[RDIC_MAX_FILES * 32];
++		DIR *d = NULL;
++		struct dirent *e;
++		struct stat st;
++		char stem[17], p[64], one[48];
++		int k, n = 0, first = 1;
++
++		types[0] = 0;
++		websWrite(stream, "{\"ok\":1,\"cap\":%d,\"icons\":{", RDIC_MAX_FILES);
++		if (rdic_dir_ok(0))
++			d = opendir(RDIC_DIR);
++		while (d && (e = readdir(d)) != NULL) {
++			k = rdic_name_kind(e->d_name, stem);
++			if (!k)
++				continue;
++			snprintf(p, sizeof(p), RDIC_DIR "/%.16s", e->d_name);
++			if (lstat(p, &st) != 0 || !S_ISREG(st.st_mode) || st.st_size <= 0 || st.st_size > RDIC_URL_MAX + 2)
++				continue;
++			snprintf(one, sizeof(one), "\"%s\":\"%ld-%ld\"", stem, (long)st.st_mtime, (long)st.st_size);
++			if (k == 1) {
++				websWrite(stream, "%s%s", first ? "" : ",", one);
++				first = 0;
++				n++;
++			}
++			else if (strlen(types) + strlen(one) + 2 < sizeof(types)) {
++				if (types[0]) strlcat(types, ",", sizeof(types));
++				strlcat(types, one, sizeof(types));
++			}
++		}
++		if (d)
++			closedir(d);
++		websWrite(stream, "},\"types\":{%s},\"n\":%d}", types, n);
++		return;
++	}
++
++	/* ICON_GET: ids = up to RDIC_GET_MAX stems (a MAC12 or a type number) joined by ","; each picture that passes the
++	 * check is returned as its data URL, the rest are left out */
++	if (!strcmp(action, "icon_get")) {
++		char *ids = get_cgi("ids");
++		char list[RDIC_GET_MAX * 14 + 1], *tok, *sp = NULL, stem[17], nm[24];
++		int first = 1, cnt = 0;
++
++		strlcpy(list, ids ? ids : "", sizeof(list));
++		websWrite(stream, "{\"ok\":1,\"src\":{");
++		for (tok = strtok_r(list, ",", &sp); tok && cnt < RDIC_GET_MAX; tok = strtok_r(NULL, ",", &sp), cnt++) {
++			if (strlen(tok) > 12)
++				continue;
++			snprintf(nm, sizeof(nm), "%s.log", tok);
++			if (rdic_name_kind(nm, stem))
++				rdic_emit(stream, stem, &first);
++		}
++		websWrite(stream, "}}");
++		return;
++	}
++
++	/* SET_ICON: mac + icon (the data URL the page made). Checked in full before anything touches /jffs. */
++	if (!strcmp(action, "set_icon")) {
++		char *mac = get_cgi("mac");
++		char *icon = get_cgi("icon");
++		char m12[13], fname[24];
++		const char *ek;
++		struct statvfs v;
++		size_t len;
++		int mine = 0, n;
++
++		if (!rdic_mac12(mac, m12)) {
++			websWrite(stream, "{\"ok\":0,\"error\":\"bad mac\",\"ek\":\"RDEVE_2\"}");
++			return;
++		}
++		if ((ek = rdic_check(icon)) != NULL) {
++			websWrite(stream, "{\"ok\":0,\"error\":\"picture refused\",\"ek\":\"%s\"}", ek);
++			return;
++		}
++		len = strlen(icon);
++		if (!rdic_dir_ok(1)) {
++			websWrite(stream, "{\"ok\":0,\"error\":\"cannot write /jffs\",\"ek\":\"RDIC_17\"}");
++			return;
++		}
++		n = rdic_scan(m12, &mine, 0, 0);
++		if (!mine && n >= RDIC_MAX_FILES) {
++			websWrite(stream, "{\"ok\":0,\"error\":\"picture store full\",\"ek\":\"RDIC_15\"}");
++			return;
++		}
++		if (statvfs("/jffs", &v) != 0 || (unsigned long long)v.f_bavail * v.f_frsize < (unsigned long long)RDIC_MIN_FREE + len) {
++			websWrite(stream, "{\"ok\":0,\"error\":\"not enough free space on /jffs\",\"ek\":\"RDIC_16\"}");
++			return;
++		}
++		snprintf(fname, sizeof(fname), "%s.log", m12);
++		if (rdic_put(fname, icon, len) != 0) {
++			websWrite(stream, "{\"ok\":0,\"error\":\"cannot write /jffs\",\"ek\":\"RDIC_17\"}");
++			return;
++		}
++		rdic_scan(m12, NULL, 1, 1);	/* the same device under another letter case (an old stock file) */
++		rdic_md5_set(m12, icon);
++		rdev_audit("icon", m12, "");
++		websWrite(stream, "{\"ok\":1}");
++		return;
++	}
++
++	/* DEL_ICON: the device's picture goes (every letter case of its file); the type glyph shows again */
++	if (!strcmp(action, "del_icon")) {
++		char *mac = get_cgi("mac");
++		char m12[13];
++
++		if (!rdic_mac12(mac, m12)) {
++			websWrite(stream, "{\"ok\":0,\"error\":\"bad mac\",\"ek\":\"RDEVE_2\"}");
++			return;
++		}
++		rdic_scan(m12, NULL, 1, 0);
++		rdic_md5_set(m12, NULL);
++		rdev_audit("icon_del", m12, "");
++		websWrite(stream, "{\"ok\":1}");
++		return;
++	}
++
+ 	/* ---------------- STORE_STATUS: durable-storage snapshot (read-only) ---- */
+ 	if (!strcmp(action, "store_status")) {
+ 		char base[128];
+@@ -36105,78 +36543,10 @@ tc_get_download_info_cgi(char *url, FILE *stream) {
+ }
+ #endif
+ 
+-#ifdef RTCONFIG_JFFS2USERICON
+-static void
+-do_get_usericon_md5_cgi(char *url, FILE *stream) {
+-
+-	char word[4096] = {0}, *word_next;
+-	struct json_object *md5_obj = NULL, *md5_mac_obj = NULL, *md5_word = NULL;
+-	struct json_object *root = json_object_new_object();
+-	char *maclist = NULL;
+-
+-	do_json_decode(root);
+-
+-	md5_obj = json_object_from_file(USERICON_MD5_FILE);
+-
+-	maclist = safe_get_cgi_json("maclist", root);
+-
+-	if(md5_obj && json_object_get_type(md5_obj) == json_type_object){
+-		if(strlen(maclist) > 0){
+-			md5_mac_obj = json_object_new_object();
+-			foreach_62(word, maclist, word_next){
+-				if(json_object_object_get_ex(md5_obj, word, &md5_word))
+-					json_object_object_add(md5_mac_obj, word, md5_word);
+-			}
+-			websWrite(stream, "%s", json_object_to_json_string(md5_mac_obj));
+-		}else
+-			websWrite(stream, "%s", json_object_to_json_string(md5_obj));
+-	}
+-	else
+-		websWrite(stream, "{}");
+-
+-	if(root)
+-		json_object_put(root);
+-	if(md5_obj)
+-		json_object_put(md5_obj);
+-	if(md5_mac_obj)
+-		json_object_put(md5_mac_obj);
+-}
+-
+-#define ALL_USERICON_EXPORT_FILE	"/tmp/all_usericon.bak"
+-
+-static void
+-do_backup_all_usericon_cgi(char *url, FILE *stream)
+-{
+-	int ret = 0;
+-	if((ret = gen_jffs_backup_profile("usericon", ALL_USERICON_EXPORT_FILE)) == HTTP_OK){
+-		do_file(ALL_USERICON_EXPORT_FILE, stream);
+-		unlink(ALL_USERICON_EXPORT_FILE);
+-	}
+-}
+-
+-static void
+-do_upload_all_usericon_post(char *url, FILE *stream, int len, char *boundary)
+-{
+-	do_upload_jffs_profile_post("usericon", url, stream, len, boundary);
+-}
+-
+-static void
+-do_upload_all_usericon_cgi(char *url, FILE *stream)
+-{
+-	char *do_rc = NULL;
+-	struct json_object *root = json_object_new_object();
+-	do_json_decode(root);
+-
+-	do_rc = safe_get_cgi_json("do_rc", root);
+-	int ret = upload_jffs_profile("usericon", safe_atoi(do_rc));
+-
+-	if(check_user_agent(user_agent) != FROM_BROWSER && check_user_agent(user_agent) != FROM_WebView)
+-		websWrite(stream, "{\"statusCode\":\"%d\"}", ret);
+-
+-	if(root)
+-		json_object_put(root);
+-}
+-#endif
++/* REAPER-DEVICON (2026-11-27, owner): get_usericon_md5.cgi, backup_all_usericon.cgi and upload_all_usericon.cgi are
++ * closed. No shipped page and no program on the image calls them (only httpd itself names them), and the upload
++ * replaced the whole picture store from an archive without looking at a single picture. The full backup (.rbk)
++ * carries /jffs, pictures included. */
+ 
+ #if defined(RTCONFIG_CONNDIAG) || defined(RTCONFIG_NEW_PHYMAP)
+ static void
+@@ -39065,11 +39435,7 @@ struct mime_handler mime_handlers[] =
+ 	{ "get_download_info", "text/html", no_cache, do_html_post_and_get, tc_get_download_info_cgi, NULL },
+ 	{ "INO", "application/octet-stream", NULL, NULL, tencent_send_file, NULL },
+ #endif
+-#ifdef RTCONFIG_JFFS2USERICON
+-	{ "get_usericon_md5.cgi", "text/html", no_cache, do_html_post_and_get, do_get_usericon_md5_cgi, do_auth },
+-	{ "backup_all_usericon.cgi", "text/html", no_cache, do_html_post_and_get, do_backup_all_usericon_cgi, do_auth },
+-	{ "upload_all_usericon.cgi*", "application/octet-stream", no_cache, do_upload_all_usericon_post, do_upload_all_usericon_cgi, do_auth },
+-#endif
++	/* REAPER-DEVICON: the three bulk device-picture rows (get_usericon_md5 / backup_all_usericon / upload_all_usericon) are closed */
+ #ifdef RTCONFIG_INTERNAL_GOBI
+ 	{ "do_modem_simstatus.cgi", "text/html", no_cache, do_html_post_and_get, do_modem_simstatus_cgi, do_auth },
+ 	{ "do_modem_fwupgrade.cgi", "text/html", no_cache, do_lte_upgrade_post, do_lte_upgrade_cgi, do_auth },
+@@ -43103,6 +43469,8 @@ ej_get_upload_icon(int eid, webs_t wp, int argc, char **argv) {
+ 	char *client_mac = NULL;
+ 	char word[1024]={0}, *word_next = NULL;
+ 	char custom_clientlist[CKN_STR_MAX] = {0}, deice_type[8] = {0}, word_tmp[256] = {0};
++	char *icon = NULL;
++	size_t icon_len = 0;
+ 	struct json_object *root = json_object_new_object();
+ 
+ 	do_json_decode(root);
+@@ -43144,13 +43512,17 @@ ej_get_upload_icon(int eid, webs_t wp, int argc, char **argv) {
+ 		}
+ 	}
+ 
+-	if(check_if_file_exist(file_name)) {
++	/* REAPER-DEVICON (2026-11-27): the file goes out only when it is a picture the store accepts (rdic_load: png / jpeg /
++	 * webp data URL, checked bytes, no link followed). It used to be copied out raw into the JSON answer - and the
++	 * per-type fallback above builds the name from field 3 of custom_clientlist, unchecked. */
++	if((icon = rdic_load(file_name, &icon_len)) != NULL) {
+ 		ret = 1; //find file
+ 		if(from_app != 0 || hook_get_json == 1)
+ 			websWrite(wp, "\"");
+-		dump_file(wp, file_name);
++		websWriteData(wp, icon, icon_len);
+ 		if(from_app != 0 || hook_get_json == 1)
+ 			websWrite(wp, "\"");
++		free(icon);
+ 	}else
+ 		goto FINISH;
+ 
+diff --git a/release/src/router/rc/rwatch.c b/release/src/router/rc/rwatch.c
+index 66975fcb2f..7795c05688 100644
+--- a/release/src/router/rc/rwatch.c
++++ b/release/src/router/rc/rwatch.c
+@@ -176,7 +176,7 @@ static void rwatch_gen(void)
+ 	  /* 2026-10-24 (owner): Reaper's own protection switches are watched too - Warden, Dreadwatch and
+ 	   * its feeds, Gatekeeper, Wallguard, the rules engine, policy routing, the Encrypted DNS server; the
+ 	   * two list-shaped ones (country list, custom feeds) hashed. A protection turned off is drift. */
+-	  "RV_NV_S='wan0_nat_x vts_enable_x autofw_enable_x dmz_ip upnp_enable wan0_upnp_enable upnp_pinhole_enable upnp_protect_svc misc_http_x http_enable misc_httpport_x misc_httpsport_x sshd_enable sshd_port telnetd_enable jffs2_scripts script_usbmount wan0_dnsenable_x wan0_dns wan_dns_x log_ipaddr fw_enable_x ipv6_fw_enable enable_cloudsync rwarden_enable rwarden_dns rwarden_dns_feeds rwarden_self rwarden_dir rwarden_feeds gk_enable gk_default gk_captive wallguard_enable reaper_fw_enable reaper_pbr_enable reaper_dot_srv http_username enable_acc_restriction http_lanport https_lanport sshd_pass misc_ping_x wans_dualwan wan1_nat_x wan1_upnp_enable wan1_dnsenable_x enable_ftp ftp_wanac enable_samba st_samba_mode snmpd_enable snmpd_wan pptpd_enable ipsec_server_enable wgs_enable vpn_serverx_start dhcp_dns1_x dhcp_dns2_x dnspriv_enable dnsfilter_enable_x ipv6_dns1 ipv6_dns2 ipv6_dns3 ddns_enable_x ddns_server_x fw_dos_x fw_lw_enable_x url_enable_x keyword_enable_x firmware_check_enable reaper_fwbeta reaper_fwsig_override wps_enable reaper_doh_block reaper_dot_block'\n"
++	  "RV_NV_S='wan0_nat_x vts_enable_x autofw_enable_x dmz_ip upnp_enable wan0_upnp_enable upnp_pinhole_enable upnp_protect_svc misc_http_x http_enable misc_httpport_x misc_httpsport_x sshd_enable sshd_port telnetd_enable jffs2_scripts script_usbmount wan0_dnsenable_x wan0_dns wan_dns_x log_ipaddr fw_enable_x ipv6_fw_enable enable_cloudsync rwarden_enable rwarden_dns rwarden_dns_feeds rwarden_self rwarden_dir rwarden_feeds gk_enable gk_default gk_captive wallguard_enable reaper_fw_enable reaper_pbr_enable reaper_dot_srv http_username enable_acc_restriction http_lanport https_lanport sshd_pass misc_ping_x wans_dualwan wan1_nat_x wan1_upnp_enable wan1_dnsenable_x enable_ftp ftp_wanac enable_samba st_samba_mode snmpd_enable snmpd_wan pptpd_enable ipsec_server_enable wgs_enable vpn_serverx_start dhcp_dns1_x dhcp_dns2_x dnspriv_enable dnsfilter_enable_x ipv6_dns1 ipv6_dns2 ipv6_dns3 ddns_enable_x ddns_server_x fw_dos_x fw_lw_enable_x url_enable_x keyword_enable_x firmware_check_enable reaper_fwbeta reaper_fwsig_override wps_enable reaper_doh_block reaper_dot_block reaper_app_allow'\n"
+ 	  /* REAPER-REVIEW-WATCH-MORE (2026-11-23, owner): access to the router, services that open it, the second WAN, where names and
+ 	   * traffic go, firewall depth, the update chain and WPS (RV_NV_S, above); list-shaped ones hashed (RV_NV_H). The
+ 	   * admin password is not watched (owner, 2026-11-23, REAPER-REVIEW-NOPW). */
+diff --git a/release/src/router/shared/defaults.c b/release/src/router/shared/defaults.c
+index 9ccb4bf8d2..efb6d664db 100644
+--- a/release/src/router/shared/defaults.c
++++ b/release/src/router/shared/defaults.c
+@@ -3200,6 +3200,7 @@ struct nvram_tuple router_defaults[] = {
+ 	/* 2026-11-20 (owner): Network page - hold the Wi-Fi restart of a create / edit / switch-on until Apply now
+ 	 * (httpd/web.c REAPER-SDN-DEFER); OFF by default, the Network page has the switch */
+ 	{ "reaper_sdn_defer", "0", CKN_STR1, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },
++	{ "reaper_app_allow", "0", CKN_STR1, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* REAPER-APP-OPTIN 2026-11-28: Administration > System - let the ASUS Router app past the cross-site checks, main network only; off */
+ 	{ "reaper_cbmode", "0", CKN_STR1, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* REAPER-CBMODE 2026-11-26 (owner): Administration > System > Accessibility, colour-blind mode; off */
+ 	/* review 2026-11-11 (A-C1): the driver's wait for a radio to answer one call, in ms (rc/services.c
+ 	 * reaper_dhd_ioto_apply). 0 = OFF = the driver's own 5000; the Tweaks page has the switch (2000-5000, 3000 recommended) */
+-- 
+2.25.1
+

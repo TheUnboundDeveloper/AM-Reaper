@@ -84,6 +84,9 @@ FULL_ONLY = {   # in the full .rbk (all nvram + /jffs) only, on purpose
     "apg_rg_devs": "travels with the stock network lists", "apg_rg_mdns": "travels with the stock network lists",
     # 2026-11-19: a network's AP Isolation choice (apgN_ap_isolate_lan: Wi-Fi only / Wi-Fi and LAN ports) - same reason
     "apg_ap_isolate_lan": "travels with the stock network lists",
+    # REAPER-APP-OPTIN (2026-11-28): the ASUS Router app exemption relaxes a protection - it is switched on per router,
+    # on its page, and never arrives with a settings file from another router
+    "reaper_app_allow": "a security opt-in: switched on per router, never imported",
 }
 STOCK = {   # stock keys whose default Reaper changed: the router settings carry them like any stock setting
     "ASUS_EULA", "ASUS_NEW_EULA", "computer_name", "dns_norebind", "enable_samba", "enable_samba_tuxera",

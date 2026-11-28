@@ -1,0 +1,2375 @@
+From a7a4c86de3ebdca8c274c95d7b9286e96731aefc Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Sat, 28 Nov 2026 12:47:02 -0500
+Subject: [PATCH] Reaper UI: guest portal look fixed, Network and AiMesh
+ restyle, device pictures, tall dialogs, add-on sheet, quiet frame
+
+- Network page (REAPER-NET-FF385): the guest portal look is asked by the right hook name, so the saved background,
+  title and terms load again and a save no longer writes the built-in look over them; the look is uploaded only when
+  it was loaded, is new or was changed. Live phone preview of the portal, also in the wizard. Wi-Fi key, RADIUS
+  secret and portal passcode are masked with Show / Hide; the Share dialog masks the key on screen. The MAC filter
+  lists each device as Name (MAC) with a picker of the wireless devices online. Cards say the kind of network and
+  Secured / Open. Final restyle in the Reaper colours.
+- Devices (REAPER-DEVICON): an icon per device (its picture, else its type, else a generic one) and a dialog to
+  upload or remove a picture and pick the type; the same icons on the dashboard and AiMesh client lists.
+- AiMesh: final restyle; the backhaul card shows Maximum (the negotiated link rate) and every traffic figure is on
+  its own line (REAPER-AIMESH-RATES).
+- Dialogs (REAPER-DLG-TALL): a dialog taller than the visible part of the page is pinned in the page and the frame
+  grows to hold it, so the page scrollbar reaches its buttons; no dialog has a height cap in viewport units or a
+  scrollbar of its own (Devices, Network, AiMesh, Wi-Fi schedule). The Devices picture dialog uses the window width.
+- Add-on pages: new reaper/reaper_addon.css hides the stock banner, menu and tabs and gives the page the Reaper
+  colours; the shell applies it as a backstop.
+- Kit frame: the band around a page's sections is neutral with a thin accent line instead of the crimson fill.
+- System page: the ASUS Router app switch (Login and access), with the trade-off stated.
+- Wireless Log: Rx / Tx retries column.
+
+Co-Authored-By: Claude Fable 5.2 <noreply@anthropic.com>
+---
+ release/src/router/www/Main_ReaperDash.asp    |   9 +-
+ release/src/router/www/Makefile               |   3 +
+ release/src/router/www/Reaper_AiMesh.asp      | 279 ++++++++---
+ release/src/router/www/Reaper_Devices.asp     | 202 +++++++-
+ release/src/router/www/Reaper_Network.asp     | 456 ++++++++++++++----
+ release/src/router/www/Reaper_System.asp      |  23 +-
+ release/src/router/www/Reaper_WLog.asp        |  22 +-
+ .../src/router/www/Reaper_WiFiSettings.asp    |   8 +-
+ .../src/router/www/reaper/reaper_addon.css    | 203 ++++++++
+ release/src/router/www/reaper/rp.css          |   8 +-
+ release/src/router/www/reaper_shell.asp       | 148 +++++-
+ release/src/router/www/reaper_util.js         | 207 +++++++-
+ 12 files changed, 1349 insertions(+), 219 deletions(-)
+ create mode 100644 release/src/router/www/reaper/reaper_addon.css
+
+diff --git a/release/src/router/www/Main_ReaperDash.asp b/release/src/router/www/Main_ReaperDash.asp
+index 9f5133a4f7..613ef1bee2 100644
+--- a/release/src/router/www/Main_ReaperDash.asp
++++ b/release/src/router/www/Main_ReaperDash.asp
+@@ -62,7 +62,8 @@ html{scrollbar-width:thin;scrollbar-color:var(--crimson) #000}
+    = ~59px; four rows + three 6px gaps = 254px. The bound used to be indirect (the sibling
+    card's height) and was lost whenever this card was the taller one. */
+ .cl-list{margin-top:10px;flex:1 1 auto;min-height:170px;max-height:254px;overflow-y:auto;display:flex;flex-direction:column;gap:6px;padding-right:4px}
+-.cl-item{border:1px solid var(--line-soft);border-radius:8px;padding:9px 11px;background:rgba(255,255,255,.03)}
++.cl-item{border:1px solid var(--line-soft);border-radius:8px;padding:9px 11px;background:rgba(255,255,255,.03);display:flex;align-items:center;gap:10px}
++.cl-item .clt{min-width:0;flex:1 1 auto}
+ .cl-item .cn{color:var(--bone);font-size:13.5px;font-weight:600}
+ .cl-item .cd{color:var(--bone-dim);font-size:12px;line-height:1.5;margin-top:3px;word-break:break-all}
+ .cl-item .cd .mono{color:var(--bone)}
+@@ -1719,9 +1720,10 @@ var LIVE_CLIENTS={'6':[],'5':[],'24':[],'eth':[]};
+ function renderClients(){
+   var sel=$id('cl_filter'); if(!sel) return;
+   var list=LIVE_CLIENTS[sel.value]||[], h='';
+-  for(var i=0;i<list.length;i++){ h+='<div class="cl-item"><div class="cn">'+esc(list[i].n)+'</div><div class="cd"><span class="mono">'+esc(list[i].ip)+'</span>'+(list[i].ip6?' &middot; <span class="mono">'+esc(list[i].ip6)+'</span>':'')+' &middot; <span class="mono">'+esc(list[i].m)+'</span></div></div>'; }
++  /* REAPER-DEVICON (2026-11-27): each device with its picture or type glyph (ReaperIcons fills the placeholders) */
++  for(var i=0;i<list.length;i++){ h+='<div class="cl-item">'+ReaperIcons.html(list[i].m,ReaperNames.type(list[i].m),'sm')+'<div class="clt"><div class="cn">'+esc(list[i].n)+'</div><div class="cd"><span class="mono">'+esc(list[i].ip)+'</span>'+(list[i].ip6?' &middot; <span class="mono">'+esc(list[i].ip6)+'</span>':'')+' &middot; <span class="mono">'+esc(list[i].m)+'</span></div></div></div>'; }
+   if(!h) h=`<div class="cd" style="padding:8px"><#RDSH_77#></div>`;
+-  var box=$id('cl_list'); if(box && h!==box._rh){ box.innerHTML=h; box._rh=h; }   /* skip identical rebuild: preserves scroll position + text selection while reading */
++  var box=$id('cl_list'); if(box && h!==box._rh){ box.innerHTML=h; box._rh=h; ReaperIcons.fill(box); }   /* skip identical rebuild: preserves scroll position + text selection while reading */
+ }
+ function setBand(barId,nId,count,total){
+   var b=$id(barId), n=$id(nId);
+@@ -1796,6 +1798,7 @@ function pollClientsDev(){
+   x.send();
+ }
+ (function(){ var sel=$id('cl_filter'); if(sel){ sel.addEventListener('change',renderClients); renderClients(); } })();
++ReaperIcons.init(HTTPID);   /* REAPER-DEVICON: device pictures + type glyphs for the client list */
+ var clientTick = ROUTING ? pollClients : pollClientsDev;
+ clientTick(); setInterval(function(){ if(!document.hidden) clientTick(); }, ROUTING ? 10000 : 30000); document.addEventListener('visibilitychange', function(){ if(!document.hidden) clientTick(); });
+ 
+diff --git a/release/src/router/www/Makefile b/release/src/router/www/Makefile
+index 861f999d69..a98fcdf657 100644
+--- a/release/src/router/www/Makefile
++++ b/release/src/router/www/Makefile
+@@ -1864,6 +1864,9 @@ endif
+ 	rm -f $(INSTALLDIR)/www/reaper/reaper_content.css
+ 	rm -f $(INSTALLDIR)/www/reaper/reaper_content_aimesh.css
+ 	rm -f $(INSTALLDIR)/www/reaper/reaper_content_network.css
++# REAPER-ADDON-SKIN (2026-11-27): reaper/reaper_addon.css (the add-on page sheet, cut down from reaper_content.css) stays
++# - httpd links it into third-party add-on pages (/www/user/userN.asp, installed at run time, so no scan of the image
++# sees them) and the shell adds it to a framed one that lacks it.
+ 	rm -f $(INSTALLDIR)/www/remote.asp
+ 	rm -f $(INSTALLDIR)/www/remote.js
+ 	rm -f $(INSTALLDIR)/www/require/modules/amesh.js
+diff --git a/release/src/router/www/Reaper_AiMesh.asp b/release/src/router/www/Reaper_AiMesh.asp
+index 4a08d2768c..e81291eaa0 100644
+--- a/release/src/router/www/Reaper_AiMesh.asp
++++ b/release/src/router/www/Reaper_AiMesh.asp
+@@ -36,94 +36,148 @@
+      Ethernet-only backhaul reads "off" for an empty value on both tabs (B17). -->
+ <link rel="stylesheet" href="/reaper/rp.css">
+ <style>
+-/* page-specific rules only; the Reaper look comes from /reaper/rp.css */
++/* page-specific rules only; the Reaper look comes from /reaper/rp.css.
++   REAPER-AIMESH-LOOK (2026-11-27, owner: "final beautiful style using the colour scheme of Reaper"): the mesh as a tree of
++   member cards on the left (uplink bar, kind and quality in words - the state reads without colour), the selected
++   member on the right, every colour from the kit tokens or a palette role (colour-blind mode switches them all). */
+ .off{display:none!important}
+ .msg{font-size:12.5px;color:var(--amber);display:none}
+-.tabs{display:flex;gap:6px;margin:0 0 12px}
+-.tabs button{background:transparent;border:1px solid var(--line2);border-radius:8px;color:var(--bone-dim);padding:7px 14px;font-family:var(--hdr);font-weight:600;font-size:12.5px;letter-spacing:.08em;text-transform:uppercase;cursor:pointer}
+-.tabs button.on{color:var(--bone);border-color:rgba(var(--cb-ok-rgb,79,178,134),.55);background:rgba(var(--cb-ok-rgb,79,178,134),.08)}
+-.topo{display:grid;grid-template-columns:minmax(260px,380px) 1fr;gap:18px;align-items:stretch}
+-@media (max-width:900px){.topo{grid-template-columns:1fr}}
+-.acts{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px}
+-/* the tree: one row per mesh member, indented by level; the bar on the left carries the uplink's quality */
+-.tree{display:flex;flex-direction:column;gap:6px;overflow-x:auto}
+-.node{display:flex;align-items:center;gap:10px;padding:9px 11px;border:1px solid var(--line-soft);border-left:3px solid var(--steel);border-radius:10px;background:var(--raised);cursor:pointer;min-width:220px}
+-.node:hover{border-color:var(--line2)}
+-.node.sel{border-color:rgba(var(--cb-ok-rgb,79,178,134),.55)}
++.syswrap{max-width:1240px}
++.pagehead .eyebrow{margin-bottom:2px}
++/* the two views: a segmented switch, the active one filled like the kit's tab buttons */
++.tabs{display:inline-flex;gap:4px;margin:0 0 14px;padding:4px;border:1px solid var(--line-soft);border-radius:12px;background:var(--panel);max-width:100%;overflow-x:auto}
++.tabs button{background:transparent;border:1px solid transparent;border-radius:9px;color:var(--bone-dim);padding:8px 18px;font-family:var(--hdr);font-weight:600;font-size:12.5px;letter-spacing:.08em;text-transform:uppercase;cursor:pointer;white-space:nowrap;transition:color .15s,background .15s}
++.tabs button:hover{color:var(--bone)}
++.tabs button.on{color:#fff;background:linear-gradient(180deg,var(--crimson),var(--crimson-deep))}
++.tabs button:focus-visible,.subs button:focus-visible,.node:focus-visible,.clic:focus-visible,.clmain.go:focus-visible{outline:2px solid var(--crimson);outline-offset:2px}
++.rframe{border-radius:16px;padding:14px}
++.rframe > .panel,.rframe .topo > .panel{margin-bottom:0}
++.topo{display:grid;grid-template-columns:minmax(280px,400px) minmax(0,1fr);gap:14px;align-items:start}
++@media (max-width:960px){.topo{grid-template-columns:minmax(0,1fr)}}
++.topo > .panel{background:linear-gradient(180deg,rgba(255,255,255,.02),rgba(255,255,255,0) 120px),var(--panel)}
++.acts{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px;padding-bottom:14px;border-bottom:1px solid var(--line-soft)}
++/* the tree: one card per mesh member, indented by level (--lvl) with an elbow to its parent; the bar on the left
++   carries the uplink's quality, the words on the right say it */
++.tree{display:flex;flex-direction:column;gap:8px;overflow-x:auto;padding:2px 2px 4px}
++.node{--lvl:0;position:relative;display:flex;align-items:center;gap:11px;margin-left:calc(var(--lvl) * 26px);padding:10px 12px 10px 11px;
++  border:1px solid var(--line-soft);border-left:3px solid var(--steel);border-radius:12px;background:var(--raised);cursor:pointer;min-width:230px;
++  transition:border-color .15s,background .15s,box-shadow .15s}
++.node.kid::before{content:"";position:absolute;left:-17px;top:-10px;width:12px;height:calc(50% + 10px);border-left:1px solid rgba(236,231,219,.16);border-bottom:1px solid rgba(236,231,219,.16);border-bottom-left-radius:8px;pointer-events:none}
++.node:hover{border-color:var(--line2);background:rgba(255,255,255,.035)}
++.node.sel{border-color:rgba(var(--cb-acc-rgb,225,6,0),.55);background:rgba(var(--cb-acc-rgb,225,6,0),.07);box-shadow:0 8px 24px -14px rgba(0,0,0,.9)}
++.node.q-root{border-left-color:var(--crimson)}
+ .node.q-great{border-left-color:var(--jade)} .node.q-ok{border-left-color:var(--jade)} .node.q-weak{border-left-color:var(--amber)}
+ .node.q-disc,.node.offline{border-left-color:var(--cb-alert,var(--crimson))}
+-.node.offline{opacity:.7}
++.node.offline{opacity:.72}
++.node .rdic.nico{width:34px;height:34px;border-radius:10px;color:var(--bone);background:rgba(var(--cb-acc-rgb,225,6,0),.10);border-color:rgba(var(--cb-acc-rgb,225,6,0),.28)}
++.node.offline .rdic.nico{color:var(--steel);background:rgba(255,255,255,.03);border-color:var(--line-soft)}
+ .node .nm{min-width:0;flex:1 1 auto}
+-.node .nm b{display:block;font-family:var(--hdr);font-weight:600;font-size:14px;color:var(--bone);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
++.node .nm b{display:block;font-family:var(--hdr);font-weight:700;font-size:14.5px;letter-spacing:.03em;color:var(--bone);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+ .node .nm span{display:block;font-size:12px;color:var(--bone-dim);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+-.node .ln{font-size:11px;color:var(--steel);text-align:right;flex:0 0 auto;line-height:1.5}
+-.node .ln .cnt{color:var(--bone-dim)}
++.node .ln{font-size:11px;color:var(--steel);text-align:right;flex:0 0 auto;line-height:1.55;display:flex;flex-direction:column;align-items:flex-end;gap:3px}
++.node .ln .qw{font-family:var(--hdr);font-weight:600;font-size:10.5px;letter-spacing:.08em;text-transform:uppercase;border:1px solid var(--line2);border-radius:999px;padding:1px 8px;color:var(--bone-dim);white-space:nowrap}
++.node .ln .qw.q-great,.node .ln .qw.q-ok{color:var(--jade);border-color:rgba(var(--cb-ok-rgb,79,178,134),.38)}
++.node .ln .qw.q-weak{color:var(--amber);border-color:rgba(var(--cb-warn-rgb,224,169,59),.38)}
++.node .ln .qw.q-disc{color:var(--cb-alert,var(--crimson));border-color:rgba(var(--cb-alert-rgb,225,6,0),.38)}
++.node .ln .cnt{color:var(--bone-dim);white-space:nowrap}
+ .node .ln .cnt.bindnote{color:var(--amber)}
+ .node .warnf{color:var(--amber);font-weight:700;margin-left:4px}
+-.intro{font-size:12.5px;color:var(--bone-dim);line-height:1.6;margin-top:10px}
+-.legend{font-size:11.5px;color:var(--steel);margin-top:10px;line-height:1.7}
+-.legend i{display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:6px;vertical-align:-1px}
++.intro{font-size:12.5px;color:var(--bone-dim);line-height:1.6;margin-top:12px;padding:10px 12px;border:1px dashed var(--line2);border-radius:10px}
++.legend{font-size:11.5px;color:var(--steel);margin-top:14px;padding-top:12px;border-top:1px solid var(--line-soft);line-height:1.8}
++.legend i{display:inline-block;width:10px;height:10px;border-radius:3px;margin-right:6px;vertical-align:-1px}
++.legend .lg{margin-right:14px;white-space:nowrap} .legend a{color:var(--bone)}
+ /* the selected member */
+-.card h2 small{font-family:var(--mono);font-weight:400;font-size:12px;color:var(--steel);letter-spacing:0;text-transform:none;margin-left:8px}
+-.kv{display:grid;grid-template-columns:minmax(120px,190px) 1fr;gap:6px 14px;font-size:13px;margin:6px 0 12px}
+-.kv .k{color:var(--steel)} .kv .v{color:var(--bone);min-width:0;overflow-wrap:anywhere}
++.card{position:relative;overflow:hidden}
++.card::before{content:"";position:absolute;left:0;right:0;top:0;height:2px;background:linear-gradient(90deg,var(--crimson),rgba(var(--cb-acc-rgb,225,6,0),0) 70%)}
++.card h2{display:flex;align-items:baseline;flex-wrap:wrap;gap:4px 10px;font-size:20px;letter-spacing:.05em;text-transform:none;margin:2px 0 12px}
++.card h2 small{font-family:var(--mono);font-weight:400;font-size:12px;color:var(--steel);letter-spacing:0;text-transform:none}
++.kv{display:grid;grid-template-columns:minmax(120px,190px) minmax(0,1fr);gap:8px 16px;font-size:13px;margin:0 0 14px;align-items:center}
++.card > .kv{padding:12px 14px;border:1px solid var(--line-soft);border-radius:12px;background:rgba(0,0,0,.28)}
++.kv .k{color:var(--steel);font-size:12px;letter-spacing:.02em} .kv .v{color:var(--bone);min-width:0;overflow-wrap:anywhere}
+ .kv select{min-width:170px;max-width:100%} .kv input[type=text]{width:220px;max-width:100%}
++.kv select,.kv input[type=text],.frow select{background:#000;border:1px solid var(--line-soft);border-radius:8px;color:var(--bone);padding:7px 9px;font:inherit;font-size:13px;outline:none}
++.kv select:focus,.kv input[type=text]:focus{border-color:var(--line)}
+ .hintline{font-size:12px;color:var(--amber);margin-top:4px;min-height:0}
+ .qual b{font-weight:600}
+ .qual.q-great b,.qual.q-ok b{color:var(--jade)} .qual.q-weak b{color:var(--amber)} .qual.q-disc b{color:var(--cb-alert,var(--crimson))}
+-.rssi{font-family:var(--mono);font-size:12px;color:var(--bone-dim);margin-left:10px}
+-.fwnew{color:var(--amber);font-size:12px;margin-left:8px}
+-.linkbtn{background:none;border:0;padding:0;color:var(--bone);text-decoration:underline;cursor:pointer;font:inherit}
+-.subs{display:flex;gap:6px;margin:4px 0 12px;flex-wrap:wrap}
+-.subs button{background:transparent;border:1px solid var(--line2);border-radius:999px;color:var(--bone-dim);padding:5px 12px;font-size:12.5px;cursor:pointer}
+-.subs button.on{color:var(--bone);border-color:rgba(var(--cb-ok-rgb,79,178,134),.55)}
+-.notice{border:1px solid rgba(var(--cb-warn-rgb,224,169,59),.4);border-radius:10px;padding:10px 14px;margin:0 0 12px;font-size:12.5px;color:var(--bone-dim);line-height:1.5}
++.rssi{display:inline-block;font-family:var(--mono);font-size:11.5px;color:var(--bone-dim);margin-left:10px}
++.fwnew{display:inline-block;color:var(--amber);font-size:11px;font-family:var(--hdr);font-weight:600;letter-spacing:.06em;text-transform:uppercase;margin-left:10px;border:1px solid rgba(var(--cb-warn-rgb,224,169,59),.38);border-radius:999px;padding:1px 8px}
++.linkbtn{background:none;border:0;padding:0;color:var(--bone);text-decoration:underline;text-decoration-color:rgba(var(--cb-acc-rgb,225,6,0),.6);text-underline-offset:3px;cursor:pointer;font:inherit}
++.linkbtn:hover{text-decoration-color:var(--crimson)}
++/* sub-views of the member: an underlined strip */
++.subs{display:flex;gap:2px;margin:4px 0 14px;flex-wrap:wrap;border-bottom:1px solid var(--line-soft)}
++.subs button{position:relative;background:transparent;border:0;border-bottom:2px solid transparent;margin-bottom:-1px;color:var(--bone-dim);padding:8px 14px;font-family:var(--hdr);font-weight:600;font-size:12.5px;letter-spacing:.08em;text-transform:uppercase;cursor:pointer}
++.subs button:hover{color:var(--bone)}
++.subs button.on{color:var(--bone);border-bottom-color:var(--crimson)}
++.notice{border:1px solid rgba(var(--cb-warn-rgb,224,169,59),.4);background:rgba(var(--cb-warn-rgb,224,169,59),.06);border-radius:12px;padding:10px 14px;margin:0 0 14px;font-size:12.5px;color:var(--bone-dim);line-height:1.5}
+ .notice a{color:var(--bone)}
+-.kv select,.kv input[type=text],.frow select{background:#000;border:1px solid var(--line-soft);border-radius:8px;color:var(--bone);padding:7px 9px;font:inherit;font-size:13px}
+-.legend .lg{margin-right:14px;white-space:nowrap} .legend a{color:var(--bone)}
+-/* clients */
+-.clhead{display:flex;align-items:baseline;gap:10px;margin-bottom:6px}
++/* clients: the device's icon (a click opens it on the Devices page), name, link, address, actions */
++.clhead{display:flex;align-items:baseline;gap:10px;margin-bottom:8px}
+ .cltitle{font-family:var(--hdr);font-weight:600;font-size:13px;letter-spacing:.08em;text-transform:uppercase;color:var(--bone)}
+ .clnum{font-size:12px;color:var(--steel)}
+-.cllist{display:flex;flex-direction:column}
+-.cl{display:flex;align-items:center;gap:10px;padding:8px 0;border-top:1px solid var(--line-soft);flex-wrap:wrap}
++.cllist{display:flex;flex-direction:column;border:1px solid var(--line-soft);border-radius:12px;overflow:hidden;background:rgba(0,0,0,.22)}
++.cllist > .empty{padding:18px}
++.cl{display:flex;align-items:center;gap:10px 12px;padding:9px 12px;border-top:1px solid var(--line-soft);flex-wrap:wrap;transition:background .12s}
+ .cl:first-child{border-top:none}
++.cl:hover{background:rgba(255,255,255,.025)}
+ .cl.gone{opacity:.6}
+-.clmain{display:flex;align-items:center;gap:10px;flex:1 1 300px;min-width:0;flex-wrap:wrap}
++.clic{background:none;border:0;padding:0;line-height:0;border-radius:8px;cursor:pointer;flex:0 0 auto}
++.clic:hover .rdic{border-color:var(--crimson-deep)}
++.clmain{display:flex;align-items:center;gap:6px 10px;flex:1 1 300px;min-width:0;flex-wrap:wrap}
+ .clmain b{font-weight:600;font-size:13.5px;color:var(--bone);overflow-wrap:anywhere}
+-.clmain .mono{font-size:12px;color:var(--bone-dim)}
+-.clmain.go{cursor:pointer} .clmain.go:hover b{text-decoration:underline}
++.clmain .mono{font-size:11.5px;color:var(--bone-dim)}
++.clmain.go{cursor:pointer;border-radius:6px} .clmain.go:hover b{text-decoration:underline;text-decoration-color:rgba(var(--cb-acc-rgb,225,6,0),.6);text-underline-offset:3px}
+ .clacts{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+ .clnote{font-size:11.5px;color:var(--amber);max-width:260px}
+ /* network cards */
+-.nsec{margin-bottom:14px}
+-.nsec h3{font-family:var(--hdr);font-weight:600;font-size:12.5px;letter-spacing:.1em;text-transform:uppercase;color:var(--bone-dim);margin:0 0 8px;display:flex;gap:12px;align-items:baseline}
+-.nsec h3.fold{cursor:pointer}
+-.ngrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(250px,1fr));gap:10px}
+-.ncard{border:1px solid var(--line-soft);border-radius:10px;padding:10px 12px;background:var(--raised)}
++.nsec{margin-bottom:16px}
++.nsec h3{font-family:var(--hdr);font-weight:600;font-size:12.5px;letter-spacing:.1em;text-transform:uppercase;color:var(--bone-dim);margin:0 0 9px;display:flex;gap:12px;align-items:center}
++.nsec h3::after{content:"";flex:1 1 auto;height:1px;background:linear-gradient(90deg,var(--line2),transparent)}
++.nsec h3.fold{cursor:pointer} .nsec h3.fold:hover{color:var(--bone)}
++.ngrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(300px,100%),1fr));gap:10px}
++.ncard{border:1px solid var(--line-soft);border-radius:12px;padding:0 0 10px;background:var(--raised);overflow:hidden}
+ .nsec > .ncard{margin-bottom:10px}
+-.ncard h4{font-family:var(--hdr);font-weight:600;font-size:13px;color:var(--bone);margin:0 0 6px}
+-.ncard .kv{margin:0;grid-template-columns:minmax(90px,130px) 1fr;font-size:12.5px}
++.ncard h4{font-family:var(--hdr);font-weight:600;font-size:13px;letter-spacing:.04em;color:var(--bone);margin:0 0 8px;padding:8px 12px;background:rgba(255,255,255,.03);border-bottom:1px solid var(--line-soft)}
++.ncard > .kv,.ncard > .hint,.ncard > .linkbtn{margin-left:12px;margin-right:12px}
++.ncard .kv{margin-top:0;margin-bottom:0;grid-template-columns:minmax(90px,130px) minmax(0,1fr);font-size:12.5px;gap:6px 12px}
++/* traffic figures (REAPER-AIMESH-RATES): one per line under the direction - Current, Average and, on an uplink, Maximum;
++   a value and its unit never split, the label gives way first; the digits are in the fixed-width face so a new reading
++   does not shift the line; two columns at every width (the phone rule below stacks only the plain rows) */
++.trf{grid-column:1/-1;display:flex;flex-direction:column;gap:3px;min-width:0}
++.trh{color:var(--steel);font-size:12px;letter-spacing:.02em}
++.trr{display:flex;align-items:baseline;gap:12px;padding-left:10px}
++.trk{flex:0 1 120px;min-width:0;color:var(--bone-dim);font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
++.trv{flex:0 0 auto;min-width:12ch;text-align:right;white-space:nowrap;font-family:var(--mono);font-size:12px;color:var(--bone)}
+ .v.good{color:var(--jade)} .v.bad{color:var(--cb-alert,var(--crimson))} .v.warnc{color:var(--amber)}
+-.ports .prow{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:6px}
+-.port{display:inline-block;border:1px solid var(--line2);border-radius:6px;padding:4px 9px;font-size:12px;color:var(--bone-dim)}
+-.port.conn{border-color:var(--jade);color:var(--bone)} .port.warn{border-color:var(--amber);color:var(--amber)} .port.unplug{border-style:dashed;color:var(--steel)}
+-.plegend{display:flex;gap:6px;flex-wrap:wrap;margin-top:8px;opacity:.8}
++.ports .prow{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px}
++.port{display:inline-flex;align-items:center;gap:6px;border:1px solid var(--line2);border-radius:8px;padding:5px 10px;font-size:12px;color:var(--bone-dim);background:var(--raised)}
++.port::before{content:"";width:7px;height:7px;border-radius:50%;background:var(--steel);flex:0 0 7px}
++.port.conn{border-color:rgba(var(--cb-ok-rgb,79,178,134),.5);color:var(--bone)} .port.conn::before{background:var(--jade)}
++.port.warn{border-color:rgba(var(--cb-warn-rgb,224,169,59),.55);color:var(--amber)} .port.warn::before{background:var(--amber)}
++.port.unplug{border-style:dashed;color:var(--steel)} .port.unplug::before{background:transparent;border:1px solid var(--steel)}
++.plegend{display:flex;gap:6px;flex-wrap:wrap;margin-top:10px;opacity:.75}
++.plegend .port{font-size:11px;padding:3px 8px}
+ /* management rows */
+-.subrows{padding-left:18px}
++.subrows{padding-left:18px;border-left:1px solid var(--line-soft);margin-left:6px}
+ .qmark{min-width:30px;padding-left:9px;padding-right:9px}
+ .curval{font-size:13px;color:var(--bone)}
+-.frow input[type=range]{width:180px}
++.frow input[type=range]{width:180px;accent-color:var(--crimson)}
+ /* dialog */
+-.adlg{position:fixed;inset:0;background:rgba(4,4,6,.72);display:flex;align-items:center;justify-content:center;z-index:70;padding:16px}
+-.abox2{background:var(--panel);border:1px solid var(--line2);border-radius:12px;max-width:540px;width:100%;max-height:88vh;overflow-y:auto;padding:18px 20px}
+-.abox2 h3{margin:0 0 8px;font-family:var(--hdr);font-size:16px;color:var(--bone)}
+-.atxt p{margin:0 0 10px;font-size:13px;color:var(--bone-dim);line-height:1.55;overflow-wrap:anywhere;white-space:pre-line}
++/* REAPER-DLG-TALL (2026-11-28): no scroll area inside a dialog - in the shell one taller than the screen is pinned in the page and the
++   page scrollbar reaches the rest (reaper_shell.asp); opened on its own the backdrop scrolls (auto margins keep a tall box's top). */
++.adlg{position:fixed;inset:0;background:rgba(4,4,6,.74);display:flex;align-items:center;justify-content:center;z-index:70;padding:16px;overflow-y:auto}
++.abox2{position:relative;background:var(--panel);border:1px solid var(--line2);border-radius:14px;max-width:560px;width:100%;margin:auto;overflow:hidden;padding:20px 22px 18px;box-shadow:0 24px 70px -20px #000}
++.abox2::before{content:"";position:absolute;left:0;right:0;top:0;height:2px;background:linear-gradient(90deg,var(--crimson),rgba(var(--cb-acc-rgb,225,6,0),0) 75%)}
++.abox2 h3{margin:0 0 10px;font-family:var(--hdr);font-size:17px;letter-spacing:.04em;color:var(--bone)}
++.atxt p{margin:0 0 10px;font-size:13px;color:var(--bone-dim);line-height:1.6;overflow-wrap:anywhere;white-space:pre-line}
+ .alink{margin:0 0 10px;font-size:13px} .alink a{color:var(--bone)}
+-.aacts{display:flex;justify-content:flex-end;gap:10px;margin-top:6px}
++.aacts{display:flex;justify-content:flex-end;gap:10px;margin-top:10px;padding-top:12px;border-top:1px solid var(--line-soft)}
+ .abox2.busy .atxt,.abox2.busy .radlist{opacity:.55}
+-.radlist{display:flex;flex-direction:column;margin:0 0 12px}
+-.rad{display:flex;align-items:center;gap:10px;padding:8px 0;border-top:1px solid var(--line-soft);cursor:pointer;font-size:13px}
++.radlist{display:flex;flex-direction:column;margin:0 0 12px;border:1px solid var(--line-soft);border-radius:10px;overflow:hidden}
++.rad{display:flex;align-items:center;gap:10px;padding:9px 12px;border-top:1px solid var(--line-soft);cursor:pointer;font-size:13px}
++.rad:first-child{border-top:none}
++.rad:hover{background:rgba(255,255,255,.03)}
++.rad input{accent-color:var(--crimson)}
+ .rad.gray{opacity:.5;cursor:default}
+ .radtxt b{display:block;color:var(--bone);font-weight:600} .radtxt span{display:block;color:var(--bone-dim);font-size:12px}
+ /* add a node */
+@@ -134,8 +188,8 @@
+ .anbody.anfail p:nth-child(2){color:var(--amber)}
+ .anl{margin:0 0 12px;padding-left:20px;font-size:12.5px;color:var(--bone-dim);line-height:1.6}
+ .anrows{display:flex;flex-direction:column;gap:6px;margin:0 0 12px}
+-.anrow{display:flex;align-items:center;gap:12px;width:100%;text-align:left;background:var(--raised);border:1px solid var(--line-soft);border-radius:10px;padding:9px 12px;cursor:pointer;font:inherit}
+-.anrow:hover,.anrow:focus-visible{border-color:rgba(var(--cb-ok-rgb,79,178,134),.55)}
++.anrow{display:flex;align-items:center;gap:12px;width:100%;text-align:left;background:var(--raised);border:1px solid var(--line-soft);border-radius:10px;padding:9px 12px;cursor:pointer;font:inherit;color:inherit}
++.anrow:hover,.anrow:focus-visible{border-color:rgba(var(--cb-acc-rgb,225,6,0),.5)}
+ .anrow .radtxt{flex:1 1 auto;min-width:0;overflow-wrap:anywhere}
+ .anrow .radtxt span,.andev span{font-family:var(--mono)}
+ .anlk{font-size:12px;color:var(--bone-dim)}
+@@ -145,12 +199,30 @@
+ .anbars.b1 i:nth-child(-n+1),.anbars.b2 i:nth-child(-n+2),.anbars.b3 i:nth-child(-n+3),.anbars.b4 i{background:var(--jade)}
+ .andev{border:1px solid var(--line-soft);border-radius:10px;padding:10px 12px;margin:0 0 12px;background:var(--raised)}
+ .andev b{display:block;color:var(--bone);font-weight:600;font-size:14px;overflow-wrap:anywhere} .andev span{font-size:12px;color:var(--bone-dim)}
+-.anspin{width:26px;height:26px;border:3px solid var(--line2);border-top-color:var(--jade);border-radius:50%;margin:6px auto 12px;animation:anspin 1s linear infinite}
++.anspin{width:26px;height:26px;border:3px solid var(--line2);border-top-color:var(--crimson);border-radius:50%;margin:6px auto 12px;animation:anspin 1s linear infinite}
+ @keyframes anspin{to{transform:rotate(360deg)}}
+-@media (prefers-reduced-motion:reduce){.anspin{animation:none}}
++@media (prefers-reduced-motion:reduce){.anspin{animation:none}.node,.cl,.tabs button{transition:none}}
+ .anpct{text-align:center;font-family:var(--mono);font-size:20px;color:var(--bone);margin:0 0 8px}
+ /* the stock LED scheduler draws itself in the top window; its host frame has nothing to show */
+ .ledhost{position:absolute;width:0;height:0;border:0;visibility:hidden}
++/* phones: one column, a shallower tree, the member facts stacked */
++@media (max-width:680px){
++  .rframe{padding:8px;border-radius:12px}
++  .tabs{display:flex;width:100%}
++  .tabs button{flex:1 1 0;padding:8px 10px}
++  .node{margin-left:calc(var(--lvl) * 14px);min-width:0;gap:9px;padding:9px 10px 9px 9px}
++  .node.kid::before{left:-10px;width:7px}
++  .node .rdic.nico{width:28px;height:28px}
++  .kv{grid-template-columns:minmax(0,1fr);gap:2px 0}
++  .kv .k{margin-top:6px}
++  .ncard .kv{grid-template-columns:minmax(0,1fr)}
++  .card h2{font-size:18px}
++  .cl{padding:9px 10px}
++  .clmain{flex-basis:calc(100% - 40px)}
++  .clacts{width:100%;justify-content:flex-end}
++  .subs button{padding:8px 10px}
++  .abox2{padding:18px 16px 14px}
++}
+ </style>
+ </head>
+ <body>
+@@ -577,19 +649,23 @@ function paintTree(){
+   allEth = true; noSupport = {};
+   rows.forEach(function(r){
+     var n = r.n, row = el('div', 'node ' + qClass(n) + (isOnline(n) ? '' : ' offline') + (n.mac === SEL ? ' sel' : '')), nm = el('div', 'nm'), ln = el('div', 'ln');
+-    var b = el('b', '', modelName(n)), cnt = clientCount(n.mac), c;
+-    row.style.marginLeft = ((r.level - 1) * 22) + 'px';
++    var b = el('b', '', modelName(n)), cnt = clientCount(n.mac), c, ico;
++    /* REAPER-AIMESH-LOOK: the indent is a level (--lvl) the stylesheet turns into a margin and an elbow to the parent;
++       the member's glyph is the stock router / repeater type glyph (no product photo: those stay removed) */
++    row.style.setProperty('--lvl', String(r.level - 1));
++    if (r.level > 1) row.classList.add('kid');
+     row.setAttribute('data-mac', n.mac); row.setAttribute('role', 'button'); row.tabIndex = 0;
++    ico = ReaperIcons.icon('', {type: n.mac === CAP ? 2 : 24}); ico.classList.add('nico');
+     noSupport[n.mac] = featureGaps(n);
+     if (noSupport[n.mac].length) b.appendChild(el('span', 'warnf', '!'));
+     nm.appendChild(b); nm.appendChild(el('span', '', locOf(n).text));
+     if (n.mac !== CAP){
+       if (!wiredPath(rePath(n))) allEth = false;                                   /* stock: any member not on a wired path, online or not */
+-      ln.appendChild(el('div', '', isOnline(n) ? pathWord(n) + ' / ' + quality(n).text : (reconFlag !== '' && (reconFlag === 'all' || reconFlag === n.mac) ? '...' : QT.disc)));
++      ln.appendChild(el('div', 'qw ' + qClass(n), isOnline(n) ? pathWord(n) + ' / ' + quality(n).text : (reconFlag !== '' && (reconFlag === 'all' || reconFlag === n.mac) ? '...' : QT.disc)));
+     }
+     c = el('div', 'cnt' + (cnt.bindNote ? ' bindnote' : ''), `<#Full_Clients#>` + ' ' + cnt.online);
+     ln.appendChild(c);
+-    row.appendChild(nm); row.appendChild(ln);
++    row.appendChild(ico); row.appendChild(nm); row.appendChild(ln);
+     function pick(){ select(n.mac); }
+     row.addEventListener('click', pick);
+     row.addEventListener('keydown', function(e){ if (e.key === 'Enter' || e.key === ' '){ e.preventDefault(); pick(); } });
+@@ -723,7 +799,9 @@ function tick(){ if (document.hidden || reconFlag !== '') return; refresh(); }
+ var BINDABLE = !!sup('force_roaming') && !!sup('sta_ap_bind');
+ var WLN = String(<% nvram_get_js("wl_ifnames"); %>).split(' ').filter(function(x){ return x !== ''; }).length;
+ var LINKTXT = [`<#tm_wired#>`, '2.4 GHz', '5 GHz', '5 GHz-2', '6 GHz', '6 GHz-2'];
+-function newClient(mac){ return {mac: mac, name: mac, nick: '', ip: '', online: false, isWL: 0, pap: '', isRe: false, bind: '', mlo: false, from: ''}; }
++function newClient(mac){ return {mac: mac, name: mac, nick: '', ip: '', online: false, isWL: 0, pap: '', isRe: false, bind: '', mlo: false, from: '', type: ''}; }
++/* REAPER-DEVICON: the type a row's icon shows - the admin's choice (type), else what networkmap detected (defaultType) */
++function typeOf(t){ var a = String(t.type === undefined ? '' : t.type), d = String(t.defaultType === undefined ? '' : t.defaultType); return (a !== '' && a !== '0') ? a : d; }
+ function ingestClients(live, hist){
+   var cli = {}, order = [], i, m, c, t, added = 0, self = NV.lanmac;
+   if (CAP && self.toUpperCase() === CAP.toUpperCase()) self = CAP;
+@@ -738,6 +816,7 @@ function ingestClients(live, hist){
+     c.ip = t.ip || '';
+     c.name = String(t.name || '').trim() || m;
+     c.nick = String(t.nickName || '').trim();
++    c.type = typeOf(t);
+     c.isWL = parseInt(t.isWL, 10) || 0;
+     if (sup('dualband') && c.isWL === 3) c.isWL = 2;
+     if (t.amesh_isRe !== undefined){ c.isRe = t.amesh_isRe === '1'; if (c.isRe) c.online = false; }   /* a mesh member is not a client */
+@@ -754,6 +833,7 @@ function ingestClients(live, hist){
+       c.from = t.from || '';
+       c.name = String(t.name === undefined ? '' : t.name).trim() || m;
+       c.nick = String(t.nickName === undefined ? '' : t.nickName).trim();
++      c.type = typeOf(t);
+       c.isRe = t.amesh_isRe === '1';
+       c.hist = true;
+       if (BINDABLE) c.bind = t.amesh_bind_mac === undefined ? '' : String(t.amesh_bind_mac);
+@@ -847,6 +927,8 @@ function clientCount(mac){ return listFor('all', mac); }
+ function canReconnect(n){ return n.mac !== CAP ? !!caps(n).manual_force_roaming : !!sup('force_roaming'); }
+ function canBind(n){ return n.mac !== CAP ? !!caps(n).manual_sta_binding : !!sup('sta_ap_bind'); }
+ function openDevices(){ (window.top || window).location.href = '/reaper_shell.asp#Reaper_Devices.asp'; }
++/* REAPER-DEVICON (owner 2026-11-27): a click on a device's icon opens that device's picture + type dialog on the Devices page */
++function openDevice(mac){ (window.top || window).location.href = '/reaper_shell.asp#Reaper_Devices.asp?mac=' + encodeURIComponent(mac); }
+ 
+ function paintClients(n){
+   var box = clear(q('b_clients')), head = el('div', 'clhead'), tabs = el('div', 'subs'), L, list = el('div', 'cllist');
+@@ -863,7 +945,12 @@ function paintClients(n){
+   add(box, head, tabs, list);
+   if (!L.rows.length){ list.appendChild(el('div', 'empty', `<#AiMesh_No_Device_Connected#>`)); return; }
+   L.rows.forEach(function(c){
+-    var row = el('div', 'cl' + (c.online ? '' : ' gone')), main = el('div', 'clmain'), acts = el('div', 'clacts'), b, other, on2;
++    var row = el('div', 'cl' + (c.online ? '' : ' gone')), main = el('div', 'clmain'), acts = el('div', 'clacts'), b, other, on2, ic;
++    /* the device's picture or type glyph (read only here); a click opens it on the Devices page */
++    ic = el('button', 'clic'); ic.type = 'button'; ic.setAttribute('title', `<#RDEV_00#>`); ic.setAttribute('aria-label', `<#RDEV_00#>`);
++    ic.appendChild(ReaperIcons.icon(c.mac, {type: c.type, size: 'sm'}));
++    ic.addEventListener('click', function(){ openDevice(c.mac); });
++    row.appendChild(ic);
+     add(main, el('b', '', cname(c)),
+       c.online ? el('span', 'tag', (sup('mlo') && c.mlo) ? 'MLO' : (LINKTXT[c.isWL] || LINKTXT[0])) : null,   /* how an offline device was linked is not known */
+       el('span', 'mono', c.mac), el('span', 'mono', c.online ? c.ip : `<#Clientlist_OffLine#>`));
+@@ -1059,17 +1146,46 @@ function unitRate(v){
+ function section(title){ var s = el('div', 'nsec'); s.appendChild(el('h3', '', title)); return s; }
+ function kvRow(box, k, v, title){ var a = el('div', 'k', k), b = el('div', 'v', v); if (title) b.setAttribute('title', title); box.appendChild(a); box.appendChild(b); return b; }
+ function ncard(title){ var c = el('div', 'ncard'), g = el('div', 'kv'); c.appendChild(el('h4', '', title)); c.appendChild(g); c._g = g; return c; }
+-/* the four traffic figures of a card; the last reading stays on screen until the next one arrives */
++/* the traffic figures of a card, one per line under each direction: Current, Average and - when the reading carries
++   one (max_tx / max_rx, a finished text) - Maximum, the rate the link has negotiated; a reading without it shows no
++   Maximum line. The last reading stays on screen until the next one arrives */
+ function trafficRows(card, key){
+   var last = TR[key] || {}, cells = {};
+-  cells.tx = kvRow(card._g, `<#AiMesh_Transmit_Rate#>`, ''); cells.rx = kvRow(card._g, `<#AiMesh_Receive_Rate#>`, '');
++  function block(dir, title){
++    var b = el('div', 'trf');
++    b.appendChild(el('div', 'trh', title));
++    [['', `<#Current#>`], ['avg_', `<#Average#>`], ['max_', `<#Maximum#>`]].forEach(function(r){
++      var row = el('div', 'trr');
++      row.appendChild(el('span', 'trk', r[1])); cells[r[0] + dir] = row.appendChild(el('span', 'trv'));
++      b.appendChild(row);
++    });
++    card._g.appendChild(b);
++  }
+   function put(t){
+-    cells.tx.textContent = `<#Current#>` + ' ' + unitRate(t.tx) + ' / ' + `<#Average#>` + ' ' + unitRate(t.avg_tx);
+-    cells.rx.textContent = `<#Current#>` + ' ' + unitRate(t.rx) + ' / ' + `<#Average#>` + ' ' + unitRate(t.avg_rx);
++    ['tx', 'rx'].forEach(function(d){
++      var m = t['max_' + d] || '';
++      cells[d].textContent = unitRate(t[d]); cells['avg_' + d].textContent = unitRate(t['avg_' + d]);
++      cells['max_' + d].textContent = m; cells['max_' + d].parentNode.classList.toggle('off', m === '');
++    });
+   }
+-  put({tx: last.tx || 0, rx: last.rx || 0, avg_tx: last.avg_tx || 0, avg_rx: last.avg_rx || 0});
++  block('tx', `<#AiMesh_Transmit_Rate#>`); block('rx', `<#AiMesh_Receive_Rate#>`);
++  put({tx: last.tx || 0, rx: last.rx || 0, avg_tx: last.avg_tx || 0, avg_rx: last.avg_rx || 0, max_tx: last.max_tx, max_rx: last.max_rx});
+   return function(t){ TR[key] = t; put(t); };
+ }
++/* Maximum of an uplink. Ethernet: the speed the uplink port has negotiated - the mesh daemon's reading of that port (the
++   one the connection quality is graded on) or, where it says only "100 Mbps or less" or nothing, the node's own WAN port
++   reading. Wi-Fi: the link rate the parent reports for the node's station (Mbps). Unknown is '' - no line, never a 0 */
++var LRATE = {G: 1000, Q: 2500, F: 5000, T: 10000}, bhPort = null;
++function uplinkSpeed(n){
++  var w = n.wired_port && n.wired_port.wan_port && n.wired_port.wan_port['WAN 0'], lr = (w && LRATE[w.link_rate]) || 0, r, p;
++  if (!lr && PC[n.mac]){
++    try { r = JSON.parse(PC[n.mac]); } catch (e){ r = null; }
++    p = r && r.port_info && r.port_info[n.mac] && r.port_info[n.mac].W0;
++    if (p && p.is_on === '1') lr = parseInt(p.link_rate, 10) || 0;
++  }
++  return RATES[lr] || '';
++}
++function phyRate(v){ var r = parseFloat(v); return (isNaN(r) || r <= 0) ? '' : (Math.round(r * 10) / 10) + ' Mbps'; }
+ function traffic(url, online, gen, done){
+   getJSON(url, function(d){
+     var zero = {tx: 0, rx: 0, avg_tx: 0, avg_rx: 0};
+@@ -1197,6 +1313,7 @@ function portCard(n, box, gen){
+     if (gen !== netGen) return;
+     PC[n.mac] = JSON.stringify(resp || {});
+     draw(resp);
++    if (bhPort) bhPort();                                                           /* the uplink's Maximum may wait for this reading */
+   });
+ }
+ /* N4: the other members this one reaches over MoCA, with the PHY rate to each */
+@@ -1245,13 +1362,19 @@ function backhaulCard(n, box, gen){
+   if (!wired && !sup('sdn_mwl')) kvRow(c._g, `<#QIS_finish_wireless_item1#>`, ssid !== '' ? ssid : 'N/A', ssid !== '' ? '' : plain(`<#AiMesh_Update_Latest_FW#>`));
+   if (!CONNDIAG) return;
+   put = trafficRows(c, 'bh|' + n.mac);
++  function show(t, mtx, mrx){ var up = n.online === '1'; put({tx: t.tx, rx: t.rx, avg_tx: t.avg_tx, avg_rx: t.avg_rx, max_tx: up ? mtx : '', max_rx: up ? mrx : ''}); }
++  /* a wired reading carries no link rate for Ethernet (its "phy" is 0 there; a powerline uplink fills it, shown as stock
++     does): Ethernet is the same speed both ways, read from the port; MoCA and powerline get no Maximum line */
+   if (wired) traffic('/get_diag_eth_traffic.cgi?node_mac=' + encodeURIComponent(n.mac) + '&is_bh=1', n.online, gen, function(t, phy){
+-    put(t);
++    var eth = band === 'wired' && wiredPath(p), sp = eth ? uplinkSpeed(n) : '';
++    show(t, sp, sp);
++    if (eth) bhPort = function(){ var s = uplinkSpeed(n); if (gen === netGen) show(t, s, s); };
+     if (band === 'plc') kvRow(c._g, `<#AiMesh_PHY_Rate#>`, `<#AiMesh_Transmit_Rate#>` + ' ' + (phy.tx || 0) + ' / ' + `<#AiMesh_Receive_Rate#>` + ' ' + (phy.rx || 0));
+   });
+-  /* the parent's reading of this node's station: what it receives is what the node transmits (stock fills the cells crosswise) */
+-  else traffic('/get_diag_sta_traffic.cgi?node_mac=' + encodeURIComponent(par || '') + '&sta_mac=' + encodeURIComponent(sta || ''), n.online, gen, function(t){
+-    put({tx: t.rx, rx: t.tx, avg_tx: t.avg_rx, avg_rx: t.avg_tx});
++  /* the parent's reading of this node's station: what it receives is what the node transmits (stock fills the cells crosswise),
++     and the rate it receives at is the node's transmit link rate */
++  else traffic('/get_diag_sta_traffic.cgi?node_mac=' + encodeURIComponent(par || '') + '&sta_mac=' + encodeURIComponent(sta || ''), n.online, gen, function(t, phy){
++    show({tx: t.rx, rx: t.tx, avg_tx: t.avg_rx, avg_rx: t.avg_tx}, phyRate(phy.rx), phyRate(phy.tx));
+   });
+ }
+ 
+@@ -1315,6 +1438,7 @@ function fronthaulCards(n, box, gen){
+ 
+ function paintNetwork(n){
+   var box = clear(q('b_network')), gen = ++netGen, Q, sec, c;
++  bhPort = null;
+   if (n.mac === CAP) wanCards(box, gen);
+   else {
+     Q = quality(n); sec = section(`<#AiMesh_Uplink_Info#>`); c = ncard(Q.typeText);
+@@ -2176,6 +2300,7 @@ function init(){
+     var s = el('span', 'lg'), i = el('i'); i.style.background = x[0]; s.appendChild(i); s.appendChild(document.createTextNode(x[1])); lg.appendChild(s);
+   });
+   a = el('a', '', 'FAQ'); a.href = FAQ(138); a.target = '_blank'; a.rel = 'noopener noreferrer'; lg.appendChild(a);
++  ReaperIcons.init(HTTPID);                                                        /* device pictures + type glyphs (REAPER-DEVICON) */
+   refresh(function(){ sysLedRead(); });
+   timer = setInterval(tick, 10000);
+   document.addEventListener('visibilitychange', function(){ if (!document.hidden && reconFlag === '') refresh(); });
+diff --git a/release/src/router/www/Reaper_Devices.asp b/release/src/router/www/Reaper_Devices.asp
+index 9ebfbafdf3..36c9995c2e 100644
+--- a/release/src/router/www/Reaper_Devices.asp
++++ b/release/src/router/www/Reaper_Devices.asp
+@@ -128,9 +128,12 @@ select.acc{background:var(--panel-2);border:1px solid var(--line-soft);border-ra
+ .foot{font-size:12px;color:var(--steel);max-width:min(var(--pagew,1120px),100%)}
+ .foot b{color:var(--bone-dim)}
+ .rtip{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+-.ovl{display:none;position:fixed;inset:0;background:rgba(0,0,0,.65);z-index:50;align-items:center;justify-content:center}
++/* REAPER-DLG-TALL (2026-11-28): no scroll area inside a dialog. In the shell a dialog taller than the screen is pinned in
++   the page and the page scrollbar reaches the rest (reaper_shell.asp); opened on its own the backdrop scrolls (the auto
++   margins keep the top of a tall box reachable). */
++.ovl{display:none;position:fixed;inset:0;background:rgba(0,0,0,.65);z-index:50;align-items:center;justify-content:center;overflow-y:auto}
+ .ovl.show{display:flex}
+-.modal{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:20px 22px;max-width:480px;width:92%}
++.modal{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:20px 22px;max-width:480px;width:92%;margin:auto}
+ .modal h3{font-size:16px;margin-bottom:8px}
+ .modal p{margin-bottom:10px}
+ .modal .mono{font-family:ui-monospace,Consolas,monospace;color:var(--bone)}
+@@ -143,6 +146,33 @@ select.acc{background:var(--panel-2);border:1px solid var(--line-soft);border-ra
+ .mopt.rec b span{color:var(--jade);font-size:10px;letter-spacing:.08em;text-transform:uppercase;margin-left:8px}
+ .mopt.blocked{opacity:.5;cursor:not-allowed}
+ .mclose{display:flex;justify-content:flex-end;gap:10px;margin-top:6px}
++/* REAPER-DEVICON (2026-11-27): the device icon in the name cell opens the picture + type dialog */
++.dicbtn{background:none;border:0;padding:0;margin:0 9px 0 0;cursor:pointer;line-height:0;border-radius:8px;flex:0 0 auto}
++.dicbtn:hover .rdic{border-color:var(--crimson-deep)}
++.dicbtn:focus-visible{outline:2px solid var(--crimson);outline-offset:2px}
++/* the type grid takes the width there is: up to nine tiles a row on a wide screen, so the dialog is short */
++.modal.wide{max-width:1320px;width:94%}
++.picrow{display:flex;gap:16px;align-items:flex-start;margin:12px 0 16px;flex-wrap:wrap}
++.picacts{flex:1 1 260px;min-width:0}
++.picup{position:relative;overflow:hidden;display:inline-block}
++.picacts .btng{vertical-align:middle}
++.ttile.auto{grid-column:span 2}
++.picup input{position:absolute;inset:0;opacity:0;cursor:pointer;font-size:0}
++.pichint{font-size:12px;color:var(--steel);margin:8px 0 0}
++.picerr{font-size:12px;color:var(--danger);margin:6px 0 0;min-height:0}
++.modal h4{font-family:var(--hdr);font-size:12px;font-weight:600;letter-spacing:.1em;text-transform:uppercase;color:var(--bone);margin:0 0 8px;padding-top:12px;border-top:1px solid var(--line-soft)}
++.tscroll{margin-bottom:10px}
++/* a type group is as wide as its tiles need (--n of them), so the short groups share a row */
++.tcats{display:flex;flex-wrap:wrap;column-gap:20px}
++.tsec{flex:0 1 calc(var(--n,99) * 142px - 6px);min-width:0;max-width:100%}
++.tcat{font-size:10.5px;font-weight:600;letter-spacing:.1em;text-transform:uppercase;color:var(--steel);margin:12px 0 6px}
++.tgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(136px,1fr));gap:6px}
++.ttile{display:flex;align-items:center;gap:8px;min-width:0;text-align:left;background:var(--panel-2);border:1px solid var(--line-soft);border-radius:9px;padding:6px 8px;color:var(--bone-dim);font-family:var(--body);font-size:11.5px;line-height:1.25;cursor:pointer}
++.ttile span:last-child{min-width:0;overflow-wrap:anywhere}
++.ttile:hover{border-color:rgba(255,255,255,.22);color:var(--bone)}
++.ttile.on{border-color:var(--crimson-deep);background:rgba(var(--cb-acc-rgb,225,6,0),.12);color:var(--bone)}
++.ttile[disabled]{opacity:.5;cursor:progress}
++@media (max-width:520px){.tgrid{grid-template-columns:repeat(auto-fill,minmax(96px,1fr))}.modal{padding:16px 14px}}
+ </style>
+ </head>
+ <body>
+@@ -213,7 +243,8 @@ var DERR = {
+   RDEVE_1:`<#RDEVE_1#>`, RDEVE_2:`<#RDEVE_2#>`, RDEVE_3:`<#RDEVE_3#>`, RDEVE_4:`<#RDEVE_4#>`,
+   RDEVE_5:`<#RDEVE_5#>`, RDEVE_6:`<#RDEVE_6#>`, RDEVE_7:`<#RDEVE_7#>`, RDEVE_8:`<#RDEVE_8#>`,
+   RDEVE_9:`<#RDEVE_9#>`, RDEVE_10:`<#RDEVE_10#>`, RDEVE_11:`<#RDEVE_11#>`, RDEVE_12:`<#RDEVE_12#>`,
+-  RDEVE_13:`<#RDEVE_13#>`, RDEVE_14:`<#RDEVE_14#>`, RDEVE_15:`<#RDEVE_15#>`, RDEVE_19:`<#RDEVE_19#>`
++  RDEVE_13:`<#RDEVE_13#>`, RDEVE_14:`<#RDEVE_14#>`, RDEVE_15:`<#RDEVE_15#>`, RDEVE_19:`<#RDEVE_19#>`,
++  RDIC_13:`<#RDIC_13#>`, RDIC_14:`<#RDIC_14#>`, RDIC_15:`<#RDIC_15#>`, RDIC_16:`<#RDIC_16#>`, RDIC_17:`<#RDIC_17#>`, RDIC_18:`<#RDIC_18#>`
+ };
+ function errText(j){ return (j && j.ek && DERR[j.ek]) || (j && j.error) || `<#RDEV_92#>`; }
+ 
+@@ -327,8 +358,37 @@ var L = {
+   RDEV_97:`<#RDEV_97#>`, RDEV_98:`<#RDEV_98#>`, RDEV_99:`<#RDEV_99#>`, RDEV_100:`<#RDEV_100#>`,
+   RDEV_101:`<#RDEV_101#>`, RDEV_102:`<#RDEV_102#>`, RDEV_103:`<#RDEV_103#>`,
+   RDEV_85:`<#RDEV_85#>`, RDEV_86:`<#RDEV_86#>`, RDEV_62:`<#RDEV_62#>`, RDEV_63:`<#RDEV_63#>`,
+-  RDEV_64:`<#RDEV_64#>`, RDEV_87:`<#RDEV_87#>`, AiMesh_Node:`<#AiMesh_Node#>`
++  RDEV_64:`<#RDEV_64#>`, RDEV_87:`<#RDEV_87#>`, AiMesh_Node:`<#AiMesh_Node#>`,
++  RDIC_6:`<#RDIC_6#>`, RDIC_7:`<#RDIC_7#>`, RDIC_8:`<#RDIC_8#>`, RDIC_9:`<#RDIC_9#>`, RDIC_10:`<#RDIC_10#>`,
++  RDIC_11:`<#RDIC_11#>`, RDIC_12:`<#RDIC_12#>`, RDIC_13:`<#RDIC_13#>`, CTL_close:`<#CTL_close#>`
+ };
++/* REAPER-DEVICON (2026-11-27): the stock device types, in the stock picker's groups and order (client_function.js
++   custom_icon_list_api.db), named by the stock dictionary; product names stay as they are */
++var DTYPES = [
++  [`<#Clientlist_Electronic_Devices#>`, [[0,`<#Clientlist_device#>`],[34,`<#Clientlist_Desktop#>`],[14,'iMac'],[1,`<#Clientlist_Windows_Desktop#>`],
++    [72,`<#Clientlist_Linux_Desktop#>`],[22,`<#Clientlist_Linux_Device#>`],[33,`<#Clientlist_Smartphone#>`],[10,`<#Clientlist_iPhone#>`],
++    [28,`<#Clientlist_ASUS_smartphone#>`],[19,`<#Clientlist_Windows_Phone#>`],[9,`<#Clientlist_Android_Phone#>`],[73,`<#Clientlist_Pad#>`],
++    [21,`<#Clientlist_iPad#>`],[29,`<#Clientlist_ASUS_pad#>`],[20,`<#Clientlist_Android_Tablet#>`],[2,`<#Device_type_02_RT#>`],
++    [24,`<#Clientlist_Repeater#>`],[4,`<#Clientlist_NAS_Server#>`],[37,`<#Clientlist_NB#>`],[35,`<#Clientlist_Windows_NB#>`],
++    [6,`<#Clientlist_Macbook#>`],[38,`<#Clientlist_ASUS_NB#>`],[39,`<#Clientlist_SD_Card#>`],[40,'USB'],[18,`<#Clientlist_Printer#>`],
++    [41,`<#RDIC_1#>`],[15,`<#Clientlist_ROG_Device#>`],[25,'Kindle'],[26,`<#Clientlist_Scanner#>`],[32,`<#Clientlist_Apple_Device#>`],
++    [31,`<#Clientlist_Android_Device#>`],[30,`<#Clientlist_Windows_Device#>`],[42,`<#Clientlist_ASUS_Device#>`]]],
++  [`<#Clientlist_Media_Entertainment#>`, [[43,'Google Home'],[44,'Amazon Alexa'],[45,'Apple HomePod'],[11,'Apple TV'],[46,'DLNA'],
++    [47,`<#RDIC_2#>`],[48,`<#RDIC_3#>`],[7,`<#RDIC_4#>`],[12,`<#RDIC_5#>`],[27,'Chromecast'],[74,'PlayStation'],[75,'PlayStation 4'],
++    [76,'Xbox'],[77,'Xbox One']]],
++  [`<#Clientlist_Electronic_Equipment#>`, [[49,`<#Clientlist_Air_Conditioner#>`],[50,`<#Clientlist_Refrigerator#>`],[51,`<#Clientlist_Weight_Scale#>`],
++    [52,`<#Clientlist_Electric_Pot#>`],[53,`<#Clientlist_Microwave_Oven#>`],[54,`<#Clientlist_Air_Purifier#>`],[55,`<#Clientlist_Fan#>`],
++    [56,`<#Clientlist_Dehumidifier#>`],[57,`<#Clientlist_Washing_Machine#>`],[58,`<#Clientlist_Water_Heater#>`],[59,`<#Clientlist_Electric_Kettle#>`],
++    [60,`<#Clientlist_Smart_Bulb#>`],[23,`<#Clientlist_Smart_TV#>`],[61,`<#Clientlist_Cleaning_Robot#>`]]],
++  [`<#Clientlist_Security#>`, [[62,`<#Clientlist_Seismograph#>`],[63,`<#Clientlist_Smart_lock#>`],[5,`<#Device_type_05_IC#>`]]],
++  [`<#Clientlist_Wearables#>`, [[64,`<#Clientlist_Smart_bracelet#>`],[65,`<#Clientlist_Watch#>`]]],
++  [`<#Adaptive_Others#>`, [[66,`<#Clientlist_Wall_switch#>`],[67,`<#Clientlist_Window_sensor#>`],[68,`<#Clientlist_Temperature_humidity_sensor#>`],
++    [69,`<#Clientlist_Body_sensor#>`],[70,`<#Clientlist_Smart_plug#>`],[71,`<#Clientlist_Robot#>`]]]
++];
++/* the Devices-page names as the page loaded (the type field of each record seeds the icons until the live list answers) */
++var CUSTOM_RAW = '<% nvram_char_to_ascii("", "custom_clientlist"); %>';
++/* ?mac= (the AiMesh page's device icon): open that device's picture dialog once the list is in */
++var DEEP_MAC = (function(){ var m = /[?&]mac=([0-9A-Fa-f:%]{12,40})/.exec(location.search || ''); try{ return m ? decodeURIComponent(m[1]).toUpperCase() : ''; }catch(e){ return ''; } })();
+ function T(id){ return L[id] || ''; }
+ function ago(sec){
+   /* 2026-10-18: only OFFLINE rows call this. Under 90 s it used to say "online"
+@@ -368,6 +428,21 @@ function xGet(url, cb){
+ function xAct(url, cb){
+   xGet(url + '&http_id=' + encodeURIComponent(REAPER_HTTPID), function(j){ if(cb) cb(j); });
+ }
++/* REAPER-DEVICON: the picture and type changes are POSTs (the router refuses them otherwise); the token rides in the body */
++function xPost(action, params, cb){
++  var x = new XMLHttpRequest(), b = 'action=' + encodeURIComponent(action) + '&http_id=' + encodeURIComponent(REAPER_HTTPID), k;
++  for(k in params) if(Object.prototype.hasOwnProperty.call(params, k)) b += '&' + k + '=' + encodeURIComponent(params[k]);
++  x.open('POST', '/reaper_dev.cgi', true);
++  x.setRequestHeader('Content-Type', 'application/x-www-form-urlencoded');
++  x.timeout = 20000;
++  x.onreadystatechange = function(){
++    if(x.readyState !== 4) return;
++    var j = null;
++    if(x.status === 200){ try{ j = JSON.parse(x.responseText); }catch(e){} }
++    cb(j);
++  };
++  x.send(b);
++}
+ 
+ /* 2026-10-18 (field: "online / offline status is not updating without a manual
+    page refresh"): the page fetched once and never again. It now refreshes every
+@@ -402,7 +477,14 @@ function loadAll(poll){
+     if(keepQ){ s0 = a.selectionStart; s1 = a.selectionEnd; }
+     render();
+     if(keepQ){ var qi = document.getElementById('q'); qi.focus(); try{ qi.setSelectionRange(s0, s1); }catch(e){} }
++    if(DEEP_MAC){
++      var di = -1;
++      D.devices.forEach(function(x, k){ if(di < 0 && String(x.mac || '').toUpperCase() === DEEP_MAC) di = k; });
++      DEEP_MAC = '';
++      if(di >= 0) picOpen(di);
++    }
+     if(poll && (++pollN % 4) !== 0) return;
++    if(poll) namesRefresh();
+     /* enrich 24h traffic from the existing rtrafd feed - no C JSON parsing */
+     xGet('/reaper_traffic.cgi?f=m5&http_id=' + encodeURIComponent(REAPER_HTTPID), function(m){
+       TRAF = {};
+@@ -616,8 +698,11 @@ function renderRows(){
+         }).join('') + '</select>'
+       : '<span style="color:var(--steel);font-size:11.5px">&mdash;</span>';
+     var traf = TRAF[d.mac] || 0;
++    /* REAPER-DEVICON: the device's picture or type glyph; a click opens its picture + type dialog */
++    var icHtml = '<button type="button" class="dicbtn" data-dic="' + i + '" title="' + esc(T('RDIC_12')) + '" aria-label="' + esc(T('RDIC_12')) + '">' +
++      ReaperIcons.html(d.mac, ReaperNames.type(d.mac), 'sm') + '</button>';
+     el += '<tr>' +
+-      '<td><div class="dcell"><span class="dot' + (d.online?' on':'') + '"></span><span>' + nameHtml + chipsHtml + '</span></div></td>' +
++      '<td><div class="dcell"><span class="dot' + (d.online?' on':'') + '"></span>' + icHtml + '<span>' + nameHtml + chipsHtml + '</span></div></td>' +
+       '<td class="mac">' + esc(d.mac) + '</td>' +
+       '<td class="ip">' + ipHtml + '</td>' +
+       '<td><span class="conn">' + connHtml + '</span></td>' +
+@@ -632,6 +717,7 @@ function renderRows(){
+       '</td></tr>';
+   });
+   document.getElementById('rows').innerHTML = el || '<tr><td colspan="8" style="color:var(--steel)">' + esc(T('RDEV_76')) + '</td></tr>';
++  ReaperIcons.fill(document.getElementById('rows'));
+   wireRows();
+   sortHead();
+   if(window.reaperTips) window.reaperTips(document.getElementById('rows'));
+@@ -659,6 +745,108 @@ function wireRows(){
+   Array.prototype.forEach.call(document.querySelectorAll('#rows [data-traf]'), function(n){
+     n.onclick = function(){ return trafGo(); };
+   });
++  Array.prototype.forEach.call(document.querySelectorAll('#rows [data-dic]'), function(n){
++    n.onclick = function(){ picOpen(+n.getAttribute('data-dic')); };
++  });
++}
++
++/* ---- REAPER-DEVICON (2026-11-27, owner): a device's picture and type ----------------------------------
++ * The dialog shows the icon the lists show, lets the admin upload a picture (shrunk here to 64 x 64 in a canvas and
++ * sent as a PNG data URL; the router checks it again - type, size, first bytes - and never takes SVG) or remove it,
++ * and pick the device type (field 3 of its Devices-page record; Automatic = what the router detects). */
++var PIC_MAC = '';
++function picDev(){
++  var k;
++  if(!D) return -1;
++  for(k = 0; k < D.devices.length; k++) if(D.devices[k].mac === PIC_MAC) return k;
++  return -1;
++}
++function picErr(t){ var e = document.getElementById('pic_err'); if(e) e.textContent = t || ''; }
++function picOpen(i){
++  var d = D && D.devices[i];
++  if(!d) return;
++  PIC_MAC = d.mac;
++  var m = document.getElementById('pin_modal'), ut = ReaperNames.userType(d.mac), det = ReaperNames.detType(d.mac), h;
++  m.className = 'modal wide';
++  h = '<h3>' + esc(T('RDIC_6')) + ' &middot; ' + esc(d.name || d.host || d.mac) + '</h3>' +
++    '<p><span class="mono">' + esc(d.mac) + '</span></p>' +
++    '<div class="picrow">' + ReaperIcons.html(d.mac, ReaperNames.type(d.mac), 'lg') +
++    '<div class="picacts"><label class="btng btnsm picup">' + esc(T('RDIC_8')) +
++    '<input type="file" id="pic_file" accept="image/png,image/jpeg,image/webp,image/gif,image/bmp"></label>' +
++    (ReaperIcons.has(d.mac) ? ' <button type="button" class="btng btnsm" id="pic_del">' + esc(T('RDIC_9')) + '</button>' : '') +
++    '<p class="pichint">' + esc(T('RDIC_10')) + '</p><p class="picerr" id="pic_err"></p></div></div>' +
++    '<h4>' + esc(T('RDIC_11')) + '</h4><div class="tscroll" id="pic_types"><div class="tgrid">' +
++    '<button type="button" class="ttile auto' + (ut === '0' ? ' on' : '') + '" data-t="0">' + ReaperIcons.html('', det, 'sm') + '<span>' + esc(T('RDIC_7')) + '</span></button></div><div class="tcats">';
++  DTYPES.forEach(function(cat){
++    h += '<div class="tsec" style="--n:' + cat[1].length + '"><div class="tcat">' + esc(cat[0]) + '</div><div class="tgrid">';
++    cat[1].forEach(function(t){
++      h += '<button type="button" class="ttile' + (ut === String(t[0]) ? ' on' : '') + '" data-t="' + t[0] + '">' +
++        ReaperIcons.html('', t[0], 'sm') + '<span>' + esc(t[1]) + '</span></button>';
++    });
++    h += '</div></div>';
++  });
++  h += '</div></div><div class="mclose"><button type="button" class="btng" id="pin_cancel">' + esc(T('CTL_close')) + '</button></div>';
++  m.innerHTML = h;
++  ReaperIcons.fill(m);
++  document.getElementById('pic_file').onchange = function(){ picUpload(this.files && this.files[0]); this.value = ''; };
++  if(document.getElementById('pic_del')) document.getElementById('pic_del').onclick = picDel;
++  Array.prototype.forEach.call(m.querySelectorAll('.ttile'), function(b){
++    b.onclick = function(){ picType(b.getAttribute('data-t'), b); };
++  });
++  document.getElementById('pin_cancel').onclick = pinClose;
++  document.getElementById('pin_ovl').className = 'ovl show';
++}
++function picReopen(){ var k = picDev(); if(k >= 0 && document.getElementById('pin_ovl').className.indexOf('show') >= 0) picOpen(k); }
++function picType(t, btn){
++  var mac = PIC_MAC;
++  if(!mac) return;
++  Array.prototype.forEach.call(document.querySelectorAll('#pic_types .ttile'), function(b){ b.disabled = true; });
++  xPost('set_type', {mac: mac, type: t}, function(j){
++    if(!j || j.ok !== 1){
++      Array.prototype.forEach.call(document.querySelectorAll('#pic_types .ttile'), function(b){ b.disabled = false; });
++      picErr(errText(j));
++      return;
++    }
++    ReaperNames.setUserType(mac, t);
++    picReopen();
++    renderRows();
++  });
++}
++function picUpload(file){
++  var mac = PIC_MAC;
++  picErr('');
++  if(!mac || !file) return;
++  if(!/^image\/(png|jpeg|webp|gif|bmp)$/.test(file.type || '')){ picErr(T('RDIC_13')); return; }
++  var url = URL.createObjectURL(file), img = new Image();
++  img.onload = function(){
++    var c = document.createElement('canvas'), x = c.getContext('2d'), s = Math.min(img.naturalWidth, img.naturalHeight), du;
++    URL.revokeObjectURL(url);
++    if(!x || !s){ picErr(T('RDIC_13')); return; }
++    c.width = c.height = 64;
++    x.imageSmoothingEnabled = true;
++    if('imageSmoothingQuality' in x) x.imageSmoothingQuality = 'high';
++    x.drawImage(img, (img.naturalWidth - s) / 2, (img.naturalHeight - s) / 2, s, s, 0, 0, 64, 64);
++    try{ du = c.toDataURL('image/png'); }catch(e){ du = ''; }
++    if(!ReaperIcons.valid(du)){ picErr(T('RDIC_13')); return; }
++    xPost('set_icon', {mac: mac, icon: du}, function(j){
++      if(!j || j.ok !== 1){ picErr(errText(j)); return; }
++      ReaperIcons.reload(mac, function(){ picReopen(); renderRows(); });
++    });
++  };
++  img.onerror = function(){ URL.revokeObjectURL(url); picErr(T('RDIC_13')); };
++  img.src = url;
++}
++function picDel(){
++  var mac = PIC_MAC;
++  if(!mac) return;
++  xPost('del_icon', {mac: mac}, function(j){
++    if(!j || j.ok !== 1){ picErr(errText(j)); return; }
++    ReaperIcons.reload(mac, function(){ picReopen(); renderRows(); });
++  });
++}
++function namesRefresh(){
++  ReaperNames.refresh(CUSTOM_RAW, function(){ if(D && !pollBlocked()) renderRows(); });
++  CUSTOM_RAW = '';   /* seeded once: later refreshes must not put the page-load copy back over a change made here */
+ }
+ 
+ function editName(i, node){
+@@ -719,7 +907,7 @@ function pinDo(i, inPool){
+     loadAll();
+   });
+ }
+-function pinClose(){ document.getElementById('pin_ovl').className = 'ovl'; }
++function pinClose(){ document.getElementById('pin_ovl').className = 'ovl'; document.getElementById('pin_modal').className = 'modal'; PIC_MAC = ''; }
+ 
+ /* IPv6 A3 (2026-10-07): a DHCPv6 reservation is the HOST part of the address; dnsmasq
+    prepends the router's prefix, so it survives a prefix change. The field is seeded
+@@ -795,6 +983,8 @@ function devBoot(){
+   var b = document.getElementById('exp_go');
+   if (b) b.onclick = expGo;
+   fitPage();
++  ReaperIcons.init(REAPER_HTTPID);   /* REAPER-DEVICON: pictures + type glyphs */
++  namesRefresh();                    /* the device types (and the names) for the icons */
+   loadAll();
+   setInterval(pollTick, POLL_MS);
+   document.addEventListener('visibilitychange', function(){ if(!document.hidden) pollTick(); });
+diff --git a/release/src/router/www/Reaper_Network.asp b/release/src/router/www/Reaper_Network.asp
+index b0c3a0786d..64bca60bba 100644
+--- a/release/src/router/www/Reaper_Network.asp
++++ b/release/src/router/www/Reaper_Network.asp
+@@ -25,86 +25,183 @@
+      wired-only network when it is first opened too. -->
+ <link rel="stylesheet" href="/reaper/rp.css">
+ <style>
+-/* page-specific rules only; the Reaper look comes from /reaper/rp.css */
++/* page-specific rules only; the Reaper look comes from /reaper/rp.css (tokens, buttons, rows, switches).
++   REAPER-NET-STYLE2 (2026-11-28): the finished look - kind glyph + name on every card, a lock / open mark, a strong selected
++   card, tabbed detail view, phone-style sign-in page preview. Colours are kit tokens or var(--cb-*) (colour-blind mode). */
+ .off{display:none!important}
+ .msg{font-size:12.5px;color:var(--amber);display:none}
+ .msg.show{display:block;margin:0 0 10px}
++.ico{width:20px;height:20px;fill:none;stroke:currentColor;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round;display:block;flex:0 0 auto}
+ /* no network open: the list has the whole width and the networks sit in a grid. One open: the list is the left column. */
+-.nwrap{display:grid;grid-template-columns:1fr;gap:18px;align-items:start}
+-.nwrap.open{grid-template-columns:minmax(270px,360px) 1fr}
+-.nwrap #listpane,.nwrap #pane{margin-bottom:0}
+-.nwrap:not(.open) #list{display:grid;grid-template-columns:repeat(auto-fill,minmax(270px,1fr));gap:10px;align-items:stretch}
+-.nwrap:not(.open) #list .nsec{grid-column:1/-1;margin:12px 0 0}
++.nwrap{display:grid;grid-template-columns:minmax(0,1fr);gap:18px;align-items:start}
++.nwrap.open{grid-template-columns:minmax(280px,360px) minmax(0,1fr)}
++.nwrap #listpane,.nwrap #pane{margin-bottom:0;min-width:0}
++.nwrap:not(.open) #list{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:12px;align-items:stretch}
++.nwrap:not(.open) #list .nsec{grid-column:1/-1;margin:14px 0 0}
+ .nwrap:not(.open) #list .nsec:first-child{margin-top:0}
+ .nwrap:not(.open) #list .nline{display:none}
+ .nwrap:not(.open) #list .ncard{margin-bottom:0}
+-.nwrap:not(.open) #list .nadd{display:flex;align-items:center;justify-content:center;min-height:76px}
+-@media (max-width:900px){.nwrap.open{grid-template-columns:1fr} .nwrap.open #listpane{display:none}}
+-.nsec{font-family:var(--hdr);font-weight:700;font-size:12px;letter-spacing:.14em;text-transform:uppercase;color:var(--steel);margin:4px 0 8px}
+-.nline{border-top:1px solid var(--line-soft);margin:12px 0}
+-.ncard{border:1px solid var(--line-soft);border-left:3px solid var(--steel);border-radius:10px;background:var(--raised);padding:9px 11px;margin-bottom:8px;cursor:pointer}
+-.ncard:hover{border-color:var(--line2)}
+-.ncard.sel{border-color:rgba(var(--cb-ok-rgb,79,178,134),.55)}
+-.ncard.on{border-left-color:var(--jade)} .ncard.dis{opacity:.6}
+-.ncard .ntags{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:4px}
++.nwrap:not(.open) #list .nadd{display:flex;align-items:center;justify-content:center;min-height:96px}
++@media (max-width:900px){.nwrap.open{grid-template-columns:minmax(0,1fr)} .nwrap.open #listpane{display:none}}
++.nsec{display:flex;align-items:center;gap:10px;font-family:var(--hdr);font-weight:700;font-size:12px;letter-spacing:.16em;text-transform:uppercase;color:var(--steel);margin:6px 0 10px}
++.nsec::after{content:"";flex:1 1 auto;height:1px;background:var(--line-soft)}
++.nline{border-top:1px solid var(--line-soft);margin:14px 0}
++/* a network card */
++.ncard{position:relative;border:1px solid var(--line-soft);border-radius:12px;background:linear-gradient(180deg,var(--panel-2),var(--raised));padding:12px 13px 11px 15px;margin-bottom:10px;cursor:pointer;transition:border-color .15s,box-shadow .15s,background .15s}
++.ncard::before{content:"";position:absolute;left:-1px;top:12px;bottom:12px;width:3px;border-radius:0 3px 3px 0;background:var(--steel);opacity:.45}
++.ncard.on::before{background:var(--jade);opacity:1}
++.ncard:hover{border-color:var(--line2);box-shadow:0 10px 24px -16px #000}
++.ncard:focus-visible{outline:2px solid var(--crimson);outline-offset:2px}
++.ncard.sel{border-color:rgba(var(--cb-acc-rgb,225,6,0),.7);background:linear-gradient(180deg,rgba(var(--cb-acc-rgb,225,6,0),.12),var(--raised) 75%);box-shadow:0 0 0 1px rgba(var(--cb-acc-rgb,225,6,0),.4),0 12px 28px -18px rgba(var(--cb-acc-rgb,225,6,0),.8)}
++.ncard.dis{opacity:.55}
++.ncard .ntags{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:9px}
+ .ncard .ntags:empty{display:none}
+-.ncard .nrow{display:flex;align-items:center;gap:10px}
+-.ncard .nname{flex:1 1 auto;min-width:0;font-family:var(--hdr);font-weight:600;font-size:14.5px;color:var(--bone);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+-.ncard .nicons{display:flex;gap:5px;flex-wrap:wrap;margin-top:6px}
+-.chipx{font-size:10.5px;border:1px solid var(--line-soft);border-radius:999px;padding:1px 8px;color:var(--bone-dim);white-space:nowrap}
+-.chipx.band{color:var(--bone)} .chipx.offl{color:var(--amber)}
+-.ncard .nfoot{display:flex;gap:14px;margin-top:6px;font-size:11.5px;color:var(--steel)}
+-.nadd{border:1px dashed var(--line2);border-radius:10px;padding:10px;text-align:center;color:var(--bone-dim);cursor:pointer;font-family:var(--hdr);font-weight:600;font-size:12.5px;letter-spacing:.06em}
+-.nadd:hover{color:var(--bone);border-color:var(--line)}
+-.dhead{display:flex;align-items:center;gap:10px;margin-bottom:10px}
+-.dhead h2{flex:1 1 auto;margin:0}
+-.tabs{display:flex;gap:6px;margin:0 0 12px;flex-wrap:wrap}
+-.tabs button{background:transparent;border:1px solid var(--line2);border-radius:8px;color:var(--bone-dim);padding:7px 14px;font-family:var(--hdr);font-weight:600;font-size:12.5px;letter-spacing:.08em;text-transform:uppercase;cursor:pointer}
+-.tabs button.on{color:var(--bone);border-color:rgba(var(--cb-ok-rgb,79,178,134),.55);background:rgba(var(--cb-ok-rgb,79,178,134),.08)}
+-.grp{border:1px solid var(--line-soft);border-radius:10px;margin-bottom:10px}
+-.grp > button{display:block;width:100%;text-align:left;background:transparent;border:0;color:var(--bone);padding:10px 12px;font-family:var(--hdr);font-weight:700;font-size:12.5px;letter-spacing:.1em;text-transform:uppercase;cursor:pointer}
+-.grp > div{padding:0 12px 6px}
++.ncard .nrow{display:flex;align-items:center;gap:11px}
++.nglyph{flex:0 0 38px;width:38px;height:38px;border-radius:10px;display:grid;place-items:center;background:rgba(255,255,255,.035);border:1px solid var(--line-soft);color:var(--bone-dim)}
++.nglyph .ico{width:21px;height:21px}
++.ncard.on .nglyph{color:var(--bone);border-color:rgba(var(--cb-ok-rgb,79,178,134),.38);background:rgba(var(--cb-ok-rgb,79,178,134),.08)}
++.ncard.sel .nglyph{border-color:rgba(var(--cb-acc-rgb,225,6,0),.55)}
++.nglyph.big{flex-basis:46px;width:46px;height:46px;border-radius:12px;color:var(--bone);border-color:rgba(var(--cb-acc-rgb,225,6,0),.4);background:rgba(var(--cb-acc-rgb,225,6,0),.08)}
++.nglyph.big .ico{width:24px;height:24px}
++.nwho{flex:1 1 auto;min-width:0}
++.ncard .nname{font-family:var(--hdr);font-weight:700;font-size:15.5px;letter-spacing:.02em;line-height:1.2;color:var(--bone);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
++.nkind{font-family:var(--hdr);font-weight:600;font-size:11px;letter-spacing:.12em;text-transform:uppercase;color:var(--steel);margin-top:3px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
++.ncard.on .nkind{color:var(--bone-dim)}
++.ncard .nicons{display:flex;gap:6px;flex-wrap:wrap;margin-top:10px}
++.chipx{display:inline-flex;align-items:center;gap:5px;font-size:11px;line-height:1;border:1px solid var(--line-soft);border-radius:999px;padding:4px 9px;color:var(--bone-dim);white-space:nowrap;background:rgba(0,0,0,.28)}
++.chipx .ico{width:12px;height:12px;stroke-width:2}
++.chipx.band{color:var(--bone)}
++.chipx.sec{color:var(--jade);border-color:rgba(var(--cb-ok-rgb,79,178,134),.34)}
++.chipx.open,.chipx.offl{color:var(--amber);border-color:rgba(var(--cb-warn-rgb,224,169,59),.38)}
++.ncard .nfoot{display:flex;flex-wrap:wrap;gap:6px 16px;margin-top:10px;padding-top:9px;border-top:1px dashed var(--line-soft);font-size:11.5px;color:var(--steel)}
++.nfoot > span{display:inline-flex;align-items:center;gap:5px}
++.nfoot .ico{width:13px;height:13px}
++.nfoot .ncli.some{color:var(--bone-dim)}
++.nadd{border:1px dashed var(--line2);border-radius:12px;padding:12px;text-align:center;color:var(--bone-dim);cursor:pointer;font-family:var(--hdr);font-weight:700;font-size:12.5px;letter-spacing:.1em;text-transform:uppercase;transition:.15s}
++.nadd:hover{color:var(--bone);border-color:rgba(var(--cb-acc-rgb,225,6,0),.55);background:rgba(var(--cb-acc-rgb,225,6,0),.05)}
++/* the hold switch: one compact row; the full explanation behind ? */
++#holdbar{border:1px solid var(--line-soft);background:rgba(255,255,255,.02);border-radius:12px;padding:8px 12px;margin-bottom:14px}
++#holdbar.held{border-color:rgba(var(--cb-warn-rgb,224,169,59),.32);background:rgba(var(--cb-warn-rgb,224,169,59),.05)}
++.holdrow{display:flex;align-items:center;gap:12px}
++.holdrow .tswitch{margin-top:0}
++.holdrow .tmeta{flex:1 1 auto;min-width:0}
++.holdrow .tdesc{margin-top:1px}
++.holdq{flex:0 0 auto;width:28px;height:28px;padding:0!important;border-radius:50%!important;text-align:center}
++.holdmore{font-size:12px;color:var(--bone-dim);line-height:1.55;padding:8px 2px 2px 54px}
++.holdwait{display:flex;align-items:center;flex-wrap:wrap;gap:6px 8px;padding:8px 0 2px;margin-top:8px;border-top:1px solid var(--line-soft);font-size:12.5px;color:var(--bone-dim)}
++#holdbar.held .holdwait{border-top-color:rgba(var(--cb-warn-rgb,224,169,59),.25)}
++.holdwait b{color:var(--amber)}
++.holdwait .tdesc{flex-basis:100%}
++.mdelcb{margin:0 2px 0 0;accent-color:#9a9fa6;width:15px;height:15px}
++/* the detail view */
++.dhead{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin:-2px 0 4px;padding-bottom:14px}
++.dtitle{flex:1 1 220px;min-width:0}
++.dhead h2{margin:0;font-size:17px;font-weight:700;letter-spacing:.08em;text-transform:uppercase}
++.dssid{font-size:13px;color:var(--bone-dim);margin-top:3px;overflow-wrap:anywhere}
++.tabs{display:flex;gap:2px;margin:0 0 14px;border-bottom:1px solid var(--line-soft);overflow-x:auto;scrollbar-width:none}
++.tabs button{background:transparent;border:0;border-bottom:2px solid transparent;margin-bottom:-1px;color:var(--steel);padding:9px 14px 10px;font-family:var(--hdr);font-weight:700;font-size:12.5px;letter-spacing:.12em;text-transform:uppercase;cursor:pointer;white-space:nowrap}
++.tabs button:hover{color:var(--bone-dim)}
++.tabs button.on{color:var(--bone);border-bottom-color:var(--crimson)}
++.grp{border:1px solid var(--line-soft);border-radius:12px;margin-bottom:12px;background:rgba(255,255,255,.012)}
++.grp > button{display:flex;align-items:center;gap:10px;width:100%;text-align:left;background:transparent;border:0;color:var(--bone);padding:12px 14px;font-family:var(--hdr);font-weight:700;font-size:13px;letter-spacing:.12em;text-transform:uppercase;cursor:pointer}
++.grp > button::after{content:"";margin-left:auto;flex:0 0 auto;width:7px;height:7px;border-right:2px solid var(--steel);border-bottom:2px solid var(--steel);transform:translateY(-2px) rotate(45deg);transition:transform .15s}
++.grp.shut > button::after{transform:rotate(-45deg)}
++.grp > button:hover::after{border-color:var(--bone)}
++.grp:not(.shut) > button{border-bottom:1px solid var(--line-soft)}
++.grp > div{padding:2px 14px 8px}
+ .grp.shut > div{display:none}
+ .frow .ferr{grid-column:1/-1;font-size:12px;color:var(--amber);line-height:1.5;margin-top:-4px}
+ /* a switch inside a settings row keeps its own width (a grid cell would stretch it) */
+ .frow .tswitch{width:42px;justify-self:start;margin-top:0}
+ .frow input[type=text],.frow input[type=password],.frow select{min-width:0}
+ .frow #dns input{width:calc(50% - 6px)}
+-.seg{display:inline-flex;border:1px solid var(--line-soft);border-radius:8px;overflow:hidden}
+-.seg button{background:transparent;border:0;color:var(--bone-dim);padding:7px 12px;font-size:12.5px;cursor:pointer}
+-.seg button.on{background:rgba(var(--cb-ok-rgb,79,178,134),.14);color:var(--bone)}
++.pwbox{display:flex;align-items:center;gap:8px;min-width:0}
++.pwbox input{flex:1 1 auto;min-width:0}
++.reveal{flex:0 0 auto;background:transparent;border:1px solid var(--line-soft);color:var(--bone-dim);border-radius:6px;padding:6px 10px;font-family:var(--hdr);font-weight:600;font-size:11.5px;letter-spacing:.06em;text-transform:uppercase;cursor:pointer}
++.reveal:hover,.reveal[aria-pressed=true]{color:var(--bone);border-color:var(--line2)}
++.seg{display:inline-flex;border:1px solid var(--line-soft);border-radius:9px;overflow:hidden;background:rgba(0,0,0,.3)}
++.seg button{background:transparent;border:0;color:var(--bone-dim);padding:7px 13px;font-size:12.5px;cursor:pointer}
++.seg button + button{border-left:1px solid var(--line-soft)}
++.seg button.on{background:rgba(var(--cb-ok-rgb,79,178,134),.16);color:var(--bone);box-shadow:inset 0 -2px 0 var(--jade)}
+ .boxes{display:flex;gap:12px;flex-wrap:wrap}
+-.boxes label,.mrow label{display:flex;align-items:center;gap:6px;font-size:13px;color:var(--bone)}
+-.mrow{padding:7px 0;border-top:1px solid var(--line-soft)}
++.boxes label,.mrow label{display:flex;align-items:center;gap:7px;font-size:13px;color:var(--bone)}
++.boxes input,.mrow input[type=checkbox],.mrow input[type=radio]{accent-color:#9a9fa6}
++.mrow{padding:8px 0;border-top:1px solid var(--line-soft)}
+ .mrow:first-child{border-top:none}
+ .mrow .mwhy{font-size:11.5px;color:var(--amber);margin:2px 0 0 22px}
+ .mrow .msub{font-size:11.5px;color:var(--steel);margin-left:6px}
+-.dacts{display:flex;justify-content:flex-end;gap:10px;margin-top:12px}
+-.kindgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(170px,1fr));gap:10px}
+-.kindgrid button{text-align:left;background:var(--raised);border:1px solid var(--line-soft);border-radius:10px;color:var(--bone);padding:10px 12px;cursor:pointer}
+-.kindgrid button b{display:block;font-family:var(--hdr);font-size:13.5px}
+-.kindgrid button span{display:block;font-size:11.5px;color:var(--steel);margin-top:3px;line-height:1.45}
+-.ppic{display:inline-block;width:160px;height:90px;border:1px solid var(--line-soft);border-radius:8px;background:#000 center/cover no-repeat;vertical-align:middle}
+-.tplgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(120px,1fr));gap:8px;margin-bottom:10px}
+-.tplgrid .tpl{height:70px;border:2px solid var(--line-soft);border-radius:8px;background:#000 center/cover no-repeat;cursor:pointer}
+-.tplgrid .tpl.on{border-color:var(--jade)}
+-.frow textarea{width:100%}
+-#holdbar{border:1px solid rgba(var(--cb-warn-rgb,224,169,59),.38);background:rgba(var(--cb-warn-rgb,224,169,59),.06);border-radius:10px;padding:4px 12px 8px;margin-bottom:12px}
+-.holdwait{padding:8px 0 4px;border-top:1px solid rgba(var(--cb-warn-rgb,224,169,59),.3);font-size:12.5px;color:var(--bone-dim)}
+-.holdwait b{color:var(--amber)}
+-.mdelcb{margin-right:8px}
++.crow,.macrow{display:flex;align-items:center;gap:10px}
++.cglyph{color:var(--steel);display:inline-flex}
++.cglyph .ico{width:16px;height:16px}
++.cwho{min-width:0}
++.cwho .cname{font-size:13px;color:var(--bone);overflow-wrap:anywhere}
++.cwho .msub{margin-left:0;font-family:var(--mono);font-size:11px}
++.macrow .mname{flex:1 1 auto;min-width:0;font-size:13px;color:var(--bone);overflow-wrap:anywhere}
++.maclist{max-height:420px;overflow-y:auto}
++.macadd{display:flex;gap:8px;min-width:0}
++.macadd input{flex:1 1 auto;min-width:0;font-family:var(--mono)}
++.dacts{display:flex;justify-content:flex-end;flex-wrap:wrap;gap:10px;margin-top:12px}
++#pane > .dacts{margin-top:16px;padding-top:14px;border-top:1px solid var(--line-soft)}
++#pane > .hint.warn{border:1px solid rgba(var(--cb-warn-rgb,224,169,59),.35);border-radius:10px;padding:8px 12px;margin:0 0 12px}
++/* the kind picker */
++.kindgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:10px}
++.kindgrid button{display:flex;align-items:flex-start;gap:12px;text-align:left;background:linear-gradient(180deg,var(--panel-2),var(--raised));border:1px solid var(--line-soft);border-radius:12px;color:var(--bone);padding:12px;cursor:pointer;transition:border-color .15s,background .15s}
++.kindgrid button:hover,.kindgrid button:focus-visible{border-color:rgba(var(--cb-acc-rgb,225,6,0),.6);background:linear-gradient(180deg,rgba(var(--cb-acc-rgb,225,6,0),.08),var(--raised));outline:none}
++.kindgrid .kt{display:block;min-width:0}
++.kindgrid .kt b{display:block;font-family:var(--hdr);font-size:14px;letter-spacing:.03em}
++.kindgrid .kt span{display:block;font-size:11.5px;color:var(--steel);margin-top:3px;line-height:1.45}
++/* the sign-in page: a live preview on a phone, and the background picker */
++.lookrow{display:flex;gap:16px;align-items:flex-start;flex-wrap:wrap}
++.lookside{flex:1 1 150px;min-width:0;display:flex;flex-direction:column;align-items:flex-start;gap:10px}
++.lookside .fh{margin:0}
++.phone{position:relative;flex:0 0 auto;width:188px;height:340px;border-radius:28px;padding:9px;background:#000;border:1px solid var(--line2);box-shadow:0 0 0 3px rgba(255,255,255,.025),0 20px 40px -22px #000;cursor:pointer;transition:border-color .15s}
++.phone::before{content:"";position:absolute;top:14px;left:50%;width:44px;height:5px;margin-left:-22px;border-radius:3px;background:rgba(255,255,255,.16);z-index:2}
++.phone:hover,.phone:focus-visible{border-color:rgba(var(--cb-acc-rgb,225,6,0),.65);outline:none}
++.pscreen{width:100%;height:100%;border-radius:20px;overflow:hidden;background:#1a1a1d center/cover no-repeat;display:flex;align-items:center;justify-content:center;padding:28px 12px 14px}
++.pcard{width:100%;max-height:100%;overflow:hidden;display:flex;flex-direction:column;gap:6px;background:rgba(255,255,255,.92);border-radius:8px;padding:10px 9px;color:#111;font-family:Arial,Helvetica,sans-serif;box-shadow:0 4px 14px rgba(0,0,0,.28)}
++.pcard.board{background:transparent;box-shadow:none;gap:14px}
++.pcard.board .pbrand{color:#fff;font-size:14px;text-shadow:0 1px 5px rgba(0,0,0,.75)}
++.pbrand{font-weight:700;font-size:13px;line-height:1.3;text-align:center;overflow-wrap:anywhere}
++.pterms{font-size:7.5px;line-height:1.4;color:#393736;max-height:66px;overflow:hidden;border:1px solid rgba(0,0,0,.12);border-radius:3px;padding:4px 5px;white-space:pre-line;overflow-wrap:anywhere}
++.pagree{display:flex;gap:4px;align-items:flex-start;font-size:7.5px;line-height:1.3;color:#222}
++.pbox{flex:0 0 8px;height:8px;margin-top:1px;border-radius:2px;background:var(--cb-acc,#2597FF)}
++.ppass{font-size:8px;color:#8e8e8e;border:1px solid #999;border-radius:4px;padding:5px 6px}
++.pgo{background:var(--cb-acc,#2597FF);color:#fff;font-size:9px;font-weight:700;text-align:center;border-radius:4px;padding:6px}
++.tplgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(120px,1fr));gap:8px;margin-bottom:12px}
++.tplgrid .tpl{height:72px;border:2px solid var(--line-soft);border-radius:9px;background:#000 center/cover no-repeat;cursor:pointer;transition:border-color .15s}
++.tplgrid .tpl:hover{border-color:var(--line2)}
++.tplgrid .tpl.on{border-color:var(--jade);box-shadow:0 0 0 1px var(--jade)}
++.frow textarea{width:100%;line-height:1.5}
++/* Wi-Fi share: the key is masked on the screen, printed in full */
+ .qrbox{text-align:center}
+-.qrsheet{display:inline-block;background:#fff;color:#000;border-radius:10px;padding:14px 18px}
++.qrsheet{display:inline-block;background:#fff;color:#000;border-radius:12px;padding:14px 18px;box-shadow:0 18px 40px -24px #000}
+ .qrsheet .qr{width:240px;height:240px;display:block}
+ .qrsheet .qrname{font-family:var(--hdr);font-weight:700;font-size:16px;margin-top:6px;overflow-wrap:anywhere}
+ .qrsheet .qrkey{font-family:monospace;font-size:13px;margin-top:2px;overflow-wrap:anywhere}
+-@media print{body.printqr > *:not(.adlg){display:none!important} body.printqr .adlg{position:static;background:#fff} body.printqr .abox2{border:0;background:#fff} body.printqr .abox2 h3, body.printqr .aacts, body.printqr .dacts, body.printqr .hint{display:none}}
+-.adlg{position:fixed;inset:0;background:rgba(4,4,6,.72);display:flex;align-items:center;justify-content:center;z-index:70;padding:16px}
+-.abox2{background:var(--panel);border:1px solid var(--line2);border-radius:12px;max-width:540px;width:100%;max-height:88vh;overflow-y:auto;padding:18px 20px}
+-.abox2.wide{max-width:760px}
+-.abox2 h3{margin:0 0 8px;font-family:var(--hdr);font-size:16px;color:var(--bone)}
++.qrkey .qsec{display:none}
++.qrbox.shown .qrkey .qsec{display:inline}
++.qrbox.shown .qrkey .qmask{display:none}
++.qrbox .dacts{justify-content:center}
++@media print{body.printqr > *:not(.adlg){display:none!important} body.printqr .adlg{position:static;background:#fff} body.printqr .abox2{border:0;background:#fff;box-shadow:none} body.printqr .abox2 h3, body.printqr .aacts, body.printqr .dacts, body.printqr .hint{display:none} body.printqr .qrkey .qsec{display:inline!important} body.printqr .qrkey .qmask{display:none!important}}
++/* dialogs. REAPER-DLG-TALL (2026-11-28): no scroll area inside a dialog - in the shell one taller than the screen is pinned in the
++   page and the page scrollbar reaches the rest (reaper_shell.asp); opened on its own the backdrop scrolls (auto margins keep the
++   top of a tall box reachable). Only a long data list (.maclist) keeps a fixed cap. */
++.adlg{position:fixed;inset:0;background:rgba(4,4,6,.74);display:flex;align-items:center;justify-content:center;z-index:70;padding:16px;overflow-y:auto}
++.abox2{background:linear-gradient(180deg,var(--panel-2),var(--panel));border:1px solid var(--line2);border-top:2px solid var(--crimson);border-radius:14px;max-width:540px;width:100%;margin:auto;padding:18px 22px;box-shadow:0 30px 80px -30px #000}
++.abox2.wide{max-width:780px}
++.abox2 h3{margin:0 0 12px;font-family:var(--hdr);font-size:16px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:var(--bone)}
+ .atxt p{margin:0 0 10px;font-size:13px;color:var(--bone-dim);line-height:1.55;overflow-wrap:anywhere;white-space:pre-line}
+-.aacts{display:flex;justify-content:flex-end;gap:10px;margin-top:6px}
++.aacts{display:flex;justify-content:flex-end;gap:10px;margin-top:12px;padding-top:12px;border-top:1px solid var(--line-soft)}
++@media (max-width:680px){
++  .nwrap:not(.open) #list{grid-template-columns:minmax(0,1fr)}
++  .dtitle{flex-basis:calc(100% - 60px)}
++  .tabs button{padding:9px 11px 10px}
++  .phone{width:168px;height:304px}
++  .holdmore{padding-left:2px}
++  .adlg{padding:10px}
++  .abox2{padding:16px 14px}
++  .kindgrid{grid-template-columns:minmax(0,1fr)}
++}
+ </style>
+ </head>
+ <body>
+@@ -2412,9 +2509,31 @@ function refused(r){
+   if (r.kind === 'mlo_off'){ dlg({lines: [refuseText(r)], ok: `<#btn_goSetting#>`, cancel: `<#CTL_close#>`, onOk: function(){ top.location.href = '/reaper_shell.asp#Reaper_MLO.asp'; }}); return; }
+   info(refuseText(r));
+ }
++/* line glyphs (drawn in the text colour; no picture files): one per kind of network, plus the marks a card carries */
++var GLYPH = {
++  MAINFH: 'M3 11.5 12 4l9 7.5M5.5 10v10h13V10M10 20v-5h4v5', Guest: 'M12 12a4 4 0 1 0 0-8 4 4 0 0 0 0 8zM4.5 20.5c.6-3.6 3.7-5.5 7.5-5.5s6.9 1.9 7.5 5.5',
++  Employee: 'M4 8h16v11H4zM9 8V5.5h6V8M4 13h16', Kids: 'M12 3.5l2.6 5.3 5.8.8-4.2 4.1 1 5.8-5.2-2.7-5.2 2.7 1-5.8-4.2-4.1 5.8-.8z',
++  Sched: 'M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18zM12 7v5l3.2 2.2', IoT: 'M7.5 7.5h9v9h-9zM10 3.5v4M14 3.5v4M10 16.5v4M14 16.5v4M3.5 10h4M3.5 14h4M16.5 10h4M16.5 14h4',
++  VPN: 'M12 3l7.5 3v5.5c0 4.6-3.2 8-7.5 9.5-4.3-1.5-7.5-4.9-7.5-9.5V6zM9 12l2.2 2.2L15.5 10', Customized: 'M4 7h9M17 7h3M4 12h3M11 12h9M4 17h11M19 17h1M15 5v4M9 10v4M17 15v4',
++  Portal: 'M13.5 3.5H20v17h-6.5M3.5 12h11M11 8l4 4-4 4', MLO: 'M10 14a4 4 0 0 0 5.7 0l3-3A4 4 0 0 0 13 5.3l-1 1M14 10a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1-1',
++  Gaming: 'M7 8.5h10a4 4 0 0 1 4 4.4l-.4 3.3a2.2 2.2 0 0 1-3.9 1.1L15 15.5H9l-1.7 1.8a2.2 2.2 0 0 1-3.9-1.1L3 12.9a4 4 0 0 1 4-4.4zM8 11v3.5M6.25 12.75h3.5M15.5 12h.01M17.5 14h.01',
++  lock: 'M6 11h12v9.5H6zM8.5 11V8a3.5 3.5 0 0 1 7 0v3M12 14.5v2.5', unlock: 'M6 11h12v9.5H6zM8.5 11V8a3.5 3.5 0 0 1 6.6-1.6M12 14.5v2.5',
++  wired: 'M9 3.5V8M15 3.5V8M7 8h10v3.5a5 5 0 0 1-10 0zM12 16.5v4', wifi: 'M2.5 9.5a14 14 0 0 1 19 0M5.5 13a9.5 9.5 0 0 1 13 0M8.8 16.4a4.8 4.8 0 0 1 6.4 0M12 19.8h.01',
++  people: 'M9 11a3.2 3.2 0 1 0 0-6.4A3.2 3.2 0 0 0 9 11zM3 20c.4-3 2.9-4.8 6-4.8s5.6 1.8 6 4.8M15.5 4.8a3.2 3.2 0 0 1 0 6.1M21 20c-.3-2.4-1.8-4-3.8-4.6', vlan: 'M4 6h16M4 12h16M4 18h16M8 4v4M16 10v4M11 16v4'
++};
++GLYPH.LEGACY = GLYPH.IoT;
++function ico(name, cls){
++  var NS = 'http://www.w3.org/2000/svg', s = document.createElementNS(NS, 'svg'), p = document.createElementNS(NS, 'path');
++  s.setAttribute('viewBox', '0 0 24 24'); s.setAttribute('class', 'ico' + (cls ? ' ' + cls : '')); s.setAttribute('aria-hidden', 'true'); s.setAttribute('focusable', 'false');
++  p.setAttribute('d', GLYPH[name] || GLYPH.Customized); s.appendChild(p);
++  return s;
++}
++/* a small chip: a glyph and a word (the word in its own span: the label fitter holds a control's own text to one line) */
++function chip(cls, glyph, text, title){ var c = el('span', 'chipx' + (cls ? ' ' + cls : '')); if (glyph) c.appendChild(ico(glyph)); c.appendChild(el('span', '', text)); if (title) c.title = title; return c; }
++function kindName(k){ return KIND[k] || KIND.Customized; }
+ function cardNode(c){
+-  var d = el('div', 'ncard' + (c.sw === 'on' || c.sw === 'none' ? ' on' : '') + (c.disabled ? ' dis' : '') + (c.idx === SELIDX ? ' sel' : '')), tags = el('div', 'ntags'), row = el('div', 'nrow'), icons = el('div', 'nicons'), foot = el('div', 'nfoot'), t;
+-  d.setAttribute('data-idx', c.idx); d.setAttribute('data-kind', c.kind);
++  var d = el('div', 'ncard' + (c.sw === 'on' || c.sw === 'none' ? ' on' : '') + (c.disabled ? ' dis' : '') + (c.idx === SELIDX ? ' sel' : '')), tags = el('div', 'ntags'), row = el('div', 'nrow'), icons = el('div', 'nicons'), foot = el('div', 'nfoot'), t, who, wired = c.left.indexOf('LAN') >= 0;
++  d.setAttribute('data-idx', c.idx); d.setAttribute('data-kind', c.kind); d.tabIndex = 0; d.setAttribute('role', 'button');
+   c.tags.forEach(function(g){
+     if (typeof g === 'object'){ t = el('span', 'tag warn', hms(g.timer)); t.title = `<#mssid_time_remaining#>`; t.setAttribute('data-end', g.end); }
+     else t = el('span', 'tag', g === 'vpnc' ? `<#vpnc_title#>` : g === 'vpns' ? `<#BOP_isp_heart_item#>` : g === 'freewifi' ? 'Free WiFi' : `<#Message_Board#>`);
+@@ -2422,16 +2541,24 @@ function cardNode(c){
+   });
+   if (LIVE.defer && Array.isArray(LIVE.defer.items) && LIVE.defer.items.some(function(i){ return String(i[0]) === c.idx; })) tags.appendChild(el('span', 'tag warn', `<#RSDN_43#>`));
+   if (MDEL !== null && ACT.mdelOk(net(c.idx), ENV.trunk)) row.appendChild(mdelBox(c.idx));
+-  add(row, el('div', 'nname', c.name));
++  /* the kind of network: a glyph and its name under the network name */
++  who = el('div', 'nwho');
++  add(who, el('div', 'nname', c.name), add(el('div', 'nkind'), el('span', '', kindName(c.kind))));
++  add(row, add(el('div', 'nglyph'), ico(c.kind)), who);
+   if (c.sw !== 'none') row.appendChild(sw(c.sw === 'on', function(v, box){ toggleNet(c.idx, v, box); }));
++  /* security first: a Wi-Fi network is marked secured (a lock) or open (an open lock); a wired-only one has no Wi-Fi key */
++  if (!wired) icons.appendChild(c.lock ? chip('sec', 'lock', `<#RNET2_2#>`) : chip('open', 'unlock', `<#RNET2_3#>`));
+   c.left.forEach(function(k){
+-    icons.appendChild(el('span', 'chipx' + (k === 'WiFi_offline' ? ' offl' : ''), k === 'LAN' ? `<#tm_wired#>` : k === 'WiFi7' ? 'WiFi 7' : k === 'WiFi' ? `<#tm_wireless#>` : `<#tm_wireless#>` + ' (' + `<#Clientlist_OffLine#>` + ')'));
++    if (k === 'LAN') icons.appendChild(chip('', 'wired', `<#tm_wired#>`));
++    else if (k === 'WiFi7') icons.appendChild(chip('', '', 'WiFi 7'));
++    else if (k === 'WiFi_offline') icons.appendChild(chip('offl', 'wifi', `<#Clientlist_OffLine#>`, `<#tm_wireless#>` + ' (' + `<#Clientlist_OffLine#>` + ')'));
+   });
+-  c.right.forEach(function(b){ icons.appendChild(el('span', 'chipx band', (BANDTXT[b] || b) + (c.lock ? '' : ' (Open)'))); });
+-  if (c.vlan !== null) foot.appendChild(el('span', '', 'VLAN ' + c.vlan));
+-  t = el('span', '', `<#number_of_client#>` + ': ' + c.clients); foot.appendChild(t);
++  c.right.forEach(function(b){ icons.appendChild(chip('band', '', BANDTXT[b] || b)); });
++  if (c.vlan !== null) foot.appendChild(add(el('span', ''), ico('vlan'), el('span', '', 'VLAN ' + c.vlan)));
++  t = add(el('span', 'ncli' + (c.clients ? ' some' : '')), ico('people'), el('span', '', `<#number_of_client#>` + ': ' + c.clients)); foot.appendChild(t);
+   add(d, tags, row, icons, foot);
+   d.addEventListener('click', function(){ openNet(c.idx); });
++  d.addEventListener('keydown', function(e){ if ((e.key === 'Enter' || e.key === ' ') && e.target === d){ e.preventDefault(); openNet(c.idx); } });
+   return d;
+ }
+ function paintList(){
+@@ -2490,12 +2617,20 @@ function rowErr(id, text){
+   if (text){ openGroupOf(x.row); if (x.row.scrollIntoView) x.row.scrollIntoView({block: 'center'}); }
+ }
+ function openGroupOf(node){ var g = node.parentNode; while (g && !(g.classList && g.classList.contains('grp'))) g = g.parentNode; if (g) g.classList.remove('shut'); }
++/* pass: a secret (Wi-Fi key, RADIUS secret, sign-in passcode): masked, with a Show / Hide button, and never offered to the
++   browser's password store (autocomplete new-password) */
+ function tx(id, label, get, set, max, pass){
+-  var i = el('input'); i.type = pass ? 'password' : 'text'; i.id = id; i.autocomplete = 'off'; if (max) i.maxLength = max; i.value = get() === undefined || get() === null ? '' : get();
++  var i = el('input'), box = i; i.type = pass ? 'password' : 'text'; i.id = id; i.autocomplete = pass ? 'new-password' : 'off'; if (max) i.maxLength = max; i.value = get() === undefined || get() === null ? '' : get();
+   i.addEventListener('input', function(){ set(i.value); changed(id, true); });
+-  frow(id, label, i).ctl = i; FM.rows[id].put = function(){ if (document.activeElement !== i) i.value = get() === undefined || get() === null ? '' : get(); };
++  if (pass){ i.spellcheck = false; box = add(el('div', 'pwbox'), i, reveal(i)); }
++  frow(id, label, box).ctl = i; FM.rows[id].put = function(){ if (document.activeElement !== i) i.value = get() === undefined || get() === null ? '' : get(); };
+   return FM.rows[id].row;
+ }
++function reveal(i){
++  var b = el('button', 'reveal', `<#RVCL_36#>`); b.type = 'button'; b.setAttribute('data-for', i.id); b.setAttribute('aria-pressed', 'false');
++  b.addEventListener('click', function(){ var show = i.type === 'password'; i.type = show ? 'text' : 'password'; b.textContent = show ? `<#RVCL_163#>` : `<#RVCL_36#>`; b.setAttribute('aria-pressed', show ? 'true' : 'false'); });
++  return b;
++}
+ function tg(id, label, get, set){
+   var s = sw(get(), function(v, box){ var r = set(v, box); if (r === false) box.checked = !!get(); changed(id); });
+   s.firstChild.id = id; frow(id, label, s); FM.rows[id].put = function(){ s.firstChild.checked = !!get(); };
+@@ -2542,6 +2677,7 @@ function changed(id, typing){
+   sh.container_macfilterlist = !!sh.select_macmode && F.macmode !== 'disabled';
+   gcSync(sh);
+   portalSync(sh);
++  lookPaint();
+   if (FM.takeNote){ k = takeText(); FM.takeNote.textContent = k.join('\n'); FM.takeNote.classList.toggle('off', !k.length); }
+   for (k in FM.rows) if (own(FM.rows, k) && sh[k] !== undefined) FM.rows[k].row.classList.toggle('off', !sh[k]);
+   if (FM.rows.select_wifi_crypto){ FM.rows.select_wifi_crypto.fill(c.allowed); }
+@@ -2610,7 +2746,8 @@ function openNet(idx){
+   SELIDX = String(idx);
+   pane = clear(q('pane')); show('pane', true); q('nwrap').classList.add('open');
+   head = el('div', 'dhead');
+-  add(head, el('h2', '', kindTitle(V0)));
++  add(head, add(el('div', 'nglyph big'), ico(V0.title === 'main' ? 'MAINFH' : V0.title === 'legacy' ? 'LEGACY' : (KIND[V0.title] ? V0.title : 'Customized'))),
++    add(el('div', 'dtitle'), el('h2', '', kindTitle(V0)), el('div', 'dssid', n.apg.ssid || '')));
+   if (shareOk(n)) head.appendChild(btn('small ghost', plain(`<#WiFi_Share#>`), function(){ shareDialog(idx); })).id = 'f_share';
+   if (!V0.mloBh) head.appendChild(btn('small ghost', `<#CTL_del#>`, function(){ deleteNet(idx); })).id = 'f_delete';
+   head.appendChild(btn('small ghost', `<#CTL_close#>`, closePane));
+@@ -2646,7 +2783,7 @@ function openNet(idx){
+     if (has[rid]) b.appendChild(sl(rid, `<#WLANConfig11b_AuthenticationMethod_itemname#>`, ch[rid], function(v){ return AUTHTXT[v] || v; }, function(){ return F.rauthSel[k]; }, function(v){ F.rauthSel[k] = v; }));
+   });
+   b.appendChild(sl('select_wifi_crypto', `<#WLANConfig11b_WPAType_itemname#>`, VW.crypto(V0, F).allowed, function(v){ return CRYTXT[v] || v; }, function(){ return F.crypto; }, function(v){ F.crypto = v; }));
+-  b.appendChild(tx('sdn_pwd', `<#QIS_finish_wireless_item3#>`, function(){ return F.pwd; }, function(v){ F.pwd = v; }, 64));
++  b.appendChild(tx('sdn_pwd', `<#QIS_finish_wireless_item3#>`, function(){ return F.pwd; }, function(v){ F.pwd = v; }, 64, true));
+   if (has.radius_ipaddr){
+     b.appendChild(tx('radius_ipaddr', `<#WLANAuthentication11a_ExAuthDBIPAddr_itemname#>`, function(){ return F.radius.server; }, function(v){ F.radius.server = v; }, 39));
+     b.appendChild(tx('radius_port', `<#WLANAuthentication11a_ExAuthDBPortNumber_itemname#>`, function(){ return F.radius.port; }, function(v){ F.radius.port = v; }, 5));
+@@ -2809,30 +2946,42 @@ function vpnTab(body, V0){
+   if (ENV.vpns.length) go.appendChild(btn('small ghost', `<#BOP_isp_heart_item#>` + ': ' + `<#btn_goSetting#>`, function(){ top.location.href = '/reaper_shell.asp#Reaper_VPNServer.asp'; }));
+   body.appendChild(go);
+ }
++/* a device's label, by the one rule (owner 2026-11-15): the Name the admin gave it, else the Hostname the router knows for
++   it (both from the router's reaper_devnames list, through the shared resolver), else its MAC address */
++function devLabel(mac){
++  var m = String(mac || ''), l = '', d;
++  if (window.ReaperNames) l = window.ReaperNames.byMac(m, '');
++  if (l === '' && LIVE.names){ d = LIVE.names[m.toUpperCase()] || LIVE.names[m.toLowerCase()]; if (d && typeof d === 'object') l = String(d.n || d.h || ''); }
++  return l !== '' ? l : m;
++}
++var namesAsked = false;
+ function paintClients(body, idx){
+-  var l = LIVE.clients || {}, k, v, n = 0, t;
++  var l = LIVE.clients || {}, k, v, n = 0, t, list = el('div', 'clist');
+   clear(body);
+   for (k in l) if (own(l, k)){
+     v = l[k];
+     if (!v || typeof v !== 'object' || v.sdn_idx === undefined || v.isOnline != '1' || v.amesh_isRe === true || v.amesh_isRe == '1' || String(v.sdn_idx) !== String(idx)) continue;
+     n++;
+-    t = el('div', 'mrow');
+-    add(t, el('span', '', v.nickName || v.name || v.mac), el('span', 'msub', (v.isWL && v.isWL != '0' ? `<#tm_wireless#>` : `<#tm_wired#>`) + '  ' + v.mac + '  ' + (v.ip || '')));
+-    body.appendChild(t);
++    t = el('div', 'mrow crow');
++    add(t, add(el('span', 'cglyph'), ico(v.isWL && v.isWL != '0' ? 'wifi' : 'wired')), add(el('div', 'cwho'), el('div', 'cname', devLabel(v.mac)), el('div', 'msub', (v.isWL && v.isWL != '0' ? `<#tm_wireless#>` : `<#tm_wired#>`) + '  ' + v.mac + '  ' + (v.ip || ''))));
++    list.appendChild(t);
+   }
+-  body.insertBefore(el('div', 'hint', `<#ConnectedClient#>` + ' : ' + n + ' ' + `<#Clientlist_Online#>`), body.firstChild);
++  add(body, el('div', 'hint', `<#ConnectedClient#>` + ' : ' + n + ' ' + `<#Clientlist_Online#>`), list);
+   if (!n) body.appendChild(el('div', 'hint', plain(`<#AiMesh_No_Device_Connected#>`)));
++  /* the Names / Hostnames arrive once per page; the tab is drawn again when they do */
++  if (n && !namesAsked && window.ReaperNames){ namesAsked = true; window.ReaperNames.refresh('', function(){ if (FM && FM.idx === String(idx) && !body.classList.contains('off')) paintClients(body, idx); }); }
+ }
+ 
+ /* W2: Apply. Validation first (first failure shown under its field), then the questions, then the request. */
+ function applyEdit(){
+-  var idx = FM.idx, Fc, err, r, kinds, lines = [];
++  var idx = FM.idx, Fc, err, r, kinds, lines = [], look;
+   if (busy) return;
+   Fc = V.clean(stateForCheck(), idx, 'ALL');
+   err = V.check(S, idx, 'ALL', Fc, ENV) || gcState(Fc);
+   if (err && err.msg){ rowErr(err.field, plain(err.msg)); return; }
+   rowErr('', '');
+   r = ED.edit(S, idx, Fc, ENV);
++  look = !!(r && r.upload) && lookSend(r.upload.cp_idx);
+   if (!r) return;
+   if (r.refuse){ refused(r.refuse); return; }
+   kinds = ED.confirm(S, idx, Fc, ENV);
+@@ -2844,7 +2993,9 @@ function applyEdit(){
+       var k; if (cur){ for (k in r.post) if (own(r.post, k) && k !== 'action_mode' && k !== 'rc_service' && cur[k] === undefined) cur[k] = ''; }
+       r = ED.light(r, cur, ENV);
+       function send(){ save(r, function(){ paintList(); if (net(idx)) openNet(idx); else closePane(); }); }
+-      if (r.upload) uploadLook(r.upload, send); else send();
++      /* the look goes up only when it is known: read from the router, none stored yet, or changed here (a look that could
++         not be read is never replaced by the built-in one) */
++      if (r.upload && look) uploadLook(r.upload, send); else send();
+     });
+   }
+   if (lines.length) ask(lines, go); else go();
+@@ -2880,7 +3031,7 @@ function addNet(what){
+   g = el('div', 'kindgrid'); g.id = 'kinds';
+   kindsOffered().forEach(function(k){
+     var b = el('button'); b.type = 'button'; b.setAttribute('data-kind', k);
+-    add(b, el('b', '', KIND[k]), el('span', '', plain(KDESC[k] || '')));
++    add(b, add(el('span', 'nglyph'), ico(k)), add(el('span', 'kt'), el('b', '', KIND[k]), el('span', '', plain(KDESC[k] || ''))));
+     b.addEventListener('click', function(){ dlgClose(); startWizard(k); });
+     g.appendChild(b);
+   });
+@@ -2905,6 +3056,8 @@ function wizardShown(W, F){
+   put('bw_ul', F.bw && F.bw.on); put('bw_dl', F.bw && F.bw.on);
+   put('FWF_brand_name', String(F.portal) === '2'); put('FWF_passcode_enabled', String(F.portal) === '2'); put('FWF_passcode', String(F.portal) === '2' && F.fwf && F.fwf.passOn);
+   put('MB_desc', String(F.portal) === '4' && !F.mainSubnet); put('select_portal_type', !(W.kind === 'Kids' && F.mainSubnet));
++  if (W.has.FWF_brand_name) o.FWF_bg = String(F.portal) === '2';
++  if (W.has.MB_desc) o.MB_bg = String(F.portal) === '4' && !F.mainSubnet;
+   put('kill_switch', F.vpn && F.vpn.on && F.vpn.type === 'vpnc');
+   put('select_wifi_band', !(W.kind === 'IoT' && F.star));
+   o.container_schedule = !!F.schedOn;
+@@ -2919,6 +3072,7 @@ function wizardChanged(id, typing){
+   if (!typing) for (k in FM.rows) if (own(FM.rows, k) && FM.rows[k].put) FM.rows[k].put();
+   if (q('wz_members')) q('wz_members').classList.toggle('off', !sh.nodes);
+   if (id !== 'members' && !typing) paintMembers();
++  lookPaint();
+   F.shown = sh; F.nodes = memberState();
+   if (FM.dlg && FM.dlg.ok) FM.dlg.ok.disabled = V.blank(wizardState());
+ }
+@@ -2949,7 +3103,7 @@ function startWizard(kind){
+     body.appendChild(sl('select_wifi_auth_radius', `<#WLANConfig11b_AuthenticationMethod_itemname#>`, ch.select_wifi_auth_radius, function(v){ return AUTHTXT[v] || v; }, function(){ return F.rauth; }, function(v){ F.rauth = v; }));
+     body.appendChild(sl('select_wifi_auth_radius_6G', `<#WLANConfig11b_AuthenticationMethod_itemname#>`, ch.select_wifi_auth_radius_6G, function(v){ return AUTHTXT[v] || v; }, function(){ return F.rauth6; }, function(v){ F.rauth6 = v; }));
+   }
+-  if (has.sdn_pwd) body.appendChild(tx('sdn_pwd', `<#QIS_finish_wireless_item3#>`, function(){ return F.pwd; }, function(v){ F.pwd = v; }, 64));
++  if (has.sdn_pwd) body.appendChild(tx('sdn_pwd', `<#QIS_finish_wireless_item3#>`, function(){ return F.pwd; }, function(v){ F.pwd = v; }, 64, true));
+   if (has.radius_ipaddr){
+     body.appendChild(tx('radius_ipaddr', `<#WLANAuthentication11a_ExAuthDBIPAddr_itemname#>`, function(){ return F.radius.server; }, function(v){ F.radius.server = v; }, 39));
+     body.appendChild(tx('radius_port', `<#WLANAuthentication11a_ExAuthDBPortNumber_itemname#>`, function(){ return F.radius.port; }, function(v){ F.radius.port = v; }, 5));
+@@ -2961,9 +3115,11 @@ function startWizard(kind){
+   if (has.FWF_brand_name){
+     body.appendChild(tx('FWF_brand_name', `<#FreeWiFi_BrandName#>`, function(){ return F.fwf.brand; }, function(v){ F.fwf.brand = v; F.fwf.touched = true; }, 40));
+     body.appendChild(tg('FWF_passcode_enabled', `<#FreeWiFi_Add_Passcode#>`, function(){ return F.fwf.passOn; }, function(v){ F.fwf.passOn = v; }));
+-    body.appendChild(tx('FWF_passcode', `<#FreeWiFi_Passcode#>`, function(){ return F.fwf.pass; }, function(v){ F.fwf.pass = v; }, 15));
++    body.appendChild(tx('FWF_passcode', `<#FreeWiFi_Passcode#>`, function(){ return F.fwf.pass; }, function(v){ F.fwf.pass = v; }, 15, true));
++    /* the sign-in page as guests will see it, and its background (stock offered both in the wizard too) */
++    body.appendChild(picture('FWF_bg', function(){ return F.fwf.image; }, function(v){ F.fwf.image = v; }, '2'));
+   }
+-  if (has.MB_desc) body.appendChild(tx('MB_desc', `<#Description#>`, function(){ return F.mb.desc; }, function(v){ F.mb.desc = v; }, 80));
++  if (has.MB_desc){ body.appendChild(tx('MB_desc', `<#Description#>`, function(){ return F.mb.desc; }, function(v){ F.mb.desc = v; }, 80)); body.appendChild(picture('MB_bg', function(){ return F.mb.image; }, function(v){ F.mb.image = v; }, '4')); }
+   if (has.use_main_subnet && kind === 'IoT') body.appendChild(tg('use_main_subnet', `<#GuestNetwork_subnet_as_main#>`, function(){ return F.mainSubnet; }, function(v){ F.mainSubnet = v; }));
+   /* More Config */
+   more = group('more', `<#MoreConfig#>`, true);
+@@ -3103,13 +3259,29 @@ function gcState(o){
+ }
+ 
+ /* --- MAC filter list --- */
++/* the stock editor: each entry as "Name (MAC)", a field for the address and a list of the wireless clients to pick from.
++   Only the addresses are stored (apgN_maclist); the names come from the router's device list (Name, else Hostname). */
++function macLabel(m){ var l = devLabel(m); return l !== m ? l + ' (' + m + ')' : m; }
+ function macDialog(){
+-  var F = FM.F, list = F.maclist.slice(), box = el('div'), rows = el('div'), inp = el('input'), err = el('div', 'ferr off'), line = el('div', 'frow');
+-  inp.type = 'text'; inp.maxLength = 17; inp.id = 'mac_new'; inp.placeholder = 'AA:BB:CC:DD:EE:FF';
++  var F = FM.F, list = F.maclist.slice(), box = el('div'), rows = el('div', 'maclist'), inp = el('input'), err = el('div', 'ferr off'), line = el('div', 'frow'), pk = el('select'), pline = el('div', 'frow');
++  inp.type = 'text'; inp.maxLength = 17; inp.id = 'mac_new'; inp.placeholder = 'AA:BB:CC:DD:EE:FF'; inp.autocomplete = 'off'; inp.spellcheck = false;
++  pk.id = 'mac_pick'; pk.title = plain(`<#select_wireless_MAC#>`);
++  function picker(cl){
++    var ml = (cl && cl.maclist) || [], out = [];
++    ml.forEach(function(mac){ var c = cl[mac], m = String(mac).toUpperCase();
++      if (!c || !MACRE.test(m) || String(c.isOnline) === '0' || !c.isWL || String(c.isWL) === '0') return;
++      out.push({mac: m, label: macLabel(m)}); });
++    out.sort(function(a, b){ return a.label.toLowerCase() < b.label.toLowerCase() ? -1 : 1; });
++    clear(pk); pk.appendChild(el('option', '', `<#Select_menu_default#>`)); pk.firstChild.value = '';
++    out.forEach(function(d){ var o = el('option', '', d.label); o.value = d.mac; o.disabled = list.indexOf(d.mac) >= 0; pk.appendChild(o); });
++    pline.classList.toggle('off', !out.length);
++  }
++  pk.addEventListener('change', function(){ if (pk.value){ inp.value = pk.value; err.className = 'ferr off'; } });
+   function paint(){
+     clear(rows);
+-    list.forEach(function(m){ var r = el('div', 'mrow'); add(r, el('span', '', m), el('span', '', ' '), btn('small ghost', `<#CTL_del#>`, function(){ list = list.filter(function(x){ return x !== m; }); paint(); })); rows.appendChild(r); });
++    list.forEach(function(m){ var r = el('div', 'mrow macrow'); add(r, add(el('span', 'cglyph'), ico('wifi')), el('span', 'mname', macLabel(m)), btn('small ghost', `<#CTL_del#>`, function(){ list = list.filter(function(x){ return x !== m; }); paint(); })); rows.appendChild(r); });
+     if (!list.length) rows.appendChild(el('div', 'hint', `<#IPConnection_VSList_Norule#>`));
++    Array.prototype.forEach.call(pk.options, function(o){ if (o.value) o.disabled = list.indexOf(o.value) >= 0; });
+   }
+   function addOne(){
+     var m = inp.value.replace(/\s+/g, '').toUpperCase();
+@@ -3120,9 +3292,13 @@ function macDialog(){
+     if (list.length >= MACMAX){ err.textContent = rep(plain(`<#weekSche_MAX_Num#>`), {'#MAXNUM': MACMAX}); err.className = 'ferr'; return; }
+     list.push(m); inp.value = ''; paint();
+   }
+-  add(line, el('div', 'fl', `<#PPPConnection_x_MacAddressForISP_itemname#>`), add(el('div'), inp, el('span', '', ' '), btn('small', '+', addOne)), err);
+-  add(box, line, el('div', 'nsec', `<#FirewallConfig_MFList_groupitemname#>` + ' (' + `<#List_limit#>` + ' ' + MACMAX + ')'), rows);
++  add(line, el('div', 'fl', `<#PPPConnection_x_MacAddressForISP_itemname#>`), add(el('div', 'macadd'), inp, btn('small', '+', addOne)), err);
++  add(pline, el('div', 'fl', `<#Clientlist_device#>`), pk);
++  picker(null);
++  add(box, line, pline, el('div', 'nsec', `<#FirewallConfig_MFList_groupitemname#>` + ' (' + `<#List_limit#>` + ' ' + MACMAX + ')'), rows);
+   paint();
++  /* the wireless clients online now, with their names; the list is drawn again when they arrive */
++  if (window.ReaperNames) window.ReaperNames.refresh('', function(cl){ if (!document.body.contains(box)) return; picker(cl); paint(); });
+   dlg({title: `<#FirewallConfig_MFList_groupitemname#>`, body: box, ok: `<#CTL_ok#>`, cancel: `<#CTL_Cancel#>`, onOk: function(){ F.maclist = list; changed('container_macfilterlist'); }});
+ }
+ 
+@@ -3298,17 +3474,23 @@ function qrPng(m, name){
+   document.body.appendChild(a); a.click(); document.body.removeChild(a);
+ }
+ function shareDialog(idx){
+-  var n = net(idx), a, open, m, box = el('div', 'qrbox'), acts, sheet;
++  var n = net(idx), a, open, m, box = el('div', 'qrbox'), acts, sheet, s2;
+   if (!n) return;
+   a = String(n.apg.security || '').split('<')[1]; a = a ? a.split('>') : [];
+   open = /^(open|owe|openowe)$/.test(a[1] || '');
+   m = QR.matrix(QR.wifi(n.apg.ssid, a[3] || '', open, n.apg.hide_ssid == '1'));
+   if (!m){ info(plain(`<#RNT_27#>`)); return; }
+   sheet = el('div', 'qrsheet');
+-  add(sheet, qrSvg(m), el('div', 'qrname', n.apg.ssid), open ? null : el('div', 'qrkey', a[3] || ''));
+-  if (String(n.sdn.cp_idx) === '2' && n.cp && n.cp.auth_type == '1' && n.cp.local_auth_profile) sheet.appendChild(el('div', 'qrkey', plain(`<#FreeWiFi_Passcode#>`) + ': ' + n.cp.local_auth_profile));
++  /* the key and the passcode are masked on the screen (Show reveals them); the printed sheet always carries them */
++  function secret(label, v){ return add(el('div', 'qrkey'), label ? el('span', '', label + ': ') : null, el('span', 'qmask', '\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022'), el('span', 'qsec', v)); }
++  add(sheet, qrSvg(m), el('div', 'qrname', n.apg.ssid), open ? null : secret('', a[3] || ''));
++  if (String(n.sdn.cp_idx) === '2' && n.cp && n.cp.auth_type == '1' && n.cp.local_auth_profile) sheet.appendChild(secret(plain(`<#FreeWiFi_Passcode#>`), n.cp.local_auth_profile));
+   add(box, sheet, el('div', 'hint', plain(`<#Scan_QR_Code_To_Connect#>`)));
+   acts = el('div', 'dacts');
++  if (sheet.querySelector('.qsec')){
++    s2 = btn('small ghost reveal', `<#RVCL_36#>`, function(){ var on2 = box.classList.toggle('shown'); s2.textContent = on2 ? `<#RVCL_163#>` : `<#RVCL_36#>`; s2.setAttribute('aria-pressed', on2 ? 'true' : 'false'); });
++    s2.id = 'qr_reveal'; s2.setAttribute('aria-pressed', 'false'); acts.appendChild(s2);
++  }
+   add(acts, btn('small ghost', 'QR Code (PNG)', function(){ qrPng(m, n.apg.ssid); }), btn('small ghost', plain(`<#Print_QR_Code#>`), function(){ document.body.classList.add('printqr'); window.print(); document.body.classList.remove('printqr'); }));
+   box.appendChild(acts);
+   dlg({title: plain(`<#WiFi_Share#>`), body: box, ok: `<#CTL_close#>`});
+@@ -3362,30 +3544,81 @@ function portalInit(V0, n){
+   F.portal = String(n.sdn.cp_idx || '0');
+   F.fwf = {minutes: '60', url: '', passOn: false, pass: '', termsOn: true, brand: n.apg.ssid, image: PD.fwf, terms: PD.tos};
+   F.mb = {desc: plain(`<#Description#>`), image: PD.mb};
++  FM.look = {};                 /* per type: 'none' (nothing stored), 'loading', 'loaded', 'nodata' (none stored yet), 'failed' */
++  FM.lookTouched = false;       /* a look field was changed here */
+   if (F.portal === '2' || F.portal === '4') portalLoad(F.portal);
+ }
+-/* a type is chosen: its stored settings and look, when there are any */
++/* a type is chosen: its stored settings and look, when there are any.
++   httpd answers an appGet hook by its exact registered name, so the request is get_customized_attribute(<id>); the answer
++   comes back under get_customized_attribute-<id>. The id is a number (a time stamp): anything else is not asked for. */
+ function portalLoad(t){
+-  var F = FM.F, c = cpStored(t), form = FM;
++  var F = FM.F, c = cpStored(t), form = FM, key;
++  FM.look[t] = 'none';
+   if (!c) return;
+   if (t === '2'){ F.fwf.minutes = String(parseInt(c.conntimeout, 10) / 60); F.fwf.url = c.redirecturl; F.fwf.passOn = c.auth_type == '1'; F.fwf.pass = c.pass; F.fwf.termsOn = c.term_of_service != '0'; }
+   if (c.id === '') return;
+-  hooks(['get_customized_attribute-' + c.id + '()'], function(h){
+-    var r = h && h['get_customized_attribute-' + c.id], s2;
+-    if (FM !== form || !r || r === 'NoData' || typeof r !== 'object' || !r.splash_page_setting) return;
+-    s2 = r.splash_page_setting;
+-    if (t === '2'){ F.fwf.brand = lookDec(s2.brand_name); if (s2.image) F.fwf.image = s2.image; F.fwf.terms = lookDec(s2.terms_service_content); }
+-    else { F.mb.desc = lookDec(s2.MB_desc); if (s2.image) F.mb.image = s2.image; }
++  if (!/^\d{1,13}$/.test(String(c.id))){ FM.look[t] = 'failed'; return; }
++  FM.look[t] = 'loading'; key = 'get_customized_attribute-' + c.id;
++  hooks(['get_customized_attribute(' + c.id + ')'], function(h){
++    var r = h ? h[key] : undefined, s2;
++    if (FM !== form) return;
++    if (r === 'NoData') FM.look[t] = 'nodata';
++    else if (!r || typeof r !== 'object' || !r.splash_page_setting || typeof r.splash_page_setting !== 'object') FM.look[t] = 'failed';
++    else {
++      FM.look[t] = 'loaded'; s2 = r.splash_page_setting;
++      if (!FM.lookTouched){       /* what was typed here meanwhile stays */
++        if (t === '2'){ F.fwf.brand = lookDec(s2.brand_name); if (s2.image) F.fwf.image = s2.image; F.fwf.terms = lookDec(s2.terms_service_content); }
++        else { F.mb.desc = lookDec(s2.MB_desc); if (s2.image) F.mb.image = s2.image; }
++      }
++    }
+     changed('portal_look');
+   });
+ }
++/* Apply: send the look of type t only when it is known (read, none stored, nothing to read) or was changed here */
++function lookSend(t){
++  var s = FM && FM.look ? FM.look[String(t)] : undefined;
++  if (!FM || FM.mode !== 'edit' || !FM.look) return true;
++  return !!FM.lookTouched || s === undefined || s === 'none' || s === 'loaded' || s === 'nodata';
++}
++function lookTouch(){ if (FM) FM.lookTouched = true; }
++/* the look rows: a live preview of the sign-in page (redrawn on every change, as the stock editor's preview) and the
++   way to another background */
+ function picture(id, get, set, type){
+-  var w = el('div'), p = el('div', 'ppic'), b = btn('small ghost', `<#CTL_modify#>`, function(){ pictureDialog(type, get(), function(img){ set(img); paintPic(); changed(id); }); });
+-  w.id = id;
+-  function paintPic(){ p.style.backgroundImage = get() ? 'url(' + get() + ')' : ''; }
+-  add(w, p, el('span', '', ' '), b); frow(id, plain(`<#Captive_Portal_Click_Image#>`), w); FM.rows[id].put = paintPic; paintPic();
++  var w = el('div', 'lookrow'), b = btn('small ghost', `<#CTL_modify#>`, pick), pv = el('div', 'phone'), scr = el('div', 'pscreen');
++  w.id = id; pv.title = plain(`<#Captive_Portal_Click_Image#>`); pv.tabIndex = 0; pv.setAttribute('role', 'button');
++  function pick(){ pictureDialog(type, get(), function(img){ set(img); lookTouch(); changed(id); }); }
++  pv.addEventListener('click', pick);
++  pv.addEventListener('keydown', function(e){ if (e.key === 'Enter' || e.key === ' '){ e.preventDefault(); pick(); } });
++  pv.appendChild(scr);
++  b.title = plain(`<#Captive_Portal_Click_Image#>`);
++  add(w, pv, add(el('div', 'lookside'), el('div', 'fh', plain(`<#Captive_Portal_Click_Image#>`)), b));
++  frow(id, `<#btn_Preview#>`, w);
++  FM.rows[id].put = function(){ lookDraw(scr, type); };
++  (FM.looks = FM.looks || []).push({scr: scr, type: type, row: FM.rows[id].row});
++  lookDraw(scr, type);
+   return FM.rows[id].row;
+ }
++/* redraw every preview in view (called from changed() and wizardChanged(), typing included) */
++function lookPaint(){ if (!FM || !FM.looks) return; FM.looks.forEach(function(l){ if (!l.row.classList.contains('off')) lookDraw(l.scr, l.type); }); }
++/* one preview: the background, and the card the sign-in page shows on it. Text goes in as text. */
++function lookDraw(scr, type){
++  var F = FM.F, f = F.fwf || {}, m = F.mb || {}, card, img = type === '2' ? f.image : m.image, terms, ag;
++  clear(scr);
++  scr.style.backgroundImage = img ? 'url("' + String(img).replace(/["\\\n\r]/g, '') + '")' : '';
++  card = el('div', 'pcard' + (type === '4' ? ' board' : ''));
++  if (type === '2'){
++    card.appendChild(el('div', 'pbrand', f.brand || ''));
++    if (f.termsOn !== false){
++      terms = el('div', 'pterms', String(f.terms || '').slice(0, 600));
++      ag = add(el('div', 'pagree'), el('span', 'pbox'), el('span', '', plain(`<#FreeWiFi_Agree_Terms_Service#>`)));
++      add(card, terms, ag);
++    }
++    if (f.passOn) card.appendChild(el('div', 'ppass', 'Enter Passcode'));
++  }
++  else card.appendChild(el('div', 'pbrand', m.desc || ''));
++  card.appendChild(el('div', 'pgo', `<#FreeWiFi_Continue#>`));
++  scr.appendChild(card);
++}
+ /* the background picker: the bundled templates, or a picture of your own (scaled to 1280 wide, as stock) */
+ function pictureDialog(type, cur, done){
+   var box = el('div'), grid = el('div', 'tplgrid'), file = el('input'), err = el('div', 'ferr off'), chosen = cur;
+@@ -3435,20 +3668,22 @@ function portalTab(body, V0){
+   s = FM.rows.select_portal_type.row.querySelector('select');
+   Array.prototype.forEach.call(s.options, function(o){ o.disabled = !!pt.used[o.value]; });
+   if (pt.locked){ s.disabled = true; FM.rows.select_portal_type.row.appendChild(el('div', 'fh', rep(plain(`<#vpnc_conn_maxi_general#>`), {'VPN': plain(`<#GuestNetwork_Portal_type#>`), '#MAXNUM': '1'}))); }
+-  body.appendChild(tx('FWF_brand_name', `<#FreeWiFi_BrandName#>`, function(){ return F.fwf.brand; }, function(v){ F.fwf.brand = v; }, 40));
++  /* the stored look could not be read: it is left as it is unless a look field is changed */
++  body.appendChild(FM.lookNote = el('div', 'hint warn off', plain(`<#RNET2_1#>`))); FM.lookNote.id = 'portal_lookfail';
++  body.appendChild(tx('FWF_brand_name', `<#FreeWiFi_BrandName#>`, function(){ return F.fwf.brand; }, function(v){ F.fwf.brand = v; lookTouch(); }, 40));
+   body.appendChild(picture('FWF_bg', function(){ return F.fwf.image; }, function(v){ F.fwf.image = v; }, '2'));
+   body.appendChild(tx('FWF_conntimeout', `<#FreeWiFi_timeout#>` + ' (' + `<#Minute#>` + ')', function(){ return F.fwf.minutes; }, function(v){ F.fwf.minutes = v; }, 3));
+   body.appendChild(tx('FWF_redirecturl', `<#FreeWiFi_LandingPage#>` + ' (' + `<#FreeWiFi_RedirectPage#>` + ')', function(){ return F.fwf.url; }, function(v){ F.fwf.url = v; }, 256));
+   body.appendChild(tg('FWF_passcode_enabled', `<#FreeWiFi_Add_Passcode#>`, function(){ return F.fwf.passOn; }, function(v){ F.fwf.passOn = v; }));
+-  body.appendChild(tx('FWF_passcode', `<#FreeWiFi_Passcode#>`, function(){ return F.fwf.pass; }, function(v){ F.fwf.pass = v; }, 15));
++  body.appendChild(tx('FWF_passcode', `<#FreeWiFi_Passcode#>`, function(){ return F.fwf.pass; }, function(v){ F.fwf.pass = v; }, 15, true));
+   body.appendChild(tg('FWF_terms_service_enabled', `<#FreeWiFi_OptionHint#>`, function(){ return F.fwf.termsOn; }, function(v){ F.fwf.termsOn = v; }));
+   body.appendChild((function(){
+     var t = el('textarea'); t.id = 'FWF_terms_service'; t.maxLength = 5120; t.rows = 8; t.value = F.fwf.terms;
+-    t.addEventListener('input', function(){ F.fwf.terms = t.value; changed('FWF_terms_service', true); });
++    t.addEventListener('input', function(){ F.fwf.terms = t.value; lookTouch(); changed('FWF_terms_service', true); });
+     frow('FWF_terms_service', `<#Terms_of_Service#>`, t); FM.rows.FWF_terms_service.put = function(){ if (document.activeElement !== t) t.value = F.fwf.terms; };
+     return FM.rows.FWF_terms_service.row;
+   })());
+-  body.appendChild(tx('MB_desc', `<#Description#>`, function(){ return F.mb.desc; }, function(v){ F.mb.desc = v; }, 80));
++  body.appendChild(tx('MB_desc', `<#Description#>`, function(){ return F.mb.desc; }, function(v){ F.mb.desc = v; lookTouch(); }, 80));
+   body.appendChild(picture('MB_bg', function(){ return F.mb.image; }, function(v){ F.mb.image = v; }, '4'));
+ }
+ /* which rows of the Portal tab are in view; called from changed() */
+@@ -3457,6 +3692,7 @@ function portalSync(sh){
+   if (!FM.pt || !FM.rows.select_portal_type) return;
+   ['FWF_brand_name', 'FWF_bg', 'FWF_conntimeout', 'FWF_redirecturl', 'FWF_passcode_enabled', 'FWF_terms_service_enabled'].forEach(function(k){ sh[k] = two2; });
+   sh.FWF_passcode = two2 && F.fwf.passOn; sh.FWF_terms_service = two2 && F.fwf.termsOn; sh.MB_desc = four; sh.MB_bg = four; sh.select_portal_type = true;
++  if (FM.lookNote) FM.lookNote.classList.toggle('off', !((two2 || four) && FM.look && FM.look[String(F.portal)] === 'failed' && !FM.lookTouched));
+ }
+ /* ==== part q8_hold.js ==== */
+ 
+@@ -3467,6 +3703,7 @@ function portalSync(sh){
+    waiting networks and has Apply now (one request, the radios restart once). There is no discard: the settings are stored.
+    Delete selected: tick boxes on the cards and one button; one request (ACT.removeMany). */
+ var MDEL = null;                /* Delete selected: null = not choosing, else {idx: true} */
++var holdMore = false;           /* the hold switch's full explanation is open */
+ function holdState(){ var d = LIVE.defer || {}; return {on: !!d.on, wait: !!d.wait, list: String(d.list || ''), items: Array.isArray(d.items) ? d.items : []}; }
+ function waitingNames(items){
+   var KINDT = {n: `<#RSDN_40#>`, e: `<#RSDN_41#>`, o: `<#RSDN_42#>`}, out = [];
+@@ -3479,13 +3716,18 @@ function waitingNames(items){
+   return out;
+ }
+ function paintHold(){
+-  var st = holdState(), bar = q('holdbar'), row, w, names, n, acts;
++  var st = holdState(), bar = q('holdbar'), row, w, names, n, acts, more, q2;
+   clear(bar);
+   if (!LIVE.defer){ show('holdbar', false); return; }                 /* the hook is not there: nothing to show */
+   show('holdbar', true);
+-  row = el('div', 'togglerow'); w = sw(st.on, function(v, box){ holdToggle(v, box); }); w.firstChild.id = 'hold_sw';
+-  add(row, w, add(el('div', 'tmeta'), el('div', 'tname', plain(`<#RSDN_35#>`)), el('div', 'tdesc', plain(`<#RSDN_36#>`))));
+-  bar.appendChild(row);
++  bar.classList.toggle('held', st.on);
++  /* compact: the switch, its name and a one-line hint; the full explanation behind the ? button */
++  row = el('div', 'holdrow'); w = sw(st.on, function(v, box){ holdToggle(v, box); }); w.firstChild.id = 'hold_sw';
++  more = el('div', 'holdmore' + (holdMore ? '' : ' off'), plain(`<#RSDN_36#>`));
++  q2 = btn('small ghost holdq', '?', function(){ holdMore = !holdMore; more.classList.toggle('off', !holdMore); q2.setAttribute('aria-expanded', holdMore ? 'true' : 'false'); });
++  q2.title = plain(`<#RSDN_36#>`); q2.setAttribute('aria-expanded', holdMore ? 'true' : 'false'); q2.id = 'hold_more';
++  add(row, w, add(el('div', 'tmeta'), el('div', 'tname', plain(`<#RSDN_35#>`)), el('div', 'tdesc', plain(`<#RNET2_4#>`))), q2);
++  add(bar, row, more);
+   if (st.wait){
+     names = waitingNames(st.items);
+     row = el('div', 'holdwait');
+diff --git a/release/src/router/www/Reaper_System.asp b/release/src/router/www/Reaper_System.asp
+index e22ff4929d..10e798671b 100644
+--- a/release/src/router/www/Reaper_System.asp
++++ b/release/src/router/www/Reaper_System.asp
+@@ -161,6 +161,17 @@ table.classes{max-width:760px}
+     <div class="frow" id="r_wanurl"><div class="fl"><#RADM_22#></div><div class="fc"><span class="fv mono" id="wan_url"></span></div></div>
+   </div>
+ 
++  <!-- REAPER-APP-OPTIN (2026-11-28): the ASUS Router app, main network only; off at factory -->
++  <div class="panel" id="p_app">
++    <h2><#RAPP_1#></h2>
++    <div class="sub"><#RAPP_2#></div>
++    <div class="secerr"><#RADM_78#></div>
++    <div class="frow"><div class="fl"><#RAPP_3#></div><div class="fc"><label class="tswitch"><input type="checkbox" id="t_reaper_app_allow"><span class="track"></span></label></div><div class="fh"><#RAPP_4#></div></div>
++    <div class="hint warn"><#RAPP_5#></div>
++    <div class="hint"><#RAPP_6#></div>
++    <div class="hint"><#RAPP_7#></div>
++  </div>
++
+   <div class="panel" id="p_acl">
+     <h2><#System_login_specified_IP#></h2>
+     <div class="sub"><#RADM_23#></div>
+@@ -341,7 +352,8 @@ var NV = {
+   reboot_schedule_type: <% nvram_get_js("reboot_schedule_type"); %>, reboot_schedule_month: <% nvram_get_js("reboot_schedule_month"); %>,
+   jffs2_scripts: <% nvram_get_js("jffs2_scripts"); %>, nat_redirect_enable: <% nvram_get_js("nat_redirect_enable"); %>, captcha_enable: <% nvram_get_js("captcha_enable"); %>,
+   http_username: U('<% nvram_char_to_ascii("","http_username"); %>'),
+-  reaper_cbmode: <% nvram_get_js("reaper_cbmode"); %>
++  reaper_cbmode: <% nvram_get_js("reaper_cbmode"); %>,
++  reaper_app_allow: <% nvram_get_js("reaper_app_allow"); %>
+ };
+ /* an empty nvram value means the default; compare against what the control shows for it, or every Apply
+    would re-post the default and restart its service */
+@@ -781,6 +793,11 @@ section('p_misc', 'maint', function(){
+   if (ROUTER) c.nat_redirect_enable = chk('t_nat_redirect_enable');
+ });
+ 
++/* --- the ASUS Router app (REAPER-APP-OPTIN, 2026-11-28). One switch, off at factory. The web server reads it on
++       every request, so Apply only saves it. Switching it ON asks first (validate): the risk is taken knowingly. --- */
++section('p_app', 'access', function(){ setChk('t_reaper_app_allow', isOn(NV.reaper_app_allow)); },
++  function(c){ c.reaper_app_allow = chk('t_reaper_app_allow'); });
++
+ /* --- accessibility: colour-blind mode (REAPER-CBMODE, owner 2026-11-26). One switch, saved per router; reaper_cb.css
+        holds the palette and every page switches it on from this setting. No service: Apply saves it and reloads the
+        whole window, chrome included, so the new colours show at once. --- */
+@@ -822,7 +839,7 @@ var FIELD_CTL = {captcha_enable: 't_captcha', misc_http_x: 't_misc_http_x', enab
+   sshd_pass: 't_sshd_pass', sshd_forwarding: 't_sshd_forwarding', ntpd_enable: 't_ntpd_enable', ntpd_server_redir: 't_ntpd_server_redir',
+   dns_probe: 't_dns_probe', wandog_enable: 't_wandog_enable', AllLED: 't_AllLED', plc_sleep_enabled: 't_plc_sleep_enabled',
+   usb_idle_enable: 't_usb_idle_enable', reboot_schedule_enable: 't_reboot_schedule_enable', jffs2_scripts: 't_jffs2_scripts',
+-  nat_redirect_enable: 't_nat_redirect_enable', reaper_cbmode: 't_reaper_cbmode'};
++  nat_redirect_enable: 't_nat_redirect_enable', reaper_cbmode: 't_reaper_cbmode', reaper_app_allow: 't_reaper_app_allow'};
+ function dirty(){ var changed; try { changed = diff(collect()); } catch (e) { return; } rp.dirtyMark(changed, FIELD_TAB); }
+ 
+ /* ---------- validate: returns '' or the message; the offending field's tab opens and the row is marked ---------- */
+@@ -876,6 +893,8 @@ function validate(c){
+      switch is being turned on, or the list changes while it is on. Last, so every other check has passed. */
+   if (ROUTER && c.enable_acc_restriction === '1' && (c.enable_acc_restriction !== NV.enable_acc_restriction || c.restrict_rulelist !== NV.restrict_rulelist)
+       && String(location.hostname).indexOf(':') >= 0 && !confirm(`<#RADM_81#>`)) return NOPOST;
++  /* REAPER-APP-OPTIN: switching the app exemption ON is asked in so many words; off needs no question */
++  if (c.reaper_app_allow === '1' && !isOn(NV.reaper_app_allow) && !confirm(`<#RAPP_8#>`)) return NOPOST;
+   return '';
+ }
+ function portTaken(p){
+diff --git a/release/src/router/www/Reaper_WLog.asp b/release/src/router/www/Reaper_WLog.asp
+index c062c95b54..f33967819c 100644
+--- a/release/src/router/www/Reaper_WLog.asp
++++ b/release/src/router/www/Reaper_WLog.asp
+@@ -15,7 +15,8 @@
+        dataarrayN = [SSID, RSSI, SNR, noise, chanspec, BSSID, channel utilisation, mode]
+        dfs_statusarrayN = [state, "N s", cleared chanspec]   (DFS regulatory domains only)
+        wificlientsN = [[MAC, IPv4, hostname, IPv6, RSSI, rx Mbps, tx Mbps, connected, NSS, PHY, BW, flags,
+-                        network ("" main / "Main BSS" / guest SSID), VLAN, AiMesh node (its LAN MAC, for a backhaul station; 2026-11-07)], ..., "-1"]
++                        network ("" main / "Main BSS" / guest SSID), VLAN, AiMesh node (its LAN MAC, for a backhaul station; 2026-11-07),
++                        tx frames, tx retries, rx unicast frames, rx frames with the retry bit (2026-11-27, REAPER-WLRETRY)], ..., "-1"]
+      A radio that is off emits nothing. Bands come from wlN_nband (2 = 2.4, 1 = 5, 4 = 6 GHz), not the unit
+      number. The stock refresh endpoint also ran the closed driver-log dump (wl_log.asp) every time into a
+      variable nothing read; here that dump runs only when "Driver details" is opened.
+@@ -167,15 +168,23 @@ function parse(txt){
+ }
+ var COLS = [
+   {k: 'name', h: `<#RLOG_49#>`, t: 'text'}, {k: 'ip', h: `<#RLOG_51#>`, t: 'ip'}, {k: 'mac', h: `<#RLOG_52#>`, t: 'text'},
+-  {k: 'rssi', h: 'RSSI', t: 'num'}, {k: 'rate', h: `<#RLOG_73#>`, t: 'num'}, {k: 'time', h: `<#RLOG_74#>`, t: 'num'},
++  {k: 'rssi', h: 'RSSI', t: 'num'}, {k: 'rate', h: `<#RLOG_73#>`, t: 'num'}, {k: 'retry', h: `<#RLOG_108#>`, t: 'num'}, {k: 'time', h: `<#RLOG_74#>`, t: 'num'},
+   {k: 'phy', h: `<#RLOG_75#>`, t: 'text'}, {k: 'flags', h: `<#RLOG_77#>`, t: 'text'}];
+ function secs(t){ var m = /(\d+):(\d+):(\d+)/.exec(t || ''); return m ? (+m[1]) * 3600 + (+m[2]) * 60 + (+m[3]) : -1; }
++/* 2026-11-27 (owner, REAPER-WLRETRY): retries as a share of the frames, since the device joined. Tx: the driver counts
++   each retransmission, so one frame can take several and retries alone can pass the frames sent - the share is of every
++   transmission (first tries + retries), which stays within 0-100. Rx: frames that arrived with the retry bit, of the
++   unicast frames received. NaN = the driver gave no counters (no SCB stats, or an older driver row). */
++function txPct(sent, retr){ sent = parseInt(sent, 10); retr = parseInt(retr, 10); return isNaN(sent) || isNaN(retr) || sent + retr <= 0 ? NaN : 100 * retr / (sent + retr); }
++function rxPct(got, retr){ got = parseInt(got, 10); retr = parseInt(retr, 10); return isNaN(got) || isNaN(retr) || got <= 0 ? NaN : Math.min(100, 100 * retr / got); }
++function pctTxt(v){ return isNaN(v) ? '-' : (v < 10 ? v.toFixed(1) : Math.round(v)) + '%'; }
+ function clients(list){
+   return (list || []).filter(function(r){ return r && typeof r === 'object' && r.length >= 12; }).map(function(r){
+     return {mac: r[0], ip: r[1], name: nameOf(r[0], r[1], r[2], r[14]), ip6: r[3], rssi: parseInt(r[4], 10), rx: r[5], tx: r[6], rate: parseInt(r[6], 10) || 0,
+       conn: String(r[7] || '').trim(), time: secs(r[7]), phy: [r[8] ? r[8] + 'x' : '', r[9], r[10]].filter(Boolean).join(' '), flags: r[11],
+-      tag: r[12] || '', vlan: r[13] && r[13] !== '0' ? r[13] : '', node: r[14] || ''};	/* 2026-11-07: the AiMesh node of a backhaul station */
+-  });
++      tag: r[12] || '', vlan: r[13] && r[13] !== '0' ? r[13] : '', node: r[14] || '',	/* 2026-11-07: the AiMesh node of a backhaul station */
++      rtx: txPct(r[15], r[16]), rrx: rxPct(r[17], r[18])};
++  }).map(function(c){ c.retry = isNaN(c.rtx) ? -1 : c.rtx; return c; });	/* sorts by the Tx share; no counters sort last */
+ }
+ /* the networks of radio i, keyed by the client tag: the main network first (shown even with no clients), the other
+    enabled networks in slot order (wlN.2, wlN.3, then any other name a client carries), the primary BSS (mesh
+@@ -249,6 +258,7 @@ function netHtml(n, col, cmp){
+     /* 2026-11-07 (owner): a node's backhaul station has no address of its own - its cell says what it is */
+     h += '<tr><td class="name">' + hx(r.name || '-') + '</td><td class="mono">' + (r.ip ? hx(r.ip) : r.node ? '<span class="tag">' + hx(`<#AiMesh_Node#>`) + '</span>' : '-') + v6lines(r.ip6) +
+       '</td><td class="mono">' + hx(r.mac) + '</td><td class="mono">' + hx(isNaN(r.rssi) ? '?' : r.rssi + ' dBm') + '</td><td class="mono">' + hx((r.rx || '-') + ' / ' + (r.tx || '-')) +
++      '</td><td class="mono">' + hx(pctTxt(r.rrx) + ' / ' + pctTxt(r.rtx)) +
+       '</td><td class="mono">' + hx(r.conn || '-') + '</td><td class="mono">' + hx(r.phy || '-') + '</td><td class="mono">' + hx(r.flags || '') + '</td></tr>';
+   });
+   return h + '</tbody></table></div></div>';
+@@ -271,7 +281,7 @@ function draw(){
+     var list = clients(DATA.c[i]); total += list.length;
+     h += radioHtml(i, names[i], DATA.d[i], DATA.f[i], list);
+   }
+-  h += '<div class="legend">' + hx(`<#RLOG_85#>`) + '</div>';
++  h += '<div class="legend">' + hx(`<#RLOG_85#>`) + '</div><div class="legend">' + hx(`<#RLOG_109#>`) + '</div>';
+   q('radios').innerHTML = h;
+   q('count').textContent = total + ' ' + `<#RLOG_86#>`;
+ }
+@@ -303,7 +313,7 @@ function driver(){
+ }
+ q('radios').addEventListener('click', function(e){
+   var th = e.target.closest ? e.target.closest('th[data-k]') : null; if (!th) return;
+-  var k = th.getAttribute('data-k'); SORT = {k: k, dir: SORT.k === k ? -SORT.dir : (k === 'rssi' || k === 'rate' ? -1 : 1)};
++  var k = th.getAttribute('data-k'); SORT = {k: k, dir: SORT.k === k ? -SORT.dir : (k === 'rssi' || k === 'rate' || k === 'retry' ? -1 : 1)};
+   try { localStorage.setItem('rwlog_sort', JSON.stringify(SORT)); } catch (e2) {}
+   draw();
+ });
+diff --git a/release/src/router/www/Reaper_WiFiSettings.asp b/release/src/router/www/Reaper_WiFiSettings.asp
+index 456740d09a..f937e6cb7b 100644
+--- a/release/src/router/www/Reaper_WiFiSettings.asp
++++ b/release/src/router/www/Reaper_WiFiSettings.asp
+@@ -139,7 +139,11 @@ a{color:var(--ice)}
+ .modal{position:fixed;top:var(--rv-top,0px);left:0;right:0;height:var(--rv-h,100vh);background:rgba(6,6,8,.82);display:none;align-items:center;justify-content:center;z-index:60;padding:16px}
+ .modal.show{display:flex}
+ .modal.anchor{align-items:flex-start;justify-content:flex-start}
+-.mcard{background:#101014;border:1px solid var(--line2);border-radius:14px;padding:18px 20px;max-width:min(96vw,900px);max-height:92vh;overflow:auto;box-shadow:0 30px 70px -20px #000;width:100%}
++/* REAPER-DLG-TALL (2026-11-28): no height cap and no scrollbar of its own - class "ovl" on the backdrop hands a card
++   taller than the screen to the shell, which pins it in the page; opened on its own, the backdrop scrolls */
++.modal{overflow-y:auto}
++.mcard{background:#101014;border:1px solid var(--line2);border-radius:14px;padding:18px 20px;max-width:min(96vw,900px);margin:auto;box-shadow:0 30px 70px -20px #000;width:100%}
++.modal.anchor .mcard{margin:0}
+ .mhead{margin-bottom:12px}
+ .mhead h3{font-size:19px}
+ .mhead .sub{font-size:12px;color:var(--steel)}
+@@ -195,7 +199,7 @@ a{color:var(--ice)}
+ </form>
+ <iframe name="hidden_frame" id="hidden_frame" width="0" height="0" frameborder="0" style="display:none"></iframe>
+ 
+-<div class="modal" id="schedModal"><div class="mcard">
++<div class="modal ovl" id="schedModal"><div class="mcard">
+   <div class="mhead"><h3 id="schedTitle"><#Time_Scheduling#></h3><div class="sub"><#RWFP_42#></div></div>
+   <div class="grid7" id="schedGrid"></div>
+   <div class="mfoot"><button type="button" class="btn" id="schedAllOn"><#RWFP_43#></button><span class="spacer"></span><button type="button" class="btn" id="schedCancel"><#CTL_Cancel#></button><button type="button" class="applybtn" id="schedSave"><#CTL_ok#></button></div>
+diff --git a/release/src/router/www/reaper/reaper_addon.css b/release/src/router/www/reaper/reaper_addon.css
+new file mode 100644
+index 0000000000..bbf65eac99
+--- /dev/null
++++ b/release/src/router/www/reaper/reaper_addon.css
+@@ -0,0 +1,203 @@
++/* SPDX-License-Identifier: GPL-2.0-only
++ * Copyright (C) 2026 the Reaper project maintainer
++ * Part of the Reaper hardened Asuswrt-Merlin build. See LICENSE / LICENSE.reaper. */
++/* REAPER add-on page sheet (REAPER-ADDON-SKIN, 2026-11-27, owner) - loaded INSIDE third-party add-on pages
++   (user<N>.asp, and an add-on's page mounted over the address of a stock page that no longer ships).
++   Add-on pages are built on the stock page template: state.js show_menu() draws the ASUS banner, the left
++   menu and the tab strip into them, at the stock fixed width. This sheet:
++     1) hides that stock chrome (the Reaper shell around the frame has its own) and lets the page use the
++        full frame width;
++     2) gives the template's panels, tables and controls the Reaper colours.
++   The page's DOM, scripts and settings are untouched. httpd links it before </head> (reaper_inject.c mode 7),
++   after the page's own stylesheets; the shell adds it at frame load to an add-on page that lacks it.
++   Taken from the retired stock skin (reaper_content.css, which www/Makefile does not install since REAPER-CUT8),
++   reduced to the template parts an add-on page uses.
++   RULES: pure ASCII only. Every colour that is not a grey is var(--cb-<role>,<colour>) (colour-blind mode,
++   test_cbmode.py); a NEW colour here must be written the same way. */
++
++@font-face{font-family:'Rajdhani';font-weight:600;font-display:swap;src:url('/fonts/rajdhani-600.woff2') format('woff2')}
++@font-face{font-family:'Rajdhani';font-weight:700;font-display:swap;src:url('/fonts/rajdhani-700.woff2') format('woff2')}
++@font-face{font-family:'Inter';font-weight:400;font-display:swap;src:url('/fonts/inter-400.woff2') format('woff2')}
++@font-face{font-family:'Inter';font-weight:500;font-display:swap;src:url('/fonts/inter-500.woff2') format('woff2')}
++
++/* ---------- 1. stock chrome off, full width ---------- */
++#TopBanner,#mainMenu,#subMenu,#footer,.banner1{display:none!important}
++html{scrollbar-width:thin;scrollbar-color:var(--cb-acc,#E10600) #000}
++::-webkit-scrollbar{width:12px;height:12px}
++::-webkit-scrollbar-track{background:#000}
++::-webkit-scrollbar-thumb{background:var(--cb-acc,#E10600);border-radius:8px;border:2px solid #000}
++body,body.bg{background:#08080a!important;background-image:
++  radial-gradient(1100px 420px at 20% -12%,rgba(var(--cb-acc-rgb,225,6,0),.08),transparent 60%)!important;
++  margin:0!important;padding:16px 20px!important;min-width:0!important;
++  font-family:'Inter','Segoe UI',system-ui,sans-serif}
++/* the template's outer table: the 17px spacer cell and the menu column go; the content cell takes the width */
++table.content{margin:0!important;width:100%!important;background-image:none!important;background-color:#08080a!important}
++table.content>tbody>tr>td[width="17"]{display:none!important}
++table.content>tbody>tr>td:has(#mainMenu){display:none!important}
++
++/* ---------- 2. in-page tab strip: hidden - the shell draws the menu's tabs above the frame ---------- */
++#tabMenu,.submenuBlock{display:none!important}
++/* page title / description: always shown at the top of the content */
++.formfonttitle,.formfontdesc{display:block!important;visibility:visible!important;opacity:1!important}
++/* ...but an inline hide is the page's own logic */
++.formfontdesc[style*="display:none"],.formfontdesc[style*="display: none"]{display:none!important}
++div.container{display:block!important}
++
++/* ---------- 3. content panels ---------- */
++/* the template fixes the panel at 760px (FormTitle width attribute): full frame width instead */
++.FormTitle{background:linear-gradient(180deg,#141418,#0f0f12)!important;
++  border:1px solid rgba(255,255,255,.06)!important;border-radius:14px!important;
++  width:100%!important;max-width:none!important;box-shadow:none!important}
++.FormTitle>tbody>tr>td[bgcolor]{background:transparent!important}
++td[bgcolor="#4D595D"]{background:transparent!important}
++.formfonttitle{color:#ECE7DB!important;font-family:'Rajdhani','Oswald',system-ui,sans-serif!important;
++  font-weight:600!important;letter-spacing:.08em!important;text-transform:uppercase!important;font-size:16px!important}
++.formfontdesc{color:#B7B1A4!important}
++.formfontcontent{color:#ECE7DB!important}
++.splitLine{background:none!important;border-bottom:1px solid rgba(var(--cb-acc-rgb,225,6,0),.35)!important;height:1px!important}
++
++/* settings tables */
++.FormTable,.FormTable_table{background:#0c0c0f!important;border:1px solid rgba(255,255,255,.08)!important;
++  border-radius:8px!important;border-collapse:separate!important;border-spacing:0!important}
++.FormTable th,.FormTable_table th{background:#101014!important;color:#B7B1A4!important;
++  border-color:rgba(255,255,255,.06)!important;font-weight:500!important;text-shadow:none!important}
++.FormTable td,.FormTable_table td{background:#0c0c0f!important;color:#ECE7DB!important;
++  border-color:rgba(255,255,255,.06)!important}
++/* the gradient lives on the ROW: a multi-cell header row would restart it per cell */
++.FormTable thead tr,.FormTable_table thead tr{
++  background:linear-gradient(90deg,rgba(var(--cb-acc-rgb,225,6,0),.25),#141418)!important}
++.FormTable thead td,.FormTable_table thead td{
++  background:transparent!important;color:#ECE7DB!important;
++  font-family:'Rajdhani','Oswald',system-ui,sans-serif!important;font-weight:600!important;
++  letter-spacing:.08em!important;text-shadow:none!important;border-color:rgba(255,255,255,.08)!important}
++.hintstyle,.hintstyle:link,.hintstyle:visited{color:#ECE7DB!important}
++.hintstyle:hover{color:var(--cb-acc,#E10600)!important}
++
++/* ---------- 4. controls ---------- */
++input[type="text"],input[type="password"],input[type="number"],textarea,
++.input_3_table,.input_6_table,.input_12_table,.input_15_table,.input_18_table,
++.input_20_table,.input_22_table,.input_25_table,.input_30_table,.input_32_table,.input_option{
++  background:#000!important;color:#ECE7DB!important;border:1px solid rgba(255,255,255,.12)!important;
++  border-radius:6px!important;text-shadow:none!important}
++input[type="text"]:focus,input[type="password"]:focus,textarea:focus{border-color:rgba(var(--cb-acc-rgb,225,6,0),.5)!important;outline:none!important}
++input:disabled,.client_input_text_disabled{background:#0c0c0f!important;color:#71767b!important}
++select{background:#000!important;color:#ECE7DB!important;border:1px solid rgba(255,255,255,.12)!important;border-radius:6px!important}
++input[type="radio"],input[type="checkbox"]{accent-color:var(--cb-acc,#E10600)!important}
++.button_gen,.button_gen_long,input.button_gen{background:linear-gradient(180deg,#1a1a1f,#101014)!important;
++  color:#ECE7DB!important;border:1px solid rgba(255,255,255,.14)!important;border-radius:8px!important;
++  font-family:'Rajdhani','Oswald',system-ui,sans-serif!important;font-weight:600!important;
++  letter-spacing:.08em!important;text-shadow:none!important;box-shadow:none!important}
++.button_gen:hover,.button_gen_long:hover{border-color:var(--cb-acc,#E10600)!important;color:#fff!important;
++  background:linear-gradient(180deg,var(--cb-tint,#2a0507),#160204)!important}
++.button_gen_dis{background:#0c0c0f!important;color:#4a4d51!important;border:1px solid rgba(255,255,255,.06)!important}
++.button{background:linear-gradient(180deg,#1a1a1f,#101014)!important;color:#ECE7DB!important;
++  border:1px solid rgba(255,255,255,.14)!important}
++
++/* log viewers + misc text */
++textarea,.textarea_log,.textarea_log_table{background:#000!important;color:#B7B1A4!important;
++  font-family:Consolas,Monaco,monospace!important;border:1px solid rgba(255,255,255,.1)!important}
++a:link,a:visited{color:var(--cb-warn,#E0A93B)}
++a:hover{color:var(--cb-acc,#E10600)}
++
++/* ---------- 5. stock banner-offset shims ---------- */
++/* the template tucks content under the stock banner with negative margins; with the banner hidden those
++   would pull the content above the visible top */
++table#FormTitle{margin-top:0!important}
++table[bgcolor="#4d595d"],table[bgcolor="#4D595D"],td[bgcolor="#4d595d"],
++tr[bgcolor="#4D595D"],tr[bgcolor="#4d595d"]{background:transparent!important}
++/* state.js browser_compatibility() re-wraps the content cell in a div with an inline margin-top:-140px after
++   load; important beats inline, the attribute selector tracks the script's write */
++div[style*="margin-top:-140px"],div[style*="margin-top: -140px"]{margin-top:0!important}
++/* popup.js showLoading() sets an inline overflow:hidden on the html element; if its restore stalls the page
++   could never scroll again */
++html{overflow-y:auto!important}
++
++/* ---------- 6. stock accents -> Reaper palette (controls and chrome only; an add-on's charts and
++   status colours keep their own) ---------- */
++html::-webkit-scrollbar{display:block!important;width:12px!important;height:12px!important;padding:0!important}
++html::-webkit-scrollbar-thumb{background-color:var(--cb-acc,#E10600)!important;border:2px solid #000!important;border-radius:8px!important}
++html::-webkit-scrollbar-track{background-color:#000!important}
++/* toggle switches (the three stock mechanisms): neutral grey when on, as on the Reaper pages */
++.switch input:checked~.container{background:linear-gradient(180deg,#6b6b72,#45454b)!important}
++.switch2 input:checked~.container{background:linear-gradient(180deg,#6b6b72,#45454b)!important}
++img.iphone_switch{filter:grayscale(1) brightness(.85)!important}
++input.switch:checked~.switch_container>.switch_bar{background-color:#6b6b72!important}
++input.switch:checked~.switch_container>.switch_bar+.switch_circle>div{filter:grayscale(1) brightness(.95)!important}
++.switch .container{font-family:'Rajdhani',system-ui,sans-serif!important}
++/* selected pills / tab chips */
++.clicked{background-color:var(--cb-acc,#E10600)!important;box-shadow:0 0 6px rgba(var(--cb-acc-rgb,225,6,0),.45)!important}
++.click:hover{background-color:rgba(var(--cb-acc-rgb,225,6,0),.45)!important;box-shadow:none!important}
++/* dropdown suggestion lists + clickable rows */
++div[id$="_Block_PC"] div:hover,#ClientList_Block a:hover,
++.clientlist_dropdown div:hover,.clientlist_dropdown a:hover,
++.dns_server_list_dropdown div:hover,.dns_server_list_dropdown a:hover,
++.table_clientlist_item:hover,.WL_MAC_Block div:hover,.WL_MAC_Block a:hover,
++.StatusClickHint_mouseover{background-color:var(--cb-acc-deep,#B3000C)!important;color:#fff!important}
++/* buttons still on the stock gradient */
++.button_gen_touch,.titlebtn:hover,.button_gen_dis:hover,
++.confirm_button_gen_long_left:hover,.confirm_button_gen_long_right:hover{
++  background:linear-gradient(180deg,var(--cb-tint,#2a0507),#160204)!important;
++  border-color:var(--cb-acc,#E10600)!important;color:#fff!important}
++.actionButtonOK{background-color:var(--cb-acc,#E10600)!important;color:#fff!important}
++.confirm_button:hover,.confirm_button:active{background:var(--cb-acc-deep,#B3000C)!important}
++/* misc stock text / borders */
++.hintstyle2,.hintstyle2:link,.hintstyle2:visited{color:#ECE7DB!important}
++.hintstyle2:hover{color:var(--cb-acc,#E10600)!important}
++.statustext,.inputinfo,.bandtext{color:#B7B1A4!important}
++.sub_title{color:#ECE7DB!important}
++.blue_line{background-color:var(--cb-acc,#E10600)!important;border-color:var(--cb-acc,#E10600)!important}
++.division-block{border-left-color:var(--cb-acc,#E10600)!important}
++.ui-slider .ui-slider-range{background:var(--cb-acc,#E10600)!important}
++.ui-slider .ui-slider-handle{background:#ECE7DB!important;border-color:var(--cb-acc,#E10600)!important}
++/* popup containers */
++.popup_container .popup_content_container{background:#0f0f12!important;border:1px solid rgba(var(--cb-acc-rgb,225,6,0),.35)!important}
++div#FormTitle{background-color:#0f0f12!important}
++
++/* ---------- 7. teal sweep: the stock teal / grey-green surfaces behind text and entry fields go dark
++   (yellow value text stays yellow) ---------- */
++.FormTable td span{background-color:transparent!important}
++.input_macaddr_table,.devicepin,.top-input,.query_list,.textarea_ssh_table,
++.IPaddr,.IPaddr input,.input_option_left,.input_option optgroup,select optgroup,.input{
++  background:#000!important;color:#ECE7DB!important;
++  border:1px solid rgba(255,255,255,.12)!important;text-shadow:none!important}
++.dns_server_list_dropdown,.dns_server_list_dropdown div,
++.clientlist_dropdown,.clientlist_dropdown div,
++div[id$="_Block_PC"],div[id$="_Block_PC"] div,div[id$="_Block_PC"] a{
++  background-color:#0c0c0f!important;color:#ECE7DB!important}
++.apply_gen{background:transparent!important}
++.MainContent,.content_bg,.list_bg,.block_bg,.tab_info_bg,.pop_div_bg,
++.list_table,.textarea_bg,.FormTitle thead,.popup_bg,.popup_bar_bg{background:#0f0f12!important}
++.tab,.tab_item,.block_filter{background:#141418!important}
++.tab{border:1px solid rgba(var(--cb-acc-rgb,225,6,0),.30)!important}
++.tab:hover,.tabClicked,.tab_item:hover,.tab_item_click,.block_filter_pressed{background:rgba(var(--cb-acc-rgb,225,6,0),.22)!important}
++#sortable div table tr:hover{background:var(--cb-tint,#2a0507)!important}
++.navtext{color:#ECE7DB!important}
++/* grey fills written as inline styles, which the bgcolor rules never match */
++[style*="background-color:#444f53"],[style*="background-color: #444f53"],
++[style*="background-color:#444F53"],[style*="background:#444f53"],
++[style*="background: #444f53"],[bgcolor="#444f53"],[bgcolor="#444F53"]{background-color:#141418!important}
++.control_bg{background:#0f0f12!important;border:1px solid rgba(255,255,255,.06)!important}
++.tbg,.tbg1,.tbg1a,.tbg2,.tbg2a,.tbg3{background-color:#0c0c0f!important;color:#ECE7DB!important}
++.Tablehead,.Tabletitle td{background-color:#101014!important;color:#ECE7DB!important}
++.table1px,.table1px th,.table1px tr,.table1px td{background-color:#0c0c0f!important;
++  border-color:rgba(255,255,255,.08)!important}
++
++/* ---------- 8. tableApi data tables (js/table/table.css) ---------- */
++.tableApi_table{border-color:rgba(255,255,255,.08)!important}
++.tableApi_table thead td,.tableApi_table thead th{
++  background:linear-gradient(180deg,var(--cb-tint,#2a0507),#141418)!important;color:#ECE7DB!important}
++.tableApi_table th{background-color:#101014!important;color:#B7B1A4!important}
++.tableApi_table td{background-color:#0c0c0f!important;color:#ECE7DB!important;
++  border-color:rgba(255,255,255,.08)!important}
++.tableApi_table td span{color:var(--cb-warn,#FFCC00)!important}
++.tableApi_table tr:nth-child(even) td{background-color:#101014!important}
++
++/* ---------- 9. the client picker of a DHCP page (an add-on copy of the stock DHCP Server page) ----------
++   The Manually-Assigned-IP dropdown (#ClientList_Block_PC) is position:absolute + height:auto, and the shell
++   sizes the frame to the body, so a downward list would grow past the frame and clip. Anchored to its input
++   cell and opened UPWARD over the settings above it, with a capped height and its own scroll. */
++body:has(input[name="dhcp_staticmac_x_0"]) td:has(> input[name="dhcp_staticmac_x_0"]){
++  position:relative!important}
++body:has(input[name="dhcp_staticmac_x_0"]) #ClientList_Block_PC.clientlist_dropdown{
++  position:absolute!important;top:auto!important;bottom:100%!important;left:0!important;
++  margin:0 0 4px 0!important;max-height:260px!important;overflow-y:auto!important;z-index:1000!important}
+diff --git a/release/src/router/www/reaper/rp.css b/release/src/router/www/reaper/rp.css
+index a0635253e6..9635dd1638 100755
+--- a/release/src/router/www/reaper/rp.css
++++ b/release/src/router/www/reaper/rp.css
+@@ -64,10 +64,10 @@ html{scrollbar-width:thin;scrollbar-color:var(--crimson) #000}
+ 
+ /* panel (card) */
+ .panel{background:var(--panel);border:1px solid var(--line-soft);border-radius:14px;padding:18px 20px;margin-bottom:18px}
+-/* a page's settings sections sit in one static crimson frame (owner, 2026-10-23: the look the stock skin gave the
+-   System page in _r20 while the cursor was over it - its .tab:hover fill - kept on permanently; the translucent
+-   crimson shows as thick bands between and around the sections); used by Reaper_System, Reaper_SNMP, Reaper_Tweaks */
+-.rframe{background:rgba(var(--cb-acc-rgb,225,6,0),.22);border:1px solid rgba(var(--cb-acc-rgb,225,6,0),.30)}
++/* a page's sections sit in one static frame: a quiet band between and around them, with only a trace of the accent
++   (owner, 2026-11-28: the crimson fill of 2026-10-23 read as a distracting block around the Network and AiMesh
++   pages); no hover state; used by every kit page */
++.rframe{background:rgba(255,255,255,.022);border:1px solid var(--line)}
+ .panel h2{font-size:15px;font-weight:700;text-transform:uppercase;letter-spacing:.12em;margin-bottom:4px}
+ .panel .sub{font-size:12.5px;color:var(--steel);margin:2px 0 14px;line-height:1.5}
+ .duo{display:grid;grid-template-columns:1fr 1fr;gap:18px}
+diff --git a/release/src/router/www/reaper_shell.asp b/release/src/router/www/reaper_shell.asp
+index ee404b93de..65e3d7b54f 100644
+--- a/release/src/router/www/reaper_shell.asp
++++ b/release/src/router/www/reaper_shell.asp
+@@ -727,11 +727,32 @@ function buildRail(menuTree){
+ /* anti-flash veil reveal (see loadPage): every framed page carries its own theme,
+    so it is safe to show at load. REAPER-CUT8: the run-time copy of the stock skin
+    (a reaper_content.css link added to a framed stock page) left with the stock UI.
+-   Failsafe timer still backstops. */
++   Failsafe timer still backstops.
++   REAPER-ADDON-SKIN (2026-11-27, owner): a third-party add-on page is built on the
++   stock template, whose scripts draw the stock banner, menu and tab strip into it.
++   httpd links reaper/reaper_addon.css into it (reaper_inject.c mode 7); a framed
++   add-on page that arrives without the sheet gets it here and stays veiled until it
++   lands. An add-on page = no reaper-native meta (every framed Reaper page has one)
++   and either a user<N>.asp address or the template's chrome holders (#TopBanner,
++   #mainMenu, #tabMenu - no Reaper page has them). */
+ (function(){
+   var f=$id('page_frame');
+   if(!f) return;
+-  f.addEventListener('load', function(){ clearTimeout(f._veilT); f.classList.remove('veil'); });
++  function unveil(){ clearTimeout(f._veilT); f.classList.remove('veil'); }
++  f.addEventListener('load', function(){
++    try{
++      var d=f.contentDocument, p=String((f.contentWindow && f.contentWindow.location.pathname) || '');
++      if(d && !d.querySelector('meta[name="reaper-native"]') && !d.querySelector('link[href*="reaper_addon.css"]')
++         && (/(^|\/)user\d+\.asp$/i.test(p) || d.getElementById('TopBanner') || d.getElementById('mainMenu') || d.getElementById('tabMenu'))){
++        var l=d.createElement('link');
++        l.rel='stylesheet'; l.href='/reaper/reaper_addon.css';
++        l.onload=unveil; l.onerror=unveil;
++        (d.head||d.documentElement).appendChild(l);
++        return;
++      }
++    }catch(e){}
++    unveil();
++  });
+ })();
+ 
+ /* ---- overlay viewport anchor (owner item, 2026-08-11) --------------------
+@@ -768,7 +789,7 @@ var RV_CSS =
+ + '#loadingBlock,#loadingBarBlock,#loadingBlock *,#loadingBarBlock *{color:#e6e3df!important;border-color:#2a2c31!important}';
+ /* reaper-native pages: their own full-frame overlays, by the classes they use */
+ var RV_CSS_NATIVE = RV_CSS
+-+ '.veil,.ovl,#ovl,.applying,.overlay,.fbov,.scrim{'
+++ '.veil,.ovl,#ovl,.applying,.overlay,.fbov,.scrim,.dlg{'
+ + 'position:absolute!important;top:var(--rv-top,0px)!important;bottom:auto!important;'
+ + 'height:var(--rv-h,100vh)!important;max-height:none!important}'
+ /* The FAQ fly-out is NOT a full-frame overlay: it is a 440px side panel PARKED
+@@ -784,7 +805,19 @@ var RV_CSS_NATIVE = RV_CSS
+    scrolls internally fixed and absolute resolve against the same box, so the
+    top/height anchoring below still lands on the visible slice. */
+ + '.flyout{position:fixed!important;top:var(--rv-top,0px)!important;bottom:auto!important;'
+-+ 'height:var(--rv-h,100vh)!important;max-height:none!important}';
+++ 'height:var(--rv-h,100vh)!important;max-height:none!important}'
++/* REAPER-DLG-TALL (2026-11-28, owner): a dialog TALLER than the visible slice. Anchored to the slice it hung out of
++   it top and bottom and followed the scrollbar, so its buttons could never be reached. Such a dialog (marked
++   data-rv-tall by the watcher below) is pinned in the framed document instead: the backdrop covers the whole page,
++   the box starts 16px under the top of the slice that was showing (--rv-pin) and stays there, and the page's own
++   scrollbar / mouse wheel reaches the rest. border-box is load-bearing: with the paddings outside it, min-height
++   100% would overhang the frame by them and the frame-grow below would chase it for ever. A dialog never scrolls
++   inside the frame (a page opened on its own lets its backdrop scroll instead). */
+++ '.ovl,#ovl,.overlay,.fbov,.dlg{overflow:visible!important}'
+++ '[data-rv-tall][data-rv-tall],#ovl[data-rv-tall]{top:0!important;height:auto!important;min-height:100%!important;'
+++ 'box-sizing:border-box!important;align-items:flex-start!important;'
+++ 'padding-top:calc(var(--rv-pin,0px) + 16px)!important;padding-bottom:16px!important}'
+++ '[data-rv-tall]>*{margin-top:0!important;margin-bottom:0!important;flex-shrink:0!important}';
+ 
+ (function(){
+   var f=$id('page_frame');
+@@ -792,13 +825,14 @@ var RV_CSS_NATIVE = RV_CSS
+   var HDR=64;                    /* sticky topbar: the frame's visible slice starts under it */
+   /* review 2026-10-24 (Q-C2-7): scroll and resize fire many times a frame; the frame is measured and the two
+      properties written once per animation frame */
+-  var raf=0;
++  var raf=0, slTop=0, slH=0;     /* the slice last published (px in the framed document) */
+   function anchor(){
+     if(raf) return;
+     if(!window.requestAnimationFrame){ anchorNow(); return; }
+     raf=window.requestAnimationFrame(function(){ raf=0; anchorNow(); });
+   }
+-  function anchorNow(){
++  function anchorNow(){ measure(); dlgCheck(true); }
++  function measure(){
+     try{
+       var d=f.contentDocument;
+       if(!d||!d.documentElement) return;
+@@ -814,28 +848,104 @@ var RV_CSS_NATIVE = RV_CSS
+                                                        document and re-trip fit() */
+       }
+       var s=d.documentElement.style;
+-      s.setProperty('--rv-top', Math.round(top)+'px');
+-      s.setProperty('--rv-h', Math.round(h)+'px');
++      slTop=Math.round(top); slH=Math.round(h);
++      s.setProperty('--rv-top', slTop+'px');
++      s.setProperty('--rv-h', slH+'px');
+     }catch(e){}
+   }
++  /* REAPER-DLG-TALL: the watcher. A dialog = a displayed flex backdrop of a reaper-native page (DLG_SEL) with ONE
++     in-flow box. Box + margins fit the slice: left alone (centred, follows the scrollbar). Taller: pinned at the
++     slice top as it is now (data-rv-tall + --rv-pin, see the sheet above) and the frame is re-fitted, so the
++     document - and the page scrollbar - grows to hold the box and shrinks back when the dialog goes. Decided when a
++     dialog opens, its content or size changes, or the window is resized; a scroll only ever pins (the slice is
++     shorter at the very top of the page), it never moves or releases a pinned dialog. A pinned box that a change
++     leaves wholly out of view is pinned again where the user is looking. The page's markup, focus and keys are
++     not touched; an attribute, not a class, because pages rewrite className. */
++  var DLG_SEL='.ovl,#ovl,.overlay,.fbov,.dlg', DLG_M=16, dlgOn=false, dlgMo=null, dlgRo=null, dlgTall=0, dlgWait=0;
++  function dlgBox(w, ov){
++    var k=ov.children, i, s, b=null;
++    for(i=0;i<k.length;i++){
++      s=w.getComputedStyle(k[i]);
++      if(s.display==='none'||s.position==='absolute'||s.position==='fixed') continue;
++      if(b) return null;
++      b=k[i];
++    }
++    return b;
++  }
++  function dlgPin(ov, top){
++    if(top<0){ ov.removeAttribute('data-rv-tall'); ov.style.removeProperty('--rv-pin'); return; }
++    ov.setAttribute('data-rv-tall', '1');
++    ov.style.setProperty('--rv-pin', Math.round(top)+'px');
++  }
++  function dlgCheck(scrollOnly){
++    if(!dlgOn) return;
++    try{
++      var d=f.contentDocument, w, list, i, ov, box, bh, r, was, n=0, changed=false;
++      if(!d||!d.body||!slH) return;
++      list=d.querySelectorAll(DLG_SEL);
++      if(!list.length && !dlgTall) return;
++      w=d.defaultView;
++      for(i=0;i<list.length;i++){
++        ov=list[i]; was=ov.hasAttribute('data-rv-tall');
++        if(scrollOnly && was){ n++; continue; }
++        box=w.getComputedStyle(ov).display==='flex' ? dlgBox(w, ov) : null;
++        if(!box){ if(was){ dlgPin(ov, -1); changed=true; } continue; }
++        if(dlgRo && !box._rvObs){ box._rvObs=1; dlgRo.observe(box); }
++        bh=box.offsetHeight;
++        if(bh+2*DLG_M>slH){
++          n++;
++          if(!was){ dlgPin(ov, slTop); changed=true; }
++          else{
++            r=box.getBoundingClientRect();
++            if(r.bottom<slTop+48 || r.top>slTop+slH-48){ dlgPin(ov, slTop); changed=true; }
++            else if(ov._rvBh!==bh) changed=true;
++          }
++          ov._rvBh=bh;
++        }else if(was){ dlgPin(ov, -1); changed=true; }
++      }
++      if(n!==dlgTall){ dlgTall=n; changed=true; }      /* a pinned dialog that was removed counts too */
++      if(changed && window.reaperFrameFit) window.reaperFrameFit();
++    }catch(e){}
++  }
++  /* once per animation frame, before it paints (so a tall dialog never shows unpinned); the timer is for a tab
++     that paints no frames */
++  function dlgSoon(){
++    if(dlgWait) return;
++    dlgWait=1;
++    var done=false, run=function(){ if(done) return; done=true; dlgWait=0; measure(); dlgCheck(false); };
++    if(window.requestAnimationFrame) window.requestAnimationFrame(run);
++    setTimeout(run, 150);
++  }
++  function dlgWatch(d, on){
++    try{ if(dlgMo) dlgMo.disconnect(); if(dlgRo) dlgRo.disconnect(); }catch(e){}
++    dlgMo=null; dlgRo=null; dlgTall=0; dlgOn=false;
++    if(!on||!d||!d.body||!window.MutationObserver) return;
++    dlgOn=true;
++    if(window.ResizeObserver) dlgRo=new ResizeObserver(dlgSoon);
++    dlgMo=new MutationObserver(dlgSoon);
++    dlgMo.observe(d.body, {childList:true, subtree:true, attributes:true, attributeFilter:['class','style','hidden']});
++    dlgSoon();
++  }
+   window.reaperAnchorOverlays=anchor;
+   /* 2026-11-01: synchronous too - form.js adjust_panel_block_top() places a panel the moment it opens and must
+      not read a slice that is one animation frame stale (or never refreshed, in a tab that paints no frames) */
+   window.reaperAnchorNow=anchorNow;
+   f.addEventListener('load', function(){
+     try{
+-      var d=f.contentDocument;
++      var d=f.contentDocument, nat=!!(d && d.querySelector('meta[name="reaper-native"]'));
+       if(d && !d.getElementById('reaper_rv_css')){
+         var st=d.createElement('style');
+         st.id='reaper_rv_css';
+-        st.textContent=d.querySelector('meta[name="reaper-native"]') ? RV_CSS_NATIVE : RV_CSS;
++        st.textContent=nat ? RV_CSS_NATIVE : RV_CSS;
+         (d.head||d.documentElement).appendChild(st);
+       }
++      dlgWatch(d, nat);
+     }catch(e){}
+     anchor();
+   });
+   window.addEventListener('scroll', anchor, {passive:true});
+   window.addEventListener('resize', anchor);
++  window.addEventListener('resize', dlgSoon);
+ })();
+ 
+ /* auto-grow the frame to its content height so long pages (SDN.asp) scroll
+@@ -852,10 +962,22 @@ var RV_CSS_NATIVE = RV_CSS
+      the body and the padding and border of the root. 0 when it cannot be read (fit() then measures). */
+   function frameContentBottom(d){
+     try{
+-      var w=d.defaultView, b=d.body, k, i, s, r, m=0, bs, hs, px=function(v){ return parseFloat(v)||0; };
++      var w=d.defaultView, b=d.body, k, i, j, c, t, s, r, m=0, bs, hs, px=function(v){ return parseFloat(v)||0; };
+       if(!w||!b) return 0;
++      /* REAPER-DLG-TALL: a pinned dialog's backdrop is as tall as the frame, so it would hide a page that got
++         shorter; the page ends where the dialog's BOX does (plus its 16px margin) */
++      t=d.querySelectorAll('[data-rv-tall]');
++      for(i=0;i<t.length;i++){
++        c=t[i].children;
++        for(j=0;j<c.length;j++){
++          s=w.getComputedStyle(c[j]);
++          if(s.display==='none'||s.position==='absolute'||s.position==='fixed') continue;
++          m=Math.max(m, c[j].getBoundingClientRect().bottom+16);
++        }
++      }
+       k=b.children;
+       for(i=0;i<k.length;i++){
++        if(k[i].hasAttribute('data-rv-tall')) continue;
+         s=w.getComputedStyle(k[i]);
+         if(s.display==='none'||s.position==='fixed') continue;
+         r=k[i].getBoundingClientRect();
+@@ -924,6 +1046,10 @@ var RV_CSS_NATIVE = RV_CSS
+        overlays are anchored to (see the overlay viewport anchor above) */
+     try{ if(window.reaperAnchorOverlays) window.reaperAnchorOverlays(); }catch(e){}
+   }
++  /* REAPER-DLG-TALL: the dialog watcher above calls this when a pinned dialog appears, changes height or goes -
++     none of which resizes the framed root, so the observer below never hears of it. lastEst is cleared so the
++     frame may shrink as well as grow. */
++  window.reaperFrameFit=function(){ lastEst=-1; fit(); };
+   f.addEventListener('load', function(){
+     f.style.height=''; f.style.width='';   /* reset before measuring the new page */
+     lastEst=-1;
+diff --git a/release/src/router/www/reaper_util.js b/release/src/router/www/reaper_util.js
+index fe5b068d70..0d27905748 100644
+--- a/release/src/router/www/reaper_util.js
++++ b/release/src/router/www/reaper_util.js
+@@ -22,7 +22,12 @@ window.ReaperNames = (function(){
+      the page's custom_clientlist seeds Names before the reply arrives. networkmap's own name (often a DHCP vendor
+      class such as "MSFT 5.0") is no longer used as a label. */
+   var nameOf = {}, hostOf = {}, ip2mac = {};
++  /* REAPER-DEVICON (2026-11-27): the device type each MAC shows (field 3 of a custom_clientlist record = the type the
++     admin chose; get_clientlist's type / defaultType = that choice or what networkmap detected). Read alongside the
++     names; nothing above uses them. */
++  var typeU = {}, typeL = {}, typeD = {};
+   function nrm(m){ return String(m == null ? '' : m).toLowerCase(); }
++  function tnum(t){ t = String(t == null ? '' : t); return /^[0-9]{1,3}$/.test(t) ? String(parseInt(t, 10)) : ''; }
+   function label(m){ var n = nameOf[m]; if(n) return n; var h = hostOf[m]; return h ? h : ''; }
+ 
+   /* parse the ASP-injected custom_clientlist tuple string: <name>mac>group>type>... (the master Name list) */
+@@ -35,6 +40,7 @@ window.ReaperNames = (function(){
+         if(!ents[i]) continue;
+         var f = ents[i].split('>'), nm = f[0] || '', mac = nrm(f[1]);
+         if(nm && mac.indexOf(':') > -1) nameOf[mac] = nm;
++        if(mac.indexOf(':') > -1 && tnum(f[3])) typeU[mac] = tnum(f[3]);
+       }
+     }catch(e){}
+   }
+@@ -58,6 +64,8 @@ window.ReaperNames = (function(){
+           for(var i = 0; i < ml.length; i++){
+             var mac = String(ml[i]), c = cl[mac]; if(!c) continue;
+             if(c.ip) ip2mac[c.ip] = nrm(mac);
++            if(tnum(c.type)) typeL[nrm(mac)] = tnum(c.type);
++            if(tnum(c.defaultType)) typeD[nrm(mac)] = tnum(c.defaultType);
+           }
+           if(dn) Object.keys(dn).forEach(function(k){
+             var d = dn[k] || {}, m = nrm(k);
+@@ -87,7 +95,18 @@ window.ReaperNames = (function(){
+     macs: function(){ var s = {}, k; for(k in nameOf) s[k] = 1; for(k in hostOf) s[k] = 1;
+       return Object.keys(s).filter(function(m){ return /^[0-9a-f]{2}(:[0-9a-f]{2}){5}$/.test(m); }); },
+     /* the lc-MAC mapped to this IP (Traffic identity cell), or ''. */
+-    macForIp: function(ip){ return ip2mac[ip] || ''; }
++    macForIp: function(ip){ return ip2mac[ip] || ''; },
++    /* REAPER-DEVICON: the type a device shows ('0' = none known): the live list's type (the admin's choice, else
++       networkmap's), else what networkmap detected, else the admin's choice as the page loaded it */
++    type: function(mac){ var m = nrm(mac);
++      if(m in typeL) return typeL[m] !== '0' ? typeL[m] : (typeD[m] || '0');
++      return typeU[m] || typeD[m] || '0'; },
++    /* the type the admin chose ('0' = automatic) and what networkmap detected */
++    userType: function(mac){ return typeU[nrm(mac)] || '0'; },
++    detType: function(mac){ return typeD[nrm(mac)] || '0'; },
++    /* after the page changed the choice (reaper_dev.cgi set_type): show it now, before the next refresh */
++    setUserType: function(mac, t){ var m = nrm(mac); t = tnum(t) || '0'; typeU[m] = t;
++      if(m in typeL) typeL[m] = t !== '0' ? t : (typeD[m] || '0'); }
+   };
+ })();
+ 
+@@ -485,3 +504,189 @@ window.ReaperBusy = (function(){
+   return { start: start, startLast: startLast, words: words };
+ })();
+ /* REAPER-BUSY-END */
++
++/* REAPER-DEVICON-BEGIN (run under node by test_device_icons.py)
++   2026-11-27 (owner: device pictures, both steps): the icon of a device, the same on every page that lists devices.
++   ReaperIcons.icon(mac, {type, size}) returns an element showing, in this order:
++     1. the device's own picture (set on the Devices page; reaper_dev.cgi icon_list / icon_get),
++     2. a picture set for its whole device type (the stock <type>.log files, read only),
++     3. the glyph of its device type - the stock set, read from /device-map/device-map.css (the stylesheet the stock
++        network pages still load; only its icon rules are used, nothing of it applies to the page) plus, for the newer
++        types, /ajax/extend_custom_icon.json,
++     4. a generic glyph.
++   A picture is used only when it is data:image/png, jpeg or webp in base64 - the router's own rule, never SVG - and it
++   goes into an <img> by its src property, never through markup. Pages that build rows as HTML put
++   ReaperIcons.html(mac, type, size) in the row and call ReaperIcons.fill(root) after; the placeholders are filled again
++   whenever more data arrives. ReaperIcons.init(http_id) once per page: the router asks for the page token. */
++window.ReaperIcons = (function(){
++  var PIC = /^data:image\/(png|jpeg|webp);base64,[A-Za-z0-9+\/]+={0,2}$/;
++  var GLY = /^data:image\/png;base64,[A-Za-z0-9+\/]+={0,2}$/;
++  var hid = '', list = null, src = {}, want = {}, wantT = null, glyphs = null, extTried = false, sheet = null, styled = false, busy = {}, onList = [];
++  function id12(m){ var s = String(m == null ? '' : m).replace(/[:\-]/g, '').toUpperCase(); return /^[0-9A-F]{12}$/.test(s) ? s : ''; }
++  function tnum(t){ t = String(t == null ? '' : t); return /^[0-9]{1,3}$/.test(t) ? String(parseInt(t, 10)) : ''; }
++  function valid(u){ return typeof u === 'string' && u.length <= 43800 && PIC.test(u); }
++  function style(){
++    if(styled || typeof document === 'undefined' || !document.head) return;
++    styled = true;
++    var s = document.createElement('style');
++    s.textContent = '.rdic{display:inline-flex;align-items:center;justify-content:center;flex:0 0 auto;box-sizing:border-box;width:28px;height:28px;'
++      + 'border-radius:8px;overflow:hidden;vertical-align:middle;color:var(--bone-dim,#B7B1A4);background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.08)}'
++      + '.rdic.sm{width:24px;height:24px;border-radius:7px}.rdic.lg{width:72px;height:72px;border-radius:16px}'
++      + '.rdic img{display:block;width:100%;height:100%;object-fit:cover}'
++      + '.rdic.pic{border-color:rgba(var(--cb-acc-rgb,225,6,0),.38)}'
++      + '.rdic .rdic-g{display:block;width:70%;height:70%;background-color:currentColor;-webkit-mask:var(--svg) center/contain no-repeat;mask:var(--svg) center/contain no-repeat}'
++      + '.rdic .rdic-x{display:block;width:42%;height:42%;border:2px solid currentColor;border-radius:4px;opacity:.6}';
++    document.head.appendChild(s);
++  }
++  function get(url, cb){
++    var x = new XMLHttpRequest();
++    x.open('GET', url, true);
++    x.timeout = 15000;
++    x.onreadystatechange = function(){ if(x.readyState === 4) cb(x.status === 200 ? x.responseText : null); };
++    x.send();
++  }
++  function getJ(url, cb){ get(url, function(t){ var j = null; if(t !== null){ try{ j = JSON.parse(t); }catch(e){ j = null; } } cb(j); }); }
++  function cacheGet(k){ try{ return window.sessionStorage ? sessionStorage.getItem(k) : null; }catch(e){ return null; } }
++  function cachePut(k, v){ try{ if(window.sessionStorage) sessionStorage.setItem(k, v); }catch(e){} }
++  /* the glyph rules: one class per type (.rdic-g.tN), the masks copied from the stock stylesheet text */
++  function addGlyphs(map){
++    var by = {}, css = '', k, n = 0;
++    for(k in map) if(Object.prototype.hasOwnProperty.call(map, k) && GLY.test(map[k]) && !glyphs[k]){
++      glyphs[k] = map[k]; (by[map[k]] = by[map[k]] || []).push('.rdic .rdic-g.t' + k); n++;
++    }
++    if(!n || typeof document === 'undefined' || !document.head) return n;
++    for(k in by) css += by[k].join(',') + '{--svg:url("' + k + '")}';
++    if(!sheet){ sheet = document.createElement('style'); document.head.appendChild(sheet); }
++    sheet.textContent += css;
++    return n;
++  }
++  function loadGlyphs(){
++    if(glyphs || busy.g) return;
++    busy.g = 1;
++    get('/device-map/device-map.css', function(t){
++      var re = /((?:i\.type\d+\s*,\s*)*i\.type\d+)\s*\{\s*--svg\s*:\s*url\(\s*["']?(data:image\/png;base64,[A-Za-z0-9+\/=]+)["']?\s*\)/g, m, nums, map = {}, i;
++      glyphs = {};
++      while(t && (m = re.exec(t))){ nums = m[1].match(/\d+/g) || []; for(i = 0; i < nums.length; i++) map[String(parseInt(nums[i], 10))] = m[2]; }
++      addGlyphs(map);
++      refill();
++    });
++  }
++  /* the newer stock types (78 and up) are only in this list; fetched once, the first time such a type is shown */
++  function loadExt(){
++    if(extTried) return;
++    extTried = true;
++    getJ('/ajax/extend_custom_icon.json', function(j){
++      var map = {}, c, i, it;
++      if(j && typeof j === 'object') for(c in j) if(j[c] && j[c].list && j[c].list.length) for(i = 0; i < j[c].list.length; i++){
++        it = j[c].list[i]; if(it && tnum(it.num) && typeof it.src === 'string') map[tnum(it.num)] = it.src;
++      }
++      if(addGlyphs(map)) refill();
++    });
++  }
++  function loadList(){
++    if(!hid || busy.l) return;
++    busy.l = 1;
++    getJ('/reaper_dev.cgi?action=icon_list&http_id=' + encodeURIComponent(hid) + '&_=' + Date.now(), function(j){
++      var nl = {icons: {}, types: {}}, k;
++      busy.l = 0;
++      if(j && j.ok === 1){
++        for(k in (j.icons || {})) if(id12(k)) nl.icons[id12(k)] = {stem: k, v: String(j.icons[k])};
++        for(k in (j.types || {})) if(tnum(k)) nl.types[tnum(k)] = {stem: k, v: String(j.types[k])};
++      }
++      list = nl;
++      refill();
++      var w = onList; onList = [];
++      for(k = 0; k < w.length; k++){ try{ w[k](); }catch(e){} }
++    });
++  }
++  /* the pictures still to fetch go in one request per 32 */
++  function need(key, ent){
++    var c = cacheGet('rdic:' + ent.stem + ':' + ent.v);
++    if(valid(c)){ src[key] = c; return; }
++    if(src[key] === undefined && !want[key]){ want[key] = ent; if(!wantT) wantT = setTimeout(fetchWanted, 30); }
++  }
++  function fetchWanted(){
++    var keys = Object.keys(want).slice(0, 32), stems = [], map = {}, i;
++    wantT = null;
++    if(!keys.length || !hid) return;
++    for(i = 0; i < keys.length; i++){ map[want[keys[i]].stem] = {key: keys[i], ent: want[keys[i]]}; stems.push(want[keys[i]].stem); src[keys[i]] = null; delete want[keys[i]]; }
++    getJ('/reaper_dev.cgi?action=icon_get&ids=' + encodeURIComponent(stems.join(',')) + '&http_id=' + encodeURIComponent(hid) + '&_=' + Date.now(), function(j){
++      var s, got = j && j.ok === 1 && j.src ? j.src : {};
++      for(s in map) if(Object.prototype.hasOwnProperty.call(map, s)){
++        if(valid(got[s])){ src[map[s].key] = got[s]; cachePut('rdic:' + s + ':' + map[s].ent.v, got[s]); }
++      }
++      refill();
++      if(Object.keys(want).length) fetchWanted();
++    });
++  }
++  /* what to show: {k: 'pic', u} | {k: 'glyph', t} | {k: 'generic'} */
++  function pick(mac, type){
++    var id = id12(mac), t = tnum(type), e;
++    if(id && list && (e = list.icons[id])){ need(id, e); if(valid(src[id])) return {k: 'pic', u: src[id]}; }
++    if(t && t !== '0' && list && (e = list.types[t])){ need('t' + t, e); if(valid(src['t' + t])) return {k: 'pic', u: src['t' + t]}; }
++    if(t && glyphs && glyphs[t]) return {k: 'glyph', t: t};
++    if(t && glyphs && !glyphs[t] && +t >= 78) loadExt();
++    if(glyphs && glyphs['0']) return {k: 'glyph', t: '0'};
++    return {k: 'generic'};
++  }
++  function paint(el){
++    var mac = el.getAttribute('data-rdic-mac') || '', t = el.getAttribute('data-rdic-type') || '', p = pick(mac, t), sig = p.k + ':' + (p.u ? p.u.length + p.u.slice(-24) : p.t || ''), c;
++    if(el.__rdic === sig) return;
++    el.__rdic = sig;
++    while(el.firstChild) el.removeChild(el.firstChild);
++    el.className = String(el.className || '').replace(/(^| )pic( |$)/, ' ').replace(/^ +| +$/g, '') + (p.k === 'pic' ? ' pic' : '');
++    if(p.k === 'pic'){ c = document.createElement('img'); c.alt = ''; c.setAttribute('draggable', 'false'); c.src = p.u; }
++    else { c = document.createElement('i'); c.className = p.k === 'glyph' ? 'rdic-g t' + p.t : 'rdic-x'; }
++    el.appendChild(c);
++  }
++  var roots = [];
++  function fill(root){
++    var n, i;
++    style();
++    root = root || (typeof document !== 'undefined' ? document : null);
++    if(!root || !root.querySelectorAll) return;
++    if(roots.indexOf(root) < 0){ roots.push(root); if(roots.length > 8) roots.shift(); }
++    n = root.querySelectorAll('.rdic[data-rdic-mac]');
++    for(i = 0; i < n.length; i++) paint(n[i]);
++  }
++  /* elements handed out by icon() are painted again too, while they are still on the page */
++  var made = [];
++  function refill(){
++    var i, keep = [];
++    for(i = 0; i < roots.length; i++) fill(roots[i]);
++    for(i = 0; i < made.length; i++){ if(made[i].isConnected === false) continue; paint(made[i]); keep.push(made[i]); }
++    made = keep;
++  }
++  function attrs(mac, type, size){
++    var m = String(mac == null ? '' : mac);
++    m = /^[0-9A-Fa-f]{2}([:\-][0-9A-Fa-f]{2}){5}$/.test(m) || /^[0-9A-Fa-f]{12}$/.test(m) ? m : '';
++    return {m: m, t: tnum(type), c: 'rdic' + (size === 'sm' || size === 'lg' ? ' ' + size : '')};
++  }
++  return {
++    init: function(httpId){ if(httpId) hid = String(httpId); style(); loadGlyphs(); loadList(); },
++    /* an element for DOM-built pages; opts: {type, size: 'sm' | 'lg'} */
++    icon: function(mac, opts){
++      opts = opts || {};
++      var a = attrs(mac, opts.type, opts.size), el = document.createElement('span');
++      style();
++      el.className = a.c; el.setAttribute('data-rdic-mac', a.m); el.setAttribute('data-rdic-type', a.t); el.setAttribute('aria-hidden', 'true');
++      paint(el);
++      made.push(el);
++      if(made.length > 800) made = made.filter(function(x){ return x.isConnected !== false; });
++      return el;
++    },
++    /* a placeholder for pages that build rows as HTML: only checked characters reach the markup */
++    html: function(mac, type, size){
++      var a = attrs(mac, type, size);
++      return '<span class="' + a.c + '" data-rdic-mac="' + a.m + '" data-rdic-type="' + a.t + '" aria-hidden="true"></span>';
++    },
++    fill: fill,
++    /* re-read which pictures exist (after the page set or removed one); mac = drop that device's copy now */
++    reload: function(mac, cb){ var id = id12(mac); if(id){ delete src[id]; delete want[id]; } if(cb) onList.push(cb); busy.l = 0; loadList(); },
++    has: function(mac){ var id = id12(mac); return !!(id && list && list.icons[id]); },
++    glyphTypes: function(){ return glyphs ? Object.keys(glyphs) : []; },
++    pick: pick,
++    valid: valid
++  };
++})();
++/* REAPER-DEVICON-END */
+-- 
+2.25.1
+

@@ -71,11 +71,13 @@ unescape_src = cg[ua:ub + 3] if ua >= 0 and ub > ua else "void unescape(char *s,
 check("the exemption decides on the decoded query, never the raw text (review S-B-2)",
       "unescape(q, sizeof(q));" in helpers and 'reaper_query_has(file, "re_mac")' in helpers and 'strstr(file, "re_mac")' not in helpers)
 # review 2026-11-24 (REAPER-NOAPP): a User-Agent that names the ASUS app is no longer skipped, and the stock Referer
-# check is never told "this is the app"
-check("the guard runs for every User-Agent (the ASUS app is not skipped)",
-      "if (reaper_xsite_cgi_refused(" in hr and "fromapp && reaper_xsite_cgi_refused(" not in hr)
+# check is never told "this is the app". REAPER-APP-OPTIN (2026-11-28): the one way round is the admin's opt-in,
+# decided once per request (reaper_req_app; test_app_optin_20261128.py) - never the User-Agent alone.
+check("the guard runs for every User-Agent (the ASUS app is skipped only by the opt-in decision, never by its name alone)",
+      "if (!reaper_req_app && reaper_xsite_cgi_refused(" in hr and hr.count("reaper_xsite_cgi_refused(url,") == 1
+      and "fromapp && reaper_xsite_cgi_refused(" not in hr)
 auth = hr.find("auth_result = auth_check(url, file, cookies, fromapp, &add_try);")
-ref = hr.find("referer_result = referer_check(referer, 0);")
+ref = hr.find("referer_result = referer_check(referer, reaper_req_app ? fromapp : 0);")
 check("the guard runs in the authenticated branch, before the stock referer_check() and auth_check()",
       0 <= g < ref < auth and hr.rfind("if (handler->auth) {", 0, g) >= 0)
 blk = hr[g:hr.find("return;", g) + 7]

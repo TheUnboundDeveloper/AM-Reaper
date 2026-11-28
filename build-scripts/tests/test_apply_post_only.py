@@ -63,10 +63,11 @@ a = wc.find("apply_cgi(webs_t wp, char_t *urlPrefix")
 ae = wc.find("\nAPPLY_FINISH:", a)
 ac = wc[a:ae]
 g = ac.find('reaper_apply_needs_post("apply.cgi")')
-# review 2026-11-24 (REAPER-NOAPP-POST): for every User-Agent - naming the ASUS app no longer lets a GET apply
-check("apply.cgi refuses action_mode=apply on a GET before validate_apply(), whatever the User-Agent, other modes untouched",
+# review 2026-11-24 (REAPER-NOAPP-POST): for every User-Agent - naming the ASUS app no longer lets a GET apply.
+# REAPER-APP-OPTIN (2026-11-28): the only exception is a request the admin's opt-in applies to (reaper_req_app).
+check("apply.cgi refuses action_mode=apply on a GET before validate_apply(), whatever the User-Agent (opt-in aside), other modes untouched",
       0 <= g < ac.find("validate_apply(wp,root)")
-      and 'if (!strcmp(action_mode, "apply") && reaper_apply_needs_post("apply.cgi"))' in ac
+      and 'if (!strcmp(action_mode, "apply") && !reaper_req_app && reaper_apply_needs_post("apply.cgi"))' in ac
       and "check_user_agent(user_agent) == FROM_BROWSER && reaper_apply_needs_post" not in ac
       and "goto APPLY_FINISH;" in ac[g:g + 200]
       and ac.find('"firmware_check"') > g)

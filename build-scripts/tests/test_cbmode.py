@@ -97,7 +97,7 @@ for f in pages:
     for a in re.findall(r'\sstyle="([^"]*)"', t):
         scan(f + " style=", a)
 sheets = ["reaper/rp.css", "reaper/reaper_content.css", "reaper/reaper_content_aimesh.css", "reaper/reaper_content_network.css",
-          "reaper/internet_speed_reaper.css", "reaper_qis.css"]
+          "reaper/internet_speed_reaper.css", "reaper_qis.css", "reaper/reaper_addon.css"]
 for s in sheets:
     if os.path.isfile(os.path.join(W, s)):
         scan(s, strip(rd("www", s)))

@@ -15,7 +15,11 @@ host against stub headers and serves pages through reaper_output():
     floor on the dashboard, the shell, Main_Password and the first-boot Wi-Fi box; everything else token-only;
   - the colour-blind block on an authenticated answer while reaper_cbmode = 1;
   - nothing at all on an AiMesh node (re_mode = 1 / disable_ui = 1);
-  - no stock skin, no SUP map, no reaper_inject switch left in the source.
+  - no stock skin, no SUP map, no reaper_inject switch left in the source;
+  - mode 7 (REAPER-ADDON-SKIN, owner 2026-11-27): a third-party add-on page - a user<N>.asp slot, or an add-on's page
+    mounted over the address of a stock page that no longer ships (a shipped = 0 row whose file is present, e.g.
+    YazDHCP over Advanced_DHCP_Content.asp) - gets the link floor, reaper/reaper_addon.css and the shell bounce, then
+    the token and colour-blind pieces; kept stock pages (QIS_wizard.htm, the AiMesh node pages) stay token-only.
 Exit 0 pass, 1 fail, 77 skipped.
 """
 import os, re, shutil, subprocess, sys, tempfile
@@ -45,6 +49,12 @@ check("the SNMP row exists only on a build with snmpd (Reaper_SNMP.asp ships onl
 check("the stock skin is gone from the code: no reaper_content.css, no SUP map, no skin-only tables",
       "reaper_content" not in code and "SUP" not in code and "reaper_css_only" not in code
       and "reaper_own_theme" not in code and "REAPER_BOUNCE" not in code and "REAPER_CSS_LINK" not in code)
+check("REAPER-ADDON-SKIN: one add-on sheet link (reaper/reaper_addon.css) and the source ships it",
+      code.count('href=\\"/reaper/reaper_addon.css\\"') == 1
+      and os.path.isfile(os.path.join(SRC, "www", "reaper", "reaper_addon.css")))
+check("REAPER-ADDON-SKIN: mode 7 = the user<N>.asp slots (reaper_should_inject) + the overlay case (reaper_output)",
+      "if (reaper_addon_name(name))\n\t\treturn 7;" in code and "if (overlay && mode == 6)\n\t\tmode = 7;" in code
+      and "case 7:" in code)
 check("the nvram switch back to the stock UI is gone (no read of reaper_inject)", '"reaper_inject"' not in code)
 check("the node guard is still there (re_mode / disable_ui)", 'nvram_match("re_mode", "1")' in code and 'nvram_match("disable_ui", "1")' in code)
 check("stage 5 rows: index.asp -> dashboard, AiMesh / Network / Game* / Feedback addresses -> their Reaper pages",
@@ -115,7 +125,7 @@ int main(int argc, char **argv)
     HEAD0 = "<html><head><title>x</title>"
     present = ["Advanced_Stock_Page.asp", "QIS_wizard.htm", "Reaper_LAN.asp", "Main_ReaperDash.asp", "reaper_shell.asp",
                "Main_Login.asp", "Main_Password.asp", "Reaper_WiFiSetup.asp", "PrinterServer.asp", "Advanced_TimeMachine.asp",
-               "index.asp"]
+               "index.asp", "user3.asp", "Advanced_DHCP_Content.asp", "AiMesh_Node_FirmwareUpgrade.asp"]
     for n in present:
         open(n, "w").write("x")
     def pieces(s):
@@ -158,7 +168,52 @@ int main(int argc, char **argv)
     st = serve("index.asp.missing", PAGE)
     check("a name not in the table is not a gone page", "reaper_shell.asp#" not in st)
     st = serve("index.asp", PAGE)
-    check("a shipped = 0 row whose file is still present (an add-on, a port) is served, not stubbed", st == PAGE, st[:200])
+    check("a shipped = 0 row whose file is still present (an add-on, a port) is served, not stubbed",
+          "reaper_shell.asp#Main_ReaperDash" not in st and st.endswith("</head><body>B</body></html>"), st[:200])
+
+    # REAPER-ADDON-SKIN (mode 7): add-on pages get the sheet + the shell bounce; kept stock pages do not
+    ADDON = '<link rel="stylesheet" href="/reaper/reaper_addon.css">'
+    def addon_ok(p):
+        return (p is not None and p.startswith("<style>:where(a:not([class]))") and p.count(ADDON) == 1
+                and p.index(ADDON) < p.index("if(self===top){var rp=") and "location.replace(\"/reaper_shell.asp#\"+rp" in p
+                and "Reaper_SecBanner.asp" not in p)
+    for n in ("user3.asp", "User12.asp", "Advanced_DHCP_Content.asp", "index.asp"):
+        if n == "User12.asp":
+            open(n, "w").write("x")
+        p = pieces(serve(n, PAGE))
+        check("add-on page %s: the link floor, the add-on sheet, then the shell bounce (unauthenticated: nothing else)" % n,
+              addon_ok(p) and "var t='" not in p, p)
+    s = serve("user3.asp", PAGE, AUTH=1)
+    p = pieces(s)
+    check("authenticated user3.asp: sheet + bounce + the token hook once, after them, body untouched",
+          addon_ok(p) and p.count("var t='Tok3n'") == 1 and p.index("var t='Tok3n'") > p.index(ADDON)
+          and s.endswith("</head><body>B</body></html>") and "reaper_cb.css" not in p, p)
+    p = pieces(serve("user3.asp", PAGE, AUTH=1, CB=1))
+    check("authenticated user3.asp + colour-blind mode: the palette block too", addon_ok(p) and "/reaper/reaper_cb.css" in p, p)
+    s = serve("Advanced_DHCP_Content.asp", PAGE, AUTH=1)
+    check("an add-on's page over a stock address (YazDHCP over Advanced_DHCP_Content.asp): the add-on treatment + token",
+          addon_ok(pieces(s)) and s.count("var t='Tok3n'") == 1, s[:300])
+    os.remove("Advanced_DHCP_Content.asp")
+    st = serve("Advanced_DHCP_Content.asp", PAGE)
+    check("...and with no add-on file there, the address answers with the stub to the Reaper page",
+          "/reaper_shell.asp#Reaper_LAN.asp?tab=dhcp" in st and ADDON not in st and "B</body>" not in st, st[:200])
+    for n in ("user.asp", "user3x.asp", "myuser3.asp", "user3.htm"):
+        open(n, "w").write("x")
+        st = serve(n, PAGE)
+        check("not an add-on slot name: %s gets no add-on piece" % n, st == PAGE, st[:200])
+    for n in ("QIS_wizard.htm", "AiMesh_Node_FirmwareUpgrade.asp", "Advanced_Stock_Page.asp"):
+        s = serve(n, PAGE, AUTH=1)
+        check("kept stock page %s: the token hook only (no add-on sheet, no bounce)" % n,
+              s.count("var t='Tok3n'") == 1 and ADDON not in s and "location.replace" not in s, s[:300])
+    for n in ("user3.asp", "index.asp"):
+        check("AiMesh node: add-on page %s gets nothing" % n, serve(n, PAGE, NODE=1, AUTH=1) == PAGE)
+    check("web UI disabled: add-on page gets nothing", serve("user3.asp", PAGE, NOUI=1) == PAGE)
+    st = serve("PrinterServer.asp", PAGE)
+    check("a shipped = 1 row (kept for AiMesh nodes) is never taken for an add-on overlay", ADDON not in st, st[:200])
+    os.remove("index.asp")
+    st = serve("index.asp", PAGE, AUTH=1)
+    check("a normal router (no index.asp on disk): index.asp answers with the stub to the dashboard, as before",
+          "top.location.replace(\"/reaper_shell.asp#Main_ReaperDash.asp\"" in st and ADDON not in st and "B</body>" not in st, st[:200])
     # shipped = 1: node pages
     for n, to in (("PrinterServer.asp", "Reaper_Printer.asp"), ("Advanced_TimeMachine.asp", "Reaper_TimeMachine.asp")):
         st = serve(n, PAGE)

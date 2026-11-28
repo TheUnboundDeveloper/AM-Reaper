@@ -1,8 +1,8 @@
 # Reaper — the owner's guide
 
-> **Doc status:** current as of **v3.8.5** · 2026-11-27 <!--@stamp-->
+> **Doc status:** current as of **v3.8.6** · 2026-11-28 <!--@stamp-->
 
-**Applies to:** Reaper firmware for the ASUS RT-BE96U (primary model) and the sibling RT-BE86U, RT-BE88U, GT-BE98, GT-BE98 Pro, GT-BE19000, ZenWiFi BQ16 and ZenWiFi BQ16 Pro, in two lines with the same Reaper version: `3006.102.10_Reaper_v<X>` (RT-BE96U, RT-BE86U, RT-BE88U, GT-BE98 Pro) and `3006.102.8_Reaper_v<X>` (GT-BE98, GT-BE19000, BQ16, BQ16 Pro; see 2.1). This guide describes the feature set as of the v3.8.5 <!--@treever--> source tree. The newest *published* release may be behind that; where a feature is newer than the image you are running, the page simply will not be there yet. See [`CHANGELOG.md`](CHANGELOG.md) for what each version added and [`BACKLOG.md`](BACKLOG.md) for what is still pending confirmation.
+**Applies to:** Reaper firmware for the ASUS RT-BE96U (primary model) and the sibling RT-BE86U, RT-BE88U, GT-BE98, GT-BE98 Pro, GT-BE19000, ZenWiFi BQ16 and ZenWiFi BQ16 Pro, in two lines with the same Reaper version: `3006.102.10_Reaper_v<X>` (RT-BE96U, RT-BE86U, RT-BE88U, GT-BE98 Pro) and `3006.102.8_Reaper_v<X>` (GT-BE98, GT-BE19000, BQ16, BQ16 Pro; see 2.1). This guide describes the feature set as of the v3.8.6 <!--@treever--> source tree. The newest *published* release may be behind that; where a feature is newer than the image you are running, the page simply will not be there yet. See [`CHANGELOG.md`](CHANGELOG.md) for what each version added and [`BACKLOG.md`](BACKLOG.md) for what is still pending confirmation.
 
 Reaper is based on **Asuswrt-Merlin by Eric "Merlin" Sauvageau**. Every line of Reaper is a patch on top of that work; the base firmware, most of its features, and most of what is good about the result are his. Reaper is an independent fork. Neither ASUS nor the Asuswrt-Merlin project has reviewed, approved or endorsed it, and neither should be contacted about it (see [Where to report issues](#214-where-to-report-issues)).
 
@@ -95,6 +95,7 @@ This guide is written for someone who will install and run the firmware: technic
      - 4.7.5 [Limits and gotchas](#475-limits-and-gotchas)
    - 4.8 [Devices](#48-devices)
      - 4.8.1 [Naming](#481-naming)
+     - 4.8.1a [Pictures and device types](#481a-pictures-and-device-types)
      - 4.8.2 [Pinning an address](#482-pinning-an-address)
      - 4.8.3 [The Network Ledger](#483-the-network-ledger)
      - 4.8.4 [What the connection column tells you](#484-what-the-connection-column-tells-you)
@@ -632,11 +633,15 @@ Do not enable remote (WAN) web administration or WAN SSH. The real-world attacks
 
 **Navigation**
 
-- The **left rail** is identical on every page. At the top is a live 24-hour router-time clock; above the "General" heading is the **Language** selector (all 25 languages; the active language is shown selected and English can always be chosen). Menu entries are the stock sections plus Reaper's own (Devices, Gatekeeper, Bastion, AI Advisor on the MCP build). Installed **addons** (amtm, Diversion, scMerlin and the like) are gathered into one dedicated **Addons** section at the end of the rail (v2.7.5) instead of being scattered through the stock menus. It behaves like every other menu entry: clicking it **opens the first installed addon page**, and the rest appear as tabs across the top. Until v3.1.2 it was the one rail item that did not navigate — it unfolded a sub-list instead, which read as the menu misbehaving. An add-on registers its page by inserting a line into the menu tree after the stock page it extends; since v3.2.8 the stock lines Reaper retired (the firewall, wireless, firmware, backup, Sysinfo, QoS, statistics and connections pages) are kept as hidden anchors, so an installer written for stock Merlin, Skynet among them, still lands its tab in the Addons section. An external "Help & Support" link opens in a new tab. At the foot of the rail a small **scythe mark** opens the About page; it stays at the bottom of the window while a long menu scrolls beneath it.
+- The **left rail** is identical on every page. At the top is a live 24-hour router-time clock; above the "General" heading is the **Language** selector (all 25 languages; the active language is shown selected and English can always be chosen). Menu entries are the stock sections plus Reaper's own (Devices, Gatekeeper, Bastion, AI Advisor on the MCP build). Installed **addons** (amtm, Diversion, scMerlin and the like) are gathered into one dedicated **Addons** section at the end of the rail (v2.7.5) instead of being scattered through the stock menus. It behaves like every other menu entry: clicking it **opens the first installed addon page**, and the rest appear as tabs across the top. Until v3.1.2 it was the one rail item that did not navigate — it unfolded a sub-list instead, which read as the menu misbehaving. An add-on registers its page by inserting a line into the menu tree after the stock page it extends; since v3.2.8 the stock lines Reaper retired (the firewall, wireless, firmware, backup, Sysinfo, QoS, statistics and connections pages) are kept as hidden anchors, so an installer written for stock Merlin, Skynet among them, still lands its tab in the Addons section. An add-on page opens in the content area like any other page, without the stock banner, menu or tab strip. An external "Help & Support" link opens in a new tab. At the foot of the rail a small **scythe mark** opens the About page; it stays at the bottom of the window while a long menu scrolls beneath it.
 - **Tabs** run across the top of pages that have them (QoS / QoS Diagnostics under Traffic Manager; Warden / Dreadwatch / Wallguard / Encrypted DNS under Bastion; USB Disks as the last tab of USB Application (v3.4.9); Long-Term Storage and Data Export under System Log; Diagnostics and Firmware under Administration; Policy Routing next to VPN Director under VPN).
 - **Unsaved changes.** A Reaper page that keeps your edits until Apply or Save says so: *Unsaved changes: N* and a **Discard** button (QoS, Policy Routing, WAN Ports, Wallguard and Dreadwatch as well since v3.6.3).
 - Every page lands scrolled to the top. The admin session logs itself out after the idle time set under Administration → System → *Auto Logout* (**30 minutes** at factory; 0 turns it off). Before v3.1.2 the dashboard used a fixed 15 minutes whatever that setting said.
 - **Overlays.** An apply, reboot or firmware flash puts up a full-screen veil that locks the header and rail; it shows an elapsed-time heartbeat so a stalled operation looks different from a working one, and on the firmware page a Close button appears on any terminal state. After a firmware flash the page polls for the router's return and sends you back to sign-in. A stock pop-up panel inside the frame (the AiMesh client card, for example) opens centred in the part of the page on screen, however far down it is scrolled (v3.6.5).
+- **Dialogs.** A dialog that fits on the screen sits in the middle of it and follows the scrollbar. A dialog taller
+  than the screen (a long form on a small or zoomed window) has no scrollbar of its own: it opens at the top of what
+  you were looking at and stays there, and the page scrollbar or the mouse wheel moves down it to the buttons. The
+  page grows while such a dialog is open if it has to, and goes back to its length when the dialog closes.
 - **Theme.** The Reaper look (matte black, crimson, jade and amber accents) is applied to stock pages by a web-server filter. It is always on: the switch that turned it off left Administration → Tweaks in v2.5.9, because Reaper's own pages, and the stock pages it replaces, depend on it. The AiMesh and Network pages are the exception: since v3.6.5 they link a Reaper stylesheet of their own with the same look, the router injects nothing into them, and their stock white / ROG / TUF themes are gone. The sign-in, set-password and logout screens show an animated model header that plays once.
 - **Tablets** are supported (the frame pans horizontally when a page is wider than the column). **Phones** get a first fit since v3.1.0: below 680 px the rail collapses into a sticky strip of icons under the header and the page takes the full width. Since v3.6.5 every Reaper page fits the screen at 402, 375 and 320 px: a settings row is one column and a data table scrolls sideways in its own box with its headers whole, and the header's ? / Reboot / Logout buttons are one group that fits beside the logo or wraps whole.
 
@@ -713,7 +718,7 @@ Finally there is one row that is always **Not applicable** on purpose, named *Ou
 3. From then on, check the card when the dashboard shows the amber bar or the posture row reads *Review*. For each listed item decide: your own change → tick it and **Accept**; a file that legitimately changes all the time → tick it and choose **Existence only**, **Ignore** or **Ignore folder** (each writes a watch rule); something you did not do → investigate before accepting (start with the file's contents and the system log around its date).
 4. Add watch rules for add-ons you run (below) so their normal churn stops showing up.
 
-**Security review (2026-10-19).** Off by default; the switch is on the Firewall page's Status tab. Once on, every self-monitor tick inventories `/jffs/scripts`, `/jffs/configs` and `/jffs/.ssh/authorized_keys` (content hashes and modes), the other files in `/jffs/.ssh` (size, date and mode — a private key is never hashed), `/jffs/addons` (name, size and date), every cron entry that is not one of Reaper's own (a Reaper job counts as its own only with the exact command the firmware installs for it, in each of its forms), and the settings that expose the router to the internet (NAT, port forwards, DMZ, UPnP, remote web access, SSH, Telnet, custom scripts, the WAN DNS servers, remote syslog, the firewall master switch, cloud sync; since v3.8.4 also the admin user name, Access restriction and its list, the router's web ports, SSH password logins, WAN ping replies, the second WAN's NAT, UPnP and DNS switches, FTP, Samba and its share mode, SNMP, the PPTP, IPsec, WireGuard and OpenVPN servers, the LAN and IPv6 DNS servers, DNS-over-TLS and its servers, DNS Director and its rules, static routes, DDNS, the DoS, network-service, URL and keyword filters, the firmware update check, the beta channel and the signature override, WPS and the Encrypted DNS block), together with Reaper's own protection switches (Warden and its feeds, country list and self-filter, Dreadwatch and its feeds, Gatekeeper and its default, Wallguard, the rules engine, policy routing, the Encrypted DNS server) — a protection turned off is listed like any other change. Since v3.8.4 the lists that let traffic through are watched as files too: Warden's Whitelist and custom feeds, and Dreadwatch's never-block names, its sources and the devices that skip it (`/jffs/rwarden`); a list that only blocks (Warden's Ban list) is not. When a firmware update widens what is watched, the newly watched settings — and, once, those list files — are adopted into your accepted baseline as they stand, with one log line naming them, rather than reported as changes; after that, an edited or a new list file is a change like any other. Nothing is reported until you press **Accept current state as baseline**; after that, anything added, changed or removed is listed on the card, announced once in the system log (`rwatch: security review: N change(s) …`) and shown as an amber bar on the dashboard until you accept the new state. It is advisory end to end: nothing is undone, no failure is declared and no incident dump is written, because the changes it sees are most often your own — a new script, a port forward, an add-on update. What it is for: persistence and exposure are how router malware survives a reboot, and a change you did not make is the signal. A baseline you accept is written to `/jffs/reaper/review/baseline`; the full backup carries it. The check waits for the 5-minute boot grace and skips a tick while a Firewall rules change is waiting for Keep. The report itself is not kept across a reboot, so after a boot the card says *no report yet* and the posture row shows **Baseline** in amber until the first check, which runs 5 minutes after boot (the grace) whatever the tick's alignment.
+**Security review (2026-10-19).** Off by default; the switch is on the Firewall page's Status tab. Once on, every self-monitor tick inventories `/jffs/scripts`, `/jffs/configs` and `/jffs/.ssh/authorized_keys` (content hashes and modes), the other files in `/jffs/.ssh` (size, date and mode — a private key is never hashed), `/jffs/addons` (name, size and date), every cron entry that is not one of Reaper's own (a Reaper job counts as its own only with the exact command the firmware installs for it, in each of its forms), and the settings that expose the router to the internet (NAT, port forwards, DMZ, UPnP, remote web access, SSH, Telnet, custom scripts, the WAN DNS servers, remote syslog, the firewall master switch, cloud sync; since v3.8.4 also the admin user name, Access restriction and its list, the router's web ports, SSH password logins, WAN ping replies, the second WAN's NAT, UPnP and DNS switches, FTP, Samba and its share mode, SNMP, the PPTP, IPsec, WireGuard and OpenVPN servers, the LAN and IPv6 DNS servers, DNS-over-TLS and its servers, DNS Director and its rules, static routes, DDNS, the DoS, network-service, URL and keyword filters, the firmware update check, the beta channel and the signature override, WPS, the Encrypted DNS block and the ASUS Router app switch), together with Reaper's own protection switches (Warden and its feeds, country list and self-filter, Dreadwatch and its feeds, Gatekeeper and its default, Wallguard, the rules engine, policy routing, the Encrypted DNS server) — a protection turned off is listed like any other change. Since v3.8.4 the lists that let traffic through are watched as files too: Warden's Whitelist and custom feeds, and Dreadwatch's never-block names, its sources and the devices that skip it (`/jffs/rwarden`); a list that only blocks (Warden's Ban list) is not. When a firmware update widens what is watched, the newly watched settings — and, once, those list files — are adopted into your accepted baseline as they stand, with one log line naming them, rather than reported as changes; after that, an edited or a new list file is a change like any other. Nothing is reported until you press **Accept current state as baseline**; after that, anything added, changed or removed is listed on the card, announced once in the system log (`rwatch: security review: N change(s) …`) and shown as an amber bar on the dashboard until you accept the new state. It is advisory end to end: nothing is undone, no failure is declared and no incident dump is written, because the changes it sees are most often your own — a new script, a port forward, an add-on update. What it is for: persistence and exposure are how router malware survives a reboot, and a change you did not make is the signal. A baseline you accept is written to `/jffs/reaper/review/baseline`; the full backup carries it. The check waits for the 5-minute boot grace and skips a tick while a Firewall rules change is waiting for Keep. The report itself is not kept across a reboot, so after a boot the card says *no report yet* and the posture row shows **Baseline** in amber until the first check, which runs 5 minutes after boot (the grace) whatever the tick's alignment.
 
 **Watch rules (v3.4.8; a list since v3.5.0).** `/jffs` has expected churn — an add-on rewriting its stats file every hour — so the card keeps **Watch rules**, shown as a list under the report: each rule is a mode and a pattern. The **Add** form under the list takes a mode and a pattern; a new rule goes first, and the first matching rule wins. Each row has **Delete**; **Delete selected** and **Delete all rules** act on several at once, and **Edit as text** shows the raw rules, one per line, for pasting or bulk edits. With no rules, every item is watched in full. `hash` reports any change of content, `meta` a change of size, date or mode, `exist` only a file appearing or disappearing, `ignore` stops watching. A pattern is a full path with `*` and `?` wildcards (`/jffs/addons/diversion/*`), `cron:` and a cron-line pattern, or `nvram:` and a setting name. The first matching rule wins, and anything no rule matches keeps its default: `hash` for `/jffs/scripts`, `/jffs/configs` and `authorized_keys`, `meta` for the rest of `/jffs/.ssh` and for `/jffs/addons`. A private SSH key is never hashed, whatever a rule says. At most 100 rules; quotes, backslashes and backticks are refused. The rules live in `/jffs/reaper/review/rules`, so they survive firmware updates, and they travel with the settings export. They are part of the seal (below): edit them on this card. A rules file edited over SSH, or replaced by importing a settings file with different rules, shows the red row until you accept the current state again. An ignored path disappears from the report without being reported as removed. When a rule changes how an item is watched, its row turns grey with the status *rule changed*: that is not a change to the file, it is not counted as unreviewed, and **Accept** records the new mode.
 
@@ -2393,6 +2398,25 @@ There is one master name store behind that, deliberately, because there used not
 - Changing a label changes only what is **shown**. Enforcement (Gatekeeper, Wallguard profiles, firewall rules) keys
   on the MAC or address, never on a label, so renaming a device never changes what applies to it.
 
+#### 4.8.1a Pictures and device types
+
+Each device in the list has an icon in front of its name: the picture you set for it, else the icon of its device
+type, else a generic one. Click the icon to open the device's **Device picture** dialog:
+
+- **Upload a picture** takes a PNG, JPEG or WebP file. The page shrinks it to 64 x 64 pixels before it is sent; the
+  router checks it again (type, size, the file's first bytes) and keeps it in `/jffs/usericon`, the same place and
+  format the stock pages used, so a picture set on an older firmware shows without a step. SVG and other formats are
+  refused. Up to 256 pictures are kept, and a picture is refused when the router storage is nearly full.
+- **Remove the picture** goes back to the device type icon.
+- **Device type** picks the icon from the stock set (the same groups as the stock picker). **Automatic** uses the type
+  the router detects. The choice is stored with the device's Name record; clearing the Name keeps the type.
+  The dialog uses the width of the window: up to nine types to a row on a wide screen, fewer on a narrow one, and the
+  short groups share a row. All types are in view at once; there is no list to scroll inside the dialog.
+
+The same icon shows on the dashboard's client list and on the AiMesh page's client lists; on the AiMesh page a click
+on it opens this dialog for that device on the Devices page. Pictures are part of the full backup (`.rbk` carries
+`/jffs`).
+
 #### 4.8.2 Pinning an address
 
 **Pin IP** opens a pool-aware dialog. It recommends an address **outside** the DHCP pool, which keeps the pool free for new arrivals; the device moves to it at its next lease renewal rather than immediately. You can also keep the address it currently has, inside the pool.
@@ -2441,6 +2465,8 @@ Filter chips: All, Online, Offline, Unnamed, Reserved, Randomized, Blocked. Sear
 - **A phone using a private (randomized) address reappears as a new device** each time it rotates, until you turn that feature off for your network on the phone. This is the single most common source of unexpected new entries here and in Gatekeeper.
 - The reservation store is limited by NVRAM size; the ledger warns before you reach it.
 - The router's own address can still appear as a row rather than being folded into a router bucket the way the Traffic Analyzer does it. Known, deferred, harmless.
+- The stock bulk icon backup / restore addresses (`backup_all_usericon.cgi`, `upload_all_usericon.cgi`,
+  `get_usericon_md5.cgi`) and the old apply-form picture field are closed; the full backup carries the pictures.
 
 ### 4.9 Connections
 
@@ -3593,7 +3619,7 @@ changes share one restart (4.21.12); and **Delete selected** removes several net
 
 #### 4.21.1 The page and the network types
 
-The page shows one card per network: its name, its connection types (wired, Wi-Fi, Wi-Fi 7), tags (**VPN Client**,
+The page shows one card per network: its name, its connection types (Wired, Wi-Fi 7), tags (**VPN Client**,
 **VPN Server**, **Free WiFi**, **Message Board**, a countdown for one-time access) and an on/off switch. Clicking a
 card opens its editor beside the list; **Add a Network** opens the type list, each type with its description.
 The model sets the maximum number of networks; when it is reached the page says *Your rules have reached the
@@ -3613,9 +3639,10 @@ points to **Set up this router** (2.3); the main network is created at the first
 | **Guest Portal** | Walk-in guests | Own subnet; **AP Isolation** on (Wi-Fi only); a sign-in page (4.21.7). Not on BQ16 / BQ16 Pro |
 | **Employee**, **Scheduled Network** | Offices | Only on ASUS business models |
 
-The type only chooses the starting values. After creation every network has the same editor; the type is shown
-as the card's title and decides which extra tabs appear (Portal for Guest Portal and, with a Message Board, Kid's
-Network).
+The type only chooses the starting values. After creation every network has the same editor; the type decides
+which extra tabs appear (Portal for Guest Portal and, with a Message Board, Kid's Network). Each card shows the
+type's name and symbol under the network name, a **Secured** (lock) or **Open** mark for a Wi-Fi network, its bands,
+and Wired / Offline when that applies.
 
 **How to use it: add a network.**
 
@@ -3643,15 +3670,15 @@ three sections: **General**, **Advanced Settings** and **AiMesh**.
 | **Security** | Guest and Guest Portal: **Open** or **Password**. Main network: Open, Password or **RADIUS Setting** (Enterprise) | Password (Guest Portal: Open) |
 | **Authentication Method** | WPA2-Personal, WPA/WPA2-Personal, WPA2/WPA3-Personal, WPA3-Personal. 6 GHz: WPA3-Personal only. MLO: WPA2/WPA3 or WPA3. RADIUS: WPA2-, WPA/WPA2-, WPA2/WPA3-, WPA3-Enterprise and WPA3-Enterprise 192-bit | WPA2-Personal; 6 GHz WPA3-Personal |
 | **WPA Encryption** | AES, TKIP, TKIP+AES, AES+GCMP256, Suite B (as the method allows) | AES |
-| **Network Password** | 8 to 63 characters, or 64 hex digits; no spaces | - |
-| **Server IP Address / Server Port / Connection Secret** | The RADIUS server, with Enterprise security | - |
-| **WiFi Share** (button at the top of the editor) | The code a phone scans to join, with the network name and key, and a Free WiFi passcode if one is set. **Print the WiFi quick connect sheet** prints it; **QR Code (PNG)** saves the code. Not offered for an Enterprise or wired-only network, or while the schedule holds the SSID off | - |
+| **Network Password** | 8 to 63 characters, or 64 hex digits; no spaces. The key is masked; **Show** reveals it (the browser is not asked to store it) | - |
+| **Server IP Address / Server Port / Connection Secret** | The RADIUS server, with Enterprise security. The secret is masked; **Show** reveals it | - |
+| **WiFi Share** (button at the top of the editor) | The code a phone scans to join, with the network name, the key and a Free WiFi passcode if one is set; the key and the passcode stay masked on screen until **Show** and are always on the printed sheet. **Print the WiFi quick connect sheet** prints it; **QR Code (PNG)** saves the code. Not offered for an Enterprise or wired-only network, or while the schedule holds the SSID off | - |
 | **Bandwidth Limiter** | Download and upload caps in Mb/s for the whole network. Turning it on **turns hardware acceleration off** (the page asks first). Not offered on IoT, Default IoT, main or portal networks | Off |
 | **Access Intranet** | Which other networks this one may reach: **Main Network** and each network that has its own subnet (`SSID (VLAN n)`). See 4.21.3 | Unticked, except VPN Network (Main Network ticked) |
 | **Reach these main-network devices** | Router mode; a network with its own subnet that is not a Guest Portal and does not have Main Network ticked in Access Intranet. Lists the main-network devices with a reserved address (LAN > DHCP Server, Manual Assignment on) by Name, else Hostname, with their address. AiMesh nodes and the router are never listed. Guests may open connections to the ticked devices only; those devices cannot open connections to the guests. At most 16. A ticked device whose reservation was removed shows *no reserved address* and is skipped until unticked. See 4.21.3 | None |
 | **Device discovery with the main network** | Same conditions. On: pick **Printing**, **AirPlay**, **Google Cast**, **HomeKit / Matter**, **Spotify / Sonos** and/or **Other service types** (`_name._tcp` / `_name._udp`, separated by commas; at most 16 service types in all). Switching on starts with Printing, AirPlay and Google Cast. Devices of those kinds show up between this network and the main network in both directions; never between two guest networks; the router's own names are not announced here. Not available while **AP Isolation** is on. Discovery only shows devices: to use one, tick it in the list above. See 4.21.8 | Off |
 | **WiFi Scheduling** | When the SSID is on. **Scheduled**: weekly time slots. **One Time Access** (Guest Network): the SSID runs for a set time (2 hours preselected, quick choices or Custom) and the card counts down | Guest and Kid's: on; others off |
-| **Enable MAC Filter** | **Disable**, **Accept** (only listed devices may join) or **Reject** (listed devices may not), with a MAC list | Disable |
+| **Enable MAC Filter** | **Disable**, **Accept** (only listed devices may join) or **Reject** (listed devices may not), with a MAC list. The list shows each device as *Name (MAC)* - the Name from the Devices page, else its Hostname - and offers the wireless devices online now to pick from; only the addresses are stored. A long MAC filter list scrolls inside the dialog (about ten rows show at a time); every other Network dialog shows whole | Disable |
 
 The setup wizards do not offer **Reach these main-network devices** or **Device discovery**; set them after the network is created. A save that changes only these two applies them without restarting Wi-Fi.
 
@@ -3689,7 +3716,8 @@ opens the VPN client or VPN server page. On the 102.8 firmware line (GT-BE98, GT
 that line's stock page: there is no Kill Switch control, and the tab is also shown for a network on the main subnet.
 See 4.21.4.
 
-**Clients tab**: the devices online on this network, each marked wired or wireless, with its MAC and IP address.
+**Clients tab**: the devices online on this network, each by its Name (Devices page), else its Hostname, else its MAC,
+marked wired or wireless, with its MAC and IP address.
 
 **Portal tab**: 4.21.7.
 
@@ -3870,18 +3898,21 @@ WISP) mode and only when the model reports portal support (`captivePortal` and `
 |---|---|---|
 | **Portal Type** | **None** (no portal) or **Free WiFi**. Each portal type serves one network; a type in use is marked *(Used)*, and only one type can be active at a time | Free WiFi (Guest Portal) |
 | **Brand Name** | The title on the sign-in page, up to 40 characters | - |
-| Background image | **Modify** opens the picture list: one of the bundled pictures, or your own JPG, PNG or SVG, up to 10 MB (2 MB after it is scaled) | Stock image |
+| **Preview** | A phone-sized preview of the sign-in page as guests see it - background, brand name, terms box and tick, passcode box, Continue - redrawn as you type. Click it, or **Modify**, for the picture list: one of the bundled pictures, or your own JPG, PNG or SVG, up to 10 MB (2 MB after it is scaled). The wizard shows the same preview | Stock image |
 | **Connection Timeout** (minutes) | The guest's session time; when it expires, the connection is cut and the guest signs in again | 60 |
 | **Landing Page (Redirect to your website)** | Where the guest is sent after signing in, up to 256 characters. Empty: the success page | Empty |
-| **Add your own Passcode** / **Passcode** | Guests must enter this code. Up to **15** characters, printable ASCII, no spaces, no `<` or `>` | Off |
+| **Add your own Passcode** / **Passcode** | Guests must enter this code. Up to **15** characters, printable ASCII, no spaces, no `<` or `>`. Masked; **Show** reveals it | Off |
 | **Add your own Terms of Service** / **Terms of Service** | A tick box the guest must accept, with your text (up to 5120 characters; a template is filled in) | On |
 
 **Message Board** (Kid's Network, where offered): **Description** (up to 80 characters) and a background image,
-shown on a page before the device gets the internet. A network with a Message Board is treated as a portal by guest
-isolation.
+shown on a page before the device gets the internet, with the same preview. A network with a Message Board is
+treated as a portal by guest isolation.
 
 **What Reaper adds and changes**
 
+- **The look you saved is kept.** The editor reads the stored sign-in page (brand name, background, terms), and a
+  save that does not change them sends them back unchanged. If the router's copy cannot be read, the Portal tab says
+  so, and a save leaves the stored look alone unless you change the brand name, background or terms.
 - The passcode can be set **in the wizard**, not only on the Portal tab afterwards (v3.7.6), and a passcode longer
   than 15 characters is refused at Apply (longer ones never signed in).
 - **The passcode is matched by the portal network's subnet (v3.8.0)**, so a correct passcode and the terms page are
@@ -4016,8 +4047,8 @@ on LAN > VLAN in Access mode (4.22.4). The IPv6 switch stays available on a wire
 
 #### 4.21.12 Several changes, one Wi-Fi restart
 
-**Hold Wi-Fi restarts until Apply.** A switch at the top of the Network page (and of the MLO page), off at factory
-(`reaper_sdn_defer` `0`; kept in the settings backup). On:
+**Hold Wi-Fi restarts until Apply.** A switch at the top of the Network page (one line with a short hint; **?** opens
+the full explanation) and of the MLO page, off at factory (`reaper_sdn_defer` `0`; kept in the settings backup). On:
 
 - A network you **create**, **edit** or **switch on** is saved at once, but the Wi-Fi restart waits. The card shows
   **Waiting**, and a bar at the top lists the waiting networks (*new*, *edited*, *switched on*) with **Apply now**.
@@ -5156,7 +5187,7 @@ phone's private (random) address does not change this.
    Network*, *Guest Portal*, *Multi-Link Operation (MLO)* and the other Network-page profiles); the radio's own
    *Primary BSS (mesh backhaul)* carries AiMesh nodes, marked *AiMesh Node*.
 3. Each client row: **Name** (the device label, 4.8.1), **IP address**, **MAC address**, **RSSI** (signal in dBm), **Rx / Tx
-   Mbps**, **Connected** (how long), **Link** (spatial streams, PHY and channel width) and **Flags**. The list opens
+   Mbps**, **Rx / Tx retries**, **Connected** (how long), **Link** (spatial streams, PHY and channel width) and **Flags**. The list opens
    sorted by signal, strongest first; click a column heading to sort another way (kept in your browser).
 4. **Refresh every** *Off* / 3 s / 5 s / 10 s (10 s until you pick one; your pick is kept in your browser). **Refresh**
    reads once now. Reading stops while the browser tab is hidden.
@@ -5166,6 +5197,11 @@ phone's private (random) address does not change this.
 **Flags**: P power save, S short guard interval, T STBC, M MU-MIMO, A associated, U authorised. A client that is
 associated but not authorised (no U) has not finished the key exchange: a wrong Wi-Fi password, or a device stuck
 mid-join.
+
+**Rx / Tx retries**: of the frames the router received from the device (Rx) and sent to it (Tx) since it joined, the
+share that needed a retransmission. Tx counts every transmission, first tries and retries, so it stays between 0 and
+100 %. A few percent is normal; a high or rising share means a weak or crowded link: move the device or the router
+closer, or pick a less busy channel. A dash means the driver gave no counters for that device.
 
 **When to use it.** To see which band and network a device is on, whether it has a usable link rate, and whether a
 device that cannot get online is associated at all. For the history of a device's signal, use Wireless Quality
@@ -5378,6 +5414,7 @@ current password is refused; repeated failures sign you out as the login page do
 | Reachable at | The address the interface answers at from the internet: the DDNS host name when DDNS is on, else the WAN address. Read only. | - |
 | Enable Access Restrictions | Only the listed addresses may open the web interface or SSH (`enable_acc_restriction`, `restrict_rulelist`; the legacy `http_client` and `http_clientlist` are kept in step). The list takes IPv4 addresses, and **IPv6 access to the web interface and SSH is blocked while this is on** (otherwise any device could go around the list over IPv6); the page says so, and asks first when you are connected over IPv6 yourself. Router mode only. | Off |
 | Address list | Up to 4 entries: an IPv4 address or subnet (`192.168.50.10`, `192.168.50.0/24`), each with **Enabled**, **Web interface** and **SSH** ticks. | Empty |
+| Allow the app (home network only) | Lets the ASUS Router phone app past the cross-site checks, from the main network only (`reaper_app_allow`). | Off |
 
 The certificate buttons shown depend on the certificate type chosen on **WAN > DDNS** (4.23): with a Let's Encrypt
 certificate only the server certificate can be exported, and with an imported certificate the root certificate cannot
@@ -5413,13 +5450,28 @@ be renewed here. With the protocol at HTTP only, the renew buttons are hidden. T
 - **A sign-in must finish within 15 seconds (v3.7.6)**, so a slow or stalled client cannot hold the interface for
   everybody. Every save from a page carries a per-boot page token; a save without it is refused and logged as
   `apply without the page token refused` (v3.7.0). Scripts that post settings are not affected.
-- **The ASUS Router phone app is not supported (v3.8.4).** Manage the router from a browser. The app's ASUS
-  account and remote connection went with the phone-home code (1.2), and from v3.8.4 the request addresses only
-  the app used - family groups, per-device internet blocking, the remote-control switch, the notification centre,
-  its own way of creating guest and IoT networks, the speed test between AiMesh nodes - are gone. Whatever the app
-  still shows or changes on the LAN is not tested and can stop working in any release. A request that names the app
-  in its User-Agent gets the same checks as a browser - the cross-site and Referer checks, the page token on a
-  save, saves by POST only - because any client can claim that name.
+- **The ASUS Router phone app is not supported (v3.8.4); an opt-in lets it through on the home network.**
+  Manage the router from a browser. The app's ASUS account and remote connection went with the phone-home code
+  (1.2), and from v3.8.4 the request addresses only the app used - family groups, per-device internet blocking, the
+  remote-control switch, the notification centre, its own way of creating guest and IoT networks, the speed test
+  between AiMesh nodes - are gone. Whatever the app still shows or changes on the LAN is not tested and can stop
+  working in any release. A request that names the app in its User-Agent gets the same checks as a browser - the
+  cross-site and Referer checks, the page token on a save, saves by POST only - because any client can claim that
+  name; the app sends no Referer and no page token, so by default it cannot sign in or save.
+  **ASUS Router app > Allow the app (home network only)** (`reaper_app_allow`, off at factory) is the choice for
+  those who depend on the app. With it on, a request skips those checks when all of this holds: its User-Agent is
+  the app's own; it reached the router's LAN-side web interface, not the one opened by Web access from WAN; and its
+  sender is on the main network (IPv4 inside the LAN subnet, IPv6 arriving on the LAN bridge). It never applies to a
+  request from the internet, from a guest or other network with its own subnet, or from a VPN client, and signing
+  in is still required. **The trade-off:** any device or program on the main network can claim to be the app, so
+  for such a request the router no longer has the second line of defence that stops another site from driving a
+  signed-in admin's session. Current browsers do not let a web page set that name on a cross-site request, which is
+  why the risk is small - but it is no longer the router that guarantees it. A network that shares the main subnet
+  counts as the main network. Turning the switch on asks for confirmation; the System Log records the first use
+  after each boot (`the ASUS Router app exemption is in use`) and, at most once per 10 seconds, a request that names
+  the app from anywhere else (`names the ASUS Router app from outside the home network`). The Security Review
+  (4.1.1b) watches the switch. Reaper does not test the app: the switch removes what refused its requests, it does
+  not bring back the removed functions above, and which parts of the app work is not known.
 
 #### 4.27.3 System > SSH
 
@@ -6087,9 +6139,13 @@ connection quality in words (the coloured bar repeats it), and its count of conn
 finds nodes in range and pairs one; **Optimization** asks the wireless nodes to look for a better uplink. Selecting
 a member shows its location (28 presets or a custom text), connection quality and signal, and firmware version, and
 three views. **Clients** lists the devices connected through it; a wireless device can be reconnected, bound to a
-node or unbound, and a click on a connected device opens **Devices** (4.8). **Network** shows the WAN status (the
+node or unbound, and a click on a connected device opens **Devices** (4.8); each device shows its picture or device type icon, and a click on the icon opens that device's **Device picture** dialog on the Devices page (4.8.1a). **Network** shows the WAN status (the
 router) or the uplink (a node), the port states, the backhaul link and one card per radio, with traffic figures when
-the connection diagnostics are on. **Management**, for a node, holds the settings the node reports it supports: LED,
+the connection diagnostics are on. Each figure is on its own line under Transmit Rate and Receive Rate: **Current**,
+**Average** and, on a node's backhaul card, **Maximum** - the rate the link has negotiated: the Ethernet port speed
+for a cabled node (for example 2.5 Gbps), or the Wi-Fi link rate in each direction for a wireless one. The Maximum
+line is left out when the rate is not known (a node that is offline, a powerline or MoCA uplink, a parent that
+reports no rate). The cards a member serves (fronthaul) show Current and Average only. **Management**, for a node, holds the settings the node reports it supports: LED,
 backhaul connection priority, preferred Wi-Fi uplink AP, link aggregation, the radios, reconnect, reboot and remove.
 The **System Settings** tab holds Ethernet-only backhaul, the system LED switch with its schedule (the stock
 scheduler), the roaming block list (4.25), and system reset and reboot. The menu shows on a router that can be an
@@ -6340,7 +6396,7 @@ Earlier editions of this guide also listed `psc6g` (6 GHz preferred scanning cha
 `0` to `1`. On every model in the fleet the stock factory value was already `1`; the stock table's
 second, conflicting entry applies only to two unrelated ASUS models.
 
-Reaper also **adds 134** entries of its own (8.2) and **removes 18** that belong to features it strips
+Reaper also **adds 135** entries of its own (8.2) and **removes 18** that belong to features it strips
 out: AiCloud and WebDAV (`enable_webdav`, `st_webdav_mode`, `webdav_proxy`, `webdav_aidisk`,
 `webdav_http_port`, `webdav_https_port`, `acc_webdavproxy`, `enable_webdav_captcha`,
 `enable_webdav_lock`, `webdav_acc_lock`, `webdav_lock_interval`, `webdav_lock_times`,
@@ -6446,6 +6502,10 @@ for **Apply now** (or for the next change that runs at once); kept in the settin
 
 **Colour-blind mode** (Administration › System, tab Accessibility, 4.27.7) — `reaper_cbmode` `0`: the standard
 colours. `1`: every page, the sign-in page included, uses the colour-blind palette; kept in the settings backup.
+
+**ASUS Router app** (Administration › System, tab Login and access, 4.27.2) — `reaper_app_allow` `0`: a request
+that names the app is checked like a browser's. `1`: such a request from the main network skips the cross-site
+checks (still signs in). In the full backup only: a settings file never switches it on.
 
 **Guest Portal secret** — the portal's sign-in secret is a random one the router makes for itself the first time a
 portal starts and keeps (the stock value was the same on every router). The secret is never shown. The Tweaks control
@@ -6734,6 +6794,19 @@ in the menu, carry no Reaper styling, and Reaper's Network (4.21) and Internet S
 A few small stock scripts that third-party Merlin add-on pages may load (`detect.js`, `base64.js`, `ajax.js`, the
 chart scripts and the like) stay, and so does the stock menu file `require/modules/menuTree.js`, which add-on
 installers edit to add their tab (Reaper reads the add-on entries from it).
+
+Add-on pages are built on the stock page template, whose scripts draw the stock banner (with Logout and Reboot), the
+stock menu and a tab strip into the page. The router hides those parts and gives the page the Reaper colours, so an
+add-on page shows inside the Reaper window at full width, under the Reaper menu and tabs. This applies to the add-on
+page slots (`user1.asp`, `user2.asp` and so on) and to an add-on that replaces a stock page Reaper no longer ships
+with its own copy (YazDHCP's DHCP page, for example). A page opened by its own address opens inside the Reaper
+window. The add-on's own charts and status colours are left as the add-on draws them.
+
+A few page hooks that the removed stock pages used as values (for example `apps_info`, `cpu_core_num`,
+`usb_is_exist`, `get_label_mac` and the traffic and DNS statistics hooks) are no longer built. An add-on page that
+still uses one gets an empty value of the same kind (an empty list, `0` or an empty text) instead of a broken script,
+and the System Log names the page and the hook once (`reaper: page user3.asp uses removed hook apps_info ...`), so
+the add-on's author can be told.
 
 ### 9.7 Why these were kept
 

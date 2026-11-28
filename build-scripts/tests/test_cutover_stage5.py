@@ -43,6 +43,10 @@ for f in ("index.asp", "AiMesh.asp", "SDN.asp", "AdaptiveQoS_InternetSpeed.asp",
           "aimesh/aimesh_topology.html", "device-map/amesh.asp", "Nologin.asp", "offline.htm", "gotoHomePage.htm",
           "reaper/reaper_content.css", "reaper/reaper_content_aimesh.css", "reaper/reaper_content_network.css"):
     check("removed at install: %s" % f, rm(f) in blk)
+# REAPER-ADDON-SKIN (owner 2026-11-27): the add-on page sheet ships (third-party pages installed at run time load it)
+check("REAPER-ADDON-SKIN: reaper/reaper_addon.css is in the source and nothing removes it at install",
+      os.path.isfile(os.path.join(www, "reaper", "reaper_addon.css")) and "reaper_addon.css" not in mk.replace(
+          "# REAPER-ADDON-SKIN (2026-11-27): reaper/reaper_addon.css", "") and "REAPER-ADDON-SKIN" in blk)
 gate = {"get_release_note_revertfw.asp": "ifneq ($(RTCONFIG_REVERTFW),y)\n\trm -f $(INSTALLDIR)/www/get_release_note_revertfw.asp\n",
         "release_note_amas.asp": "ifneq ($(RTCONFIG_ROLLBACKFW),y)\n\trm -f $(INSTALLDIR)/www/release_note_amas.asp\nendif\nendif\n",
         "get_release_note_amas.asp": "ifneq ($(RTCONFIG_ROLLBACKFW),y)\n\trm -f $(INSTALLDIR)/www/get_release_note_amas.asp\n\trm -f $(INSTALLDIR)/www/ajax_onboarding.asp\nendif\n"}
@@ -83,6 +87,11 @@ check("the apply-token gate exempts AiMesh nodes only", 'if (nvram_match("re_mod
 shell = rd(www, "reaper_shell.asp")
 check("shell: a malformed page name falls back to the dashboard; no run-time copy of the stock skin",
       "var DEFAULT_PAGE = 'Main_ReaperDash.asp';" in shell and "reaper_content.css'" not in shell and "link[href*=\"reaper_content\"]" not in shell)
+# REAPER-ADDON-SKIN: the frame-load backstop adds the add-on sheet to a framed add-on page that lacks it (never to a Reaper page)
+check("shell: a framed add-on page without reaper_addon.css gets it at load, veiled until it lands; Reaper pages never",
+      "l.href='/reaper/reaper_addon.css';" in shell and "l.onload=unveil; l.onerror=unveil;" in shell
+      and "!d.querySelector('meta[name=\"reaper-native\"]') && !d.querySelector('link[href*=\"reaper_addon.css\"]')" in shell
+      and "/(^|\\/)user\\d+\\.asp$/i.test(p) || d.getElementById('TopBanner') || d.getElementById('mainMenu') || d.getElementById('tabMenu')" in shell)
 wfs = rd(www, "Reaper_WiFiSetup.asp")
 check("the first-boot Wi-Fi box carries its own copy of the skin rules it used",
       "REAPER-CUT8" in wfs and ".button{background:linear-gradient(180deg,#1a1a1f,#101014)!important" in wfs

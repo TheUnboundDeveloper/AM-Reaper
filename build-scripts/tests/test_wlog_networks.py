@@ -92,11 +92,11 @@ check("httpd: reaper_node_of_sta() walks the node table (station MACs -> the nod
       "int reaper_node_of_sta(const char *mac, char *out, size_t n)\n{" in WC and "memcmp(tbl->sta6g[i], mb, 6) == 0) {" in WC
       and "int reaper_node_of_sta(const char *mac, char *out, size_t n) { (void)mac; if (n) out[0] = '\\0'; return 0; }" in WC)
 check("page (owner, 2026-11-07): a node row keeps its node; its empty IP cell says 'AiMesh Node' (the stock token, every pack), a device's address is shown as before",
-      "node: r[14] || ''}" in W and "(r.ip ? hx(r.ip) : r.node ? '<span class=\"tag\">' + hx(`<#AiMesh_Node#>`) + '</span>' : '-')" in W
+      "node: r[14] || ''," in W and "(r.ip ? hx(r.ip) : r.node ? '<span class=\"tag\">' + hx(`<#AiMesh_Node#>`) + '</span>' : '-')" in W
       and "hx(r.ip || '-')" not in W)
 check("httpd: every client row ends with the node field (the four closers), from the station MAC as associated",
-      WB.count('\\"%s\\"],", nodemac);') == 3 and '"\\"%d\\",\\"%s\\"],", guestvlan, nodemac);' in WB
-      and '"\\"\\",\\"%s\\"],", nodemac);' in WB and "strlcpy(rawea, ea, sizeof(rawea));" in WB
+      WB.count('\\"%s\\",%s],", nodemac, rtx);') == 3 and '"\\"%d\\",\\"%s\\",%s],", guestvlan, nodemac, rtx);' in WB
+      and '"\\"\\",\\"%s\\",%s],", nodemac, rtx);' in WB and "strlcpy(rawea, ea, sizeof(rawea));" in WB
       and "if (!reaper_node_of_sta(rawea, nodemac, sizeof(nodemac)) && strcmp(rawea, ea))" in WB
       and '"\\"\\",\\"\\"],"' not in WB and '"\\"Main BSS\\",\\"\\"],"' not in WB)
 if nm and shutil.which("node"):
@@ -216,6 +216,34 @@ console.log(JSON.stringify([nameOf('00:00:5E:00:53:01', '192.168.50.8', 'esp-1a2
               got == ["Kitchen speaker", "Office PC", "android-77", "", ""], got or r.stderr[-200:])
 elif not node:
     print("note: node not found - nets() run skipped")
+# 2026-11-27 (owner, REAPER-WLRETRY): the retry column. httpd adds four driver counters after the node field (frames
+# sent, their retransmissions, unicast frames received, those with the retry bit; empty without SCB stats) and the
+# page shows Rx / Tx retries as a share of the frames. Tx is of every transmission (first tries + retries) because
+# the driver counts each retransmission - retries alone can pass the frames sent.
+check("httpd: the four retry counters follow the node field; four empty fields without SCB stats",
+      'sta->tx_pkts_total, sta->tx_pkts_retries, sta->rx_ucast_pkts, sta->rx_pkts_retried);' in WB
+      and '"\\"%u\\",\\"%u\\",\\"%u\\",\\"%u\\""' in WB and 'strlcpy(rtx, "\\"\\",\\"\\",\\"\\",\\"\\"", sizeof(rtx));' in WB
+      and '#if (WL_STA_VER >= 4)' in WB)
+check("page: Rx / Tx retries column (sorts by the Tx share, worst first) and its legend line, keys in every pack",
+      "{k: 'retry', h: `<#RLOG_108#>`, t: 'num'}" in W and "rtx: txPct(r[15], r[16]), rrx: rxPct(r[17], r[18])" in W
+      and "hx(pctTxt(r.rrx) + ' / ' + pctTxt(r.rtx))" in W and "`<#RLOG_109#>`" in W
+      and "k === 'retry' ? -1 : 1" in W
+      and all(re.search(r"^RLOG_108=.+$", open(os.path.join(www, p), encoding="utf-8").read(), re.M)
+              and re.search(r"^RLOG_109=.+$", open(os.path.join(www, p), encoding="utf-8").read(), re.M)
+              for p in os.listdir(www) if p.endswith(".dict") and p != "temp.dict"))
+fx = [m.group(0) for m in re.finditer(r"^function (txPct|rxPct|pctTxt)\(.*$", W, re.M)]
+check("retry helpers found", len(fx) == 3, len(fx))
+if node and len(fx) == 3:
+    fd, jp = tempfile.mkstemp(suffix=".js"); os.close(fd)
+    open(jp, "w", encoding="utf-8").write("\n".join(fx) + r"""
+var c = [['1475','1525','1036','213'], ['13126','1583','13673','306'], ['', '', '', ''], ['0','0','0','0'], ['10','0','5','9']];
+console.log(JSON.stringify(c.map(function(x){ return pctTxt(rxPct(x[2], x[3])) + ' / ' + pctTxt(txPct(x[0], x[1])); })));
+""")
+    r = subprocess.run([node, jp], capture_output=True, text=True); os.unlink(jp)
+    try: got = json.loads(r.stdout)
+    except ValueError: got = None
+    check("retry shares: lab rows 21% / 51% and 2.2% / 11%; no counters or no frames = '-'; Rx capped at 100%",
+          got == ["21% / 51%", "2.2% / 11%", "- / -", "- / -", "100% / 0.0%"], got or r.stderr[-200:])
 print("%d failure(s)" % len(fails))
 for f in fails: print("  " + f)
 sys.exit(1 if fails else 0)

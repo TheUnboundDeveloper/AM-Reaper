@@ -291,8 +291,10 @@ check("B-1: the injector carries the token hook for start_apply*.htm, apply.cgi 
 check("B-1: the hook is written only into authenticated responses, with a plain alphanumeric token",
       "if (reaper_req_authed && tn > 0 && tn <= 64 &&" in inj and 'strspn(tk, "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789") == tn' in inj)
 check("B-1: skip-listed and QIS_* pages get the hook alone (mode 6), no theme",
-      # REAPER-CUT8 (stage 5): token-only is also the default for an unlisted page (it replaced the stock skin, mode 1)
-      inj.count("return 6;") == 3 and "default:\t/* 6: token hook only (B-1) */\n\t\t\tbreak;" in inj and "RP_CSS_LINK" not in inj)
+      # REAPER-CUT8 (stage 5): token-only is also the default for an unlisted page (it replaced the stock skin, mode 1);
+      # REAPER-ADDON-SKIN (2026-11-27): add-on pages alone (user<N>.asp, an add-on over a stock address) take mode 7
+      inj.count("return 6;") == 3 and "default:\t/* 6: token hook only (B-1) */\n\t\t\tbreak;" in inj and "RP_CSS_LINK" not in inj
+      and inj.count("return 7;") == 1 and inj.count("mode = 7;") == 1)
 check("B-1: httpd marks a request authenticated only after auth_check() passed, and clears it per request",
       "int reaper_req_authed = 0;" in hc and "\treaper_req_authed = 0;\n\treaper_req_post" in hc
       # review 2026-11-11 (B-3): the connection deadline is switched off on the next line, still inside the #ifndef

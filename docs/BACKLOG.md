@@ -1,6 +1,6 @@
 # RT-BE Series "Reaper" — Backlog
 
-> **Doc status:** current as of **v3.8.5** · 2026-11-27 <!--@stamp-->
+> **Doc status:** current as of **v3.8.6** · 2026-11-28 <!--@stamp-->
 
 What is left to do, one line per item, grouped by area. Status where known: **[owed]** (must be done), **[blocked]** (external cause), **[shelved]** / **[deferred]** (deliberately set aside),
 **[watch]** (not a defect today; a guard to keep), **[needs data]** (waiting on a capture or report).
@@ -39,7 +39,6 @@ internal quality, or deferred by decision.
 (recorded in the changelog), except a **[partial: ...]** line: it goes back to its section with only the open part.*
 
 
-
 ---
 
 ## Open bugs / under investigation
@@ -56,7 +55,6 @@ internal quality, or deferred by decision.
 - **[P3] DDNS: intermittent updates (v3.7.9)** **[reporter still checking]** ↳ notes: `ddns-flaky-v379.md`
 - **[P2] BQ16: the Devices page reportedly does not show MLO devices properly** **[details needed]** ↳ notes: `bq16-devices-mlo-display.md`
 - **[P2] Aqara G410 doorbell: control works but no video in the Aqara app or Apple Home (Bastion off)** **[reported; data asked]** ↳ notes: `aqara-g410-doorbell-no-video.md`
-- **[P3] RT-BE86U bootloader: cma=48M (stock now 64M) and an RTL8372 blob stock does not link** **[needs data]** ↳ notes: `rt-be86u-uboot-cma-rtl8372.md`
 - **[P2] Alpha line: check the rest of the closed-object swap list for pairs that must cross together (the conn_diag case)** **[parked]** ↳ notes: `conn-diag-crash-bq16-alpha.md`
 
 ---
@@ -126,6 +124,7 @@ private review report and the finding ID in it; review reports are never publish
 - **[P3] wifi_dsps.sh not installed: EDPD power-down and the fast radio recovery stay off (all models)** **[deferred (owner 2026-11-20)]** ↳ notes: `wifi-dsps-not-installed.md`
 - **[P3] RT-BE88U: the AiMesh revert-firmware button does nothing (scripts not installed)** **[deferred (owner 2026-11-20)]** ↳ notes: `rt-be88u-revert-scripts.md`
 - **[P4] Firewall log day files: split today's file so the store cap can remove parts** **[deferred]** ↳ notes: `fwlog-storage-row-layout.md` (item 2)
+- **[P3] RT-BE86U bootloader: cma=48M (stock now 64M) and an RTL8372 blob stock does not link** **[deferred (owner 2026-11-27)]** ↳ notes: `rt-be86u-uboot-cma-rtl8372.md`
 
 ---
 

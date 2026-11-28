@@ -211,6 +211,19 @@ check("REAPER-CUT8 (stage 5): the stock page no longer ships (removed at install
       and '{ "aimesh.asp", "Reaper_AiMesh.asp", 0 }' in tab and '"AiMesh.asp"' not in inj)
 check("Makefile: the kit page goes with AiMesh on a build without it (two places, as the stock page)",
       mk.count("\trm -f $(INSTALLDIR)/www/Reaper_AiMesh.asp\n") == 2)
+# ---------------------------------------------------------------- traffic figures (REAPER-AIMESH-RATES, 2026-11-28)
+check("traffic figures: one per line (Current / Average / Maximum), value and unit never split, fixed-width digits",
+      ".trv{flex:0 0 auto;min-width:12ch;text-align:right;white-space:nowrap;font-family:var(--mono);" in head and ".trf{grid-column:1/-1;" in head
+      and "[['', `<#Current#>`], ['avg_', `<#Average#>`], ['max_', `<#Maximum#>`]]" in js and "' / ' + `<#Average#>`" not in js)
+check("Maximum: no line without a value (a reading with no link rate, an offline node, a fronthaul card)",
+      "cells['max_' + d].parentNode.classList.toggle('off', m === '');" in js and "max_tx: up ? mtx : '', max_rx: up ? mrx : ''" in js
+      and "return (isNaN(r) || r <= 0) ? '' :" in js and "return RATES[lr] || '';" in js)
+check("Maximum, Ethernet uplink: the negotiated port speed (the mesh reading, else the node's WAN port), the same both ways",
+      "var LRATE = {G: 1000, Q: 2500, F: 5000, T: 10000}" in js and "if (p && p.is_on === '1') lr = parseInt(p.link_rate, 10) || 0;" in js
+      and "var eth = band === 'wired' && wiredPath(p), sp = eth ? uplinkSpeed(n) : '';" in js and "if (bhPort) bhPort();" in js)
+check("Maximum, Wi-Fi uplink: the parent's link rates for the node's station, crosswise like the traffic; httpd still sends them",
+      "show({tx: t.rx, rx: t.tx, avg_tx: t.avg_rx, avg_rx: t.avg_tx}, phyRate(phy.rx), phyRate(phy.tx));" in js
+      and web.count('\\"phy\\":{\\"tx\\":\\"%s\\", \\"rx\\":\\"%s\\"}') == 2 and "get_staphy_txrxbyte_avg(sta_mac, node_mac, &phy_txbyte, &phy_rxbyte, 1);" in web)
 pages = sorted(set(re.findall(r"T\('([A-Za-z0-9_]+\.(?:asp|htm|html))'", menu)))
 left = [p for p in pages if not p.startswith(("Reaper_", "Main_ReaperDash"))]
 check("menu: no stock page is listed any more (stage 3 moved the Network page to the kit)", left == [], left)

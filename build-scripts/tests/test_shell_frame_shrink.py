@@ -14,6 +14,7 @@ WHAT IT DOES.
   - a short page whose document is taller than its content is cleared once, not on every fit, and still shrinks
     back after a grow; a page shorter than the fallback stays on the fallback;
   - the window scroll position is put back if the clear moved it.
+- A dialog pinned in the page (REAPER-DLG-TALL, 2026-11-28) counts by its box: the frame grows to hold it and shrinks back.
 - Pins the wiring: frameContentBottom() feeds the gate, the load handler resets lastEst, the width logic is unchanged.
 """
 import json, os, re, shutil, subprocess, sys, tempfile
@@ -42,7 +43,7 @@ JS = r'''
 const vm = require('vm');
 const BLOCK = %s;
 function run(steps){
-  const M = { content: 0, docMin: 0, fallback: 836, padB: 16, marB: 18, clears: 0, y: 0, clampTo: null };
+  const M = { content: 0, docMin: 0, fallback: 836, padB: 16, marB: 18, clears: 0, y: 0, clampTo: null, tall: 0 };
   const style = { _h: '', width: '', setProperty(){},
     get height(){ return this._h; },
     set height(v){ if (v === '' && this._h !== '') { M.clears++; if (M.clampTo !== null) M.y = Math.min(M.y, M.clampTo); } this._h = v; } };
@@ -51,14 +52,18 @@ function run(steps){
   const f = { style, parentElement: { clientWidth: 1000 }, handlers: {},
     get offsetHeight(){ return style._h ? parseInt(style._h, 10) : M.fallback; },
     addEventListener(t, fn){ this.handlers[t] = fn; } };
-  const body = { children: [child], get scrollHeight(){ return Math.max(est(), M.docMin, f.offsetHeight); }, scrollWidth: 900 };
+  /* M.tall: a dialog pinned in the page (REAPER-DLG-TALL) whose box ends there - its backdrop is as tall as the frame */
+  const tbox = { getBoundingClientRect: () => ({ bottom: M.tall }) };
+  const tov = { children: [tbox], hasAttribute: () => true, getBoundingClientRect: () => ({ bottom: f.offsetHeight, height: f.offsetHeight, width: 900 }) };
+  const body = { get children(){ return M.tall ? [child, tov] : [child]; }, get scrollHeight(){ return Math.max(est(), M.docMin, f.offsetHeight, M.tall ? M.tall + 16 : 0); }, scrollWidth: 900 };
   child.getBoundingClientRect = () => ({ bottom: M.content, height: M.content, width: 900 });
+  child.hasAttribute = () => false;
   Object.defineProperty(html, 'scrollHeight', { get(){ return body.scrollHeight; } }); html.scrollWidth = 900;
   const win = { pageXOffset: 0,
     getComputedStyle(el){ return el === body ? { paddingBottom: M.padB + 'px', borderBottomWidth: '0px', marginBottom: '0px' }
       : el === html ? { paddingBottom: '0px', borderBottomWidth: '0px' } : { display: 'block', position: 'static', marginBottom: M.marB + 'px' }; } };
   Object.defineProperty(win, 'pageYOffset', { get(){ return 0; } });
-  const doc = { documentElement: html, body, defaultView: win, getElementById(){ return null; } };
+  const doc = { documentElement: html, body, defaultView: win, getElementById(){ return null; }, querySelectorAll(){ return M.tall ? [tov] : []; } };
   f.contentDocument = doc;
   const ctx = { $id: id => id === 'page_frame' ? f : null, handlers: {} };
   ctx.window = ctx;
@@ -74,7 +79,8 @@ function run(steps){
     if (s.docMin !== undefined) M.docMin = s.docMin;
     if (s.y !== undefined) M.y = s.y;
     if (s.clampTo !== undefined) M.clampTo = s.clampTo;
-    if (s.load) f.handlers.load(); else ctx.handlers.resize();
+    if (s.tall !== undefined) M.tall = s.tall;
+    if (s.load) f.handlers.load(); else if (s.refit) ctx.reaperFrameFit(); else ctx.handlers.resize();
     out.push({ h: f.offsetHeight, style: style._h, clears: M.clears, y: M.y });
   }
   return out;
@@ -88,6 +94,8 @@ R.shortdoc = run([{content: 503, docMin: 975, load: 1}, {}, {}, {}, {content: 30
 R.tiny = run([{content: 200, load: 1}, {}, {}, {content: 2000}, {content: 200}, {}]);
 /* scrolled down; the clear clamps the window scroll to 500, the fit puts it back */
 R.scroll = run([{content: 3330, load: 1}, {content: 6330}, {y: 2000, clampTo: 500, content: 3330}]);
+/* a dialog pinned in the page runs past its end: the frame grows to hold the box, follows it, and shrinks back when it goes */
+R.dialog = run([{content: 3330, load: 1}, {tall: 4000, refit: 1}, {}, {tall: 3600, refit: 1}, {tall: 2000, refit: 1}, {tall: 0, refit: 1}, {}]);
 console.log(JSON.stringify(R));
 '''
 
@@ -122,6 +130,10 @@ else:
                   T[0]["style"] == "" and T[2]["clears"] == 0 and T[3]["h"] == 2034 and T[4]["style"] == "" and T[5]["clears"] == T[4]["clears"], T)
             C = R["scroll"]
             check("scroll position put back after the clear (2000)", C[2]["y"] == 2000 and C[2]["h"] == 3364, C)
+            D = R["dialog"]
+            check("pinned dialog past the page end: the frame grows to the box (4016), follows it (3616), never below the page (3364)",
+                  [x["h"] for x in D] == [3364, 4016, 4016, 3616, 3364, 3364, 3364], [x["h"] for x in D])
+            check("pinned dialog: nothing cleared at rest while it is open or after it has gone", D[2]["clears"] == D[1]["clears"] and D[6]["clears"] == D[5]["clears"], [x["clears"] for x in D])
 
 print("%d checks failed" % len(fails) if fails else "all checks passed")
 for f in fails: print("  " + f)

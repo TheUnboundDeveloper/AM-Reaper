@@ -78,11 +78,14 @@ git am --keep-cr /path/to/AM-Reaper/patches/[0-9]*.patch
 sha256sum -c /path/to/AM-Reaper/overlays/openssl-3.5-source.sha256   # run in that overlays/ dir
 tar -xzf /path/to/AM-Reaper/overlays/openssl-3.5-source.tar.gz         # from the tree root
 # The vendor WLCSM blob pair (libnvram.so + libwlcsm.so) sits outside the hashed tree: the
-# 3006.102.10 base carries ASUS's 40585 pair; a model whose platform tree predates it (every
-# 3006.102.8 model) takes ASUS stock 42015's pair from overlays/wlcsm-42015-blobs.tar.gz over its
-# router-sysdep.<model>/{wlan/nvram,wlcsm}/prebuilt/ copies, as CI does.
+# 3006.102.10 base carries ASUS's 40585 pair, and on this branch every model's platform tree
+# carries that pair too (GT-BE98, GT-BE19000, BQ16 and BQ16 Pro take it with the objects listed
+# in overlays/common-blobs.list). CI still decides per model from the model's own objects; a
+# platform tree that predates the pair (none on this branch) would take ASUS stock 42015's pair
+# from overlays/wlcsm-42015-blobs.tar.gz over its router-sysdep.<model>/{wlan/nvram,wlcsm}/prebuilt/
+# copies.
 #   --keep-cr matters: a few third-party files are CRLF and the series
-#   fails without it. This applies all 1052 <!--@patchcount--> patches (through v3.8.6 <!--@treever-->).
+#   fails without it. This applies all 1057 <!--@patchcount--> patches (through v3.8.6 <!--@treever-->).
 
 # --- (c) Hash the corresponding source and compare ----------------------------
 git rev-parse HEAD:release/src/router

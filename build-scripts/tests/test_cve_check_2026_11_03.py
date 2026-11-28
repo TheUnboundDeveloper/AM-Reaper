@@ -12,8 +12,9 @@ that 4.19 / BusyBox upstream will never ship for us:
 - CVE-2026-98276, socket timestamp (upstream 9ed55f3dbef4): SOCK_TIMESTAMP was set without the socket lock
   (sock_set_flag is not atomic). 4.19 has the helper in sock.c twice AND in compat.c twice - compat is the path the
   32-bit userspace takes on this arm64 kernel, so all four are locked. Every built caller holds no socket lock.
-- CVE-2026-19386, 102.8 line only: the closed config-upload handler of the 102.8 blobs is the unfixed one; nothing on
-  this firmware posts upload_config_sync.cgi, so its route is compiled out there (the 102.10 blobs carry ASUS's fix).
+- CVE-2026-19386: the closed config-upload handler of the older (102_39274 / 102_39256) objects is the unfixed one;
+  nothing on this firmware posts upload_config_sync.cgi, so its route is compiled out for the models built with them
+  (RTCONFIG_REAPER_LEGACY_BLOBS; on the old 3006.102.8 line: #if 0). The 102.10 blobs carry ASUS's fix.
 
 WHAT IT DOES. Pins each change in the source the build compiles. Exit 0 pass, 1 fail, 77 skipped.
 """
@@ -60,12 +61,22 @@ else:
 
 line = "102.8" if os.path.isfile(VC) and "SERIALNO=102.8\n" in rd(VC) else "102.10"
 w = rd(os.path.join(SRC, "httpd", "web.c"))
-row = re.search(r'(?m)^(#if 0[^\n]*\n(?:\t \*[^\n]*\n)*)?\t\{ "upload_config_sync\.cgi\*"', w)
+row = re.search(r'(?m)^(#if(?:ndef RTCONFIG_REAPER_LEGACY_BLOBS| 0| !defined\(RTCONFIG_REAPER_LEGACY_BLOBS\) \|\| defined\(BQ16_PRO\))[^\n]*\n(?:\t \*[^\n]*\n)*)?'
+                r'\t\{ "upload_config_sync\.cgi\*"[^\n]*\n(#endif)?', w)
 if line == "102.8":
     check("102.8: the upload_config_sync.cgi route is compiled out (#if 0 around the row)",
-          row is not None and row.group(1) is not None and "CVE-2026-19386" in row.group(1))
+          row is not None and row.group(1) is not None and row.group(1).startswith("#if 0")
+          and "CVE-2026-19386" in row.group(1))
 else:
-    check("102.10: the upload_config_sync.cgi route stays (the 40585 blobs carry ASUS's fix)", row is not None)
+    # One tree for every model since the unification (2026-11-04): the models built with the older
+    # closed objects (RTCONFIG_REAPER_LEGACY_BLOBS: GT-BE98, GT-BE19000, BQ16, BQ16 Pro) carry the
+    # unfixed handler, so their route is compiled out; every other model keeps it (the 40585 blobs
+    # carry ASUS's fix). 2026-11-18: the BQ16 Pro moved to GPL 102_39442, whose handler is the 40585 one
+    # instruction for instruction, so its route is served too although it keeps the compatibility layer.
+    check("102.10: the upload_config_sync.cgi route is served except under RTCONFIG_REAPER_LEGACY_BLOBS (BQ16 Pro excepted)",
+          row is not None and row.group(1) is not None
+          and row.group(1).startswith("#if !defined(RTCONFIG_REAPER_LEGACY_BLOBS) || defined(BQ16_PRO)")
+          and "CVE-2026-19386" in row.group(1) and row.group(2) == "#endif")
 
 if fails:
     print("\n".join("FAILED: " + f for f in fails)); sys.exit(1)
